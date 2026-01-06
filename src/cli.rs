@@ -30,7 +30,7 @@ where
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let src = std::fs::read_to_string(path.into())?;
-            let toks = crate::lexer::lex(&src);
+            let toks = crate::lexer::lex(&src)?;
             println!("{toks:#?}");
             Ok(())
         }

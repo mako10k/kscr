@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
+    pub name: Option<String>,
     pub items: Vec<Item>,
 }
 

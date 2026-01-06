@@ -1,31 +1,70 @@
 use crate::{ast, error::Error, lexer, lexer::TokenKind, Result};
 
 pub fn parse_module(src: &str) -> Result<ast::Module> {
-    let tokens = lexer::lex(src);
+    let tokens = lexer::lex(src)?;
     let mut ts = TokenStream::new(tokens);
-    let mut items = Vec::new();
 
-    while !ts.is_eof() {
+    ts.skip_newlines();
+
+    if matches!(ts.peek_kind(), Some(TokenKind::KwModule)) {
+        parse_module_decl(&mut ts)
+    } else {
+        let items = parse_items_until(&mut ts, StopAt::Eof)?;
+        Ok(ast::Module { name: None, items })
+    }
+}
+
+fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
+    ts.expect(TokenKind::KwModule)?;
+    let name = ts.expect_ident()?;
+    ts.expect(TokenKind::KwWhere)?;
+    ts.consume_line_end();
+    ts.skip_newlines();
+    ts.expect(TokenKind::Indent)?;
+
+    let items = parse_items_until(ts, StopAt::Dedent)?;
+
+    ts.expect(TokenKind::Dedent)?;
+    ts.consume_line_end();
+
+    Ok(ast::Module {
+        name: Some(name),
+        items,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum StopAt {
+    Dedent,
+    Eof,
+}
+
+fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::Item>> {
+    let mut items = Vec::new();
+    loop {
         ts.skip_newlines();
         if ts.is_eof() {
             break;
         }
+        if matches!(stop_at, StopAt::Dedent) && matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+            break;
+        }
 
         let item = match ts.peek_kind() {
-            Some(TokenKind::KwData) => parse_data_decl(&mut ts)?,
-            Some(TokenKind::KwType) => parse_type_alias(&mut ts)?,
-            Some(TokenKind::Ident(_)) => parse_binding(&mut ts)?,
-            Some(_) => {
-                return Err(Error::msg("unexpected token at top-level"));
-            }
+            Some(TokenKind::KwData) => parse_data_decl(ts)?,
+            Some(TokenKind::KwType) => parse_type_alias(ts)?,
+            Some(TokenKind::Ident(_)) => parse_binding(ts)?,
+            Some(_) => return Err(Error::msg("unexpected token at top-level")),
             None => break,
         };
-
         items.push(item);
         ts.consume_line_end();
-    }
 
-    Ok(ast::Module { items })
+        if matches!(stop_at, StopAt::Eof) && ts.is_eof() {
+            break;
+        }
+    }
+    Ok(items)
 }
 
 fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
@@ -254,6 +293,10 @@ impl TokenStream {
             Some(TokenKind::String(s)) => format!("\"{}\"", s),
             Some(TokenKind::True) => "True".to_string(),
             Some(TokenKind::False) => "False".to_string(),
+            Some(TokenKind::KwModule) => "module".to_string(),
+            Some(TokenKind::KwWhere) => "where".to_string(),
+            Some(TokenKind::KwImport) => "import".to_string(),
+            Some(TokenKind::KwExport) => "export".to_string(),
             Some(TokenKind::KwIf) => "if".to_string(),
             Some(TokenKind::KwThen) => "then".to_string(),
             Some(TokenKind::KwElse) => "else".to_string(),
@@ -265,9 +308,14 @@ impl TokenStream {
             Some(TokenKind::Arrow) => "->".to_string(),
             Some(TokenKind::LBracket) => "[".to_string(),
             Some(TokenKind::RBracket) => "]".to_string(),
-            Some(TokenKind::Newline) | None => "".to_string(),
+            Some(TokenKind::Newline) => "".to_string(),
+            Some(TokenKind::Indent) => "INDENT".to_string(),
+            Some(TokenKind::Dedent) => "DEDENT".to_string(),
+            None => "".to_string(),
         }
     }
+
+    // bump_text is defined above.
 
     fn expect(&mut self, kind: TokenKind) -> Result<()> {
         let got = self.bump().ok_or_else(|| Error::msg("unexpected EOF"))?;

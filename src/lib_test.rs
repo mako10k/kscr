@@ -5,6 +5,14 @@ fn scaffold_parser_accepts_binding() {
 }
 
 #[test]
+fn parser_module_basic() {
+    let src = std::fs::read_to_string("tests/module_basic.ks").unwrap();
+    let m = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(m.name.as_deref(), Some("Main"));
+    assert_eq!(m.items.len(), 2);
+}
+
+#[test]
 fn parser_golden_basic() {
     let src = std::fs::read_to_string("tests/basic.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
@@ -29,7 +37,7 @@ fn parser_golden_decl() {
 #[test]
 fn lexer_golden_basic() {
     let src = std::fs::read_to_string("tests/basic.ks").unwrap();
-    let tokens = crate::lexer::lex(&src);
+    let tokens = crate::lexer::lex(&src).unwrap();
     let tokens: Vec<_> = tokens
         .into_iter()
         .filter(|t| t.kind != crate::lexer::TokenKind::Newline)
@@ -54,7 +62,7 @@ fn lexer_golden_basic() {
 #[test]
 fn lexer_golden_ext() {
     let src = std::fs::read_to_string("tests/lexer_ext.ks").unwrap();
-    let tokens = crate::lexer::lex(&src);
+    let tokens = crate::lexer::lex(&src).unwrap();
     let tokens: Vec<_> = tokens
         .into_iter()
         .filter(|t| t.kind != crate::lexer::TokenKind::Newline)
@@ -75,7 +83,7 @@ fn lexer_golden_ext() {
 #[test]
 fn lexer_strips_nested_block_comments() {
     let src = "x = 1 {- a {- b -} c -} y = 2";
-    let tokens = crate::lexer::lex(src);
+    let tokens = crate::lexer::lex(src).unwrap();
     let tokens: Vec<_> = tokens
         .into_iter()
         .filter(|t| t.kind != crate::lexer::TokenKind::Newline)
@@ -86,7 +94,7 @@ fn lexer_strips_nested_block_comments() {
 #[test]
 fn lexer_skips_shebang() {
     let src = "#!/usr/bin/env kscr\nx = 1";
-    let tokens = crate::lexer::lex(src);
+    let tokens = crate::lexer::lex(src).unwrap();
     let tokens: Vec<_> = tokens
         .into_iter()
         .filter(|t| t.kind != crate::lexer::TokenKind::Newline)

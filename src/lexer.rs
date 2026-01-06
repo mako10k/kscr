@@ -7,6 +7,10 @@ pub enum TokenKind {
     True,
     False,
 
+    KwModule,
+    KwWhere,
+    KwImport,
+    KwExport,
     KwIf,
     KwThen,
     KwElse,
@@ -14,6 +18,8 @@ pub enum TokenKind {
     KwData,
 
     Newline,
+    Indent,
+    Dedent,
     Eq,
     Pipe,
     Backslash,
@@ -27,10 +33,13 @@ pub struct Token {
     pub kind: TokenKind,
 }
 
-pub fn lex(src: &str) -> Vec<Token> {
+pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
     let mut tokens = Vec::new();
     let bytes = src.as_bytes();
     let mut i = 0usize;
+
+    let mut indent_stack: Vec<usize> = vec![0];
+    let mut bol = true;
 
     // Shebang handling: ignore first line if it starts with "#!".
     if bytes.starts_with(b"#!") {
@@ -43,12 +52,58 @@ pub fn lex(src: &str) -> Vec<Token> {
     }
 
     while i < bytes.len() {
+        if bol {
+            let mut col = 0usize;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b' ' => {
+                        col += 1;
+                        i += 1;
+                    }
+                    b'\t' => {
+                        col += 4;
+                        i += 1;
+                    }
+                    _ => break,
+                }
+            }
+
+            // Do not change indentation on blank/comment-only lines.
+            if i >= bytes.len()
+                || bytes[i] == b'\n'
+                || bytes[i..].starts_with(b"--")
+                || bytes[i..].starts_with(b"{-")
+            {
+                bol = false;
+            } else {
+                let current = *indent_stack.last().unwrap_or(&0);
+                if col > current {
+                    indent_stack.push(col);
+                    tokens.push(Token {
+                        kind: TokenKind::Indent,
+                    });
+                } else if col < current {
+                    while indent_stack.len() > 1 && col < *indent_stack.last().unwrap() {
+                        indent_stack.pop();
+                        tokens.push(Token {
+                            kind: TokenKind::Dedent,
+                        });
+                    }
+                    if col != *indent_stack.last().unwrap() {
+                        return Err(crate::error::Error::msg("inconsistent indentation"));
+                    }
+                }
+                bol = false;
+            }
+        }
+
         // Newline (statement separator)
         if bytes[i] == b'\n' {
             tokens.push(Token {
                 kind: TokenKind::Newline,
             });
             i += 1;
+            bol = true;
             continue;
         }
 
@@ -234,6 +289,10 @@ pub fn lex(src: &str) -> Vec<Token> {
             let kind = match word {
                 "True" => TokenKind::True,
                 "False" => TokenKind::False,
+                "module" => TokenKind::KwModule,
+                "where" => TokenKind::KwWhere,
+                "import" => TokenKind::KwImport,
+                "export" => TokenKind::KwExport,
                 "if" => TokenKind::KwIf,
                 "then" => TokenKind::KwThen,
                 "else" => TokenKind::KwElse,
@@ -249,5 +308,13 @@ pub fn lex(src: &str) -> Vec<Token> {
         i += 1;
     }
 
-    tokens
+    // Close any remaining indentation at EOF.
+    while indent_stack.len() > 1 {
+        indent_stack.pop();
+        tokens.push(Token {
+            kind: TokenKind::Dedent,
+        });
+    }
+
+    Ok(tokens)
 }
