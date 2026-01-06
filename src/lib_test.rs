@@ -596,6 +596,19 @@ fn typecheck_expands_type_aliases() {
         panic!("expected annotation");
     };
     assert_eq!(ty, &Type::Tuple(vec![Type::Integer, Type::Bool]));
+
+    use crate::types::{Scheme, Ty};
+    assert_eq!(
+        tm.inferred.get("x").unwrap(),
+        &Scheme::mono(Ty::List(Box::new(Ty::Con("Char".to_string()))))
+    );
+    assert_eq!(
+        tm.inferred.get("z").unwrap(),
+        &Scheme::mono(Ty::Tuple(vec![
+            Ty::Con("Integer".to_string()),
+            Ty::Con("Bool".to_string())
+        ]))
+    );
 }
 
 #[test]

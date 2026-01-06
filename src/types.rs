@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedModule {
     pub module: ast::Module,
+    pub inferred: HashMap<String, Scheme>,
 }
 
 // --- Milestone 2.2.1: Unification core (scaffolding) ---
@@ -512,10 +513,12 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
         Expr::String(_) => Ok((Subst::new(), Ty::Con("String".to_string()))),
 
         Expr::Var(name) => {
-            let s = env
-                .get(&name)
-                .ok_or_else(|| Error::msg("unbound variable"))?;
-            Ok((Subst::new(), instantiate(cx, s)))
+            if let Some(s) = env.get(&name) {
+                Ok((Subst::new(), instantiate(cx, s)))
+            } else {
+                // Until we have name resolution/imports, treat unknown vars as assumptions.
+                Ok((Subst::new(), cx.fresh()))
+            }
         }
 
         Expr::Ctor(name) => {
@@ -826,7 +829,10 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
         .into_iter()
         .map(|it| expand_item(it, &aliases))
         .collect::<Result<Vec<_>>>()?;
-    Ok(TypedModule { module })
+
+    let inferred = infer_module(&module)?;
+
+    Ok(TypedModule { module, inferred })
 }
 
 fn collect_type_aliases(module: &ast::Module) -> HashMap<String, ast::TypeAlias> {
