@@ -16,7 +16,7 @@ pub enum TokenKind {
 pub struct Token {
     pub kind: TokenKind,
 }
-
+pub fn lex(src: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     for line in src.lines() {
         let line = line.trim();
@@ -26,32 +26,56 @@ pub struct Token {
             None => line,
         };
         for word in line.split_whitespace() {
-            let kind = match word {
-                "True" => TokenKind::True,
-                "False" => TokenKind::False,
-                "type" => TokenKind::KwType,
-                "data" => TokenKind::KwData,
-                "module" => TokenKind::Ident("module".to_string()),
-                "import" => TokenKind::Ident("import".to_string()),
-                "export" => TokenKind::Ident("export".to_string()),
-                "let" => TokenKind::Ident("let".to_string()),
-                "in" => TokenKind::Ident("in".to_string()),
-                "where" => TokenKind::Ident("where".to_string()),
-                "case" => TokenKind::Ident("case".to_string()),
-                "of" => TokenKind::Ident("of".to_string()),
-                "if" => TokenKind::Ident("if".to_string()),
-                "then" => TokenKind::Ident("then".to_string()),
-                "else" => TokenKind::Ident("else".to_string()),
-                "do" => TokenKind::Ident("do".to_string()),
-                "=" => TokenKind::Eq,
-                "|" => TokenKind::Pipe,
-                _ if word.chars().all(|c| c.is_ascii_digit()) => TokenKind::Integer(word.to_string()),
-                _ if word.parse::<f64>().is_ok() && word.contains('.') => TokenKind::Float(word.to_string()),
-                _ if word.starts_with('"') && word.ends_with('"') => TokenKind::String(word.trim_matches('"').to_string()),
-                _ if word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => TokenKind::Ident(word.to_string()),
-                _ => continue, // skip unknown for now
+            let kind = if word == "True" {
+                Some(TokenKind::True)
+            } else if word == "False" {
+                Some(TokenKind::False)
+            } else if word == "type" {
+                Some(TokenKind::KwType)
+            } else if word == "data" {
+                Some(TokenKind::KwData)
+            } else if word == "module" {
+                Some(TokenKind::Ident("module".to_string()))
+            } else if word == "import" {
+                Some(TokenKind::Ident("import".to_string()))
+            } else if word == "export" {
+                Some(TokenKind::Ident("export".to_string()))
+            } else if word == "let" {
+                Some(TokenKind::Ident("let".to_string()))
+            } else if word == "in" {
+                Some(TokenKind::Ident("in".to_string()))
+            } else if word == "where" {
+                Some(TokenKind::Ident("where".to_string()))
+            } else if word == "case" {
+                Some(TokenKind::Ident("case".to_string()))
+            } else if word == "of" {
+                Some(TokenKind::Ident("of".to_string()))
+            } else if word == "if" {
+                Some(TokenKind::Ident("if".to_string()))
+            } else if word == "then" {
+                Some(TokenKind::Ident("then".to_string()))
+            } else if word == "else" {
+                Some(TokenKind::Ident("else".to_string()))
+            } else if word == "do" {
+                Some(TokenKind::Ident("do".to_string()))
+            } else if word == "=" {
+                Some(TokenKind::Eq)
+            } else if word == "|" {
+                Some(TokenKind::Pipe)
+            } else if word.chars().all(|c| c.is_ascii_digit()) {
+                Some(TokenKind::Integer(word.to_string()))
+            } else if word.parse::<f64>().is_ok() && word.contains('.') {
+                Some(TokenKind::Float(word.to_string()))
+            } else if word.starts_with('"') && word.ends_with('"') {
+                Some(TokenKind::String(word.trim_matches('"').to_string()))
+            } else if word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                Some(TokenKind::Ident(word.to_string()))
+            } else {
+                None
             };
-            tokens.push(Token { kind });
+            if let Some(kind) = kind {
+                tokens.push(Token { kind });
+            }
         }
     }
     tokens

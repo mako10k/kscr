@@ -29,3 +29,17 @@ fn lexer_golden_basic() {
     assert!(matches!(tokens[7].kind, crate::lexer::TokenKind::Eq));
     assert!(matches!(tokens[8].kind, crate::lexer::TokenKind::String(_)));
 }
+
+#[test]
+fn lexer_golden_ext() {
+    let src = std::fs::read_to_string("tests/lexer_ext.ks").unwrap();
+    let tokens = crate::lexer::lex(&src);
+    // x = 1.23, flag = True, msg = "hello", module = "main"
+    // コメント行は無視される
+    // 12 tokens expected: Ident, Eq, Float, Ident, Eq, True, Ident, Eq, String, Ident, Eq, String
+    assert_eq!(tokens.len(), 12);
+    assert!(matches!(tokens[2].kind, crate::lexer::TokenKind::Float(_)));
+    assert!(matches!(tokens[5].kind, crate::lexer::TokenKind::True));
+    assert!(matches!(tokens[8].kind, crate::lexer::TokenKind::String(_)));
+    assert!(matches!(tokens[11].kind, crate::lexer::TokenKind::String(_)));
+}
