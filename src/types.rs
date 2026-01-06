@@ -927,6 +927,14 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
 }
 
 pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
+    if module
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Import(_)))
+    {
+        return Err(Error::msg("imports are not supported yet"));
+    }
+
     let aliases = collect_type_aliases(&module);
     module.items = module
         .items
@@ -1232,6 +1240,18 @@ mod unification_tests {
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+
+    #[test]
+    fn typecheck_rejects_imports() {
+        let m = ast::Module {
+            name: None,
+            items: vec![ast::Item::Import(ast::ImportDecl {
+                module: "Foo".to_string(),
+                as_name: None,
+            })],
+        };
+        assert!(typecheck(m).is_err());
+    }
 
     #[test]
     fn scheme_display_renames_vars() {
