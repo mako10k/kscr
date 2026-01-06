@@ -413,3 +413,48 @@ fn parser_case_patterns() {
     assert!(matches!(arms[3].0, Pattern::Record(_)));
     assert!(matches!(arms[4].0, Pattern::Constructor { .. }));
 }
+
+#[test]
+fn parser_type_annotations() {
+    let src = std::fs::read_to_string("tests/parser_annot.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 3);
+
+    use crate::ast::{Expr, Item, Type};
+
+    let Item::Binding(b0) = &module.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b0.expr,
+        Expr::Annot {
+            ty: Type::Var(ref s),
+            ..
+        } if s == "Integer"
+    ));
+
+    let Item::Binding(b1) = &module.items[1] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b1.expr,
+        Expr::Annot {
+            ty: Type::Var(ref s),
+            ..
+        } if s == "Float64"
+    ));
+
+    let Item::Binding(b2) = &module.items[2] else {
+        panic!("expected binding");
+    };
+    let Expr::List(v) = &b2.expr else {
+        panic!("expected list");
+    };
+    assert!(matches!(
+        v[0],
+        Expr::Annot {
+            ty: Type::Var(ref s),
+            ..
+        } if s == "Integer"
+    ));
+}

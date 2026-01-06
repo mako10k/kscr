@@ -36,6 +36,7 @@ pub enum TokenKind {
     LBrace,
     RBrace,
     Colon,
+    ColonColon,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,6 +226,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::RBrace,
             });
             i += 1;
+            continue;
+        }
+        if bytes[i..].starts_with(b"::") {
+            tokens.push(Token {
+                kind: TokenKind::ColonColon,
+            });
+            i += 2;
             continue;
         }
         if bytes[i] == b':' {

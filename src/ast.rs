@@ -79,6 +79,10 @@ pub enum Expr {
         expr: Box<Expr>,
         bindings: Vec<Binding>,
     },
+    Annot {
+        expr: Box<Expr>,
+        ty: Type,
+    },
     Case {
         expr: Box<Expr>,
         arms: Vec<(Pattern, Expr)>,
