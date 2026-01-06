@@ -280,6 +280,41 @@ fn apply_env(subst: &Subst, env: &TypeEnv) -> TypeEnv {
         .collect()
 }
 
+fn infer_pat_template(
+    cx: &mut InferCtx,
+    pat: &ast::Pattern,
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+) -> Result<Ty> {
+    use ast::{Expr, Pattern};
+
+    match pat {
+        Pattern::Var(name) => {
+            if !seen.insert(name.clone()) {
+                return Err(Error::msg("duplicate pattern variable"));
+            }
+            let t = cx.fresh();
+            binds.push((name.clone(), t.clone()));
+            Ok(t)
+        }
+        Pattern::Wildcard => Ok(cx.fresh()),
+        Pattern::Literal(e) => Ok(match e {
+            Expr::Unit => Ty::Con("Unit".to_string()),
+            Expr::Integer(_) => Ty::Con("Integer".to_string()),
+            Expr::Float64(_) => Ty::Con("Float64".to_string()),
+            Expr::Bool(_) => Ty::Con("Bool".to_string()),
+            Expr::String(_) => Ty::Con("String".to_string()),
+            _ => return Err(Error::msg("unsupported literal pattern")),
+        }),
+        Pattern::Tuple(ps) => Ok(Ty::Tuple(
+            ps.iter()
+                .map(|p| infer_pat_template(cx, p, binds, seen))
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        _ => Err(Error::msg("pattern inference not implemented")),
+    }
+}
+
 pub fn infer_expr(expr: ast::Expr) -> Result<Ty> {
     let mut cx = InferCtx::default();
     let env = TypeEnv::new();
@@ -374,17 +409,22 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             let mut env2 = env.clone();
 
             for b in bindings {
-                let ast::Pattern::Var(name) = b.pat else {
-                    return Err(Error::msg("pattern inference not implemented"));
-                };
+                let mut binds = Vec::new();
+                let mut seen = HashSet::new();
+                let pat_ty = infer_pat_template(cx, &b.pat, &mut binds, &mut seen)?;
 
                 let env_in = apply_env(&s, &env2);
                 let (s_rhs, t_rhs) = infer_expr_in(cx, &env_in, b.expr)?;
                 s = compose(&s_rhs, &s);
 
-                let env_gen = apply_env(&s, &env2);
-                let scheme = generalize(&env_gen, apply(&s, t_rhs));
-                env2.insert(name, scheme);
+                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))?;
+                s = compose(&s_pat, &s);
+
+                for (name, t) in binds {
+                    let env_gen = apply_env(&s, &env2);
+                    let scheme = generalize(&env_gen, apply(&s, t));
+                    env2.insert(name, scheme);
+                }
             }
 
             let env_body = apply_env(&s, &env2);
@@ -825,6 +865,48 @@ mod inference_tests {
                 Ty::Con("Bool".to_string())
             ])
         );
+    }
+
+    #[test]
+    fn infer_let_tuple_pattern() {
+        let b = ast::Binding {
+            pat: ast::Pattern::Tuple(vec![
+                ast::Pattern::Var("a".to_string()),
+                ast::Pattern::Var("b".to_string()),
+            ]),
+            expr: ast::Expr::Tuple(vec![
+                ast::Expr::Integer("1".to_string()),
+                ast::Expr::Bool(true),
+            ]),
+        };
+
+        let ty = infer_expr(ast::Expr::Let {
+            bindings: vec![b],
+            body: Box::new(ast::Expr::Var("b".to_string())),
+        })
+        .unwrap();
+
+        assert_eq!(ty, Ty::Con("Bool".to_string()));
+    }
+
+    #[test]
+    fn infer_duplicate_pattern_vars_is_error() {
+        let b = ast::Binding {
+            pat: ast::Pattern::Tuple(vec![
+                ast::Pattern::Var("x".to_string()),
+                ast::Pattern::Var("x".to_string()),
+            ]),
+            expr: ast::Expr::Tuple(vec![
+                ast::Expr::Integer("1".to_string()),
+                ast::Expr::Integer("2".to_string()),
+            ]),
+        };
+
+        let _ = infer_expr(ast::Expr::Let {
+            bindings: vec![b],
+            body: Box::new(ast::Expr::Var("x".to_string())),
+        })
+        .unwrap_err();
     }
 
     #[test]
