@@ -69,12 +69,21 @@ fn unify_in(subst: &mut Subst, a: Ty, b: Ty) -> Result<()> {
             if a.len() != b.len() {
                 return Err(Error::msg("record arity mismatch"));
             }
-            for ((na, ta), (nb, tb)) in a.into_iter().zip(b) {
-                if na != nb {
-                    return Err(Error::msg("record field mismatch"));
-                }
-                unify_in(subst, ta, tb)?;
+
+            let a: HashMap<String, Ty> = a.into_iter().collect();
+            let b: HashMap<String, Ty> = b.into_iter().collect();
+
+            if a.len() != b.len() {
+                return Err(Error::msg("record field mismatch"));
             }
+
+            for (k, ta) in a {
+                let tb = b
+                    .get(&k)
+                    .ok_or_else(|| Error::msg("record field mismatch"))?;
+                unify_in(subst, ta, tb.clone())?;
+            }
+
             Ok(())
         }
         (Ty::App { head: ha, args: aa }, Ty::App { head: hb, args: ab }) => {
@@ -326,12 +335,14 @@ fn infer_pat_in(
             }
             Ok(Ty::List(Box::new(apply(subst, first))))
         }
-        Pattern::Record(fields) => Ok(Ty::Record(
-            fields
+        Pattern::Record(fields) => {
+            let mut out = fields
                 .iter()
                 .map(|(n, p)| Ok((n.clone(), infer_pat_in(cx, subst, env, p, binds, seen)?)))
-                .collect::<Result<Vec<_>>>()?,
-        )),
+                .collect::<Result<Vec<_>>>()?;
+            out.sort_by(|(a, _), (b, _)| a.cmp(b));
+            Ok(Ty::Record(out))
+        }
         Pattern::Constructor { name, args } => {
             let scheme = env
                 .get(name)
@@ -611,6 +622,7 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                 s = compose(&s_e, &s);
                 out.push((name, apply(&s, t_e)));
             }
+            out.sort_by(|(a, _), (b, _)| a.cmp(b));
             Ok((s, Ty::Record(out)))
         }
 
@@ -1177,8 +1189,8 @@ mod inference_tests {
     fn infer_let_record_pattern() {
         let b = ast::Binding {
             pat: ast::Pattern::Record(vec![
-                ("a".to_string(), ast::Pattern::Var("x".to_string())),
                 ("b".to_string(), ast::Pattern::Var("y".to_string())),
+                ("a".to_string(), ast::Pattern::Var("x".to_string())),
             ]),
             expr: ast::Expr::Record(vec![
                 ("a".to_string(), ast::Expr::Integer("1".to_string())),
@@ -1193,6 +1205,20 @@ mod inference_tests {
         .unwrap();
 
         assert_eq!(ty, Ty::Con("Bool".to_string()));
+    }
+
+    #[test]
+    fn infer_record_field_mismatch_is_error() {
+        let b = ast::Binding {
+            pat: ast::Pattern::Record(vec![("a".to_string(), ast::Pattern::Wildcard)]),
+            expr: ast::Expr::Record(vec![("b".to_string(), ast::Expr::Bool(true))]),
+        };
+
+        let _ = infer_expr(ast::Expr::Let {
+            bindings: vec![b],
+            body: Box::new(ast::Expr::Unit),
+        })
+        .unwrap_err();
     }
 
     #[test]
