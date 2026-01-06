@@ -75,6 +75,10 @@ pub enum Expr {
         bindings: Vec<Binding>,
         body: Box<Expr>,
     },
+    Where {
+        expr: Box<Expr>,
+        bindings: Vec<Binding>,
+    },
     Case {
         expr: Box<Expr>,
         arms: Vec<(Pattern, Expr)>,

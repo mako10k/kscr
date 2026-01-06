@@ -320,3 +320,35 @@ fn parser_golden_case_expr() {
         _ => panic!("expected binding"),
     }
 }
+
+#[test]
+fn parser_golden_where_expr() {
+    let src = std::fs::read_to_string("tests/parser_where.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{Expr, Item};
+
+    match &module.items[0] {
+        Item::Binding(b) => match &b.expr {
+            Expr::Where { bindings, .. } => {
+                assert_eq!(bindings.len(), 1);
+                assert_eq!(bindings[0].name, "x");
+            }
+            _ => panic!("expected where"),
+        },
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[1] {
+        Item::Binding(b) => match &b.expr {
+            Expr::Where { bindings, .. } => {
+                assert_eq!(bindings.len(), 2);
+                assert_eq!(bindings[0].name, "x");
+                assert_eq!(bindings[1].name, "y");
+            }
+            _ => panic!("expected where"),
+        },
+        _ => panic!("expected binding"),
+    }
+}

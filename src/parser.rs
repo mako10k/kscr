@@ -183,13 +183,19 @@ enum Stop {
 }
 
 fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
-    match ts.peek_kind() {
-        Some(TokenKind::Backslash) => parse_lambda(ts, stop),
-        Some(TokenKind::KwIf) => parse_if(ts, stop),
-        Some(TokenKind::KwLet) => parse_let(ts, stop),
-        Some(TokenKind::KwCase) => parse_case(ts, stop),
-        _ => parse_application(ts, stop),
+    let mut expr = match ts.peek_kind() {
+        Some(TokenKind::Backslash) => parse_lambda(ts, stop)?,
+        Some(TokenKind::KwIf) => parse_if(ts, stop)?,
+        Some(TokenKind::KwLet) => parse_let(ts, stop)?,
+        Some(TokenKind::KwCase) => parse_case(ts, stop)?,
+        _ => parse_application(ts, stop)?,
+    };
+
+    while let Some(TokenKind::KwWhere) = ts.peek_kind() {
+        expr = parse_where(ts, expr)?;
     }
+
+    Ok(expr)
 }
 
 fn parse_lambda(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
@@ -301,6 +307,39 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
     ts.consume_line_end();
 
     Ok(ast::Expr::Case { expr, arms })
+}
+
+fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
+    ts.expect(TokenKind::KwWhere)?;
+
+    if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        return Err(Error::msg("expected newline after 'where'"));
+    }
+
+    ts.consume_line_end();
+    ts.skip_newlines();
+    ts.expect(TokenKind::Indent)?;
+
+    let mut bindings = Vec::new();
+    loop {
+        ts.skip_newlines();
+        if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+            break;
+        }
+        if ts.is_eof() {
+            return Err(Error::msg("unexpected EOF in where"));
+        }
+        bindings.push(parse_let_binding_line(ts)?);
+        ts.consume_line_end();
+    }
+
+    ts.expect(TokenKind::Dedent)?;
+    ts.consume_line_end();
+
+    Ok(ast::Expr::Where {
+        expr: Box::new(expr),
+        bindings,
+    })
 }
 
 fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
