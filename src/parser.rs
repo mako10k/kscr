@@ -199,7 +199,7 @@ fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         Some(TokenKind::KwLet) => parse_let(ts, stop)?,
         Some(TokenKind::KwCase) => parse_case(ts, stop)?,
         Some(TokenKind::KwDo) => parse_do(ts, stop)?,
-        _ => parse_application(ts, stop)?,
+        _ => parse_infix_application(ts, stop)?,
     };
 
     while let Some(TokenKind::ColonColon) = ts.peek_kind() {
@@ -573,6 +573,23 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     Ok(ast::Pattern::Record(fields))
 }
 
+fn parse_infix_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
+    let mut lhs = parse_application(ts, stop)?;
+
+    while ts.can_continue_expr(stop) && matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
+        ts.expect(TokenKind::Backtick)?;
+        let op = ts.expect_ident()?;
+        ts.expect(TokenKind::Backtick)?;
+        let rhs = parse_application(ts, stop)?;
+        lhs = ast::Expr::Apply {
+            func: Box::new(ast::Expr::Var(op)),
+            args: vec![lhs, rhs],
+        };
+    }
+
+    Ok(lhs)
+}
+
 fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     let mut exprs = Vec::new();
     exprs.push(parse_atom(ts)?);
@@ -810,6 +827,7 @@ impl TokenStream {
             Some(TokenKind::Colon) => ":".to_string(),
             Some(TokenKind::ColonColon) => "::".to_string(),
             Some(TokenKind::LeftArrow) => "<-".to_string(),
+            Some(TokenKind::Backtick) => "`".to_string(),
             Some(TokenKind::Newline) => "".to_string(),
             Some(TokenKind::Indent) => "INDENT".to_string(),
             Some(TokenKind::Dedent) => "DEDENT".to_string(),

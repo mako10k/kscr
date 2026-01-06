@@ -39,6 +39,7 @@ pub enum TokenKind {
     Colon,
     ColonColon,
     LeftArrow,
+    Backtick,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +175,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             i += 1;
             continue;
         }
+        if bytes[i] == b'`' {
+            tokens.push(Token {
+                kind: TokenKind::Backtick,
+            });
+            i += 1;
+            continue;
+        }
         if bytes[i] == b'\\' {
             tokens.push(Token {
                 kind: TokenKind::Backslash,
@@ -242,6 +250,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::LeftArrow,
             });
             i += 2;
+            continue;
+        }
+        if bytes[i] == b'`' {
+            tokens.push(Token {
+                kind: TokenKind::Backtick,
+            });
+            i += 1;
             continue;
         }
         if bytes[i] == b':' {

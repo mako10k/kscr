@@ -504,3 +504,33 @@ fn parser_ctor_exprs() {
     };
     assert!(matches!(b1.expr, Expr::Ctor(ref s) if s == "Nothing"));
 }
+
+#[test]
+fn parser_infix_backticks() {
+    let src = std::fs::read_to_string("tests/parser_infix.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{Expr, Item};
+
+    let Item::Binding(b0) = &module.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b0.expr,
+        Expr::Apply { ref func, ref args }
+            if matches!(**func, Expr::Var(ref s) if s == "f") && args.len() == 2
+    ));
+
+    let Item::Binding(b1) = &module.items[1] else {
+        panic!("expected binding");
+    };
+    // left associative: (a `f` b) `g` c
+    let Expr::Apply { func, args } = &b1.expr else {
+        panic!("expected apply");
+    };
+    assert!(matches!(**func, Expr::Var(ref s) if s == "g"));
+    assert_eq!(args.len(), 2);
+    assert!(matches!(args[1], Expr::Var(ref s) if s == "c"));
+    assert!(matches!(args[0], Expr::Apply { .. }));
+}
