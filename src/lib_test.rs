@@ -530,6 +530,31 @@ fn parser_type_exprs() {
 }
 
 #[test]
+fn typecheck_expands_type_aliases() {
+    let src = std::fs::read_to_string("tests/type_alias_expand.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    let tm = crate::types::typecheck(module).unwrap();
+
+    use crate::ast::{Expr, Item, Type};
+
+    let Item::Binding(b0) = &tm.module.items[2] else {
+        panic!("expected binding");
+    };
+    let Expr::Annot { ty, .. } = &b0.expr else {
+        panic!("expected annotation");
+    };
+    assert_eq!(ty, &Type::List(Box::new(Type::Char)));
+
+    let Item::Binding(b1) = &tm.module.items[3] else {
+        panic!("expected binding");
+    };
+    let Expr::Annot { ty, .. } = &b1.expr else {
+        panic!("expected annotation");
+    };
+    assert_eq!(ty, &Type::Tuple(vec![Type::Integer, Type::Bool]));
+}
+
+#[test]
 fn parser_do_blocks() {
     let src = std::fs::read_to_string("tests/parser_do.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
