@@ -696,7 +696,61 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             Ok((s.clone(), apply(&s, out_ty)))
         }
 
-        _ => Err(Error::msg("inference not implemented for this expression")),
+        Expr::Do(stmts) => {
+            if stmts.is_empty() {
+                return Err(Error::msg("empty do"));
+            }
+
+            let n = stmts.len();
+            let mut s = Subst::new();
+            let mut env2 = env.clone();
+
+            let mut last_ty: Option<Ty> = None;
+
+            for (i, stmt) in stmts.into_iter().enumerate() {
+                let is_last = i + 1 == n;
+                match stmt {
+                    ast::DoStmt::Bind { name, expr } => {
+                        let env_in = apply_env(&s, &env2);
+                        let (s_e, t_e) = infer_expr_in(cx, &env_in, expr)?;
+                        s = compose(&s_e, &s);
+
+                        let a = cx.fresh();
+                        let io_a = Ty::App {
+                            head: Box::new(Ty::Con("IO".to_string())),
+                            args: vec![a.clone()],
+                        };
+                        let su = unify(apply(&s, t_e), apply(&s, io_a))?;
+                        s = compose(&su, &s);
+
+                        env2.insert(name, Scheme::mono(apply(&s, a)));
+                        last_ty = None;
+                    }
+                    ast::DoStmt::Expr(e) => {
+                        let env_in = apply_env(&s, &env2);
+                        let (s_e, t_e) = infer_expr_in(cx, &env_in, e)?;
+                        s = compose(&s_e, &s);
+
+                        let r = cx.fresh();
+                        let io_r = Ty::App {
+                            head: Box::new(Ty::Con("IO".to_string())),
+                            args: vec![r.clone()],
+                        };
+                        let su = unify(apply(&s, t_e), apply(&s, io_r.clone()))?;
+                        s = compose(&su, &s);
+
+                        if is_last {
+                            last_ty = Some(apply(&s, io_r));
+                        } else {
+                            last_ty = None;
+                        }
+                    }
+                }
+            }
+
+            let last_ty = last_ty.ok_or_else(|| Error::msg("do must end with expression"))?;
+            Ok((s.clone(), apply(&s, last_ty)))
+        }
     }
 }
 
@@ -1219,6 +1273,47 @@ mod inference_tests {
             body: Box::new(ast::Expr::Unit),
         })
         .unwrap_err();
+    }
+
+    #[test]
+    fn infer_do_block() {
+        let src = r#"data IO a = IO a
+
+x = do
+  y <- IO 1
+  IO y
+"#;
+        let m = crate::parser::parse_module(src).unwrap();
+
+        let crate::ast::Item::Binding(b) = &m.items[1] else {
+            panic!("expected binding");
+        };
+
+        let ty = infer_in_module(&m, b.expr.clone()).unwrap();
+        assert_eq!(
+            ty,
+            Ty::App {
+                head: Box::new(Ty::Con("IO".to_string())),
+                args: vec![Ty::Con("Integer".to_string())],
+            }
+        );
+    }
+
+    #[test]
+    fn infer_do_bind_requires_io() {
+        let src = r#"data IO a = IO a
+
+x = do
+  y <- 1
+  IO y
+"#;
+        let m = crate::parser::parse_module(src).unwrap();
+
+        let crate::ast::Item::Binding(b) = &m.items[1] else {
+            panic!("expected binding");
+        };
+
+        let _ = infer_in_module(&m, b.expr.clone()).unwrap_err();
     }
 
     #[test]
