@@ -26,6 +26,11 @@ pub enum TokenKind {
     Indent,
     Dedent,
     Comma,
+    Backtick,
+    Plus,
+    Minus,
+    Star,
+    Slash,
     Eq,
     Pipe,
     Backslash,
@@ -39,7 +44,6 @@ pub enum TokenKind {
     Colon,
     ColonColon,
     LeftArrow,
-    Backtick,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,6 +198,34 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::Arrow,
             });
             i += 2;
+            continue;
+        }
+        if bytes[i] == b'+' {
+            tokens.push(Token {
+                kind: TokenKind::Plus,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'-' {
+            tokens.push(Token {
+                kind: TokenKind::Minus,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'*' {
+            tokens.push(Token {
+                kind: TokenKind::Star,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'/' {
+            tokens.push(Token {
+                kind: TokenKind::Slash,
+            });
+            i += 1;
             continue;
         }
         if bytes[i] == b'(' {

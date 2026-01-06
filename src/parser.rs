@@ -574,13 +574,40 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
 }
 
 fn parse_infix_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
+    parse_binops(ts, stop, 0)
+}
+
+fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::Expr> {
     let mut lhs = parse_application(ts, stop)?;
 
-    while ts.can_continue_expr(stop) && matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
-        ts.expect(TokenKind::Backtick)?;
-        let op = ts.expect_ident()?;
-        ts.expect(TokenKind::Backtick)?;
-        let rhs = parse_application(ts, stop)?;
+    while ts.can_continue_expr(stop) {
+        let (prec, is_backtick) = match ts.peek_kind() {
+            Some(TokenKind::Backtick) => (5u8, true),
+            Some(TokenKind::Plus) | Some(TokenKind::Minus) => (5u8, false),
+            Some(TokenKind::Star) | Some(TokenKind::Slash) => (6u8, false),
+            _ => break,
+        };
+
+        if prec < min_prec {
+            break;
+        }
+
+        let op = if is_backtick {
+            ts.expect(TokenKind::Backtick)?;
+            let op = ts.expect_ident()?;
+            ts.expect(TokenKind::Backtick)?;
+            op
+        } else {
+            match ts.bump() {
+                Some(TokenKind::Plus) => "+".to_string(),
+                Some(TokenKind::Minus) => "-".to_string(),
+                Some(TokenKind::Star) => "*".to_string(),
+                Some(TokenKind::Slash) => "/".to_string(),
+                _ => unreachable!(),
+            }
+        };
+
+        let rhs = parse_binops(ts, stop, prec + 1)?;
         lhs = ast::Expr::Apply {
             func: Box::new(ast::Expr::Var(op)),
             args: vec![lhs, rhs],
@@ -828,6 +855,10 @@ impl TokenStream {
             Some(TokenKind::ColonColon) => "::".to_string(),
             Some(TokenKind::LeftArrow) => "<-".to_string(),
             Some(TokenKind::Backtick) => "`".to_string(),
+            Some(TokenKind::Plus) => "+".to_string(),
+            Some(TokenKind::Minus) => "-".to_string(),
+            Some(TokenKind::Star) => "*".to_string(),
+            Some(TokenKind::Slash) => "/".to_string(),
             Some(TokenKind::Newline) => "".to_string(),
             Some(TokenKind::Indent) => "INDENT".to_string(),
             Some(TokenKind::Dedent) => "DEDENT".to_string(),

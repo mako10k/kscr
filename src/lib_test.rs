@@ -534,3 +534,36 @@ fn parser_infix_backticks() {
     assert!(matches!(args[1], Expr::Var(ref s) if s == "c"));
     assert!(matches!(args[0], Expr::Apply { .. }));
 }
+
+#[test]
+fn parser_symbol_ops() {
+    let src = std::fs::read_to_string("tests/parser_ops.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{Expr, Item};
+
+    let Item::Binding(b0) = &module.items[0] else {
+        panic!("expected binding");
+    };
+    // 1 + (2 * 3)
+    let Expr::Apply { func, args } = &b0.expr else {
+        panic!("expected apply");
+    };
+    assert!(matches!(**func, Expr::Var(ref s) if s == "+"));
+    assert_eq!(args.len(), 2);
+    assert!(matches!(args[0], Expr::Integer(ref s) if s == "1"));
+    assert!(matches!(args[1], Expr::Apply { .. }));
+
+    let Item::Binding(b1) = &module.items[1] else {
+        panic!("expected binding");
+    };
+    // (10 / 2) - 1
+    let Expr::Apply { func, args } = &b1.expr else {
+        panic!("expected apply");
+    };
+    assert!(matches!(**func, Expr::Var(ref s) if s == "-"));
+    assert_eq!(args.len(), 2);
+    assert!(matches!(args[1], Expr::Integer(ref s) if s == "1"));
+    assert!(matches!(args[0], Expr::Apply { .. }));
+}
