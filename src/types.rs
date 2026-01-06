@@ -19,7 +19,7 @@ pub struct TypedModule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
     Var(u32),
-    Con(&'static str),
+    Con(String),
     List(Box<Ty>),
     Tuple(Vec<Ty>),
     Record(Vec<(String, Ty)>),
@@ -159,6 +159,250 @@ pub fn apply(subst: &Subst, t: Ty) -> Ty {
         },
         Ty::Func(a, b) => Ty::Func(Box::new(apply(subst, *a)), Box::new(apply(subst, *b))),
         c @ Ty::Con(_) => c,
+    }
+}
+
+// --- Milestone 2.2.1/2.2.2: Schemes + minimal expression inference ---
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scheme {
+    pub vars: Vec<u32>,
+    pub ty: Ty,
+}
+
+impl Scheme {
+    pub fn mono(ty: Ty) -> Self {
+        Self { vars: vec![], ty }
+    }
+}
+
+type TypeEnv = HashMap<String, Scheme>;
+
+pub fn compose(s1: &Subst, s2: &Subst) -> Subst {
+    let mut out: Subst = s2.iter().map(|(v, t)| (*v, apply(s1, t.clone()))).collect();
+    for (v, t) in s1 {
+        out.insert(*v, t.clone());
+    }
+    out
+}
+
+pub fn ftv_ty(ty: &Ty) -> HashSet<u32> {
+    match ty {
+        Ty::Var(v) => [*v].into_iter().collect(),
+        Ty::Con(_) => HashSet::new(),
+        Ty::List(t) => ftv_ty(t),
+        Ty::Tuple(ts) => ts.iter().flat_map(ftv_ty).collect(),
+        Ty::Record(fields) => fields.iter().flat_map(|(_, t)| ftv_ty(t)).collect(),
+        Ty::App { head, args } => {
+            let mut s = ftv_ty(head);
+            for t in args {
+                s.extend(ftv_ty(t));
+            }
+            s
+        }
+        Ty::Func(a, b) => {
+            let mut s = ftv_ty(a);
+            s.extend(ftv_ty(b));
+            s
+        }
+    }
+}
+
+pub fn ftv_scheme(s: &Scheme) -> HashSet<u32> {
+    let mut ftv = ftv_ty(&s.ty);
+    for v in &s.vars {
+        ftv.remove(v);
+    }
+    ftv
+}
+
+pub fn ftv_env(env: &TypeEnv) -> HashSet<u32> {
+    env.values().flat_map(ftv_scheme).collect()
+}
+
+pub fn generalize(env: &TypeEnv, ty: Ty) -> Scheme {
+    let env_ftv = ftv_env(env);
+    let mut vars: Vec<u32> = ftv_ty(&ty).difference(&env_ftv).copied().collect();
+    vars.sort_unstable();
+    Scheme { vars, ty }
+}
+
+pub fn instantiate(cx: &mut InferCtx, s: &Scheme) -> Ty {
+    let mut m: HashMap<u32, Ty> = HashMap::new();
+    for v in &s.vars {
+        m.insert(*v, cx.fresh());
+    }
+    replace_vars(&s.ty, &m)
+}
+
+fn replace_vars(ty: &Ty, m: &HashMap<u32, Ty>) -> Ty {
+    match ty {
+        Ty::Var(v) => m.get(v).cloned().unwrap_or(Ty::Var(*v)),
+        Ty::Con(c) => Ty::Con(c.clone()),
+        Ty::List(t) => Ty::List(Box::new(replace_vars(t, m))),
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| replace_vars(t, m)).collect()),
+        Ty::Record(fields) => Ty::Record(
+            fields
+                .iter()
+                .map(|(n, t)| (n.clone(), replace_vars(t, m)))
+                .collect(),
+        ),
+        Ty::App { head, args } => Ty::App {
+            head: Box::new(replace_vars(head, m)),
+            args: args.iter().map(|t| replace_vars(t, m)).collect(),
+        },
+        Ty::Func(a, b) => Ty::Func(Box::new(replace_vars(a, m)), Box::new(replace_vars(b, m))),
+    }
+}
+
+fn apply_scheme(subst: &Subst, s: &Scheme) -> Scheme {
+    if s.vars.is_empty() {
+        return Scheme {
+            vars: vec![],
+            ty: apply(subst, s.ty.clone()),
+        };
+    }
+
+    let mut sub = subst.clone();
+    for v in &s.vars {
+        sub.remove(v);
+    }
+
+    Scheme {
+        vars: s.vars.clone(),
+        ty: apply(&sub, s.ty.clone()),
+    }
+}
+
+fn apply_env(subst: &Subst, env: &TypeEnv) -> TypeEnv {
+    env.iter()
+        .map(|(k, v)| (k.clone(), apply_scheme(subst, v)))
+        .collect()
+}
+
+pub fn infer_expr(expr: ast::Expr) -> Result<Ty> {
+    let mut cx = InferCtx::default();
+    let env = TypeEnv::new();
+    let (s, t) = infer_expr_in(&mut cx, &env, expr)?;
+    Ok(apply(&s, t))
+}
+
+fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(Subst, Ty)> {
+    use ast::Expr;
+
+    match expr {
+        Expr::Unit => Ok((Subst::new(), Ty::Con("Unit".to_string()))),
+        Expr::Integer(_) => Ok((Subst::new(), Ty::Con("Integer".to_string()))),
+        Expr::Float64(_) => Ok((Subst::new(), Ty::Con("Float64".to_string()))),
+        Expr::Bool(true) | Expr::Bool(false) => Ok((Subst::new(), Ty::Con("Bool".to_string()))),
+        Expr::String(_) => Ok((Subst::new(), Ty::Con("String".to_string()))),
+
+        Expr::Var(name) => {
+            let s = env
+                .get(&name)
+                .ok_or_else(|| Error::msg("unbound variable"))?;
+            Ok((Subst::new(), instantiate(cx, s)))
+        }
+
+        Expr::Lambda { params, body } => {
+            if params.is_empty() {
+                return Err(Error::msg("expected lambda parameter"));
+            }
+
+            let mut env2 = env.clone();
+            let mut param_tys = Vec::new();
+            for p in &params {
+                let tv = cx.fresh();
+                env2.insert(p.clone(), Scheme::mono(tv.clone()));
+                param_tys.push(tv);
+            }
+
+            let (s_body, body_ty) = infer_expr_in(cx, &env2, *body)?;
+            let mut out = apply(&s_body, body_ty);
+            for pty in param_tys.into_iter().rev() {
+                out = Ty::Func(Box::new(apply(&s_body, pty)), Box::new(out));
+            }
+
+            Ok((s_body, out))
+        }
+
+        Expr::Apply { func, args } => {
+            let (mut s, mut fun_ty) = infer_expr_in(cx, env, *func)?;
+
+            for arg in args {
+                let env2 = apply_env(&s, env);
+                let (s_arg, arg_ty) = infer_expr_in(cx, &env2, arg)?;
+                s = compose(&s_arg, &s);
+
+                fun_ty = apply(&s, fun_ty);
+                let res = cx.fresh();
+
+                let s_unify = unify(
+                    fun_ty,
+                    Ty::Func(Box::new(apply(&s, arg_ty)), Box::new(res.clone())),
+                )?;
+                s = compose(&s_unify, &s);
+                fun_ty = apply(&s, res);
+            }
+
+            Ok((s, fun_ty))
+        }
+
+        Expr::Annot { expr, ty } => {
+            let (s1, t1) = infer_expr_in(cx, env, *expr)?;
+            let mut holes = HashMap::new();
+            let t_ann = lower_surface_type(cx, &ty, &mut holes);
+            let s2 = unify(apply(&s1, t1), apply(&s1, t_ann.clone()))?;
+            let s = compose(&s2, &s1);
+            Ok((s.clone(), apply(&s, t_ann)))
+        }
+
+        _ => Err(Error::msg("inference not implemented for this expression")),
+    }
+}
+
+fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<String, Ty>) -> Ty {
+    use ast::Type;
+
+    match ty {
+        Type::Unit => Ty::Con("Unit".to_string()),
+        Type::Integer => Ty::Con("Integer".to_string()),
+        Type::Bool => Ty::Con("Bool".to_string()),
+        Type::Float64 => Ty::Con("Float64".to_string()),
+        Type::Char => Ty::Con("Char".to_string()),
+        Type::String => Ty::Con("String".to_string()),
+
+        Type::List(t) => Ty::List(Box::new(lower_surface_type(cx, t, holes))),
+        Type::Tuple(ts) => Ty::Tuple(
+            ts.iter()
+                .map(|t| lower_surface_type(cx, t, holes))
+                .collect(),
+        ),
+        Type::Record(fields) => Ty::Record(
+            fields
+                .iter()
+                .map(|(n, t)| (n.clone(), lower_surface_type(cx, t, holes)))
+                .collect(),
+        ),
+        Type::Func(a, b) => Ty::Func(
+            Box::new(lower_surface_type(cx, a, holes)),
+            Box::new(lower_surface_type(cx, b, holes)),
+        ),
+        Type::App { head, args } => Ty::App {
+            head: Box::new(lower_surface_type(cx, head, holes)),
+            args: args
+                .iter()
+                .map(|t| lower_surface_type(cx, t, holes))
+                .collect(),
+        },
+
+        Type::Hole(Some(name)) => holes
+            .entry(name.clone())
+            .or_insert_with(|| cx.fresh())
+            .clone(),
+        Type::Hole(None) => cx.fresh(),
+
+        Type::Var(name) => Ty::Con(name.clone()),
     }
 }
 
@@ -432,8 +676,8 @@ mod unification_tests {
     fn unify_var_with_con() {
         let mut cx = InferCtx::default();
         let a = cx.fresh();
-        let subst = unify(a.clone(), Ty::Con("Integer")).unwrap();
-        assert_eq!(apply(&subst, a), Ty::Con("Integer"));
+        let subst = unify(a.clone(), Ty::Con("Integer".to_string())).unwrap();
+        assert_eq!(apply(&subst, a), Ty::Con("Integer".to_string()));
     }
 
     #[test]
@@ -442,12 +686,15 @@ mod unification_tests {
         let a = cx.fresh();
         let b = cx.fresh();
 
-        let t1 = Ty::Func(Box::new(a.clone()), Box::new(Ty::Con("Bool")));
-        let t2 = Ty::Func(Box::new(Ty::Con("Integer")), Box::new(b.clone()));
+        let t1 = Ty::Func(Box::new(a.clone()), Box::new(Ty::Con("Bool".to_string())));
+        let t2 = Ty::Func(
+            Box::new(Ty::Con("Integer".to_string())),
+            Box::new(b.clone()),
+        );
 
         let subst = unify(t1, t2).unwrap();
-        assert_eq!(apply(&subst, a), Ty::Con("Integer"));
-        assert_eq!(apply(&subst, b), Ty::Con("Bool"));
+        assert_eq!(apply(&subst, a), Ty::Con("Integer".to_string()));
+        assert_eq!(apply(&subst, b), Ty::Con("Bool".to_string()));
     }
 
     #[test]
@@ -456,5 +703,65 @@ mod unification_tests {
         let a = cx.fresh();
         let t = Ty::List(Box::new(a.clone()));
         assert!(unify(a, t).is_err());
+    }
+}
+
+#[cfg(test)]
+mod inference_tests {
+    use super::*;
+
+    #[test]
+    fn infer_identity_lambda() {
+        let ty = infer_expr(ast::Expr::Lambda {
+            params: vec!["x".to_string()],
+            body: Box::new(ast::Expr::Var("x".to_string())),
+        })
+        .unwrap();
+
+        let Ty::Func(a, b) = ty else {
+            panic!("expected function");
+        };
+        let Ty::Var(va) = *a else {
+            panic!("expected var");
+        };
+        let Ty::Var(vb) = *b else {
+            panic!("expected var");
+        };
+        assert_eq!(va, vb);
+    }
+
+    #[test]
+    fn infer_apply_identity() {
+        let id = ast::Expr::Lambda {
+            params: vec!["x".to_string()],
+            body: Box::new(ast::Expr::Var("x".to_string())),
+        };
+
+        let ty = infer_expr(ast::Expr::Apply {
+            func: Box::new(id),
+            args: vec![ast::Expr::Integer("1".to_string())],
+        })
+        .unwrap();
+
+        assert_eq!(ty, Ty::Con("Integer".to_string()));
+    }
+
+    #[test]
+    fn infer_annotation_mismatch_is_error() {
+        let _ = infer_expr(ast::Expr::Annot {
+            expr: Box::new(ast::Expr::Integer("1".to_string())),
+            ty: ast::Type::Bool,
+        })
+        .unwrap_err();
+    }
+
+    #[test]
+    fn infer_annotation_hole_resolves() {
+        let ty = infer_expr(ast::Expr::Annot {
+            expr: Box::new(ast::Expr::Integer("1".to_string())),
+            ty: ast::Type::Hole(None),
+        })
+        .unwrap();
+        assert_eq!(ty, Ty::Con("Integer".to_string()));
     }
 }
