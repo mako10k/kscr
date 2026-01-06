@@ -36,14 +36,28 @@ where
             Ok(())
         }
         "typecheck" => {
-            let path = args
+            let mut show_all = false;
+            let arg1 = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
-            let src = std::fs::read_to_string(path.into())?;
+            let path = match arg1.into().as_str() {
+                "--all" => {
+                    show_all = true;
+                    args.next()
+                        .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
+                        .into()
+                }
+                other => other.to_string(),
+            };
+
+            let src = std::fs::read_to_string(path)?;
             let ast = parser::parse_module(&src)?;
             let tm = types::typecheck(ast)?;
 
-            print!("{}", render_typecheck_report(&tm.module, tm.inferred));
+            print!(
+                "{}",
+                render_typecheck_report(&tm.module, tm.inferred, show_all)
+            );
             Ok(())
         }
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
@@ -80,6 +94,7 @@ fn filter_inferred_by_exports(
 fn render_typecheck_report(
     module: &ast::Module,
     inferred: std::collections::HashMap<String, types::Scheme>,
+    show_all: bool,
 ) -> String {
     let mut out = String::new();
 
@@ -95,7 +110,11 @@ fn render_typecheck_report(
         out.push('\n');
     }
 
-    let mut inferred = filter_inferred_by_exports(module, inferred);
+    let mut inferred = if show_all {
+        inferred.into_iter().collect()
+    } else {
+        filter_inferred_by_exports(module, inferred)
+    };
     inferred.sort_by(|(a, _), (b, _)| a.cmp(b));
     for (name, scheme) in inferred {
         out.push_str(&format!("{name} : {scheme}\n"));
@@ -129,9 +148,18 @@ mod tests {
         let src = "module Main where\n  export x\n  x = 1\n  y = 2\n";
         let ast = parser::parse_module(src).unwrap();
         let tm = types::typecheck(ast).unwrap();
-        let report = render_typecheck_report(&tm.module, tm.inferred);
+        let report = render_typecheck_report(&tm.module, tm.inferred, false);
         assert!(report.starts_with("module Main\nexport x\n"));
         assert!(report.contains("x : Integer\n"));
         assert!(!report.contains("y : Integer\n"));
+    }
+
+    #[test]
+    fn typecheck_report_all_includes_nonexported() {
+        let src = "module Main where\n  export x\n  x = 1\n  y = 2\n";
+        let ast = parser::parse_module(src).unwrap();
+        let tm = types::typecheck(ast).unwrap();
+        let report = render_typecheck_report(&tm.module, tm.inferred, true);
+        assert!(report.contains("y : Integer\n"));
     }
 }
