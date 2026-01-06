@@ -8,6 +8,7 @@
 
 use crate::{ast, error::Error, Result};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedModule {
@@ -26,6 +27,45 @@ pub enum Ty {
     Record(Vec<(String, Ty)>),
     App { head: Box<Ty>, args: Vec<Ty> },
     Func(Box<Ty>, Box<Ty>),
+}
+
+impl fmt::Display for Ty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Ty::Var(v) => write!(f, "t{v}"),
+            Ty::Con(name) => write!(f, "{name}"),
+            Ty::List(t) => write!(f, "[{t}]"),
+            Ty::Tuple(ts) => {
+                write!(f, "(")?;
+                for (i, t) in ts.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{t}")?;
+                }
+                write!(f, ")")
+            }
+            Ty::Record(fields) => {
+                write!(f, "{{")?;
+                for (i, (k, t)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{k}: {t}")?;
+                }
+                write!(f, "}}")
+            }
+            Ty::App { head, args } => {
+                write!(f, "(")?;
+                write!(f, "{head}")?;
+                for a in args {
+                    write!(f, " {a}")?;
+                }
+                write!(f, ")")
+            }
+            Ty::Func(a, b) => write!(f, "({a} -> {b})"),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -183,6 +223,21 @@ pub struct Scheme {
 impl Scheme {
     pub fn mono(ty: Ty) -> Self {
         Self { vars: vec![], ty }
+    }
+}
+
+impl fmt::Display for Scheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.vars.is_empty() {
+            return write!(f, "{}", self.ty);
+        }
+        let mut vars = self.vars.clone();
+        vars.sort_unstable();
+        write!(f, "forall")?;
+        for v in vars {
+            write!(f, " t{v}")?;
+        }
+        write!(f, ". {}", self.ty)
     }
 }
 

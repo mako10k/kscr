@@ -1,4 +1,4 @@
-use crate::{parser, Result};
+use crate::{parser, types, Result};
 
 pub fn run<I, S>(mut args: I) -> Result<()>
 where
@@ -34,12 +34,27 @@ where
             println!("{toks:#?}");
             Ok(())
         }
+        "typecheck" => {
+            let path = args
+                .next()
+                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
+            let src = std::fs::read_to_string(path.into())?;
+            let ast = parser::parse_module(&src)?;
+            let tm = types::typecheck(ast)?;
+
+            let mut inferred: Vec<_> = tm.inferred.into_iter().collect();
+            inferred.sort_by(|(a, _), (b, _)| a.cmp(b));
+            for (name, scheme) in inferred {
+                println!("{name} : {scheme}");
+            }
+            Ok(())
+        }
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
 }
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>   Parse source and print AST (debug)\n  lex <file>     Lex source and print tokens (debug)\n  help           Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n  help              Show this help\n"
     );
 }
