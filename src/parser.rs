@@ -55,7 +55,17 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
             Some(TokenKind::KwExport) => parse_export_decl(ts)?,
             Some(TokenKind::KwData) => parse_data_decl(ts)?,
             Some(TokenKind::KwType) => parse_type_alias(ts)?,
-            Some(TokenKind::Ident(_)) => parse_binding(ts)?,
+            Some(
+                TokenKind::Ident(_)
+                | TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::Integer(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::True
+                | TokenKind::False,
+            ) => parse_binding(ts)?,
             Some(_) => return Err(Error::msg("unexpected token at top-level")),
             None => break,
         };
@@ -167,10 +177,10 @@ fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 }
 
 fn parse_binding(ts: &mut TokenStream) -> Result<ast::Item> {
-    let name = ts.expect_ident()?;
+    let pat = parse_pattern(ts)?;
     ts.expect(TokenKind::Eq)?;
     let expr = parse_expr(ts, Stop::LineEnd)?;
-    Ok(ast::Item::Binding(ast::Binding { name, expr }))
+    Ok(ast::Item::Binding(ast::Binding { pat, expr }))
 }
 
 #[derive(Clone, Copy)]
@@ -260,17 +270,17 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
 }
 
 fn parse_let_binding_line(ts: &mut TokenStream) -> Result<ast::Binding> {
-    let name = ts.expect_ident()?;
+    let pat = parse_pattern(ts)?;
     ts.expect(TokenKind::Eq)?;
     let expr = parse_expr(ts, Stop::LineEnd)?;
-    Ok(ast::Binding { name, expr })
+    Ok(ast::Binding { pat, expr })
 }
 
 fn parse_let_binding_inline(ts: &mut TokenStream) -> Result<ast::Binding> {
-    let name = ts.expect_ident()?;
+    let pat = parse_pattern(ts)?;
     ts.expect(TokenKind::Eq)?;
     let expr = parse_expr(ts, Stop::In)?;
-    Ok(ast::Binding { name, expr })
+    Ok(ast::Binding { pat, expr })
 }
 
 fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
@@ -756,6 +766,7 @@ impl TokenStream {
             None | Some(TokenKind::Newline)
                 | Some(TokenKind::Dedent)
                 | Some(TokenKind::Arrow)
+                | Some(TokenKind::Eq)
                 | Some(TokenKind::Comma)
                 | Some(TokenKind::RParen)
                 | Some(TokenKind::RBracket)

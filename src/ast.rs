@@ -26,7 +26,7 @@ pub struct ExportDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
-    pub name: String,
+    pub pat: Pattern,
     pub expr: Expr,
 }
 

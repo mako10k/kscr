@@ -13,6 +13,25 @@ fn parser_module_basic() {
 }
 
 #[test]
+fn parser_binding_patterns() {
+    let src = std::fs::read_to_string("tests/parser_binding_patterns.ks").unwrap();
+    let m = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(m.items.len(), 3);
+
+    use crate::ast::{Item, Pattern};
+
+    match &m.items[1] {
+        Item::Binding(b) => assert!(matches!(b.pat, Pattern::Tuple(_))),
+        _ => panic!("expected binding"),
+    }
+
+    match &m.items[2] {
+        Item::Binding(b) => assert!(matches!(b.pat, Pattern::Wildcard)),
+        _ => panic!("expected binding"),
+    }
+}
+
+#[test]
 fn parser_module_import_export() {
     let src = std::fs::read_to_string("tests/module_import_export.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
@@ -266,7 +285,10 @@ fn parser_golden_let_expr() {
         Item::Binding(b) => match &b.expr {
             Expr::Let { bindings, body } => {
                 assert_eq!(bindings.len(), 1);
-                assert_eq!(bindings[0].name, "x");
+                assert!(matches!(
+                    bindings[0].pat,
+                    crate::ast::Pattern::Var(ref s) if s == "x"
+                ));
                 assert!(matches!(bindings[0].expr, Expr::Integer(ref s) if s == "1"));
                 assert!(matches!(**body, Expr::Var(ref s) if s == "x"));
             }
@@ -279,8 +301,14 @@ fn parser_golden_let_expr() {
         Item::Binding(b) => match &b.expr {
             Expr::Let { bindings, body } => {
                 assert_eq!(bindings.len(), 2);
-                assert_eq!(bindings[0].name, "x");
-                assert_eq!(bindings[1].name, "y");
+                assert!(matches!(
+                    bindings[0].pat,
+                    crate::ast::Pattern::Var(ref s) if s == "x"
+                ));
+                assert!(matches!(
+                    bindings[1].pat,
+                    crate::ast::Pattern::Var(ref s) if s == "y"
+                ));
                 assert!(matches!(**body, Expr::Apply { .. }));
             }
             _ => panic!("expected let"),
@@ -333,7 +361,10 @@ fn parser_golden_where_expr() {
         Item::Binding(b) => match &b.expr {
             Expr::Where { bindings, .. } => {
                 assert_eq!(bindings.len(), 1);
-                assert_eq!(bindings[0].name, "x");
+                assert!(matches!(
+                    bindings[0].pat,
+                    crate::ast::Pattern::Var(ref s) if s == "x"
+                ));
             }
             _ => panic!("expected where"),
         },
@@ -344,8 +375,14 @@ fn parser_golden_where_expr() {
         Item::Binding(b) => match &b.expr {
             Expr::Where { bindings, .. } => {
                 assert_eq!(bindings.len(), 2);
-                assert_eq!(bindings[0].name, "x");
-                assert_eq!(bindings[1].name, "y");
+                assert!(matches!(
+                    bindings[0].pat,
+                    crate::ast::Pattern::Var(ref s) if s == "x"
+                ));
+                assert!(matches!(
+                    bindings[1].pat,
+                    crate::ast::Pattern::Var(ref s) if s == "y"
+                ));
             }
             _ => panic!("expected where"),
         },
