@@ -481,3 +481,26 @@ fn parser_do_blocks() {
     assert!(matches!(stmts[1], DoStmt::Bind { .. }));
     assert!(matches!(stmts[2], DoStmt::Expr(_)));
 }
+
+#[test]
+fn parser_ctor_exprs() {
+    let src = std::fs::read_to_string("tests/parser_ctor_expr.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{Expr, Item};
+
+    let Item::Binding(b0) = &module.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b0.expr,
+        Expr::Apply { ref func, ref args }
+            if matches!(**func, Expr::Ctor(ref s) if s == "Just") && args.len() == 1
+    ));
+
+    let Item::Binding(b1) = &module.items[1] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(b1.expr, Expr::Ctor(ref s) if s == "Nothing"));
+}

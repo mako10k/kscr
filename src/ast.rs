@@ -58,6 +58,7 @@ pub enum Expr {
     Bool(bool),
     String(String),
     Var(String),
+    Ctor(String),
     Lambda {
         params: Vec<String>,
         body: Box<Expr>,

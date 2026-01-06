@@ -634,7 +634,13 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
             _ => unreachable!(),
         },
         Some(TokenKind::Ident(_)) => match ts.bump() {
-            Some(TokenKind::Ident(s)) => Ok(ast::Expr::Var(s)),
+            Some(TokenKind::Ident(s)) => {
+                if s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    Ok(ast::Expr::Ctor(s))
+                } else {
+                    Ok(ast::Expr::Var(s))
+                }
+            }
             _ => unreachable!(),
         },
         Some(TokenKind::LBracket) => parse_list_expr(ts),
