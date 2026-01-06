@@ -52,6 +52,7 @@ pub struct DataCtor {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
+    Unit,
     Integer(String),
     Float64(String),
     Bool(bool),

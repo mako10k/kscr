@@ -232,7 +232,8 @@ fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                 | TokenKind::String(_)
                 | TokenKind::True
                 | TokenKind::False
-                | TokenKind::LBracket,
+                | TokenKind::LBracket
+                | TokenKind::LParen,
             ) => {
                 exprs.push(parse_atom(ts)?);
             }
@@ -275,7 +276,31 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
             _ => unreachable!(),
         },
         Some(TokenKind::LBracket) => parse_list_expr(ts),
+        Some(TokenKind::LParen) => parse_paren_or_tuple_expr(ts),
         _ => Err(Error::msg("expected expression")),
+    }
+}
+
+fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
+    ts.expect(TokenKind::LParen)?;
+
+    if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+        ts.bump();
+        return Ok(ast::Expr::Unit);
+    }
+
+    let first = parse_expr(ts, Stop::LineEnd)?;
+    if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        let mut elems = vec![first];
+        while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            ts.bump();
+            elems.push(parse_expr(ts, Stop::LineEnd)?);
+        }
+        ts.expect(TokenKind::RParen)?;
+        Ok(ast::Expr::Tuple(elems))
+    } else {
+        ts.expect(TokenKind::RParen)?;
+        Ok(first)
     }
 }
 
@@ -376,6 +401,8 @@ impl TokenStream {
             Some(TokenKind::Comma) => ",".to_string(),
             Some(TokenKind::Backslash) => "\\".to_string(),
             Some(TokenKind::Arrow) => "->".to_string(),
+            Some(TokenKind::LParen) => "(".to_string(),
+            Some(TokenKind::RParen) => ")".to_string(),
             Some(TokenKind::LBracket) => "[".to_string(),
             Some(TokenKind::RBracket) => "]".to_string(),
             Some(TokenKind::Newline) => "".to_string(),

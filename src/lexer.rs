@@ -25,6 +25,8 @@ pub enum TokenKind {
     Pipe,
     Backslash,
     Arrow,
+    LParen,
+    RParen,
     LBracket,
     RBracket,
 }
@@ -174,6 +176,20 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::Arrow,
             });
             i += 2;
+            continue;
+        }
+        if bytes[i] == b'(' {
+            tokens.push(Token {
+                kind: TokenKind::LParen,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b')' {
+            tokens.push(Token {
+                kind: TokenKind::RParen,
+            });
+            i += 1;
             continue;
         }
         if bytes[i] == b'[' {
