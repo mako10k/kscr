@@ -412,6 +412,28 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             Ok((s.clone(), apply(&s, t_ann)))
         }
 
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let (s_cond, t_cond) = infer_expr_in(cx, env, *cond)?;
+            let s_bool = unify(apply(&s_cond, t_cond), Ty::Con("Bool".to_string()))?;
+            let mut s = compose(&s_bool, &s_cond);
+
+            let env2 = apply_env(&s, env);
+            let (s_then, t_then) = infer_expr_in(cx, &env2, *then_branch)?;
+            s = compose(&s_then, &s);
+
+            let env3 = apply_env(&s, env);
+            let (s_else, t_else) = infer_expr_in(cx, &env3, *else_branch)?;
+            s = compose(&s_else, &s);
+
+            let s_res = unify(apply(&s, t_then.clone()), apply(&s, t_else))?;
+            s = compose(&s_res, &s);
+            Ok((s.clone(), apply(&s, apply(&s, t_then))))
+        }
+
         Expr::Tuple(elems) => {
             let mut s = Subst::new();
             let mut ts = Vec::new();
@@ -1023,5 +1045,26 @@ mod inference_tests {
         })
         .unwrap();
         assert_eq!(ty, Ty::Con("Integer".to_string()));
+    }
+
+    #[test]
+    fn infer_if_expr() {
+        let ty = infer_expr(ast::Expr::If {
+            cond: Box::new(ast::Expr::Bool(true)),
+            then_branch: Box::new(ast::Expr::Integer("1".to_string())),
+            else_branch: Box::new(ast::Expr::Integer("2".to_string())),
+        })
+        .unwrap();
+        assert_eq!(ty, Ty::Con("Integer".to_string()));
+    }
+
+    #[test]
+    fn infer_if_mismatch_is_error() {
+        let _ = infer_expr(ast::Expr::If {
+            cond: Box::new(ast::Expr::Bool(true)),
+            then_branch: Box::new(ast::Expr::Integer("1".to_string())),
+            else_branch: Box::new(ast::Expr::Bool(false)),
+        })
+        .unwrap_err();
     }
 }
