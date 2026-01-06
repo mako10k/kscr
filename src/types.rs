@@ -168,6 +168,7 @@ fn expand_type(
     use ast::Type;
 
     Ok(match ty {
+        Type::Hole(name) => Type::Hole(name),
         Type::List(t) => Type::List(Box::new(expand_type(*t, aliases, stack)?)),
         Type::Tuple(ts) => Type::Tuple(
             ts.into_iter()
@@ -254,6 +255,7 @@ fn subst_type(ty: ast::Type, env: &HashMap<String, ast::Type>) -> ast::Type {
     use ast::Type;
 
     match ty {
+        Type::Hole(name) => Type::Hole(name),
         Type::Var(v) => env.get(&v).cloned().unwrap_or(Type::Var(v)),
         Type::List(t) => Type::List(Box::new(subst_type(*t, env))),
         Type::Tuple(ts) => Type::Tuple(ts.into_iter().map(|t| subst_type(t, env)).collect()),

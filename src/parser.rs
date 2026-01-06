@@ -449,6 +449,7 @@ fn is_type_atom_start(kind: Option<&TokenKind>) -> bool {
             | Some(TokenKind::LParen)
             | Some(TokenKind::LBracket)
             | Some(TokenKind::LBrace)
+            | Some(TokenKind::Question)
     )
 }
 
@@ -458,6 +459,15 @@ fn parse_type_atom(
     _end: fn(Option<&TokenKind>, Stop) -> bool,
 ) -> Result<ast::Type> {
     match ts.peek_kind() {
+        Some(TokenKind::Question) => {
+            ts.bump();
+            let name = if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
+                Some(ts.expect_ident()?)
+            } else {
+                None
+            };
+            Ok(ast::Type::Hole(name))
+        }
         Some(TokenKind::Ident(_)) => match ts.bump() {
             Some(TokenKind::Ident(s)) => Ok(match s.as_str() {
                 "Integer" => ast::Type::Integer,

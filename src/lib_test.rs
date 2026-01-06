@@ -530,6 +530,50 @@ fn parser_type_exprs() {
 }
 
 #[test]
+fn parser_type_holes() {
+    let src = std::fs::read_to_string("tests/parser_type_holes.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 4);
+
+    use crate::ast::{Expr, Item, Type};
+
+    let Item::Binding(b0) = &module.items[0] else {
+        panic!("expected binding");
+    };
+    let Expr::Annot { ty, .. } = &b0.expr else {
+        panic!("expected annotation");
+    };
+    assert_eq!(ty, &Type::Hole(None));
+
+    let Item::Binding(b1) = &module.items[1] else {
+        panic!("expected binding");
+    };
+    let Expr::Annot { ty, .. } = &b1.expr else {
+        panic!("expected annotation");
+    };
+    assert_eq!(ty, &Type::Hole(Some("t".to_string())));
+
+    let Item::Binding(b2) = &module.items[2] else {
+        panic!("expected binding");
+    };
+    let Expr::Annot { ty, .. } = &b2.expr else {
+        panic!("expected annotation");
+    };
+    assert_eq!(ty, &Type::List(Box::new(Type::Hole(None))));
+
+    let Item::Binding(b3) = &module.items[3] else {
+        panic!("expected binding");
+    };
+    let Expr::Annot { ty, .. } = &b3.expr else {
+        panic!("expected annotation");
+    };
+    assert_eq!(
+        ty,
+        &Type::Tuple(vec![Type::Hole(Some("a".to_string())), Type::Hole(None)])
+    );
+}
+
+#[test]
 fn typecheck_expands_type_aliases() {
     let src = std::fs::read_to_string("tests/type_alias_expand.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

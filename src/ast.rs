@@ -124,6 +124,7 @@ pub enum Type {
     Tuple(Vec<Type>),
     Record(Vec<(String, Type)>),
 
+    Hole(Option<String>),
     Var(String),
     App { head: Box<Type>, args: Vec<Type> },
     Func(Box<Type>, Box<Type>),
