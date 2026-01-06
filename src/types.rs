@@ -7,11 +7,159 @@
 //! - Potentially lossy conversions happen only at boundaries as checked casts.
 
 use crate::{ast, error::Error, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedModule {
     pub module: ast::Module,
+}
+
+// --- Milestone 2.2.1: Unification core (scaffolding) ---
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ty {
+    Var(u32),
+    Con(&'static str),
+    List(Box<Ty>),
+    Tuple(Vec<Ty>),
+    Record(Vec<(String, Ty)>),
+    App { head: Box<Ty>, args: Vec<Ty> },
+    Func(Box<Ty>, Box<Ty>),
+}
+
+#[derive(Debug, Default)]
+pub struct InferCtx {
+    next_var: u32,
+}
+
+impl InferCtx {
+    pub fn fresh(&mut self) -> Ty {
+        let v = self.next_var;
+        self.next_var += 1;
+        Ty::Var(v)
+    }
+}
+
+pub type Subst = HashMap<u32, Ty>;
+
+pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
+    let mut subst = Subst::new();
+    unify_in(&mut subst, a, b)?;
+    Ok(subst)
+}
+
+fn unify_in(subst: &mut Subst, a: Ty, b: Ty) -> Result<()> {
+    let a = apply(subst, a);
+    let b = apply(subst, b);
+
+    match (a, b) {
+        (Ty::Var(v), t) | (t, Ty::Var(v)) => bind_var(subst, v, t),
+        (Ty::Con(a), Ty::Con(b)) if a == b => Ok(()),
+        (Ty::List(a), Ty::List(b)) => unify_in(subst, *a, *b),
+        (Ty::Tuple(a), Ty::Tuple(b)) => {
+            if a.len() != b.len() {
+                return Err(Error::msg("tuple arity mismatch"));
+            }
+            for (x, y) in a.into_iter().zip(b) {
+                unify_in(subst, x, y)?;
+            }
+            Ok(())
+        }
+        (Ty::Record(a), Ty::Record(b)) => {
+            if a.len() != b.len() {
+                return Err(Error::msg("record arity mismatch"));
+            }
+            for ((na, ta), (nb, tb)) in a.into_iter().zip(b) {
+                if na != nb {
+                    return Err(Error::msg("record field mismatch"));
+                }
+                unify_in(subst, ta, tb)?;
+            }
+            Ok(())
+        }
+        (Ty::App { head: ha, args: aa }, Ty::App { head: hb, args: ab }) => {
+            if aa.len() != ab.len() {
+                return Err(Error::msg("type application arity mismatch"));
+            }
+            unify_in(subst, *ha, *hb)?;
+            for (x, y) in aa.into_iter().zip(ab) {
+                unify_in(subst, x, y)?;
+            }
+            Ok(())
+        }
+        (Ty::Func(a1, a2), Ty::Func(b1, b2)) => {
+            unify_in(subst, *a1, *b1)?;
+            unify_in(subst, *a2, *b2)
+        }
+        _ => Err(Error::msg("cannot unify")),
+    }
+}
+
+fn bind_var(subst: &mut Subst, v: u32, t: Ty) -> Result<()> {
+    match t {
+        Ty::Var(v2) if v == v2 => return Ok(()),
+        _ => {}
+    }
+
+    if occurs(subst, v, &t) {
+        return Err(Error::msg("occurs check"));
+    }
+
+    subst.insert(v, t);
+    Ok(())
+}
+
+fn occurs(subst: &Subst, v: u32, t: &Ty) -> bool {
+    let mut seen = HashSet::new();
+    occurs_in(subst, &mut seen, v, t)
+}
+
+fn occurs_in(subst: &Subst, seen: &mut HashSet<u32>, v: u32, t: &Ty) -> bool {
+    match t {
+        Ty::Var(x) => {
+            if *x == v {
+                return true;
+            }
+            if !seen.insert(*x) {
+                return false;
+            }
+            match subst.get(x) {
+                Some(t) => occurs_in(subst, seen, v, t),
+                None => false,
+            }
+        }
+        Ty::List(t) => occurs_in(subst, seen, v, t),
+        Ty::Tuple(ts) => ts.iter().any(|t| occurs_in(subst, seen, v, t)),
+        Ty::Record(fields) => fields.iter().any(|(_, t)| occurs_in(subst, seen, v, t)),
+        Ty::App { head, args } => {
+            occurs_in(subst, seen, v, head) || args.iter().any(|t| occurs_in(subst, seen, v, t))
+        }
+        Ty::Func(a, b) => occurs_in(subst, seen, v, a) || occurs_in(subst, seen, v, b),
+        Ty::Con(_) => false,
+    }
+}
+
+pub fn apply(subst: &Subst, t: Ty) -> Ty {
+    match t {
+        Ty::Var(v) => match subst.get(&v) {
+            Some(t) => apply(subst, t.clone()),
+            None => Ty::Var(v),
+        },
+        Ty::List(t) => Ty::List(Box::new(apply(subst, *t))),
+        Ty::Tuple(ts) => Ty::Tuple(ts.into_iter().map(|t| apply(subst, t)).collect()),
+        Ty::Record(fields) => Ty::Record(
+            fields
+                .into_iter()
+                .map(|(n, t)| (n, apply(subst, t)))
+                .collect(),
+        ),
+        Ty::App { head, args } => Ty::App {
+            head: Box::new(apply(subst, *head)),
+            args: args.into_iter().map(|t| apply(subst, t)).collect(),
+        },
+        Ty::Func(a, b) => Ty::Func(Box::new(apply(subst, *a)), Box::new(apply(subst, *b))),
+        c @ Ty::Con(_) => c,
+    }
 }
 
 pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
@@ -273,5 +421,40 @@ fn subst_type(ty: ast::Type, env: &HashMap<String, ast::Type>) -> ast::Type {
             Type::Func(Box::new(subst_type(*a, env)), Box::new(subst_type(*b, env)))
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod unification_tests {
+    use super::*;
+
+    #[test]
+    fn unify_var_with_con() {
+        let mut cx = InferCtx::default();
+        let a = cx.fresh();
+        let subst = unify(a.clone(), Ty::Con("Integer")).unwrap();
+        assert_eq!(apply(&subst, a), Ty::Con("Integer"));
+    }
+
+    #[test]
+    fn unify_func() {
+        let mut cx = InferCtx::default();
+        let a = cx.fresh();
+        let b = cx.fresh();
+
+        let t1 = Ty::Func(Box::new(a.clone()), Box::new(Ty::Con("Bool")));
+        let t2 = Ty::Func(Box::new(Ty::Con("Integer")), Box::new(b.clone()));
+
+        let subst = unify(t1, t2).unwrap();
+        assert_eq!(apply(&subst, a), Ty::Con("Integer"));
+        assert_eq!(apply(&subst, b), Ty::Con("Bool"));
+    }
+
+    #[test]
+    fn occurs_check_rejects_recursive() {
+        let mut cx = InferCtx::default();
+        let a = cx.fresh();
+        let t = Ty::List(Box::new(a.clone()));
+        assert!(unify(a, t).is_err());
     }
 }
