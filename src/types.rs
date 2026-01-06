@@ -498,15 +498,23 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
             continue;
         };
 
+        let ctx_name = match &b.pat {
+            ast::Pattern::Var(n) => n.as_str(),
+            _ => "<pattern>",
+        };
+
         let mut binds = Vec::new();
         let mut seen = HashSet::new();
-        let pat_ty = infer_pat_in(&mut cx, &mut subst, &env, &b.pat, &mut binds, &mut seen)?;
+        let pat_ty = infer_pat_in(&mut cx, &mut subst, &env, &b.pat, &mut binds, &mut seen)
+            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
 
         let env_in = apply_env(&subst, &env);
-        let (s_rhs, t_rhs) = infer_expr_in(&mut cx, &env_in, b.expr.clone())?;
+        let (s_rhs, t_rhs) = infer_expr_in(&mut cx, &env_in, b.expr.clone())
+            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
         subst = compose(&s_rhs, &subst);
 
-        let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))?;
+        let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))
+            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
         subst = compose(&s_pat, &subst);
 
         for (name, t) in binds {
@@ -1260,6 +1268,13 @@ mod inference_tests {
             ty: Ty::List(Box::new(Ty::Var(2))),
         };
         assert_eq!(format!("{s}"), "forall a. [a]");
+    }
+
+    #[test]
+    fn type_error_includes_binding_name() {
+        let m = crate::parser::parse_module("x = y\n").unwrap();
+        let e = typecheck(m).unwrap_err();
+        assert!(format!("{e}").contains("in binding x"));
     }
 
     #[test]
