@@ -369,6 +369,39 @@ pub fn infer_in_module(module: &ast::Module, expr: ast::Expr) -> Result<Ty> {
     Ok(apply(&s, t))
 }
 
+pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
+    let mut cx = InferCtx::default();
+    let mut env = collect_ctor_env(&mut cx, module)?;
+    let mut subst = Subst::new();
+    let mut out = HashMap::new();
+
+    for it in &module.items {
+        let ast::Item::Binding(b) = it else {
+            continue;
+        };
+
+        let mut binds = Vec::new();
+        let mut seen = HashSet::new();
+        let pat_ty = infer_pat_in(&mut cx, &mut subst, &env, &b.pat, &mut binds, &mut seen)?;
+
+        let env_in = apply_env(&subst, &env);
+        let (s_rhs, t_rhs) = infer_expr_in(&mut cx, &env_in, b.expr.clone())?;
+        subst = compose(&s_rhs, &subst);
+
+        let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))?;
+        subst = compose(&s_pat, &subst);
+
+        for (name, t) in binds {
+            let env_gen = apply_env(&subst, &env);
+            let scheme = generalize(&env_gen, apply(&subst, t));
+            env.insert(name.clone(), scheme.clone());
+            out.insert(name, scheme);
+        }
+    }
+
+    Ok(out)
+}
+
 fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> {
     let mut env = TypeEnv::new();
 
@@ -1243,6 +1276,12 @@ x = case Just 1 of
 
         let ty = infer_in_module(&m, b.expr.clone()).unwrap();
         assert_eq!(ty, Ty::Con("Integer".to_string()));
+
+        let env = infer_module(&m).unwrap();
+        assert_eq!(
+            env.get("x").unwrap(),
+            &Scheme::mono(Ty::Con("Integer".to_string()))
+        );
     }
 
     #[test]
