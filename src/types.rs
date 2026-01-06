@@ -517,6 +517,38 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             },
         ),
 
+        Expr::Case { expr, arms } => {
+            if arms.is_empty() {
+                return Err(Error::msg("empty case"));
+            }
+
+            let (mut s, scrut_ty) = infer_expr_in(cx, env, *expr)?;
+            let mut out_ty = cx.fresh();
+
+            for (pat, arm_expr) in arms {
+                let mut binds = Vec::new();
+                let mut seen = HashSet::new();
+                let pat_ty = infer_pat_in(cx, &mut s, &pat, &mut binds, &mut seen)?;
+
+                let su_pat = unify(apply(&s, pat_ty), apply(&s, scrut_ty.clone()))?;
+                s = compose(&su_pat, &s);
+
+                let mut env_arm = apply_env(&s, env);
+                for (name, t) in binds {
+                    env_arm.insert(name, Scheme::mono(apply(&s, t)));
+                }
+
+                let (s_arm, arm_ty) = infer_expr_in(cx, &env_arm, arm_expr)?;
+                s = compose(&s_arm, &s);
+
+                let su_out = unify(apply(&s, out_ty.clone()), apply(&s, arm_ty))?;
+                s = compose(&su_out, &s);
+                out_ty = apply(&s, out_ty);
+            }
+
+            Ok((s.clone(), apply(&s, out_ty)))
+        }
+
         _ => Err(Error::msg("inference not implemented for this expression")),
     }
 }
@@ -1064,6 +1096,54 @@ mod inference_tests {
             cond: Box::new(ast::Expr::Bool(true)),
             then_branch: Box::new(ast::Expr::Integer("1".to_string())),
             else_branch: Box::new(ast::Expr::Bool(false)),
+        })
+        .unwrap_err();
+    }
+
+    #[test]
+    fn infer_case_expr() {
+        let x_bind = ast::Binding {
+            pat: ast::Pattern::Var("x".to_string()),
+            expr: ast::Expr::Integer("1".to_string()),
+        };
+
+        let ty = infer_expr(ast::Expr::Let {
+            bindings: vec![x_bind],
+            body: Box::new(ast::Expr::Case {
+                expr: Box::new(ast::Expr::Var("x".to_string())),
+                arms: vec![
+                    (
+                        ast::Pattern::Literal(ast::Expr::Integer("0".to_string())),
+                        ast::Expr::Bool(true),
+                    ),
+                    (ast::Pattern::Wildcard, ast::Expr::Bool(false)),
+                ],
+            }),
+        })
+        .unwrap();
+
+        assert_eq!(ty, Ty::Con("Bool".to_string()));
+    }
+
+    #[test]
+    fn infer_case_arm_mismatch_is_error() {
+        let x_bind = ast::Binding {
+            pat: ast::Pattern::Var("x".to_string()),
+            expr: ast::Expr::Integer("1".to_string()),
+        };
+
+        let _ = infer_expr(ast::Expr::Let {
+            bindings: vec![x_bind],
+            body: Box::new(ast::Expr::Case {
+                expr: Box::new(ast::Expr::Var("x".to_string())),
+                arms: vec![
+                    (
+                        ast::Pattern::Literal(ast::Expr::Integer("0".to_string())),
+                        ast::Expr::Bool(true),
+                    ),
+                    (ast::Pattern::Wildcard, ast::Expr::Integer("1".to_string())),
+                ],
+            }),
         })
         .unwrap_err();
     }
