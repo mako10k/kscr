@@ -280,8 +280,9 @@ fn apply_env(subst: &Subst, env: &TypeEnv) -> TypeEnv {
         .collect()
 }
 
-fn infer_pat_template(
+fn infer_pat_in(
     cx: &mut InferCtx,
+    subst: &mut Subst,
     pat: &ast::Pattern,
     binds: &mut Vec<(String, Ty)>,
     seen: &mut HashSet<String>,
@@ -308,7 +309,26 @@ fn infer_pat_template(
         }),
         Pattern::Tuple(ps) => Ok(Ty::Tuple(
             ps.iter()
-                .map(|p| infer_pat_template(cx, p, binds, seen))
+                .map(|p| infer_pat_in(cx, subst, p, binds, seen))
+                .collect::<Result<Vec<_>>>()?,
+        )),
+        Pattern::List(ps) => {
+            if ps.is_empty() {
+                return Ok(Ty::List(Box::new(cx.fresh())));
+            }
+
+            let first = infer_pat_in(cx, subst, &ps[0], binds, seen)?;
+            for p in &ps[1..] {
+                let t = infer_pat_in(cx, subst, p, binds, seen)?;
+                let su = unify(apply(subst, first.clone()), apply(subst, t))?;
+                *subst = compose(&su, subst);
+            }
+            Ok(Ty::List(Box::new(apply(subst, first))))
+        }
+        Pattern::Record(fields) => Ok(Ty::Record(
+            fields
+                .iter()
+                .map(|(n, p)| Ok((n.clone(), infer_pat_in(cx, subst, p, binds, seen)?)))
                 .collect::<Result<Vec<_>>>()?,
         )),
         _ => Err(Error::msg("pattern inference not implemented")),
@@ -404,6 +424,39 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             Ok((s, Ty::Tuple(ts)))
         }
 
+        Expr::List(elems) => {
+            if elems.is_empty() {
+                return Ok((Subst::new(), Ty::List(Box::new(cx.fresh()))));
+            }
+
+            let (mut s, first_ty) = infer_expr_in(cx, env, elems[0].clone())?;
+            let mut elem_ty = apply(&s, first_ty);
+
+            for e in elems.into_iter().skip(1) {
+                let env2 = apply_env(&s, env);
+                let (s_e, t_e) = infer_expr_in(cx, &env2, e)?;
+                s = compose(&s_e, &s);
+
+                let su = unify(apply(&s, elem_ty.clone()), apply(&s, t_e))?;
+                s = compose(&su, &s);
+                elem_ty = apply(&s, elem_ty);
+            }
+
+            Ok((s.clone(), Ty::List(Box::new(apply(&s, elem_ty)))))
+        }
+
+        Expr::Record(fields) => {
+            let mut s = Subst::new();
+            let mut out = Vec::new();
+            for (name, e) in fields {
+                let env2 = apply_env(&s, env);
+                let (s_e, t_e) = infer_expr_in(cx, &env2, e)?;
+                s = compose(&s_e, &s);
+                out.push((name, apply(&s, t_e)));
+            }
+            Ok((s, Ty::Record(out)))
+        }
+
         Expr::Let { bindings, body } => {
             let mut s = Subst::new();
             let mut env2 = env.clone();
@@ -411,7 +464,7 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             for b in bindings {
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
-                let pat_ty = infer_pat_template(cx, &b.pat, &mut binds, &mut seen)?;
+                let pat_ty = infer_pat_in(cx, &mut s, &b.pat, &mut binds, &mut seen)?;
 
                 let env_in = apply_env(&s, &env2);
                 let (s_rhs, t_rhs) = infer_expr_in(cx, &env_in, b.expr)?;
@@ -907,6 +960,50 @@ mod inference_tests {
             body: Box::new(ast::Expr::Var("x".to_string())),
         })
         .unwrap_err();
+    }
+
+    #[test]
+    fn infer_let_list_pattern() {
+        let b = ast::Binding {
+            pat: ast::Pattern::List(vec![
+                ast::Pattern::Var("x".to_string()),
+                ast::Pattern::Var("y".to_string()),
+            ]),
+            expr: ast::Expr::List(vec![
+                ast::Expr::Integer("1".to_string()),
+                ast::Expr::Integer("2".to_string()),
+            ]),
+        };
+
+        let ty = infer_expr(ast::Expr::Let {
+            bindings: vec![b],
+            body: Box::new(ast::Expr::Var("y".to_string())),
+        })
+        .unwrap();
+
+        assert_eq!(ty, Ty::Con("Integer".to_string()));
+    }
+
+    #[test]
+    fn infer_let_record_pattern() {
+        let b = ast::Binding {
+            pat: ast::Pattern::Record(vec![
+                ("a".to_string(), ast::Pattern::Var("x".to_string())),
+                ("b".to_string(), ast::Pattern::Var("y".to_string())),
+            ]),
+            expr: ast::Expr::Record(vec![
+                ("a".to_string(), ast::Expr::Integer("1".to_string())),
+                ("b".to_string(), ast::Expr::Bool(true)),
+            ]),
+        };
+
+        let ty = infer_expr(ast::Expr::Let {
+            bindings: vec![b],
+            body: Box::new(ast::Expr::Var("y".to_string())),
+        })
+        .unwrap();
+
+        assert_eq!(ty, Ty::Con("Bool".to_string()));
     }
 
     #[test]
