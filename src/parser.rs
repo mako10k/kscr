@@ -198,6 +198,7 @@ fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         Some(TokenKind::KwIf) => parse_if(ts, stop)?,
         Some(TokenKind::KwLet) => parse_let(ts, stop)?,
         Some(TokenKind::KwCase) => parse_case(ts, stop)?,
+        Some(TokenKind::KwDo) => parse_do(ts, stop)?,
         _ => parse_application(ts, stop)?,
     };
 
@@ -285,6 +286,52 @@ fn parse_let_binding_inline(ts: &mut TokenStream) -> Result<ast::Binding> {
     ts.expect(TokenKind::Eq)?;
     let expr = parse_expr(ts, Stop::In)?;
     Ok(ast::Binding { pat, expr })
+}
+
+fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
+    ts.expect(TokenKind::KwDo)?;
+
+    if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        return Err(Error::msg("expected newline after 'do'"));
+    }
+
+    ts.consume_line_end();
+    ts.skip_newlines();
+    ts.expect(TokenKind::Indent)?;
+
+    let mut stmts = Vec::new();
+    loop {
+        ts.skip_newlines();
+        if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+            break;
+        }
+        if ts.is_eof() {
+            return Err(Error::msg("unexpected EOF in do"));
+        }
+
+        // Minimal: bind statement is `name <- expr`.
+        if let Some(TokenKind::Ident(_)) = ts.peek_kind() {
+            let save = ts.i;
+            let name = ts.expect_ident()?;
+            if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
+                ts.bump();
+                let expr = parse_expr(ts, Stop::LineEnd)?;
+                stmts.push(ast::DoStmt::Bind { name, expr });
+                ts.consume_line_end();
+                continue;
+            }
+            ts.i = save;
+        }
+
+        let expr = parse_expr(ts, Stop::LineEnd)?;
+        stmts.push(ast::DoStmt::Expr(expr));
+        ts.consume_line_end();
+    }
+
+    ts.expect(TokenKind::Dedent)?;
+    ts.consume_line_end();
+
+    Ok(ast::Expr::Do(stmts))
 }
 
 fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
@@ -535,7 +582,8 @@ fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
             Some(TokenKind::Backslash)
             | Some(TokenKind::KwIf)
             | Some(TokenKind::KwLet)
-            | Some(TokenKind::KwCase) => {
+            | Some(TokenKind::KwCase)
+            | Some(TokenKind::KwDo) => {
                 exprs.push(parse_expr(ts, stop)?);
             }
             Some(
@@ -736,6 +784,7 @@ impl TokenStream {
             Some(TokenKind::KwIn) => "in".to_string(),
             Some(TokenKind::KwCase) => "case".to_string(),
             Some(TokenKind::KwOf) => "of".to_string(),
+            Some(TokenKind::KwDo) => "do".to_string(),
             Some(TokenKind::KwIf) => "if".to_string(),
             Some(TokenKind::KwThen) => "then".to_string(),
             Some(TokenKind::KwElse) => "else".to_string(),
@@ -754,6 +803,7 @@ impl TokenStream {
             Some(TokenKind::RBrace) => "}".to_string(),
             Some(TokenKind::Colon) => ":".to_string(),
             Some(TokenKind::ColonColon) => "::".to_string(),
+            Some(TokenKind::LeftArrow) => "<-".to_string(),
             Some(TokenKind::Newline) => "".to_string(),
             Some(TokenKind::Indent) => "INDENT".to_string(),
             Some(TokenKind::Dedent) => "DEDENT".to_string(),

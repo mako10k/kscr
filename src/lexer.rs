@@ -15,6 +15,7 @@ pub enum TokenKind {
     KwIn,
     KwCase,
     KwOf,
+    KwDo,
     KwIf,
     KwThen,
     KwElse,
@@ -37,6 +38,7 @@ pub enum TokenKind {
     RBrace,
     Colon,
     ColonColon,
+    LeftArrow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +237,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             i += 2;
             continue;
         }
+        if bytes[i..].starts_with(b"<-") {
+            tokens.push(Token {
+                kind: TokenKind::LeftArrow,
+            });
+            i += 2;
+            continue;
+        }
         if bytes[i] == b':' {
             tokens.push(Token {
                 kind: TokenKind::Colon,
@@ -357,6 +366,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 "in" => TokenKind::KwIn,
                 "case" => TokenKind::KwCase,
                 "of" => TokenKind::KwOf,
+                "do" => TokenKind::KwDo,
                 "if" => TokenKind::KwIf,
                 "then" => TokenKind::KwThen,
                 "else" => TokenKind::KwElse,

@@ -458,3 +458,26 @@ fn parser_type_annotations() {
         } if s == "Integer"
     ));
 }
+
+#[test]
+fn parser_do_blocks() {
+    let src = std::fs::read_to_string("tests/parser_do.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 1);
+
+    use crate::ast::{DoStmt, Expr, Item, Pattern};
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(b.pat, Pattern::Var(ref s) if s == "main"));
+
+    let Expr::Do(stmts) = &b.expr else {
+        panic!("expected do");
+    };
+
+    assert_eq!(stmts.len(), 3);
+    assert!(matches!(stmts[0], DoStmt::Bind { .. }));
+    assert!(matches!(stmts[1], DoStmt::Bind { .. }));
+    assert!(matches!(stmts[2], DoStmt::Expr(_)));
+}

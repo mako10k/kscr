@@ -83,6 +83,7 @@ pub enum Expr {
         expr: Box<Expr>,
         ty: Type,
     },
+    Do(Vec<DoStmt>),
     Case {
         expr: Box<Expr>,
         arms: Vec<(Pattern, Expr)>,
@@ -90,6 +91,12 @@ pub enum Expr {
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Record(Vec<(String, Expr)>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoStmt {
+    Bind { name: String, expr: Expr },
+    Expr(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
