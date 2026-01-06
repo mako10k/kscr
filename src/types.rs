@@ -283,6 +283,7 @@ fn apply_env(subst: &Subst, env: &TypeEnv) -> TypeEnv {
 fn infer_pat_in(
     cx: &mut InferCtx,
     subst: &mut Subst,
+    env: &TypeEnv,
     pat: &ast::Pattern,
     binds: &mut Vec<(String, Ty)>,
     seen: &mut HashSet<String>,
@@ -309,7 +310,7 @@ fn infer_pat_in(
         }),
         Pattern::Tuple(ps) => Ok(Ty::Tuple(
             ps.iter()
-                .map(|p| infer_pat_in(cx, subst, p, binds, seen))
+                .map(|p| infer_pat_in(cx, subst, env, p, binds, seen))
                 .collect::<Result<Vec<_>>>()?,
         )),
         Pattern::List(ps) => {
@@ -317,9 +318,9 @@ fn infer_pat_in(
                 return Ok(Ty::List(Box::new(cx.fresh())));
             }
 
-            let first = infer_pat_in(cx, subst, &ps[0], binds, seen)?;
+            let first = infer_pat_in(cx, subst, env, &ps[0], binds, seen)?;
             for p in &ps[1..] {
-                let t = infer_pat_in(cx, subst, p, binds, seen)?;
+                let t = infer_pat_in(cx, subst, env, p, binds, seen)?;
                 let su = unify(apply(subst, first.clone()), apply(subst, t))?;
                 *subst = compose(&su, subst);
             }
@@ -328,10 +329,29 @@ fn infer_pat_in(
         Pattern::Record(fields) => Ok(Ty::Record(
             fields
                 .iter()
-                .map(|(n, p)| Ok((n.clone(), infer_pat_in(cx, subst, p, binds, seen)?)))
+                .map(|(n, p)| Ok((n.clone(), infer_pat_in(cx, subst, env, p, binds, seen)?)))
                 .collect::<Result<Vec<_>>>()?,
         )),
-        _ => Err(Error::msg("pattern inference not implemented")),
+        Pattern::Constructor { name, args } => {
+            let scheme = env
+                .get(name)
+                .ok_or_else(|| Error::msg("unknown constructor"))?;
+            let mut ctor_ty = instantiate(cx, scheme);
+
+            for p in args {
+                let arg_pat_ty = infer_pat_in(cx, subst, env, p, binds, seen)?;
+                let res = cx.fresh();
+
+                let su = unify(
+                    apply(subst, ctor_ty),
+                    Ty::Func(Box::new(apply(subst, arg_pat_ty)), Box::new(res.clone())),
+                )?;
+                *subst = compose(&su, subst);
+                ctor_ty = res;
+            }
+
+            Ok(apply(subst, ctor_ty))
+        }
     }
 }
 
@@ -340,6 +360,81 @@ pub fn infer_expr(expr: ast::Expr) -> Result<Ty> {
     let env = TypeEnv::new();
     let (s, t) = infer_expr_in(&mut cx, &env, expr)?;
     Ok(apply(&s, t))
+}
+
+pub fn infer_in_module(module: &ast::Module, expr: ast::Expr) -> Result<Ty> {
+    let mut cx = InferCtx::default();
+    let env = collect_ctor_env(&mut cx, module)?;
+    let (s, t) = infer_expr_in(&mut cx, &env, expr)?;
+    Ok(apply(&s, t))
+}
+
+fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> {
+    let mut env = TypeEnv::new();
+
+    for it in &module.items {
+        let ast::Item::DataDecl(d) = it else {
+            continue;
+        };
+
+        let mut param_vars: HashMap<String, u32> = HashMap::new();
+        for p in &d.params {
+            let Ty::Var(v) = cx.fresh() else {
+                unreachable!()
+            };
+            param_vars.insert(p.clone(), v);
+        }
+
+        let result_ty = if d.params.is_empty() {
+            Ty::Con(d.name.clone())
+        } else {
+            Ty::App {
+                head: Box::new(Ty::Con(d.name.clone())),
+                args: d
+                    .params
+                    .iter()
+                    .map(|p| Ty::Var(*param_vars.get(p).unwrap()))
+                    .collect(),
+            }
+        };
+
+        for ctor in &d.ctors {
+            let mut holes = HashMap::new();
+            let arg_tys: Vec<Ty> = ctor
+                .args
+                .iter()
+                .map(|t| lower_surface_type_with_params(cx, t, &mut holes, &param_vars))
+                .collect();
+
+            let mut ty = result_ty.clone();
+            for a in arg_tys.into_iter().rev() {
+                ty = Ty::Func(Box::new(a), Box::new(ty));
+            }
+
+            let mut vars: Vec<u32> = ftv_ty(&ty).into_iter().collect();
+            vars.sort_unstable();
+            env.insert(ctor.name.clone(), Scheme { vars, ty });
+        }
+    }
+
+    Ok(env)
+}
+
+fn lower_surface_type_with_params(
+    cx: &mut InferCtx,
+    ty: &ast::Type,
+    holes: &mut HashMap<String, Ty>,
+    params: &HashMap<String, u32>,
+) -> Ty {
+    use ast::Type;
+
+    match ty {
+        Type::Var(name) => params
+            .get(name)
+            .map(|v| Ty::Var(*v))
+            .unwrap_or_else(|| Ty::Con(name.clone())),
+        other => lower_surface_type(cx, other, holes),
+    }
 }
 
 fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(Subst, Ty)> {
@@ -356,6 +451,13 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             let s = env
                 .get(&name)
                 .ok_or_else(|| Error::msg("unbound variable"))?;
+            Ok((Subst::new(), instantiate(cx, s)))
+        }
+
+        Expr::Ctor(name) => {
+            let s = env
+                .get(&name)
+                .ok_or_else(|| Error::msg("unknown constructor"))?;
             Ok((Subst::new(), instantiate(cx, s)))
         }
 
@@ -486,7 +588,7 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             for b in bindings {
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
-                let pat_ty = infer_pat_in(cx, &mut s, &b.pat, &mut binds, &mut seen)?;
+                let pat_ty = infer_pat_in(cx, &mut s, &env2, &b.pat, &mut binds, &mut seen)?;
 
                 let env_in = apply_env(&s, &env2);
                 let (s_rhs, t_rhs) = infer_expr_in(cx, &env_in, b.expr)?;
@@ -528,7 +630,7 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             for (pat, arm_expr) in arms {
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
-                let pat_ty = infer_pat_in(cx, &mut s, &pat, &mut binds, &mut seen)?;
+                let pat_ty = infer_pat_in(cx, &mut s, env, &pat, &mut binds, &mut seen)?;
 
                 let su_pat = unify(apply(&s, pat_ty), apply(&s, scrut_ty.clone()))?;
                 s = compose(&su_pat, &s);
@@ -1123,6 +1225,24 @@ mod inference_tests {
         .unwrap();
 
         assert_eq!(ty, Ty::Con("Bool".to_string()));
+    }
+
+    #[test]
+    fn infer_case_adt_constructors() {
+        let src = r#"data Maybe a = Nothing | Just a
+
+x = case Just 1 of
+  Just n -> n
+  Nothing -> 0
+"#;
+        let m = crate::parser::parse_module(src).unwrap();
+
+        let crate::ast::Item::Binding(b) = &m.items[1] else {
+            panic!("expected binding");
+        };
+
+        let ty = infer_in_module(&m, b.expr.clone()).unwrap();
+        assert_eq!(ty, Ty::Con("Integer".to_string()));
     }
 
     #[test]
