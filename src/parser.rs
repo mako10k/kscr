@@ -178,12 +178,14 @@ enum Stop {
     LineEnd,
     Then,
     Else,
+    In,
 }
 
 fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     match ts.peek_kind() {
         Some(TokenKind::Backslash) => parse_lambda(ts, stop),
         Some(TokenKind::KwIf) => parse_if(ts, stop),
+        Some(TokenKind::KwLet) => parse_let(ts, stop),
         _ => parse_application(ts, stop),
     }
 }
@@ -214,6 +216,53 @@ fn parse_if(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         then_branch,
         else_branch,
     })
+}
+
+fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
+    ts.expect(TokenKind::KwLet)?;
+
+    let bindings = if matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        ts.consume_line_end();
+        ts.skip_newlines();
+        ts.expect(TokenKind::Indent)?;
+
+        let mut bs = Vec::new();
+        loop {
+            ts.skip_newlines();
+            if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+                break;
+            }
+            if ts.is_eof() {
+                return Err(Error::msg("unexpected EOF in let"));
+            }
+            bs.push(parse_let_binding_line(ts)?);
+            ts.consume_line_end();
+        }
+
+        ts.expect(TokenKind::Dedent)?;
+        ts.consume_line_end();
+        bs
+    } else {
+        vec![parse_let_binding_inline(ts)?]
+    };
+
+    ts.expect(TokenKind::KwIn)?;
+    let body = Box::new(parse_expr(ts, stop)?);
+    Ok(ast::Expr::Let { bindings, body })
+}
+
+fn parse_let_binding_line(ts: &mut TokenStream) -> Result<ast::Binding> {
+    let name = ts.expect_ident()?;
+    ts.expect(TokenKind::Eq)?;
+    let expr = parse_expr(ts, Stop::LineEnd)?;
+    Ok(ast::Binding { name, expr })
+}
+
+fn parse_let_binding_inline(ts: &mut TokenStream) -> Result<ast::Binding> {
+    let name = ts.expect_ident()?;
+    ts.expect(TokenKind::Eq)?;
+    let expr = parse_expr(ts, Stop::In)?;
+    Ok(ast::Binding { name, expr })
 }
 
 fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
@@ -419,6 +468,8 @@ impl TokenStream {
             Some(TokenKind::KwWhere) => "where".to_string(),
             Some(TokenKind::KwImport) => "import".to_string(),
             Some(TokenKind::KwExport) => "export".to_string(),
+            Some(TokenKind::KwLet) => "let".to_string(),
+            Some(TokenKind::KwIn) => "in".to_string(),
             Some(TokenKind::KwIf) => "if".to_string(),
             Some(TokenKind::KwThen) => "then".to_string(),
             Some(TokenKind::KwElse) => "else".to_string(),
@@ -479,6 +530,7 @@ impl TokenStream {
             (_, Some(TokenKind::Newline)) => false,
             (Stop::Then, Some(TokenKind::KwThen)) => false,
             (Stop::Else, Some(TokenKind::KwElse)) => false,
+            (Stop::In, Some(TokenKind::KwIn)) => false,
             (Stop::LineEnd, _) => true,
             _ => true,
         }

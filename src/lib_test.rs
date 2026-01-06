@@ -253,3 +253,38 @@ fn parser_golden_record_expr() {
         _ => panic!("expected binding"),
     }
 }
+
+#[test]
+fn parser_golden_let_expr() {
+    let src = std::fs::read_to_string("tests/parser_let.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{Expr, Item};
+
+    match &module.items[0] {
+        Item::Binding(b) => match &b.expr {
+            Expr::Let { bindings, body } => {
+                assert_eq!(bindings.len(), 1);
+                assert_eq!(bindings[0].name, "x");
+                assert!(matches!(bindings[0].expr, Expr::Integer(ref s) if s == "1"));
+                assert!(matches!(**body, Expr::Var(ref s) if s == "x"));
+            }
+            _ => panic!("expected let"),
+        },
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[1] {
+        Item::Binding(b) => match &b.expr {
+            Expr::Let { bindings, body } => {
+                assert_eq!(bindings.len(), 2);
+                assert_eq!(bindings[0].name, "x");
+                assert_eq!(bindings[1].name, "y");
+                assert!(matches!(**body, Expr::Apply { .. }));
+            }
+            _ => panic!("expected let"),
+        },
+        _ => panic!("expected binding"),
+    }
+}
