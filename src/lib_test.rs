@@ -567,3 +567,43 @@ fn parser_symbol_ops() {
     assert!(matches!(args[1], Expr::Integer(ref s) if s == "1"));
     assert!(matches!(args[0], Expr::Apply { .. }));
 }
+
+#[test]
+fn parser_cmp_and_logic_ops() {
+    let src = std::fs::read_to_string("tests/parser_cmp_logic.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 3);
+
+    use crate::ast::{Expr, Item};
+
+    let Item::Binding(b0) = &module.items[0] else {
+        panic!("expected binding");
+    };
+    // (1 + (2 * 3)) == 7
+    let Expr::Apply { func, args } = &b0.expr else {
+        panic!("expected apply");
+    };
+    assert!(matches!(**func, Expr::Var(ref s) if s == "=="));
+    assert_eq!(args.len(), 2);
+
+    let Item::Binding(b1) = &module.items[1] else {
+        panic!("expected binding");
+    };
+    // (True && False) || True
+    let Expr::Apply { func, args } = &b1.expr else {
+        panic!("expected apply");
+    };
+    assert!(matches!(**func, Expr::Var(ref s) if s == "||"));
+    assert_eq!(args.len(), 2);
+    assert!(matches!(args[1], Expr::Bool(true)));
+
+    let Item::Binding(b2) = &module.items[2] else {
+        panic!("expected binding");
+    };
+    // (1 < 2) && (2 <= 3)
+    let Expr::Apply { func, args } = &b2.expr else {
+        panic!("expected apply");
+    };
+    assert!(matches!(**func, Expr::Var(ref s) if s == "&&"));
+    assert_eq!(args.len(), 2);
+}

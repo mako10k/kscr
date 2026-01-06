@@ -582,9 +582,17 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
 
     while ts.can_continue_expr(stop) {
         let (prec, is_backtick) = match ts.peek_kind() {
-            Some(TokenKind::Backtick) => (5u8, true),
-            Some(TokenKind::Plus) | Some(TokenKind::Minus) => (5u8, false),
-            Some(TokenKind::Star) | Some(TokenKind::Slash) => (6u8, false),
+            Some(TokenKind::Backtick) => (60u8, true),
+            Some(TokenKind::Star) | Some(TokenKind::Slash) => (70u8, false),
+            Some(TokenKind::Plus) | Some(TokenKind::Minus) => (60u8, false),
+            Some(TokenKind::EqEq)
+            | Some(TokenKind::SlashEq)
+            | Some(TokenKind::Lt)
+            | Some(TokenKind::Le)
+            | Some(TokenKind::Gt)
+            | Some(TokenKind::Ge) => (50u8, false),
+            Some(TokenKind::AndAnd) => (40u8, false),
+            Some(TokenKind::OrOr) => (30u8, false),
             _ => break,
         };
 
@@ -603,6 +611,14 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
                 Some(TokenKind::Minus) => "-".to_string(),
                 Some(TokenKind::Star) => "*".to_string(),
                 Some(TokenKind::Slash) => "/".to_string(),
+                Some(TokenKind::EqEq) => "==".to_string(),
+                Some(TokenKind::SlashEq) => "/=".to_string(),
+                Some(TokenKind::Lt) => "<".to_string(),
+                Some(TokenKind::Le) => "<=".to_string(),
+                Some(TokenKind::Gt) => ">".to_string(),
+                Some(TokenKind::Ge) => ">=".to_string(),
+                Some(TokenKind::AndAnd) => "&&".to_string(),
+                Some(TokenKind::OrOr) => "||".to_string(),
                 _ => unreachable!(),
             }
         };
@@ -859,6 +875,14 @@ impl TokenStream {
             Some(TokenKind::Minus) => "-".to_string(),
             Some(TokenKind::Star) => "*".to_string(),
             Some(TokenKind::Slash) => "/".to_string(),
+            Some(TokenKind::EqEq) => "==".to_string(),
+            Some(TokenKind::SlashEq) => "/=".to_string(),
+            Some(TokenKind::Lt) => "<".to_string(),
+            Some(TokenKind::Le) => "<=".to_string(),
+            Some(TokenKind::Gt) => ">".to_string(),
+            Some(TokenKind::Ge) => ">=".to_string(),
+            Some(TokenKind::AndAnd) => "&&".to_string(),
+            Some(TokenKind::OrOr) => "||".to_string(),
             Some(TokenKind::Newline) => "".to_string(),
             Some(TokenKind::Indent) => "INDENT".to_string(),
             Some(TokenKind::Dedent) => "DEDENT".to_string(),

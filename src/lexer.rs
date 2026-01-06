@@ -31,6 +31,14 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
+    EqEq,
+    SlashEq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    AndAnd,
+    OrOr,
     Eq,
     Pipe,
     Backslash,
@@ -157,7 +165,64 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             continue;
         }
 
-        // Punctuation
+        // Punctuation (multi-char first)
+        if bytes[i..].starts_with(b"->") {
+            tokens.push(Token {
+                kind: TokenKind::Arrow,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"<-") {
+            tokens.push(Token {
+                kind: TokenKind::LeftArrow,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"==") {
+            tokens.push(Token {
+                kind: TokenKind::EqEq,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"/=") {
+            tokens.push(Token {
+                kind: TokenKind::SlashEq,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"<=") {
+            tokens.push(Token {
+                kind: TokenKind::Le,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b">=") {
+            tokens.push(Token {
+                kind: TokenKind::Ge,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"&&") {
+            tokens.push(Token {
+                kind: TokenKind::AndAnd,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"||") {
+            tokens.push(Token {
+                kind: TokenKind::OrOr,
+            });
+            i += 2;
+            continue;
+        }
+
         if bytes[i] == b'=' {
             tokens.push(Token {
                 kind: TokenKind::Eq,
@@ -168,6 +233,20 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
         if bytes[i] == b'|' {
             tokens.push(Token {
                 kind: TokenKind::Pipe,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'<' {
+            tokens.push(Token {
+                kind: TokenKind::Lt,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'>' {
+            tokens.push(Token {
+                kind: TokenKind::Gt,
             });
             i += 1;
             continue;
@@ -191,13 +270,6 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::Backslash,
             });
             i += 1;
-            continue;
-        }
-        if bytes[i..].starts_with(b"->") {
-            tokens.push(Token {
-                kind: TokenKind::Arrow,
-            });
-            i += 2;
             continue;
         }
         if bytes[i] == b'+' {
@@ -275,20 +347,6 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::ColonColon,
             });
             i += 2;
-            continue;
-        }
-        if bytes[i..].starts_with(b"<-") {
-            tokens.push(Token {
-                kind: TokenKind::LeftArrow,
-            });
-            i += 2;
-            continue;
-        }
-        if bytes[i] == b'`' {
-            tokens.push(Token {
-                kind: TokenKind::Backtick,
-            });
-            i += 1;
             continue;
         }
         if bytes[i] == b':' {
