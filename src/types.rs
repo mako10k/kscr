@@ -842,15 +842,19 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                 return Err(Error::msg("empty case"));
             }
 
-            let (mut s, scrut_ty) = infer_expr_in(cx, env, *expr)?;
+            let (mut s, scrut_ty) = infer_expr_in(cx, env, *expr)
+                .map_err(|e| Error::msg(format!("in case scrutinee: {e}")))?;
             let mut out_ty = cx.fresh();
 
-            for (pat, arm_expr) in arms {
+            for (i, (pat, arm_expr)) in arms.into_iter().enumerate() {
+                let arm_no = i + 1;
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
-                let pat_ty = infer_pat_in(cx, &mut s, env, &pat, &mut binds, &mut seen)?;
+                let pat_ty = infer_pat_in(cx, &mut s, env, &pat, &mut binds, &mut seen)
+                    .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
 
-                let su_pat = unify(apply(&s, pat_ty), apply(&s, scrut_ty.clone()))?;
+                let su_pat = unify(apply(&s, pat_ty), apply(&s, scrut_ty.clone()))
+                    .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
                 s = compose(&su_pat, &s);
 
                 let mut env_arm = apply_env(&s, env);
@@ -858,10 +862,12 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                     env_arm.insert(name, Scheme::mono(apply(&s, t)));
                 }
 
-                let (s_arm, arm_ty) = infer_expr_in(cx, &env_arm, arm_expr)?;
+                let (s_arm, arm_ty) = infer_expr_in(cx, &env_arm, arm_expr)
+                    .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
                 s = compose(&s_arm, &s);
 
-                let su_out = unify(apply(&s, out_ty.clone()), apply(&s, arm_ty))?;
+                let su_out = unify(apply(&s, out_ty.clone()), apply(&s, arm_ty))
+                    .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
                 s = compose(&su_out, &s);
                 out_ty = apply(&s, out_ty);
             }
@@ -881,11 +887,14 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             let mut last_ty: Option<Ty> = None;
 
             for (i, stmt) in stmts.into_iter().enumerate() {
-                let is_last = i + 1 == n;
+                let stmt_no = i + 1;
+                let is_last = stmt_no == n;
                 match stmt {
                     ast::DoStmt::Bind { name, expr } => {
                         let env_in = apply_env(&s, &env2);
-                        let (s_e, t_e) = infer_expr_in(cx, &env_in, expr)?;
+                        let (s_e, t_e) = infer_expr_in(cx, &env_in, expr).map_err(|e| {
+                            Error::msg(format!("in do stmt {stmt_no} ({name} <-): {e}"))
+                        })?;
                         s = compose(&s_e, &s);
 
                         let a = cx.fresh();
@@ -893,7 +902,9 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                             head: Box::new(Ty::Con("IO".to_string())),
                             args: vec![a.clone()],
                         };
-                        let su = unify(apply(&s, t_e), apply(&s, io_a))?;
+                        let su = unify(apply(&s, t_e), apply(&s, io_a)).map_err(|e| {
+                            Error::msg(format!("in do stmt {stmt_no} ({name} <-): {e}"))
+                        })?;
                         s = compose(&su, &s);
 
                         env2.insert(name, Scheme::mono(apply(&s, a)));
@@ -901,7 +912,8 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                     }
                     ast::DoStmt::Expr(e) => {
                         let env_in = apply_env(&s, &env2);
-                        let (s_e, t_e) = infer_expr_in(cx, &env_in, e)?;
+                        let (s_e, t_e) = infer_expr_in(cx, &env_in, e)
+                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no}: {e}")))?;
                         s = compose(&s_e, &s);
 
                         let r = cx.fresh();
@@ -909,7 +921,8 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                             head: Box::new(Ty::Con("IO".to_string())),
                             args: vec![r.clone()],
                         };
-                        let su = unify(apply(&s, t_e), apply(&s, io_r.clone()))?;
+                        let su = unify(apply(&s, t_e), apply(&s, io_r.clone()))
+                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no}: {e}")))?;
                         s = compose(&su, &s);
 
                         if is_last {
@@ -1348,6 +1361,28 @@ mod inference_tests {
         })
         .unwrap_err();
         assert!(format!("{e}").contains("in where binding x"));
+    }
+
+    #[test]
+    fn type_error_includes_case_arm_number() {
+        let e = infer_expr(ast::Expr::Case {
+            expr: Box::new(ast::Expr::Integer("1".to_string())),
+            arms: vec![
+                (ast::Pattern::Wildcard, ast::Expr::Var("y".to_string())),
+                (ast::Pattern::Wildcard, ast::Expr::Integer("0".to_string())),
+            ],
+        })
+        .unwrap_err();
+        assert!(format!("{e}").contains("in case arm 1"));
+    }
+
+    #[test]
+    fn type_error_includes_do_stmt_number() {
+        let e = infer_expr(ast::Expr::Do(vec![ast::DoStmt::Expr(ast::Expr::Var(
+            "y".to_string(),
+        ))]))
+        .unwrap_err();
+        assert!(format!("{e}").contains("in do stmt 1"));
     }
 
     #[test]
