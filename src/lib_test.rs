@@ -30,6 +30,10 @@ fn parser_golden_decl() {
 fn lexer_golden_basic() {
     let src = std::fs::read_to_string("tests/basic.ks").unwrap();
     let tokens = crate::lexer::lex(&src);
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| t.kind != crate::lexer::TokenKind::Newline)
+        .collect();
     // 3 bindings: x = 1, flag = True, msg = "hello"
     // 9 tokens expected: Ident, Eq, Integer, Ident, Eq, True, Ident, Eq, String
     assert_eq!(tokens.len(), 9);
@@ -51,6 +55,10 @@ fn lexer_golden_basic() {
 fn lexer_golden_ext() {
     let src = std::fs::read_to_string("tests/lexer_ext.ks").unwrap();
     let tokens = crate::lexer::lex(&src);
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| t.kind != crate::lexer::TokenKind::Newline)
+        .collect();
     // x = 1.23, flag = True, msg = "hello", module = "main"
     // コメント行は無視される
     // 12 tokens expected: Ident, Eq, Float, Ident, Eq, True, Ident, Eq, String, Ident, Eq, String
@@ -68,6 +76,10 @@ fn lexer_golden_ext() {
 fn lexer_strips_nested_block_comments() {
     let src = "x = 1 {- a {- b -} c -} y = 2";
     let tokens = crate::lexer::lex(src);
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| t.kind != crate::lexer::TokenKind::Newline)
+        .collect();
     assert_eq!(tokens.len(), 6);
 }
 
@@ -75,6 +87,10 @@ fn lexer_strips_nested_block_comments() {
 fn lexer_skips_shebang() {
     let src = "#!/usr/bin/env kscr\nx = 1";
     let tokens = crate::lexer::lex(src);
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| t.kind != crate::lexer::TokenKind::Newline)
+        .collect();
     assert_eq!(tokens.len(), 3);
 }
 
@@ -82,7 +98,32 @@ fn lexer_skips_shebang() {
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
-    println!("{:?}", module);
-    // 目視確認用: AST出力
-    // 厳密なassertは後続で追加可能
+    assert_eq!(module.items.len(), 5);
+
+    use crate::ast::{Expr, Item};
+
+    match &module.items[0] {
+        Item::Binding(b) => assert!(matches!(b.expr, Expr::Lambda { .. })),
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[1] {
+        Item::Binding(b) => assert!(matches!(b.expr, Expr::Lambda { .. })),
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[2] {
+        Item::Binding(b) => assert!(matches!(b.expr, Expr::If { .. })),
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[3] {
+        Item::Binding(b) => assert!(matches!(b.expr, Expr::Apply { .. })),
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[4] {
+        Item::Binding(b) => assert!(matches!(b.expr, Expr::Lambda { .. })),
+        _ => panic!("expected binding"),
+    }
 }

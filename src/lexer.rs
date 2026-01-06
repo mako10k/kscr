@@ -6,10 +6,20 @@ pub enum TokenKind {
     String(String),
     True,
     False,
-    Eq,
+
+    KwIf,
+    KwThen,
+    KwElse,
     KwType,
     KwData,
+
+    Newline,
+    Eq,
     Pipe,
+    Backslash,
+    Arrow,
+    LBracket,
+    RBracket,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,9 +37,21 @@ pub fn lex(src: &str) -> Vec<Token> {
         while i < bytes.len() && bytes[i] != b'\n' {
             i += 1;
         }
+        if i < bytes.len() && bytes[i] == b'\n' {
+            i += 1;
+        }
     }
 
     while i < bytes.len() {
+        // Newline (statement separator)
+        if bytes[i] == b'\n' {
+            tokens.push(Token {
+                kind: TokenKind::Newline,
+            });
+            i += 1;
+            continue;
+        }
+
         // Whitespace
         if bytes[i].is_ascii_whitespace() {
             i += 1;
@@ -73,6 +95,34 @@ pub fn lex(src: &str) -> Vec<Token> {
         if bytes[i] == b'|' {
             tokens.push(Token {
                 kind: TokenKind::Pipe,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'\\' {
+            tokens.push(Token {
+                kind: TokenKind::Backslash,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i..].starts_with(b"->") {
+            tokens.push(Token {
+                kind: TokenKind::Arrow,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'[' {
+            tokens.push(Token {
+                kind: TokenKind::LBracket,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b']' {
+            tokens.push(Token {
+                kind: TokenKind::RBracket,
             });
             i += 1;
             continue;
@@ -184,6 +234,9 @@ pub fn lex(src: &str) -> Vec<Token> {
             let kind = match word {
                 "True" => TokenKind::True,
                 "False" => TokenKind::False,
+                "if" => TokenKind::KwIf,
+                "then" => TokenKind::KwThen,
+                "else" => TokenKind::KwElse,
                 "type" => TokenKind::KwType,
                 "data" => TokenKind::KwData,
                 _ => TokenKind::Ident(word.to_string()),
