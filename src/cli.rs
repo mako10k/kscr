@@ -43,11 +43,7 @@ where
             let ast = parser::parse_module(&src)?;
             let tm = types::typecheck(ast)?;
 
-            let mut inferred = filter_inferred_by_exports(&tm.module, tm.inferred);
-            inferred.sort_by(|(a, _), (b, _)| a.cmp(b));
-            for (name, scheme) in inferred {
-                println!("{name} : {scheme}");
-            }
+            print!("{}", render_typecheck_report(&tm.module, tm.inferred));
             Ok(())
         }
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
@@ -81,6 +77,33 @@ fn filter_inferred_by_exports(
     }
 }
 
+fn render_typecheck_report(
+    module: &ast::Module,
+    inferred: std::collections::HashMap<String, types::Scheme>,
+) -> String {
+    let mut out = String::new();
+
+    if let Some(name) = &module.name {
+        out.push_str(&format!("module {name}\n"));
+    }
+
+    if let Some(exports) = exported_names(module) {
+        let mut names: Vec<_> = exports.into_iter().collect();
+        names.sort();
+        out.push_str("export ");
+        out.push_str(&names.join(", "));
+        out.push('\n');
+    }
+
+    let mut inferred = filter_inferred_by_exports(module, inferred);
+    inferred.sort_by(|(a, _), (b, _)| a.cmp(b));
+    for (name, scheme) in inferred {
+        out.push_str(&format!("{name} : {scheme}\n"));
+    }
+
+    out
+}
+
 fn print_help() {
     eprintln!(
         "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   (imports are not supported yet)\n  help              Show this help\n"
@@ -99,5 +122,16 @@ mod tests {
         let filtered = filter_inferred_by_exports(&tm.module, tm.inferred);
         let names: HashSet<String> = filtered.into_iter().map(|(n, _)| n).collect();
         assert_eq!(names, ["x".to_string()].into_iter().collect());
+    }
+
+    #[test]
+    fn typecheck_report_includes_module_and_export() {
+        let src = "module Main where\n  export x\n  x = 1\n  y = 2\n";
+        let ast = parser::parse_module(src).unwrap();
+        let tm = types::typecheck(ast).unwrap();
+        let report = render_typecheck_report(&tm.module, tm.inferred);
+        assert!(report.starts_with("module Main\nexport x\n"));
+        assert!(report.contains("x : Integer\n"));
+        assert!(!report.contains("y : Integer\n"));
     }
 }
