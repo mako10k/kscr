@@ -117,7 +117,13 @@ pub enum Type {
     Integer,
     Bool,
     Float64,
+    Char,
     String,
+
+    List(Box<Type>),
+    Tuple(Vec<Type>),
+    Record(Vec<(String, Type)>),
+
     Var(String),
     App { head: Box<Type>, args: Vec<Type> },
     Func(Box<Type>, Box<Type>),

@@ -96,10 +96,13 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         let mut args = Vec::new();
         while matches!(
             ts.peek_kind(),
-            Some(TokenKind::Ident(_)) | Some(TokenKind::LBracket)
+            Some(TokenKind::Ident(_))
+                | Some(TokenKind::LParen)
+                | Some(TokenKind::LBracket)
+                | Some(TokenKind::LBrace)
         ) {
-            // Placeholder type parsing: keep a minimal representation.
-            args.push(parse_type_placeholder(ts)?);
+            // Atom-level type parsing for ctor args.
+            args.push(parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?);
         }
         ctors.push(ast::DataCtor {
             name: ctor_name,
@@ -133,19 +136,9 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
 
     ts.expect(TokenKind::Eq)?;
 
-    let mut ty_src = String::new();
-    while !matches!(ts.peek_kind(), Some(TokenKind::Newline) | None) {
-        if !ty_src.is_empty() {
-            ty_src.push(' ');
-        }
-        ty_src.push_str(&ts.bump_text());
-    }
+    let ty = parse_type_expr(ts, Stop::LineEnd, is_type_alias_end)?;
 
-    Ok(ast::Item::TypeAlias(ast::TypeAlias {
-        name,
-        params,
-        ty: ast::Type::Var(ty_src),
-    }))
+    Ok(ast::Item::TypeAlias(ast::TypeAlias { name, params, ty }))
 }
 
 fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
@@ -373,21 +366,11 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
 fn parse_annot(ts: &mut TokenStream, expr: ast::Expr, stop: Stop) -> Result<ast::Expr> {
     ts.expect(TokenKind::ColonColon)?;
 
-    let mut ty_src = String::new();
-    while !is_type_end(ts.peek_kind(), stop) {
-        if !ty_src.is_empty() {
-            ty_src.push(' ');
-        }
-        ty_src.push_str(&ts.bump_text());
-    }
-
-    if ty_src.is_empty() {
-        return Err(Error::msg("expected type after '::'"));
-    }
+    let ty = parse_type_expr(ts, stop, is_type_end)?;
 
     Ok(ast::Expr::Annot {
         expr: Box::new(expr),
-        ty: ast::Type::Var(ty_src),
+        ty,
     })
 }
 
@@ -400,6 +383,7 @@ fn is_type_end(kind: Option<&TokenKind>, stop: Stop) -> bool {
         | Some(TokenKind::RBracket)
         | Some(TokenKind::RBrace)
         | Some(TokenKind::Dedent)
+        | Some(TokenKind::ColonColon)
         | Some(TokenKind::KwWhere) => true,
         Some(TokenKind::KwThen) if matches!(stop, Stop::Then) => true,
         Some(TokenKind::KwElse) if matches!(stop, Stop::Else) => true,
@@ -407,6 +391,149 @@ fn is_type_end(kind: Option<&TokenKind>, stop: Stop) -> bool {
         Some(TokenKind::KwOf) if matches!(stop, Stop::Of) => true,
         _ => false,
     }
+}
+
+fn is_type_alias_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
+    matches!(kind, None | Some(TokenKind::Newline))
+}
+
+fn parse_type_expr(
+    ts: &mut TokenStream,
+    stop: Stop,
+    end: fn(Option<&TokenKind>, Stop) -> bool,
+) -> Result<ast::Type> {
+    parse_type_func(ts, stop, end)
+}
+
+fn parse_type_func(
+    ts: &mut TokenStream,
+    stop: Stop,
+    end: fn(Option<&TokenKind>, Stop) -> bool,
+) -> Result<ast::Type> {
+    let lhs = parse_type_app(ts, stop, end)?;
+    if matches!(ts.peek_kind(), Some(TokenKind::Arrow)) && !end(ts.peek_kind(), stop) {
+        ts.bump();
+        let rhs = parse_type_func(ts, stop, end)?;
+        Ok(ast::Type::Func(Box::new(lhs), Box::new(rhs)))
+    } else {
+        Ok(lhs)
+    }
+}
+
+fn parse_type_app(
+    ts: &mut TokenStream,
+    stop: Stop,
+    end: fn(Option<&TokenKind>, Stop) -> bool,
+) -> Result<ast::Type> {
+    let head = parse_type_atom(ts, stop, end)?;
+
+    let mut args = Vec::new();
+    while !end(ts.peek_kind(), stop) && is_type_atom_start(ts.peek_kind()) {
+        args.push(parse_type_atom(ts, stop, end)?);
+    }
+
+    if args.is_empty() {
+        Ok(head)
+    } else {
+        Ok(ast::Type::App {
+            head: Box::new(head),
+            args,
+        })
+    }
+}
+
+fn is_type_atom_start(kind: Option<&TokenKind>) -> bool {
+    matches!(
+        kind,
+        Some(TokenKind::Ident(_))
+            | Some(TokenKind::LParen)
+            | Some(TokenKind::LBracket)
+            | Some(TokenKind::LBrace)
+    )
+}
+
+fn parse_type_atom(
+    ts: &mut TokenStream,
+    stop: Stop,
+    _end: fn(Option<&TokenKind>, Stop) -> bool,
+) -> Result<ast::Type> {
+    match ts.peek_kind() {
+        Some(TokenKind::Ident(_)) => match ts.bump() {
+            Some(TokenKind::Ident(s)) => Ok(match s.as_str() {
+                "Integer" => ast::Type::Integer,
+                "Bool" => ast::Type::Bool,
+                "Float64" => ast::Type::Float64,
+                "Char" => ast::Type::Char,
+                "String" => ast::Type::String,
+                _ => ast::Type::Var(s),
+            }),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::LParen) => {
+            ts.expect(TokenKind::LParen)?;
+            if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+                ts.bump();
+                return Ok(ast::Type::Unit);
+            }
+
+            let first = parse_type_expr(ts, stop, is_paren_type_end)?;
+            if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+                let mut elems = vec![first];
+                while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+                    ts.bump();
+                    elems.push(parse_type_expr(ts, stop, is_paren_type_end)?);
+                }
+                ts.expect(TokenKind::RParen)?;
+                Ok(ast::Type::Tuple(elems))
+            } else {
+                ts.expect(TokenKind::RParen)?;
+                Ok(first)
+            }
+        }
+        Some(TokenKind::LBracket) => {
+            ts.expect(TokenKind::LBracket)?;
+            let elem = parse_type_expr(ts, stop, is_bracket_type_end)?;
+            ts.expect(TokenKind::RBracket)?;
+            Ok(ast::Type::List(Box::new(elem)))
+        }
+        Some(TokenKind::LBrace) => {
+            ts.expect(TokenKind::LBrace)?;
+            if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
+                ts.bump();
+                return Ok(ast::Type::Record(Vec::new()));
+            }
+
+            let mut fields = Vec::new();
+            let name = ts.expect_ident()?;
+            ts.expect(TokenKind::Colon)?;
+            let ty = parse_type_expr(ts, stop, is_record_field_type_end)?;
+            fields.push((name, ty));
+
+            while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+                ts.bump();
+                let name = ts.expect_ident()?;
+                ts.expect(TokenKind::Colon)?;
+                let ty = parse_type_expr(ts, stop, is_record_field_type_end)?;
+                fields.push((name, ty));
+            }
+
+            ts.expect(TokenKind::RBrace)?;
+            Ok(ast::Type::Record(fields))
+        }
+        _ => Err(Error::msg("expected type")),
+    }
+}
+
+fn is_paren_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
+    matches!(kind, Some(TokenKind::Comma) | Some(TokenKind::RParen))
+}
+
+fn is_bracket_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
+    matches!(kind, Some(TokenKind::RBracket))
+}
+
+fn is_record_field_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
+    matches!(kind, Some(TokenKind::Comma) | Some(TokenKind::RBrace))
 }
 
 fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
@@ -778,38 +905,6 @@ fn parse_record_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     Ok(ast::Expr::Record(fields))
 }
 
-fn parse_type_placeholder(ts: &mut TokenStream) -> Result<ast::Type> {
-    // Minimal placeholder for now.
-    let mut s = String::new();
-
-    if !matches!(
-        ts.peek_kind(),
-        Some(TokenKind::Ident(_)) | Some(TokenKind::LBracket)
-    ) {
-        return Err(Error::msg("expected type"));
-    }
-
-    while matches!(
-        ts.peek_kind(),
-        Some(TokenKind::Ident(_)) | Some(TokenKind::LBracket) | Some(TokenKind::RBracket)
-    ) {
-        if !s.is_empty() {
-            s.push(' ');
-        }
-        s.push_str(&ts.bump_text());
-
-        // Stop after simple bracketed type like [Char] or a single identifier.
-        if !matches!(
-            ts.peek_kind(),
-            Some(TokenKind::Ident(_)) | Some(TokenKind::LBracket)
-        ) {
-            break;
-        }
-    }
-
-    Ok(ast::Type::Var(s))
-}
-
 struct TokenStream {
     tokens: Vec<lexer::Token>,
     i: usize,
@@ -833,64 +928,6 @@ impl TokenStream {
         self.i += 1;
         Some(t)
     }
-
-    fn bump_text(&mut self) -> String {
-        match self.bump() {
-            Some(TokenKind::Ident(s)) => s,
-            Some(TokenKind::Integer(s)) => s,
-            Some(TokenKind::Float(s)) => s,
-            Some(TokenKind::String(s)) => format!("\"{}\"", s),
-            Some(TokenKind::True) => "True".to_string(),
-            Some(TokenKind::False) => "False".to_string(),
-            Some(TokenKind::KwModule) => "module".to_string(),
-            Some(TokenKind::KwWhere) => "where".to_string(),
-            Some(TokenKind::KwImport) => "import".to_string(),
-            Some(TokenKind::KwExport) => "export".to_string(),
-            Some(TokenKind::KwLet) => "let".to_string(),
-            Some(TokenKind::KwIn) => "in".to_string(),
-            Some(TokenKind::KwCase) => "case".to_string(),
-            Some(TokenKind::KwOf) => "of".to_string(),
-            Some(TokenKind::KwDo) => "do".to_string(),
-            Some(TokenKind::KwIf) => "if".to_string(),
-            Some(TokenKind::KwThen) => "then".to_string(),
-            Some(TokenKind::KwElse) => "else".to_string(),
-            Some(TokenKind::KwType) => "type".to_string(),
-            Some(TokenKind::KwData) => "data".to_string(),
-            Some(TokenKind::Eq) => "=".to_string(),
-            Some(TokenKind::Pipe) => "|".to_string(),
-            Some(TokenKind::Comma) => ",".to_string(),
-            Some(TokenKind::Backslash) => "\\".to_string(),
-            Some(TokenKind::Arrow) => "->".to_string(),
-            Some(TokenKind::LParen) => "(".to_string(),
-            Some(TokenKind::RParen) => ")".to_string(),
-            Some(TokenKind::LBracket) => "[".to_string(),
-            Some(TokenKind::RBracket) => "]".to_string(),
-            Some(TokenKind::LBrace) => "{".to_string(),
-            Some(TokenKind::RBrace) => "}".to_string(),
-            Some(TokenKind::Colon) => ":".to_string(),
-            Some(TokenKind::ColonColon) => "::".to_string(),
-            Some(TokenKind::LeftArrow) => "<-".to_string(),
-            Some(TokenKind::Backtick) => "`".to_string(),
-            Some(TokenKind::Plus) => "+".to_string(),
-            Some(TokenKind::Minus) => "-".to_string(),
-            Some(TokenKind::Star) => "*".to_string(),
-            Some(TokenKind::Slash) => "/".to_string(),
-            Some(TokenKind::EqEq) => "==".to_string(),
-            Some(TokenKind::SlashEq) => "/=".to_string(),
-            Some(TokenKind::Lt) => "<".to_string(),
-            Some(TokenKind::Le) => "<=".to_string(),
-            Some(TokenKind::Gt) => ">".to_string(),
-            Some(TokenKind::Ge) => ">=".to_string(),
-            Some(TokenKind::AndAnd) => "&&".to_string(),
-            Some(TokenKind::OrOr) => "||".to_string(),
-            Some(TokenKind::Newline) => "".to_string(),
-            Some(TokenKind::Indent) => "INDENT".to_string(),
-            Some(TokenKind::Dedent) => "DEDENT".to_string(),
-            None => "".to_string(),
-        }
-    }
-
-    // bump_text is defined above.
 
     fn expect(&mut self, kind: TokenKind) -> Result<()> {
         let got = self.bump().ok_or_else(|| Error::msg("unexpected EOF"))?;

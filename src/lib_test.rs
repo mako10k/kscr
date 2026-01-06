@@ -75,13 +75,19 @@ fn parser_golden_decl() {
     let src = std::fs::read_to_string("tests/parser_decl.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
     assert_eq!(m.items.len(), 5);
-    // 1: DataDecl, 2: TypeAlias, 3-5: Binding
-    use crate::ast::Item;
-    matches!(m.items[0], Item::DataDecl(_));
-    matches!(m.items[1], Item::TypeAlias(_));
-    matches!(m.items[2], Item::Binding(_));
-    matches!(m.items[3], Item::Binding(_));
-    matches!(m.items[4], Item::Binding(_));
+
+    use crate::ast::{Item, Type};
+
+    assert!(matches!(m.items[0], Item::DataDecl(_)));
+
+    match &m.items[1] {
+        Item::TypeAlias(ta) => assert_eq!(ta.ty, Type::List(Box::new(Type::Char))),
+        _ => panic!("expected type alias"),
+    }
+
+    assert!(matches!(m.items[2], Item::Binding(_)));
+    assert!(matches!(m.items[3], Item::Binding(_)));
+    assert!(matches!(m.items[4], Item::Binding(_)));
 }
 
 #[test]
@@ -428,9 +434,9 @@ fn parser_type_annotations() {
     assert!(matches!(
         b0.expr,
         Expr::Annot {
-            ty: Type::Var(ref s),
+            ty: Type::Integer,
             ..
-        } if s == "Integer"
+        }
     ));
 
     let Item::Binding(b1) = &module.items[1] else {
@@ -439,9 +445,9 @@ fn parser_type_annotations() {
     assert!(matches!(
         b1.expr,
         Expr::Annot {
-            ty: Type::Var(ref s),
+            ty: Type::Float64,
             ..
-        } if s == "Float64"
+        }
     ));
 
     let Item::Binding(b2) = &module.items[2] else {
@@ -453,9 +459,73 @@ fn parser_type_annotations() {
     assert!(matches!(
         v[0],
         Expr::Annot {
-            ty: Type::Var(ref s),
+            ty: Type::Integer,
             ..
-        } if s == "Integer"
+        }
+    ));
+}
+
+#[test]
+fn parser_type_exprs() {
+    let src = std::fs::read_to_string("tests/parser_type_expr.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 5);
+
+    use crate::ast::{Expr, Item, Type};
+
+    let Item::Binding(b0) = &module.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b0.expr,
+        Expr::Annot {
+            ty: Type::List(_),
+            ..
+        }
+    ));
+
+    let Item::Binding(b1) = &module.items[1] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b1.expr,
+        Expr::Annot {
+            ty: Type::Tuple(_),
+            ..
+        }
+    ));
+
+    let Item::Binding(b2) = &module.items[2] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b2.expr,
+        Expr::Annot {
+            ty: Type::Record(_),
+            ..
+        }
+    ));
+
+    let Item::Binding(b3) = &module.items[3] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b3.expr,
+        Expr::Annot {
+            ty: Type::App { .. },
+            ..
+        }
+    ));
+
+    let Item::Binding(b4) = &module.items[4] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(
+        b4.expr,
+        Expr::Annot {
+            ty: Type::Func(_, _),
+            ..
+        }
     ));
 }
 
