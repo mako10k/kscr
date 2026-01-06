@@ -29,6 +29,9 @@ pub enum TokenKind {
     RParen,
     LBracket,
     RBracket,
+    LBrace,
+    RBrace,
+    Colon,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +205,27 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
         if bytes[i] == b']' {
             tokens.push(Token {
                 kind: TokenKind::RBracket,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'{' {
+            tokens.push(Token {
+                kind: TokenKind::LBrace,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'}' {
+            tokens.push(Token {
+                kind: TokenKind::RBrace,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b':' {
+            tokens.push(Token {
+                kind: TokenKind::Colon,
             });
             i += 1;
             continue;

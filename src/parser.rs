@@ -233,7 +233,8 @@ fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::LBracket
-                | TokenKind::LParen,
+                | TokenKind::LParen
+                | TokenKind::LBrace,
             ) => {
                 exprs.push(parse_atom(ts)?);
             }
@@ -277,6 +278,7 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
         },
         Some(TokenKind::LBracket) => parse_list_expr(ts),
         Some(TokenKind::LParen) => parse_paren_or_tuple_expr(ts),
+        Some(TokenKind::LBrace) => parse_record_expr(ts),
         _ => Err(Error::msg("expected expression")),
     }
 }
@@ -321,6 +323,32 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
     ts.expect(TokenKind::RBracket)?;
     Ok(ast::Expr::List(elems))
+}
+
+fn parse_record_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
+    ts.expect(TokenKind::LBrace)?;
+
+    if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
+        ts.bump();
+        return Ok(ast::Expr::Record(Vec::new()));
+    }
+
+    let mut fields = Vec::new();
+    let name = ts.expect_ident()?;
+    ts.expect(TokenKind::Colon)?;
+    let expr = parse_expr(ts, Stop::LineEnd)?;
+    fields.push((name, expr));
+
+    while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        ts.bump();
+        let name = ts.expect_ident()?;
+        ts.expect(TokenKind::Colon)?;
+        let expr = parse_expr(ts, Stop::LineEnd)?;
+        fields.push((name, expr));
+    }
+
+    ts.expect(TokenKind::RBrace)?;
+    Ok(ast::Expr::Record(fields))
 }
 
 fn parse_type_placeholder(ts: &mut TokenStream) -> Result<ast::Type> {
@@ -405,6 +433,9 @@ impl TokenStream {
             Some(TokenKind::RParen) => ")".to_string(),
             Some(TokenKind::LBracket) => "[".to_string(),
             Some(TokenKind::RBracket) => "]".to_string(),
+            Some(TokenKind::LBrace) => "{".to_string(),
+            Some(TokenKind::RBrace) => "}".to_string(),
+            Some(TokenKind::Colon) => ":".to_string(),
             Some(TokenKind::Newline) => "".to_string(),
             Some(TokenKind::Indent) => "INDENT".to_string(),
             Some(TokenKind::Dedent) => "DEDENT".to_string(),

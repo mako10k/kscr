@@ -225,3 +225,31 @@ fn parser_golden_tuple_expr() {
         _ => panic!("expected binding"),
     }
 }
+
+#[test]
+fn parser_golden_record_expr() {
+    let src = std::fs::read_to_string("tests/parser_record.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{Expr, Item};
+
+    match &module.items[0] {
+        Item::Binding(b) => assert!(matches!(&b.expr, Expr::Record(v) if v.is_empty())),
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[1] {
+        Item::Binding(b) => match &b.expr {
+            Expr::Record(v) => {
+                assert_eq!(v.len(), 2);
+                assert_eq!(v[0].0, "a");
+                assert!(matches!(&v[0].1, Expr::Integer(s) if s == "1"));
+                assert_eq!(v[1].0, "b");
+                assert!(matches!(&v[1].1, Expr::Apply { .. }));
+            }
+            _ => panic!("expected record"),
+        },
+        _ => panic!("expected binding"),
+    }
+}
