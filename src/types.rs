@@ -29,42 +29,80 @@ pub enum Ty {
     Func(Box<Ty>, Box<Ty>),
 }
 
+fn fmt_ty_prec(
+    f: &mut fmt::Formatter<'_>,
+    ty: &Ty,
+    parent_prec: u8,
+    vars: &HashMap<u32, String>,
+) -> fmt::Result {
+    const PREC_FUNC: u8 = 0;
+    const PREC_APP: u8 = 1;
+    const PREC_ATOM: u8 = 2;
+
+    match ty {
+        Ty::Var(v) => match vars.get(v) {
+            Some(name) => write!(f, "{name}"),
+            None => write!(f, "t{v}"),
+        },
+        Ty::Con(name) => write!(f, "{name}"),
+        Ty::List(t) => {
+            write!(f, "[")?;
+            fmt_ty_prec(f, t, PREC_FUNC, vars)?;
+            write!(f, "]")
+        }
+        Ty::Tuple(ts) => {
+            write!(f, "(")?;
+            for (i, t) in ts.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                fmt_ty_prec(f, t, PREC_FUNC, vars)?;
+            }
+            write!(f, ")")
+        }
+        Ty::Record(fields) => {
+            write!(f, "{{")?;
+            for (i, (k, t)) in fields.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{k}: ")?;
+                fmt_ty_prec(f, t, PREC_FUNC, vars)?;
+            }
+            write!(f, "}}")
+        }
+        Ty::App { head, args } => {
+            if parent_prec > PREC_APP {
+                write!(f, "(")?;
+            }
+            fmt_ty_prec(f, head, PREC_ATOM, vars)?;
+            for a in args {
+                write!(f, " ")?;
+                fmt_ty_prec(f, a, PREC_ATOM, vars)?;
+            }
+            if parent_prec > PREC_APP {
+                write!(f, ")")?;
+            }
+            Ok(())
+        }
+        Ty::Func(a, b) => {
+            if parent_prec > PREC_FUNC {
+                write!(f, "(")?;
+            }
+            fmt_ty_prec(f, a, PREC_APP, vars)?;
+            write!(f, " -> ")?;
+            fmt_ty_prec(f, b, PREC_FUNC, vars)?;
+            if parent_prec > PREC_FUNC {
+                write!(f, ")")?;
+            }
+            Ok(())
+        }
+    }
+}
+
 impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Ty::Var(v) => write!(f, "t{v}"),
-            Ty::Con(name) => write!(f, "{name}"),
-            Ty::List(t) => write!(f, "[{t}]"),
-            Ty::Tuple(ts) => {
-                write!(f, "(")?;
-                for (i, t) in ts.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{t}")?;
-                }
-                write!(f, ")")
-            }
-            Ty::Record(fields) => {
-                write!(f, "{{")?;
-                for (i, (k, t)) in fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{k}: {t}")?;
-                }
-                write!(f, "}}")
-            }
-            Ty::App { head, args } => {
-                write!(f, "(")?;
-                write!(f, "{head}")?;
-                for a in args {
-                    write!(f, " {a}")?;
-                }
-                write!(f, ")")
-            }
-            Ty::Func(a, b) => write!(f, "({a} -> {b})"),
-        }
+        fmt_ty_prec(f, self, 0, &HashMap::new())
     }
 }
 
@@ -229,15 +267,28 @@ impl Scheme {
 impl fmt::Display for Scheme {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.vars.is_empty() {
-            return write!(f, "{}", self.ty);
+            return fmt_ty_prec(f, &self.ty, 0, &HashMap::new());
         }
-        let mut vars = self.vars.clone();
-        vars.sort_unstable();
+
+        let mut vs = self.vars.clone();
+        vs.sort_unstable();
+
+        let mut names = HashMap::new();
+        for (i, v) in vs.iter().enumerate() {
+            let name = if i < 26 {
+                ((b'a' + i as u8) as char).to_string()
+            } else {
+                format!("a{i}")
+            };
+            names.insert(*v, name);
+        }
+
         write!(f, "forall")?;
-        for v in vars {
-            write!(f, " t{v}")?;
+        for v in &vs {
+            write!(f, " {}", names.get(v).expect("missing var name"))?;
         }
-        write!(f, ". {}", self.ty)
+        write!(f, ". ")?;
+        fmt_ty_prec(f, &self.ty, 0, &names)
     }
 }
 
@@ -1181,6 +1232,15 @@ mod unification_tests {
 #[cfg(test)]
 mod inference_tests {
     use super::*;
+
+    #[test]
+    fn scheme_display_renames_vars() {
+        let s = Scheme {
+            vars: vec![2],
+            ty: Ty::List(Box::new(Ty::Var(2))),
+        };
+        assert_eq!(format!("{s}"), "forall a. [a]");
+    }
 
     #[test]
     fn infer_identity_lambda() {
