@@ -766,15 +766,23 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             let mut env2 = env.clone();
 
             for b in bindings {
+                let ctx_name = match &b.pat {
+                    ast::Pattern::Var(n) => n.as_str(),
+                    _ => "<pattern>",
+                };
+
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
-                let pat_ty = infer_pat_in(cx, &mut s, &env2, &b.pat, &mut binds, &mut seen)?;
+                let pat_ty = infer_pat_in(cx, &mut s, &env2, &b.pat, &mut binds, &mut seen)
+                    .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
 
                 let env_in = apply_env(&s, &env2);
-                let (s_rhs, t_rhs) = infer_expr_in(cx, &env_in, b.expr)?;
+                let (s_rhs, t_rhs) = infer_expr_in(cx, &env_in, b.expr)
+                    .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
                 s = compose(&s_rhs, &s);
 
-                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))?;
+                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
+                    .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
                 s = compose(&s_pat, &s);
 
                 for (name, t) in binds {
@@ -785,19 +793,49 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             }
 
             let env_body = apply_env(&s, &env2);
-            let (s_body, t_body) = infer_expr_in(cx, &env_body, *body)?;
+            let (s_body, t_body) = infer_expr_in(cx, &env_body, *body)
+                .map_err(|e| Error::msg(format!("in let body: {e}")))?;
             let s = compose(&s_body, &s);
             Ok((s.clone(), apply(&s, t_body)))
         }
 
-        Expr::Where { expr, bindings } => infer_expr_in(
-            cx,
-            env,
-            Expr::Let {
-                bindings,
-                body: expr,
-            },
-        ),
+        Expr::Where { expr, bindings } => {
+            let mut s = Subst::new();
+            let mut env2 = env.clone();
+
+            for b in bindings {
+                let ctx_name = match &b.pat {
+                    ast::Pattern::Var(n) => n.as_str(),
+                    _ => "<pattern>",
+                };
+
+                let mut binds = Vec::new();
+                let mut seen = HashSet::new();
+                let pat_ty = infer_pat_in(cx, &mut s, &env2, &b.pat, &mut binds, &mut seen)
+                    .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
+
+                let env_in = apply_env(&s, &env2);
+                let (s_rhs, t_rhs) = infer_expr_in(cx, &env_in, b.expr)
+                    .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
+                s = compose(&s_rhs, &s);
+
+                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
+                    .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
+                s = compose(&s_pat, &s);
+
+                for (name, t) in binds {
+                    let env_gen = apply_env(&s, &env2);
+                    let scheme = generalize(&env_gen, apply(&s, t));
+                    env2.insert(name, scheme);
+                }
+            }
+
+            let env_body = apply_env(&s, &env2);
+            let (s_body, t_body) = infer_expr_in(cx, &env_body, *expr)
+                .map_err(|e| Error::msg(format!("in where body: {e}")))?;
+            let s = compose(&s_body, &s);
+            Ok((s.clone(), apply(&s, t_body)))
+        }
 
         Expr::Case { expr, arms } => {
             if arms.is_empty() {
@@ -1275,6 +1313,41 @@ mod inference_tests {
         let m = crate::parser::parse_module("x = y\n").unwrap();
         let e = typecheck(m).unwrap_err();
         assert!(format!("{e}").contains("in binding x"));
+    }
+
+    #[test]
+    fn type_error_includes_let_binding_name() {
+        let _ = infer_expr(ast::Expr::Let {
+            bindings: vec![ast::Binding {
+                pat: ast::Pattern::Var("x".to_string()),
+                expr: ast::Expr::Var("y".to_string()),
+            }],
+            body: Box::new(ast::Expr::Var("x".to_string())),
+        })
+        .unwrap_err();
+
+        let e = infer_expr(ast::Expr::Let {
+            bindings: vec![ast::Binding {
+                pat: ast::Pattern::Var("x".to_string()),
+                expr: ast::Expr::Var("y".to_string()),
+            }],
+            body: Box::new(ast::Expr::Var("x".to_string())),
+        })
+        .unwrap_err();
+        assert!(format!("{e}").contains("in let binding x"));
+    }
+
+    #[test]
+    fn type_error_includes_where_binding_name() {
+        let e = infer_expr(ast::Expr::Where {
+            expr: Box::new(ast::Expr::Var("x".to_string())),
+            bindings: vec![ast::Binding {
+                pat: ast::Pattern::Var("x".to_string()),
+                expr: ast::Expr::Var("y".to_string()),
+            }],
+        })
+        .unwrap_err();
+        assert!(format!("{e}").contains("in where binding x"));
     }
 
     #[test]
