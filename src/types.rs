@@ -357,6 +357,51 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             Ok((s.clone(), apply(&s, t_ann)))
         }
 
+        Expr::Tuple(elems) => {
+            let mut s = Subst::new();
+            let mut ts = Vec::new();
+            for e in elems {
+                let env2 = apply_env(&s, env);
+                let (s_e, t_e) = infer_expr_in(cx, &env2, e)?;
+                s = compose(&s_e, &s);
+                ts.push(apply(&s, t_e));
+            }
+            Ok((s, Ty::Tuple(ts)))
+        }
+
+        Expr::Let { bindings, body } => {
+            let mut s = Subst::new();
+            let mut env2 = env.clone();
+
+            for b in bindings {
+                let ast::Pattern::Var(name) = b.pat else {
+                    return Err(Error::msg("pattern inference not implemented"));
+                };
+
+                let env_in = apply_env(&s, &env2);
+                let (s_rhs, t_rhs) = infer_expr_in(cx, &env_in, b.expr)?;
+                s = compose(&s_rhs, &s);
+
+                let env_gen = apply_env(&s, &env2);
+                let scheme = generalize(&env_gen, apply(&s, t_rhs));
+                env2.insert(name, scheme);
+            }
+
+            let env_body = apply_env(&s, &env2);
+            let (s_body, t_body) = infer_expr_in(cx, &env_body, *body)?;
+            let s = compose(&s_body, &s);
+            Ok((s.clone(), apply(&s, t_body)))
+        }
+
+        Expr::Where { expr, bindings } => infer_expr_in(
+            cx,
+            env,
+            Expr::Let {
+                bindings,
+                body: expr,
+            },
+        ),
+
         _ => Err(Error::msg("inference not implemented for this expression")),
     }
 }
@@ -744,6 +789,42 @@ mod inference_tests {
         .unwrap();
 
         assert_eq!(ty, Ty::Con("Integer".to_string()));
+    }
+
+    #[test]
+    fn infer_let_generalizes() {
+        let id_binding = ast::Binding {
+            pat: ast::Pattern::Var("id".to_string()),
+            expr: ast::Expr::Lambda {
+                params: vec!["x".to_string()],
+                body: Box::new(ast::Expr::Var("x".to_string())),
+            },
+        };
+
+        let body = ast::Expr::Tuple(vec![
+            ast::Expr::Apply {
+                func: Box::new(ast::Expr::Var("id".to_string())),
+                args: vec![ast::Expr::Integer("1".to_string())],
+            },
+            ast::Expr::Apply {
+                func: Box::new(ast::Expr::Var("id".to_string())),
+                args: vec![ast::Expr::Bool(true)],
+            },
+        ]);
+
+        let ty = infer_expr(ast::Expr::Let {
+            bindings: vec![id_binding],
+            body: Box::new(body),
+        })
+        .unwrap();
+
+        assert_eq!(
+            ty,
+            Ty::Tuple(vec![
+                Ty::Con("Integer".to_string()),
+                Ty::Con("Bool".to_string())
+            ])
+        );
     }
 
     #[test]
