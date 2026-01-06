@@ -15,6 +15,24 @@
   - Run: `cargo run -- help`
   - Parse: `cargo run -- parse path/to/file.ks`
 
+## Commit Gate: Quality Checks Required
+Before every commit, the following quality checks MUST pass:
+
+- **Lint**: Run `cargo clippy -- -D warnings` and ensure no warnings.
+- **Unsafe code**: Run `cargo geiger` and confirm no unsafe code is present.
+- **Unused/duplicate dependencies**: Run `cargo udeps` (requires nightly) and confirm no unused dependencies.
+
+If any check fails, DO NOT commit. Fix issues first.
+
+Example workflow:
+1. Run all tests: `cargo test`
+2. Run lint: `cargo clippy -- -D warnings`
+3. Run unsafe check: `cargo geiger`
+4. (Optional, nightly only) Run dependency check: `cargo +nightly udeps`
+5. If all pass, commit: `git commit -a -m 'your message'`
+
+These checks are mandatory for all AI agent-driven changes.
+
 ## Coding & Design Patterns
 - Components (AST, Lexer, Parser, IR, Type System) are separated by file.
 - Error handling is centralized in `src/error.rs`.

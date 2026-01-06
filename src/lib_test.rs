@@ -13,6 +13,20 @@ fn parser_golden_basic() {
 }
 
 #[test]
+fn parser_golden_decl() {
+    let src = std::fs::read_to_string("tests/parser_decl.ks").unwrap();
+    let m = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(m.items.len(), 5);
+    // 1: DataDecl, 2: TypeAlias, 3-5: Binding
+    use crate::ast::Item;
+    matches!(m.items[0], Item::DataDecl(_));
+    matches!(m.items[1], Item::TypeAlias(_));
+    matches!(m.items[2], Item::Binding(_));
+    matches!(m.items[3], Item::Binding(_));
+    matches!(m.items[4], Item::Binding(_));
+}
+
+#[test]
 fn lexer_golden_basic() {
     let src = std::fs::read_to_string("tests/basic.ks").unwrap();
     let tokens = crate::lexer::lex(&src);
