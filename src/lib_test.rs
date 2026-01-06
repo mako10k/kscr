@@ -288,3 +288,35 @@ fn parser_golden_let_expr() {
         _ => panic!("expected binding"),
     }
 }
+
+#[test]
+fn parser_golden_case_expr() {
+    let src = std::fs::read_to_string("tests/parser_case.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{Expr, Item, Pattern};
+
+    match &module.items[0] {
+        Item::Binding(b) => match &b.expr {
+            Expr::Case { arms, .. } => {
+                assert_eq!(arms.len(), 1);
+                assert!(matches!(arms[0].0, Pattern::Wildcard));
+            }
+            _ => panic!("expected case"),
+        },
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[1] {
+        Item::Binding(b) => match &b.expr {
+            Expr::Case { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(arms[0].0, Pattern::Literal(Expr::Bool(true))));
+                assert!(matches!(arms[1].0, Pattern::Literal(Expr::Bool(false))));
+            }
+            _ => panic!("expected case"),
+        },
+        _ => panic!("expected binding"),
+    }
+}

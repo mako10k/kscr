@@ -179,6 +179,7 @@ enum Stop {
     Then,
     Else,
     In,
+    Of,
 }
 
 fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
@@ -186,6 +187,7 @@ fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         Some(TokenKind::Backslash) => parse_lambda(ts, stop),
         Some(TokenKind::KwIf) => parse_if(ts, stop),
         Some(TokenKind::KwLet) => parse_let(ts, stop),
+        Some(TokenKind::KwCase) => parse_case(ts, stop),
         _ => parse_application(ts, stop),
     }
 }
@@ -265,13 +267,86 @@ fn parse_let_binding_inline(ts: &mut TokenStream) -> Result<ast::Binding> {
     Ok(ast::Binding { name, expr })
 }
 
+fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
+    ts.expect(TokenKind::KwCase)?;
+    let expr = Box::new(parse_expr(ts, Stop::Of)?);
+    ts.expect(TokenKind::KwOf)?;
+
+    if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        return Err(Error::msg("expected newline after 'of'"));
+    }
+
+    ts.consume_line_end();
+    ts.skip_newlines();
+    ts.expect(TokenKind::Indent)?;
+
+    let mut arms = Vec::new();
+    loop {
+        ts.skip_newlines();
+        if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+            break;
+        }
+        if ts.is_eof() {
+            return Err(Error::msg("unexpected EOF in case"));
+        }
+
+        let pat = parse_pattern(ts)?;
+        ts.expect(TokenKind::Arrow)?;
+        let body = parse_expr(ts, Stop::LineEnd)?;
+        arms.push((pat, body));
+        ts.consume_line_end();
+    }
+
+    ts.expect(TokenKind::Dedent)?;
+    ts.consume_line_end();
+
+    Ok(ast::Expr::Case { expr, arms })
+}
+
+fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    match ts.peek_kind() {
+        Some(TokenKind::Ident(s)) if s == "_" => {
+            ts.bump();
+            Ok(ast::Pattern::Wildcard)
+        }
+        Some(TokenKind::Ident(_)) => match ts.bump() {
+            Some(TokenKind::Ident(s)) => Ok(ast::Pattern::Var(s)),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::True) => {
+            ts.bump();
+            Ok(ast::Pattern::Literal(ast::Expr::Bool(true)))
+        }
+        Some(TokenKind::False) => {
+            ts.bump();
+            Ok(ast::Pattern::Literal(ast::Expr::Bool(false)))
+        }
+        Some(TokenKind::Integer(_)) => match ts.bump() {
+            Some(TokenKind::Integer(s)) => Ok(ast::Pattern::Literal(ast::Expr::Integer(s))),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::Float(_)) => match ts.bump() {
+            Some(TokenKind::Float(s)) => Ok(ast::Pattern::Literal(ast::Expr::Float64(s))),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::String(_)) => match ts.bump() {
+            Some(TokenKind::String(s)) => Ok(ast::Pattern::Literal(ast::Expr::String(s))),
+            _ => unreachable!(),
+        },
+        _ => Err(Error::msg("expected pattern")),
+    }
+}
+
 fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     let mut exprs = Vec::new();
     exprs.push(parse_atom(ts)?);
 
     while ts.can_continue_expr(stop) {
         match ts.peek_kind() {
-            Some(TokenKind::Backslash) | Some(TokenKind::KwIf) => {
+            Some(TokenKind::Backslash)
+            | Some(TokenKind::KwIf)
+            | Some(TokenKind::KwLet)
+            | Some(TokenKind::KwCase) => {
                 exprs.push(parse_expr(ts, stop)?);
             }
             Some(
@@ -470,6 +545,8 @@ impl TokenStream {
             Some(TokenKind::KwExport) => "export".to_string(),
             Some(TokenKind::KwLet) => "let".to_string(),
             Some(TokenKind::KwIn) => "in".to_string(),
+            Some(TokenKind::KwCase) => "case".to_string(),
+            Some(TokenKind::KwOf) => "of".to_string(),
             Some(TokenKind::KwIf) => "if".to_string(),
             Some(TokenKind::KwThen) => "then".to_string(),
             Some(TokenKind::KwElse) => "else".to_string(),
@@ -531,6 +608,7 @@ impl TokenStream {
             (Stop::Then, Some(TokenKind::KwThen)) => false,
             (Stop::Else, Some(TokenKind::KwElse)) => false,
             (Stop::In, Some(TokenKind::KwIn)) => false,
+            (Stop::Of, Some(TokenKind::KwOf)) => false,
             (Stop::LineEnd, _) => true,
             _ => true,
         }
