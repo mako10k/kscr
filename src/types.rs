@@ -416,6 +416,26 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
 fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> {
     let mut env = TypeEnv::new();
 
+    // Minimal prelude:
+    //   IO :: forall a. a -> IO a
+    // This lets `do` blocks typecheck without requiring an explicit `data IO a = ...` in every module.
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
+    env.insert(
+        "IO".to_string(),
+        Scheme {
+            vars: vec![a],
+            ty: Ty::Func(
+                Box::new(Ty::Var(a)),
+                Box::new(Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![Ty::Var(a)],
+                }),
+            ),
+        },
+    );
+
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
             continue;
@@ -1314,6 +1334,24 @@ x = do
         };
 
         let _ = infer_in_module(&m, b.expr.clone()).unwrap_err();
+    }
+
+    #[test]
+    fn infer_do_uses_prelude_io() {
+        let src = r#"x = do
+  y <- IO 1
+  IO y
+"#;
+        let m = crate::parser::parse_module(src).unwrap();
+
+        let env = infer_module(&m).unwrap();
+        assert_eq!(
+            env.get("x").unwrap(),
+            &Scheme::mono(Ty::App {
+                head: Box::new(Ty::Con("IO".to_string())),
+                args: vec![Ty::Con("Integer".to_string())],
+            })
+        );
     }
 
     #[test]
