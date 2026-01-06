@@ -15,4 +15,5 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo test
 cargo run -- help
 cargo run -- parse path/to/file.ks
+cargo run -- lex path/to/file.ks
 ```

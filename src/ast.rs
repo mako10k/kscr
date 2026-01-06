@@ -43,6 +43,37 @@ pub enum Expr {
     Bool(bool),
     String(String),
     Var(String),
+    Lambda {
+        params: Vec<String>,
+        body: Box<Expr>,
+    },
+    Apply {
+        func: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    If {
+        cond: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+    },
+    Case {
+        expr: Box<Expr>,
+        arms: Vec<(Pattern, Expr)>,
+    },
+    List(Vec<Expr>),
+    Tuple(Vec<Expr>),
+    Record(Vec<(String, Expr)>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    Var(String),
+    Wildcard,
+    Literal(Expr),
+    Tuple(Vec<Pattern>),
+    List(Vec<Pattern>),
+    Record(Vec<(String, Pattern)>),
+    Constructor { name: String, args: Vec<Pattern> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
