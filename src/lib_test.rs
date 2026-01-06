@@ -13,6 +13,37 @@ fn parser_module_basic() {
 }
 
 #[test]
+fn parser_module_import_export() {
+    let src = std::fs::read_to_string("tests/module_import_export.ks").unwrap();
+    let m = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(m.name.as_deref(), Some("Main"));
+    assert_eq!(m.items.len(), 5);
+
+    use crate::ast::Item;
+
+    match &m.items[0] {
+        Item::Import(i) => {
+            assert_eq!(i.module, "Foo");
+            assert_eq!(i.as_name, None);
+        }
+        _ => panic!("expected import"),
+    }
+
+    match &m.items[1] {
+        Item::Import(i) => {
+            assert_eq!(i.module, "Bar");
+            assert_eq!(i.as_name.as_deref(), Some("B"));
+        }
+        _ => panic!("expected import"),
+    }
+
+    match &m.items[2] {
+        Item::Export(e) => assert_eq!(e.names, vec!["x", "y"]),
+        _ => panic!("expected export"),
+    }
+}
+
+#[test]
 fn parser_golden_basic() {
     let src = std::fs::read_to_string("tests/basic.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();

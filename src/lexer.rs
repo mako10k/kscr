@@ -20,6 +20,7 @@ pub enum TokenKind {
     Newline,
     Indent,
     Dedent,
+    Comma,
     Eq,
     Pipe,
     Backslash,
@@ -150,6 +151,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
         if bytes[i] == b'|' {
             tokens.push(Token {
                 kind: TokenKind::Pipe,
+            });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b',' {
+            tokens.push(Token {
+                kind: TokenKind::Comma,
             });
             i += 1;
             continue;

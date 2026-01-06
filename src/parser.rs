@@ -51,6 +51,8 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
         }
 
         let item = match ts.peek_kind() {
+            Some(TokenKind::KwImport) => parse_import_decl(ts)?,
+            Some(TokenKind::KwExport) => parse_export_decl(ts)?,
             Some(TokenKind::KwData) => parse_data_decl(ts)?,
             Some(TokenKind::KwType) => parse_type_alias(ts)?,
             Some(TokenKind::Ident(_)) => parse_binding(ts)?,
@@ -134,6 +136,34 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
         params,
         ty: ast::Type::Var(ty_src),
     }))
+}
+
+fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+    ts.expect(TokenKind::KwImport)?;
+    let module = ts.expect_ident()?;
+
+    let as_name = match ts.peek_kind() {
+        Some(TokenKind::Ident(s)) if s == "as" => {
+            ts.bump();
+            Some(ts.expect_ident()?)
+        }
+        _ => None,
+    };
+
+    Ok(ast::Item::Import(ast::ImportDecl { module, as_name }))
+}
+
+fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+    ts.expect(TokenKind::KwExport)?;
+
+    let mut names = Vec::new();
+    names.push(ts.expect_ident()?);
+    while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        ts.bump();
+        names.push(ts.expect_ident()?);
+    }
+
+    Ok(ast::Item::Export(ast::ExportDecl { names }))
 }
 
 fn parse_binding(ts: &mut TokenStream) -> Result<ast::Item> {
@@ -304,6 +334,7 @@ impl TokenStream {
             Some(TokenKind::KwData) => "data".to_string(),
             Some(TokenKind::Eq) => "=".to_string(),
             Some(TokenKind::Pipe) => "|".to_string(),
+            Some(TokenKind::Comma) => ",".to_string(),
             Some(TokenKind::Backslash) => "\\".to_string(),
             Some(TokenKind::Arrow) => "->".to_string(),
             Some(TokenKind::LBracket) => "[".to_string(),

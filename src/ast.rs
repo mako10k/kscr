@@ -6,9 +6,22 @@ pub struct Module {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
+    Import(ImportDecl),
+    Export(ExportDecl),
     Binding(Binding),
     TypeAlias(TypeAlias),
     DataDecl(DataDecl),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportDecl {
+    pub module: String,
+    pub as_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportDecl {
+    pub names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
