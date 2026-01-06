@@ -579,19 +579,26 @@ fn typecheck_expands_type_aliases() {
     let module = crate::parser::parse_module(&src).unwrap();
     let tm = crate::types::typecheck(module).unwrap();
 
-    use crate::ast::{Expr, Item, Type};
+    use crate::ast::{Expr, Item, Pattern, Type};
 
-    let Item::Binding(b0) = &tm.module.items[2] else {
-        panic!("expected binding");
+    let find_binding = |name: &str| -> &crate::ast::Binding {
+        tm.module
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Item::Binding(b) if matches!(&b.pat, Pattern::Var(n) if n == name) => Some(b),
+                _ => None,
+            })
+            .unwrap()
     };
+
+    let b0 = find_binding("x");
     let Expr::Annot { ty, .. } = &b0.expr else {
         panic!("expected annotation");
     };
     assert_eq!(ty, &Type::List(Box::new(Type::Char)));
 
-    let Item::Binding(b1) = &tm.module.items[3] else {
-        panic!("expected binding");
-    };
+    let b1 = find_binding("z");
     let Expr::Annot { ty, .. } = &b1.expr else {
         panic!("expected annotation");
     };

@@ -513,12 +513,10 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
         Expr::String(_) => Ok((Subst::new(), Ty::Con("String".to_string()))),
 
         Expr::Var(name) => {
-            if let Some(s) = env.get(&name) {
-                Ok((Subst::new(), instantiate(cx, s)))
-            } else {
-                // Until we have name resolution/imports, treat unknown vars as assumptions.
-                Ok((Subst::new(), cx.fresh()))
-            }
+            let s = env
+                .get(&name)
+                .ok_or_else(|| Error::msg(format!("unbound variable: {name}")))?;
+            Ok((Subst::new(), instantiate(cx, s)))
         }
 
         Expr::Ctor(name) => {
