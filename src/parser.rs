@@ -343,15 +343,43 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
 }
 
 fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    let mut pat = parse_pattern_atom(ts)?;
+
+    // Constructor application: Just x y
+    if let ast::Pattern::Constructor { name, mut args } = pat {
+        while ts.can_continue_pattern() {
+            args.push(parse_pattern_atom(ts)?);
+        }
+        pat = ast::Pattern::Constructor { name, args };
+    }
+
+    Ok(pat)
+}
+
+fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
     match ts.peek_kind() {
+        Some(TokenKind::LParen) => parse_paren_or_tuple_pattern(ts),
+        Some(TokenKind::LBracket) => parse_list_pattern(ts),
+        Some(TokenKind::LBrace) => parse_record_pattern(ts),
+
         Some(TokenKind::Ident(s)) if s == "_" => {
             ts.bump();
             Ok(ast::Pattern::Wildcard)
         }
         Some(TokenKind::Ident(_)) => match ts.bump() {
-            Some(TokenKind::Ident(s)) => Ok(ast::Pattern::Var(s)),
+            Some(TokenKind::Ident(s)) => {
+                if s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    Ok(ast::Pattern::Constructor {
+                        name: s,
+                        args: vec![],
+                    })
+                } else {
+                    Ok(ast::Pattern::Var(s))
+                }
+            }
             _ => unreachable!(),
         },
+
         Some(TokenKind::True) => {
             ts.bump();
             Ok(ast::Pattern::Literal(ast::Expr::Bool(true)))
@@ -372,8 +400,77 @@ fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
             Some(TokenKind::String(s)) => Ok(ast::Pattern::Literal(ast::Expr::String(s))),
             _ => unreachable!(),
         },
+
         _ => Err(Error::msg("expected pattern")),
     }
+}
+
+fn parse_paren_or_tuple_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    ts.expect(TokenKind::LParen)?;
+
+    if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+        ts.bump();
+        return Ok(ast::Pattern::Literal(ast::Expr::Unit));
+    }
+
+    let first = parse_pattern(ts)?;
+    if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        let mut elems = vec![first];
+        while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            ts.bump();
+            elems.push(parse_pattern(ts)?);
+        }
+        ts.expect(TokenKind::RParen)?;
+        Ok(ast::Pattern::Tuple(elems))
+    } else {
+        ts.expect(TokenKind::RParen)?;
+        Ok(first)
+    }
+}
+
+fn parse_list_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    ts.expect(TokenKind::LBracket)?;
+
+    if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
+        ts.bump();
+        return Ok(ast::Pattern::List(Vec::new()));
+    }
+
+    let mut elems = Vec::new();
+    elems.push(parse_pattern(ts)?);
+    while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        ts.bump();
+        elems.push(parse_pattern(ts)?);
+    }
+
+    ts.expect(TokenKind::RBracket)?;
+    Ok(ast::Pattern::List(elems))
+}
+
+fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    ts.expect(TokenKind::LBrace)?;
+
+    if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
+        ts.bump();
+        return Ok(ast::Pattern::Record(Vec::new()));
+    }
+
+    let mut fields = Vec::new();
+    let name = ts.expect_ident()?;
+    ts.expect(TokenKind::Colon)?;
+    let pat = parse_pattern(ts)?;
+    fields.push((name, pat));
+
+    while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        ts.bump();
+        let name = ts.expect_ident()?;
+        ts.expect(TokenKind::Colon)?;
+        let pat = parse_pattern(ts)?;
+        fields.push((name, pat));
+    }
+
+    ts.expect(TokenKind::RBrace)?;
+    Ok(ast::Pattern::Record(fields))
 }
 
 fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
@@ -651,5 +748,18 @@ impl TokenStream {
             (Stop::LineEnd, _) => true,
             _ => true,
         }
+    }
+
+    fn can_continue_pattern(&self) -> bool {
+        !matches!(
+            self.peek_kind(),
+            None | Some(TokenKind::Newline)
+                | Some(TokenKind::Dedent)
+                | Some(TokenKind::Arrow)
+                | Some(TokenKind::Comma)
+                | Some(TokenKind::RParen)
+                | Some(TokenKind::RBracket)
+                | Some(TokenKind::RBrace)
+        )
     }
 }
