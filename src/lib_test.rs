@@ -166,3 +166,30 @@ fn parser_golden_expr() {
         _ => panic!("expected binding"),
     }
 }
+
+#[test]
+fn parser_golden_list_expr() {
+    let src = std::fs::read_to_string("tests/parser_list.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{Expr, Item};
+
+    match &module.items[0] {
+        Item::Binding(b) => assert!(matches!(&b.expr, Expr::List(v) if v.is_empty())),
+        _ => panic!("expected binding"),
+    }
+
+    match &module.items[1] {
+        Item::Binding(b) => match &b.expr {
+            Expr::List(v) => {
+                assert_eq!(v.len(), 3);
+                assert!(matches!(&v[0], Expr::Integer(s) if s == "1"));
+                assert!(matches!(&v[1], Expr::Integer(s) if s == "2"));
+                assert!(matches!(&v[2], Expr::Apply { .. }));
+            }
+            _ => panic!("expected list"),
+        },
+        _ => panic!("expected binding"),
+    }
+}

@@ -231,7 +231,8 @@ fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                 | TokenKind::Float(_)
                 | TokenKind::String(_)
                 | TokenKind::True
-                | TokenKind::False,
+                | TokenKind::False
+                | TokenKind::LBracket,
             ) => {
                 exprs.push(parse_atom(ts)?);
             }
@@ -248,15 +249,53 @@ fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
 }
 
 fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
-    match ts.bump() {
-        Some(TokenKind::True) => Ok(ast::Expr::Bool(true)),
-        Some(TokenKind::False) => Ok(ast::Expr::Bool(false)),
-        Some(TokenKind::Integer(s)) => Ok(ast::Expr::Integer(s)),
-        Some(TokenKind::Float(s)) => Ok(ast::Expr::Float64(s)),
-        Some(TokenKind::String(s)) => Ok(ast::Expr::String(s)),
-        Some(TokenKind::Ident(s)) => Ok(ast::Expr::Var(s)),
+    match ts.peek_kind() {
+        Some(TokenKind::True) => {
+            ts.bump();
+            Ok(ast::Expr::Bool(true))
+        }
+        Some(TokenKind::False) => {
+            ts.bump();
+            Ok(ast::Expr::Bool(false))
+        }
+        Some(TokenKind::Integer(_)) => match ts.bump() {
+            Some(TokenKind::Integer(s)) => Ok(ast::Expr::Integer(s)),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::Float(_)) => match ts.bump() {
+            Some(TokenKind::Float(s)) => Ok(ast::Expr::Float64(s)),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::String(_)) => match ts.bump() {
+            Some(TokenKind::String(s)) => Ok(ast::Expr::String(s)),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::Ident(_)) => match ts.bump() {
+            Some(TokenKind::Ident(s)) => Ok(ast::Expr::Var(s)),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::LBracket) => parse_list_expr(ts),
         _ => Err(Error::msg("expected expression")),
     }
+}
+
+fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
+    ts.expect(TokenKind::LBracket)?;
+
+    if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
+        ts.bump();
+        return Ok(ast::Expr::List(Vec::new()));
+    }
+
+    let mut elems = Vec::new();
+    elems.push(parse_expr(ts, Stop::LineEnd)?);
+    while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        ts.bump();
+        elems.push(parse_expr(ts, Stop::LineEnd)?);
+    }
+
+    ts.expect(TokenKind::RBracket)?;
+    Ok(ast::Expr::List(elems))
 }
 
 fn parse_type_placeholder(ts: &mut TokenStream) -> Result<ast::Type> {
