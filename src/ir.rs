@@ -450,6 +450,10 @@ pub enum Value {
     BuiltinConcatMap1(Box<Value>),
     BuiltinAdd,
     BuiltinAdd1(Box<Value>),
+    BuiltinSub,
+    BuiltinSub1(Box<Value>),
+    BuiltinMul,
+    BuiltinMul1(Box<Value>),
     BuiltinEqInt,
     BuiltinEqInt1(Box<Value>),
     Closure {
@@ -564,6 +568,14 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "+" {
         return Ok(Value::BuiltinAdd);
+    }
+
+    if name == "-" {
+        return Ok(Value::BuiltinSub);
+    }
+
+    if name == "*" {
+        return Ok(Value::BuiltinMul);
     }
 
     if name == "==" {
@@ -823,6 +835,10 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinConcatMap1(f) => concat_map(g, *f, arg),
         Value::BuiltinAdd => Ok(Value::BuiltinAdd1(Box::new(arg))),
         Value::BuiltinAdd1(a) => add_int(g, *a, arg),
+        Value::BuiltinSub => Ok(Value::BuiltinSub1(Box::new(arg))),
+        Value::BuiltinSub1(a) => sub_int(g, *a, arg),
+        Value::BuiltinMul => Ok(Value::BuiltinMul1(Box::new(arg))),
+        Value::BuiltinMul1(a) => mul_int(g, *a, arg),
         Value::BuiltinEqInt => Ok(Value::BuiltinEqInt1(Box::new(arg))),
         Value::BuiltinEqInt1(a) => eq_int(g, *a, arg),
         Value::Closure {
@@ -903,6 +919,24 @@ fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("+ expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("+ expects Integer")) };
     let out = parse_i64(&a)? + parse_i64(&b)?;
+    Ok(Value::Integer(out.to_string()))
+}
+
+fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("- expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg("- expects Integer")) };
+    let out = parse_i64(&a)? - parse_i64(&b)?;
+    Ok(Value::Integer(out.to_string()))
+}
+
+fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("* expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg("* expects Integer")) };
+    let out = parse_i64(&a)? * parse_i64(&b)?;
     Ok(Value::Integer(out.to_string()))
 }
 

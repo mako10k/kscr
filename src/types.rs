@@ -737,6 +737,36 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // - :: Integer -> Integer -> Integer
+    env.insert(
+        "-".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Integer".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(Ty::Con("Integer".to_string())),
+                )),
+            ),
+        },
+    );
+
+    // * :: Integer -> Integer -> Integer
+    env.insert(
+        "*".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Integer".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(Ty::Con("Integer".to_string())),
+                )),
+            ),
+        },
+    );
+
     // == :: Integer -> Integer -> Bool
     env.insert(
         "==".to_string(),
