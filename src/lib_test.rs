@@ -366,6 +366,26 @@ fn ir_run_main_list_comprehension() {
 }
 
 #[test]
+fn ir_run_main_plus_operator() {
+    let src = "main = case (1 + 2) of\n  3 -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_eqeq_operator() {
+    let src = "main = case (1 == 1) of\n  True -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn typecheck_list_comprehension_with_guard() {
     let m = crate::parser::parse_module("xs = [x | x <- [1, 2], True]\n").unwrap();
     let tm = crate::types::typecheck(m).unwrap();
