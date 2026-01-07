@@ -607,8 +607,11 @@ fn eval_expr(
         IrExpr::Apply { func, args } => {
             let mut f = eval_expr(g, env, func)?;
             for a in args {
-                let av = eval_expr(g, env, a)?;
-                f = apply_one(g, f, av)?;
+                let t = std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
+                    expr: a.clone(),
+                    env: env.clone(),
+                }));
+                f = apply_one(g, f, Value::Thunk(t))?;
             }
             f
         }
@@ -700,7 +703,7 @@ fn eval_expr(
 
 fn run_io(g: &Globals, action: IoAction) -> Result<Value> {
     match action {
-        IoAction::Pure(v) => Ok(v),
+        IoAction::Pure(v) => force_value(g, v),
         IoAction::StdoutWrite(s) => {
             use std::io::Write;
             print!("{s}");
@@ -749,6 +752,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
     match fun {
         Value::IoCtor => Ok(Value::IoAction(Box::new(IoAction::Pure(arg)))),
         Value::BuiltinStdoutWrite => {
+            let arg = force_value(g, arg)?;
             let Value::String(s) = arg else {
                 return Err(Error::msg("stdoutWrite expects String"));
             };

@@ -525,6 +525,16 @@ fn ir_let_is_lazy() {
 }
 
 #[test]
+fn ir_apply_args_are_lazy() {
+    let src = "main = let\n  bad = case True of\n    False -> ()\n  f = \\a b -> a\nin do\n  IO (f 1 bad)\n  IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn ir_run_main_with_print() {
     let src = "main = do\n  print \"hi\"\n  IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
