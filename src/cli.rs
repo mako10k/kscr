@@ -71,6 +71,21 @@ where
             println!("{irm:#?}");
             Ok(())
         }
+        "run" => {
+            let path = args
+                .next()
+                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
+            let src = std::fs::read_to_string(path.into())?;
+            let ast = parser::parse_module(&src)?;
+            let tm = types::typecheck(ast)?;
+            let irm = ir::lower_to_ir(&tm.module)?;
+            let v = ir::run_main(&irm)?;
+            match v {
+                ir::Value::Unit => println!("()"),
+                other => println!("{other:#?}"),
+            }
+            Ok(())
+        }
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
 }
@@ -136,7 +151,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   (imports are not supported yet)\n  ir <file>         Typecheck then lower to IR (debug)\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   (imports are not supported yet)\n  ir <file>         Typecheck then lower to IR (debug)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  help              Show this help\n"
     );
 }
 
@@ -172,5 +187,18 @@ mod tests {
         let tm = types::typecheck(ast).unwrap();
         let report = render_typecheck_report(&tm.module, tm.inferred, true);
         assert!(report.contains("y : Integer\n"));
+    }
+
+    #[test]
+    fn cli_run_command_smoke() {
+        let path = std::env::temp_dir().join("kscr_cli_run_command_smoke.ks");
+        std::fs::write(&path, "main = IO ()\n").unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
     }
 }
