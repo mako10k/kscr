@@ -687,14 +687,16 @@ fn infer_pat_in(
 pub fn infer_expr(expr: ast::Expr) -> Result<Ty> {
     let mut cx = InferCtx::default();
     let env = TypeEnv::new();
-    let (s, _cs, t) = infer_expr_in(&mut cx, &env, expr)?;
+    let (s, cs, t) = infer_expr_in(&mut cx, &env, expr)?;
+    let _ = simplify_constraints(apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
 }
 
 pub fn infer_in_module(module: &ast::Module, expr: ast::Expr) -> Result<Ty> {
     let mut cx = InferCtx::default();
     let env = collect_ctor_env(&mut cx, module)?;
-    let (s, _cs, t) = infer_expr_in(&mut cx, &env, expr)?;
+    let (s, cs, t) = infer_expr_in(&mut cx, &env, expr)?;
+    let _ = simplify_constraints(apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
 }
 
@@ -730,7 +732,8 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
 
         for (name, t) in binds {
             let env_gen = apply_env(&subst, &env);
-            let scheme = generalize_qual(&env_gen, apply_constraints(&subst, cs_rhs.clone()), apply(&subst, t));
+            let cs = simplify_constraints(apply_constraints(&subst, cs_rhs.clone()))?;
+            let scheme = generalize_qual(&env_gen, cs, apply(&subst, t));
             env.insert(name.clone(), scheme.clone());
             out.insert(name, scheme);
         }
@@ -1019,13 +1022,13 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
-    // show :: a -> String
+    // show :: Show a => a -> String
     let Ty::Var(v) = cx.fresh() else { unreachable!() };
     env.insert(
         "show".to_string(),
         Scheme {
             vars: vec![v],
-            constraints: vec![],
+            constraints: vec![Constraint::Show(Ty::Var(v))],
             ty: Ty::Func(
                 Box::new(Ty::Var(v)),
                 Box::new(Ty::Con("String".to_string())),
@@ -1033,13 +1036,13 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
-    // toString :: a -> String
+    // toString :: Show a => a -> String
     let Ty::Var(v) = cx.fresh() else { unreachable!() };
     env.insert(
         "toString".to_string(),
         Scheme {
             vars: vec![v],
-            constraints: vec![],
+            constraints: vec![Constraint::Show(Ty::Var(v))],
             ty: Ty::Func(
                 Box::new(Ty::Var(v)),
                 Box::new(Ty::Con("String".to_string())),
@@ -1180,6 +1183,36 @@ fn lower_surface_type_with_params(
 
 fn apply_constraints(subst: &Subst, cs: Vec<Constraint>) -> Vec<Constraint> {
     cs.into_iter().map(|c| apply_constraint(subst, &c)).collect()
+}
+
+fn show_instance(ty: &Ty) -> Option<bool> {
+    match ty {
+        Ty::Var(_) => None,
+        Ty::Con(name) => Some(matches!(
+            name.as_str(),
+            "Integer" | "Bool" | "String" | "Char" | "Unit"
+        )),
+        Ty::List(_)
+        | Ty::Tuple(_)
+        | Ty::Record(_)
+        | Ty::RecordOpen(_)
+        | Ty::App { .. }
+        | Ty::Func(_, _) => Some(false),
+    }
+}
+
+fn simplify_constraints(cs: Vec<Constraint>) -> Result<Vec<Constraint>> {
+    let mut out = Vec::new();
+    for c in cs {
+        match c {
+            Constraint::Show(t) => match show_instance(&t) {
+                Some(true) => {}
+                Some(false) => return Err(Error::msg(format!("cannot satisfy constraint: Show {t}"))),
+                None => out.push(Constraint::Show(t)),
+            },
+        }
+    }
+    Ok(out)
 }
 
 fn infer_expr_in(
@@ -1408,7 +1441,8 @@ fn infer_expr_in(
 
                 for (name, t) in binds {
                     let env_gen = apply_env(&s, &env2);
-                    let scheme = generalize_qual(&env_gen, apply_constraints(&s, cs_rhs.clone()), apply(&s, t));
+                    let cs = simplify_constraints(apply_constraints(&s, cs_rhs.clone()))?;
+                    let scheme = generalize_qual(&env_gen, cs, apply(&s, t));
                     env2.insert(name, scheme);
                 }
             }
@@ -1452,7 +1486,8 @@ fn infer_expr_in(
 
                 for (name, t) in binds {
                     let env_gen = apply_env(&s, &env2);
-                    let scheme = generalize_qual(&env_gen, apply_constraints(&s, cs_rhs.clone()), apply(&s, t));
+                    let cs = simplify_constraints(apply_constraints(&s, cs_rhs.clone()))?;
+                    let scheme = generalize_qual(&env_gen, cs, apply(&s, t));
                     env2.insert(name, scheme);
                 }
             }
@@ -1691,7 +1726,7 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
             head: Box::new(Ty::Con("IO".to_string())),
             args: vec![Ty::Con("Unit".to_string())],
         };
-        if !main.vars.is_empty() || main.ty != expected {
+        if !main.vars.is_empty() || !main.constraints.is_empty() || main.ty != expected {
             return Err(Error::msg("main must have type IO Unit"));
         }
     }
@@ -2397,6 +2432,30 @@ x = do
                 args: vec![Ty::Con("Integer".to_string())],
             })
         );
+    }
+
+    #[test]
+    fn infer_show_is_qualified() {
+        let src = "f = show\n";
+        let m = crate::parser::parse_module(src).unwrap();
+        let env = infer_module(&m).unwrap();
+        let s = env.get("f").unwrap();
+
+        assert_eq!(s.constraints.len(), 1);
+        let Constraint::Show(t) = &s.constraints[0];
+
+        let Ty::Func(a, b) = &s.ty else {
+            panic!("expected function type");
+        };
+        assert_eq!(**b, Ty::Con("String".to_string()));
+        assert_eq!(&**a, t);
+    }
+
+    #[test]
+    fn infer_show_function_is_error() {
+        let src = "x = show (\\y -> y)\n";
+        let m = crate::parser::parse_module(src).unwrap();
+        let _ = infer_module(&m).unwrap_err();
     }
 
     #[test]
