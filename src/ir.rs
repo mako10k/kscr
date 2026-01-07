@@ -30,6 +30,7 @@ pub enum IrPattern {
     Tuple(Vec<IrPattern>),
     List(Vec<IrPattern>),
     Record(Vec<(String, IrPattern)>),
+    RecordLoose(Vec<(String, IrPattern)>),
     Cons(Box<IrPattern>, Box<IrPattern>),
     Constructor { name: String, args: Vec<IrPattern> },
     Or(Box<IrPattern>, Box<IrPattern>),
@@ -118,9 +119,12 @@ fn lower_pat(pat: &ast::Pattern) -> Result<IrPattern> {
                 .map(|(n, p)| Ok((n.clone(), lower_pat(p)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::RecordLoose(_) => {
-            return Err(Error::msg("loose record pattern is not supported in IR lowering yet"));
-        }
+        Pattern::RecordLoose(fields) => IrPattern::RecordLoose(
+            fields
+                .iter()
+                .map(|(n, p)| Ok((n.clone(), lower_pat(p)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
         Pattern::Cons(a, b) => IrPattern::Cons(Box::new(lower_pat(a)?), Box::new(lower_pat(b)?)),
         Pattern::Or(a, b) => IrPattern::Or(Box::new(lower_pat(a)?), Box::new(lower_pat(b)?)),
         Pattern::As(n, p) => IrPattern::As(n.clone(), Box::new(lower_pat(p)?)),

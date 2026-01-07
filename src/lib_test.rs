@@ -402,6 +402,21 @@ fn ir_lowering_as_pattern() {
 }
 
 #[test]
+fn ir_lowering_loose_record_pattern() {
+    let src = "x = case {a: 1, b: 2} of\n  {a: n, ...} -> n\n  _ -> 0\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
+        panic!("expected single binding");
+    };
+    let crate::ir::IrExpr::Case { arms, .. } = expr else {
+        panic!("expected case");
+    };
+    assert!(matches!(arms[0].pat, crate::ir::IrPattern::RecordLoose(_)));
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
