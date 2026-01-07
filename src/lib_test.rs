@@ -505,6 +505,16 @@ fn ir_lowering_top_level_pattern_binding() {
 }
 
 #[test]
+fn ir_run_main_io_unit() {
+    let src = "main = do\n  IO 1\n  IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

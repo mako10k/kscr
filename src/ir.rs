@@ -403,3 +403,299 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
         }
     })
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Unit,
+    Integer(String),
+    Float64(String),
+    Bool(bool),
+    String(String),
+    Char(char),
+    Tuple(Vec<Value>),
+    List(Vec<Value>),
+    Record(Vec<(String, Value)>),
+    Io(Box<Value>),
+    IoCtor,
+    Closure {
+        params: Vec<String>,
+        body: Box<IrExpr>,
+        env: std::collections::HashMap<String, Value>,
+    },
+}
+
+struct Globals {
+    defs: std::collections::HashMap<String, IrExpr>,
+    memo: std::cell::RefCell<std::collections::HashMap<String, Option<Value>>>,
+}
+
+pub fn run_main(module: &IrModule) -> Result<Value> {
+    let g = Globals::from_module(module);
+    let v = eval_var(&g, &std::collections::HashMap::new(), "main")?;
+    let Value::Io(inner) = v else {
+        return Err(Error::msg("main did not evaluate to an IO action"));
+    };
+    Ok(*inner)
+}
+
+impl Globals {
+    fn from_module(module: &IrModule) -> Self {
+        let mut defs = std::collections::HashMap::new();
+        let mut memo = std::collections::HashMap::new();
+        for it in &module.items {
+            let IrItem::Binding { name, expr } = it;
+            defs.insert(name.clone(), expr.clone());
+            memo.insert(name.clone(), None);
+        }
+        Self {
+            defs,
+            memo: std::cell::RefCell::new(memo),
+        }
+    }
+}
+
+fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &str) -> Result<Value> {
+    if let Some(v) = env.get(name) {
+        return Ok(v.clone());
+    }
+
+    if name == "IO" {
+        // Built-in IO constructor used by the minimal typecheck prelude.
+        return Ok(Value::IoCtor);
+    }
+
+    if !g.defs.contains_key(name) {
+        return Err(Error::msg(format!("unbound variable: {name}")));
+    }
+
+    if let Some(v) = g.memo.borrow().get(name).cloned().flatten() {
+        return Ok(v);
+    }
+
+    let expr = g.defs.get(name).unwrap().clone();
+    let v = eval_expr(g, &std::collections::HashMap::new(), &expr)?;
+    g.memo.borrow_mut().insert(name.to_string(), Some(v.clone()));
+    Ok(v)
+}
+
+fn eval_expr(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    expr: &IrExpr,
+) -> Result<Value> {
+    Ok(match expr {
+        IrExpr::Unit => Value::Unit,
+        IrExpr::Integer(s) => Value::Integer(s.clone()),
+        IrExpr::Float64(s) => Value::Float64(s.clone()),
+        IrExpr::Bool(b) => Value::Bool(*b),
+        IrExpr::String(s) => Value::String(s.clone()),
+        IrExpr::Char(c) => Value::Char(*c),
+        IrExpr::Var(n) => eval_var(g, env, n)?,
+        IrExpr::Lambda { params, body } => Value::Closure {
+            params: params.clone(),
+            body: body.clone(),
+            env: env.clone(),
+        },
+        IrExpr::Apply { func, args } => {
+            let mut f = eval_expr(g, env, func)?;
+            for a in args {
+                let av = eval_expr(g, env, a)?;
+                f = apply_one(g, f, av)?;
+            }
+            f
+        }
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let Value::Bool(b) = eval_expr(g, env, cond)? else {
+                return Err(Error::msg("if condition did not evaluate to Bool"));
+            };
+            if b {
+                eval_expr(g, env, then_branch)?
+            } else {
+                eval_expr(g, env, else_branch)?
+            }
+        }
+        IrExpr::Let { bindings, body } => {
+            let mut env2 = env.clone();
+            for (name, e) in bindings {
+                let v = eval_expr(g, &env2, e)?;
+                env2.insert(name.clone(), v);
+            }
+            eval_expr(g, &env2, body)?
+        }
+        IrExpr::List(es) => Value::List(
+            es.iter()
+                .map(|e| eval_expr(g, env, e))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        IrExpr::Tuple(es) => Value::Tuple(
+            es.iter()
+                .map(|e| eval_expr(g, env, e))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        IrExpr::Record(fields) => Value::Record(
+            fields
+                .iter()
+                .map(|(n, e)| Ok((n.clone(), eval_expr(g, env, e)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        IrExpr::Case { expr, arms } => {
+            let scrut = eval_expr(g, env, expr)?;
+            for arm in arms {
+                if let Some(binds) = match_pat(g, env, &arm.pat, &scrut)? {
+                    let mut env_arm = env.clone();
+                    env_arm.extend(binds);
+                    if let Some(guard) = &arm.guard {
+                        let Value::Bool(b) = eval_expr(g, &env_arm, guard)? else {
+                            return Err(Error::msg("case guard did not evaluate to Bool"));
+                        };
+                        if !b {
+                            continue;
+                        }
+                    }
+                    return Ok(eval_expr(g, &env_arm, &arm.body)?);
+                }
+            }
+            return Err(Error::msg("non-exhaustive case"));
+        }
+        IrExpr::IoBind { action, param, body } => {
+            let act = eval_expr(g, env, action)?;
+            let Value::Io(v) = act else {
+                return Err(Error::msg("IoBind action did not evaluate to IO"));
+            };
+            let mut env2 = env.clone();
+            env2.insert(param.clone(), *v);
+            eval_expr(g, &env2, body)?
+        }
+        IrExpr::IoThen { first, then_expr } => {
+            let act = eval_expr(g, env, first)?;
+            let Value::Io(_) = act else {
+                return Err(Error::msg("IoThen first did not evaluate to IO"));
+            };
+            eval_expr(g, env, then_expr)?
+        }
+    })
+}
+
+fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
+    match fun {
+        Value::IoCtor => Ok(Value::Io(Box::new(arg))),
+        Value::Closure {
+            mut params,
+            body,
+            mut env,
+        } => {
+            let Some(p) = params.first().cloned() else {
+                return Err(Error::msg("cannot apply function with no params"));
+            };
+            params.remove(0);
+            env.insert(p, arg);
+            if params.is_empty() {
+                eval_expr(g, &env, &body)
+            } else {
+                Ok(Value::Closure { params, body, env })
+            }
+        }
+        Value::Integer(_)
+        | Value::Float64(_)
+        | Value::Bool(_)
+        | Value::String(_)
+        | Value::Char(_)
+        | Value::Unit
+        | Value::Tuple(_)
+        | Value::List(_)
+        | Value::Record(_)
+        | Value::Io(_) => Err(Error::msg("attempted to apply a non-function")),
+    }
+}
+
+fn match_pat(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    pat: &IrPattern,
+    val: &Value,
+) -> Result<Option<std::collections::HashMap<String, Value>>> {
+    use IrPattern as P;
+    Ok(match (pat, val) {
+        (P::Wildcard, _) => Some(std::collections::HashMap::new()),
+        (P::Var(n), v) => {
+            let mut m = std::collections::HashMap::new();
+            m.insert(n.clone(), v.clone());
+            Some(m)
+        }
+        (P::Literal(l), v) => {
+            let ok = match (l, v) {
+                (IrLiteral::Unit, Value::Unit) => true,
+                (IrLiteral::Integer(a), Value::Integer(b)) => a == b,
+                (IrLiteral::Float64(a), Value::Float64(b)) => a == b,
+                (IrLiteral::Bool(a), Value::Bool(b)) => a == b,
+                (IrLiteral::String(a), Value::String(b)) => a == b,
+                (IrLiteral::Char(a), Value::Char(b)) => a == b,
+                _ => false,
+            };
+            if ok { Some(std::collections::HashMap::new()) } else { None }
+        }
+        (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => {
+            let mut out = std::collections::HashMap::new();
+            for (p, v) in ps.iter().zip(vs.iter()) {
+                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                out.extend(b);
+            }
+            Some(out)
+        }
+        (P::List(ps), Value::List(vs)) if ps.len() == vs.len() => {
+            let mut out = std::collections::HashMap::new();
+            for (p, v) in ps.iter().zip(vs.iter()) {
+                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                out.extend(b);
+            }
+            Some(out)
+        }
+        (P::Record(fs), Value::Record(vs)) => {
+            if fs.len() != vs.len() {
+                return Ok(None);
+            }
+            let mut out = std::collections::HashMap::new();
+            for (name, p) in fs {
+                let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
+                    return Ok(None);
+                };
+                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                out.extend(b);
+            }
+            Some(out)
+        }
+        (P::RecordLoose(fs), Value::Record(vs)) => {
+            let mut out = std::collections::HashMap::new();
+            for (name, p) in fs {
+                let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
+                    return Ok(None);
+                };
+                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                out.extend(b);
+            }
+            Some(out)
+        }
+        (P::As(n, p), v) => {
+            let Some(mut b) = match_pat(g, env, p, v)? else { return Ok(None) };
+            b.insert(n.clone(), v.clone());
+            Some(b)
+        }
+        (P::Or(a, b), v) => {
+            if let Some(binds) = match_pat(g, env, a, v)? {
+                Some(binds)
+            } else {
+                match_pat(g, env, b, v)?
+            }
+        }
+        (P::View(p, e), v) => {
+            let fv = eval_expr(g, env, e)?;
+            let v2 = apply_one(g, fv, v.clone())?;
+            match_pat(g, env, p, &v2)?
+        }
+        _ => None,
+    })
+}
