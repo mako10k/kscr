@@ -402,12 +402,20 @@ pub fn ftv_env(env: &TypeEnv) -> HashSet<u32> {
 }
 
 pub fn generalize(env: &TypeEnv, ty: Ty) -> Scheme {
+    generalize_qual(env, vec![], ty)
+}
+
+pub fn generalize_qual(env: &TypeEnv, constraints: Vec<Constraint>, ty: Ty) -> Scheme {
     let env_ftv = ftv_env(env);
-    let mut vars: Vec<u32> = ftv_ty(&ty).difference(&env_ftv).copied().collect();
+    let mut ftv = ftv_ty(&ty);
+    for c in &constraints {
+        ftv.extend(ftv_constraint(c));
+    }
+    let mut vars: Vec<u32> = ftv.difference(&env_ftv).copied().collect();
     vars.sort_unstable();
     Scheme {
         vars,
-        constraints: vec![],
+        constraints,
         ty,
     }
 }
@@ -712,7 +720,7 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
             .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
 
         let env_in = apply_env(&subst, &env);
-        let (s_rhs, _cs_rhs, t_rhs) = infer_expr_in(&mut cx, &env_in, b.expr.clone())
+        let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &env_in, b.expr.clone())
             .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
         subst = compose(&s_rhs, &subst);
 
@@ -722,7 +730,7 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
 
         for (name, t) in binds {
             let env_gen = apply_env(&subst, &env);
-            let scheme = generalize(&env_gen, apply(&subst, t));
+            let scheme = generalize_qual(&env_gen, apply_constraints(&subst, cs_rhs.clone()), apply(&subst, t));
             env.insert(name.clone(), scheme.clone());
             out.insert(name, scheme);
         }
@@ -1391,7 +1399,7 @@ fn infer_expr_in(
                     .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
                 s = compose(&s_rhs, &s);
                 cs = apply_constraints(&s, cs);
-                cs.extend(apply_constraints(&s, cs_rhs));
+                cs.extend(apply_constraints(&s, cs_rhs.clone()));
 
                 let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
                     .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
@@ -1400,7 +1408,7 @@ fn infer_expr_in(
 
                 for (name, t) in binds {
                     let env_gen = apply_env(&s, &env2);
-                    let scheme = generalize(&env_gen, apply(&s, t));
+                    let scheme = generalize_qual(&env_gen, apply_constraints(&s, cs_rhs.clone()), apply(&s, t));
                     env2.insert(name, scheme);
                 }
             }
@@ -1435,7 +1443,7 @@ fn infer_expr_in(
                     .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
                 s = compose(&s_rhs, &s);
                 cs = apply_constraints(&s, cs);
-                cs.extend(apply_constraints(&s, cs_rhs));
+                cs.extend(apply_constraints(&s, cs_rhs.clone()));
 
                 let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
                     .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
@@ -1444,7 +1452,7 @@ fn infer_expr_in(
 
                 for (name, t) in binds {
                     let env_gen = apply_env(&s, &env2);
-                    let scheme = generalize(&env_gen, apply(&s, t));
+                    let scheme = generalize_qual(&env_gen, apply_constraints(&s, cs_rhs.clone()), apply(&s, t));
                     env2.insert(name, scheme);
                 }
             }
