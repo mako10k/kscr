@@ -406,6 +406,16 @@ fn ir_run_main_mul_operator() {
 }
 
 #[test]
+fn ir_run_main_div_operator() {
+    let src = "main = case (6 / 2) of\n  3 -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn ir_run_main_lt_le_operators() {
     let src = "main = case (1 < 2) of\n  True -> case (2 <= 2) of\n    True -> IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();

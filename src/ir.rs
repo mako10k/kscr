@@ -454,6 +454,8 @@ pub enum Value {
     BuiltinSub1(Box<Value>),
     BuiltinMul,
     BuiltinMul1(Box<Value>),
+    BuiltinDiv,
+    BuiltinDiv1(Box<Value>),
     BuiltinEqInt,
     BuiltinEqInt1(Box<Value>),
     BuiltinLtInt,
@@ -590,6 +592,10 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "*" {
         return Ok(Value::BuiltinMul);
+    }
+
+    if name == "/" {
+        return Ok(Value::BuiltinDiv);
     }
 
     if name == "==" {
@@ -881,6 +887,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinSub1(a) => sub_int(g, *a, arg),
         Value::BuiltinMul => Ok(Value::BuiltinMul1(Box::new(arg))),
         Value::BuiltinMul1(a) => mul_int(g, *a, arg),
+        Value::BuiltinDiv => Ok(Value::BuiltinDiv1(Box::new(arg))),
+        Value::BuiltinDiv1(a) => div_int(g, *a, arg),
         Value::BuiltinEqInt => Ok(Value::BuiltinEqInt1(Box::new(arg))),
         Value::BuiltinEqInt1(a) => eq_int(g, *a, arg),
         Value::BuiltinLtInt => Ok(Value::BuiltinLtInt1(Box::new(arg))),
@@ -993,6 +1001,19 @@ fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("* expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("* expects Integer")) };
     let out = parse_i64(&a)? * parse_i64(&b)?;
+    Ok(Value::Integer(out.to_string()))
+}
+
+fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("/ expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg("/ expects Integer")) };
+    let b = parse_i64(&b)?;
+    if b == 0 {
+        return Err(Error::msg("division by zero"));
+    }
+    let out = parse_i64(&a)? / b;
     Ok(Value::Integer(out.to_string()))
 }
 
