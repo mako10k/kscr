@@ -782,6 +782,66 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // < :: Integer -> Integer -> Bool
+    env.insert(
+        "<".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Integer".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(Ty::Con("Bool".to_string())),
+                )),
+            ),
+        },
+    );
+
+    // <= :: Integer -> Integer -> Bool
+    env.insert(
+        "<=".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Integer".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(Ty::Con("Bool".to_string())),
+                )),
+            ),
+        },
+    );
+
+    // && :: Bool -> Bool -> Bool
+    env.insert(
+        "&&".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Bool".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("Bool".to_string())),
+                    Box::new(Ty::Con("Bool".to_string())),
+                )),
+            ),
+        },
+    );
+
+    // || :: Bool -> Bool -> Bool
+    env.insert(
+        "||".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Bool".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("Bool".to_string())),
+                    Box::new(Ty::Con("Bool".to_string())),
+                )),
+            ),
+        },
+    );
+
     // stdoutWrite :: String -> IO Unit
     // Low-level IO primitive used as a building block for higher-level IO.
     env.insert(

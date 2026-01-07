@@ -456,6 +456,14 @@ pub enum Value {
     BuiltinMul1(Box<Value>),
     BuiltinEqInt,
     BuiltinEqInt1(Box<Value>),
+    BuiltinLtInt,
+    BuiltinLtInt1(Box<Value>),
+    BuiltinLeInt,
+    BuiltinLeInt1(Box<Value>),
+    BuiltinAnd,
+    BuiltinAnd1(Box<Value>),
+    BuiltinOr,
+    BuiltinOr1(Box<Value>),
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -580,6 +588,22 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "==" {
         return Ok(Value::BuiltinEqInt);
+    }
+
+    if name == "<" {
+        return Ok(Value::BuiltinLtInt);
+    }
+
+    if name == "<=" {
+        return Ok(Value::BuiltinLeInt);
+    }
+
+    if name == "&&" {
+        return Ok(Value::BuiltinAnd);
+    }
+
+    if name == "||" {
+        return Ok(Value::BuiltinOr);
     }
 
     if name == "stdinReadLine" {
@@ -841,6 +865,14 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinMul1(a) => mul_int(g, *a, arg),
         Value::BuiltinEqInt => Ok(Value::BuiltinEqInt1(Box::new(arg))),
         Value::BuiltinEqInt1(a) => eq_int(g, *a, arg),
+        Value::BuiltinLtInt => Ok(Value::BuiltinLtInt1(Box::new(arg))),
+        Value::BuiltinLtInt1(a) => lt_int(g, *a, arg),
+        Value::BuiltinLeInt => Ok(Value::BuiltinLeInt1(Box::new(arg))),
+        Value::BuiltinLeInt1(a) => le_int(g, *a, arg),
+        Value::BuiltinAnd => Ok(Value::BuiltinAnd1(Box::new(arg))),
+        Value::BuiltinAnd1(a) => and_bool(g, *a, arg),
+        Value::BuiltinOr => Ok(Value::BuiltinOr1(Box::new(arg))),
+        Value::BuiltinOr1(a) => or_bool(g, *a, arg),
         Value::Closure {
             mut params,
             body,
@@ -946,6 +978,44 @@ fn eq_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("== expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("== expects Integer")) };
     Ok(Value::Bool(parse_i64(&a)? == parse_i64(&b)?))
+}
+
+fn lt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("< expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg("< expects Integer")) };
+    Ok(Value::Bool(parse_i64(&a)? < parse_i64(&b)?))
+}
+
+fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("<= expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg("<= expects Integer")) };
+    Ok(Value::Bool(parse_i64(&a)? <= parse_i64(&b)?))
+}
+
+fn and_bool(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let Value::Bool(a) = a else { return Err(Error::msg("&& expects Bool")) };
+    if !a {
+        return Ok(Value::Bool(false));
+    }
+    let b = force_value(g, b)?;
+    let Value::Bool(b) = b else { return Err(Error::msg("&& expects Bool")) };
+    Ok(Value::Bool(b))
+}
+
+fn or_bool(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let Value::Bool(a) = a else { return Err(Error::msg("|| expects Bool")) };
+    if a {
+        return Ok(Value::Bool(true));
+    }
+    let b = force_value(g, b)?;
+    let Value::Bool(b) = b else { return Err(Error::msg("|| expects Bool")) };
+    Ok(Value::Bool(b))
 }
 
 fn match_pat(
