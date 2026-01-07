@@ -255,6 +255,23 @@ fn typecheck_hole_pattern_binds_nothing() {
 }
 
 #[test]
+fn parser_record_loose_pattern() {
+    let m = crate::parser::parse_module("{x: a, ...} = r\n").unwrap();
+    use crate::ast::{Item, Pattern};
+    match &m.items[0] {
+        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::RecordLoose(_))),
+        _ => panic!("expected binding"),
+    }
+}
+
+#[test]
+fn typecheck_record_loose_pattern_binds_fields() {
+    let m = crate::parser::parse_module("{x: a, ...} = {x: 1, y: 2}\n").unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    assert_eq!(tm.inferred["a"].to_string(), "Integer");
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

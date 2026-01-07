@@ -25,6 +25,8 @@ pub enum Ty {
     List(Box<Ty>),
     Tuple(Vec<Ty>),
     Record(Vec<(String, Ty)>),
+    /// Open record (required fields only). Used for `{..., ...}` pattern matching.
+    RecordOpen(Vec<(String, Ty)>),
     App { head: Box<Ty>, args: Vec<Ty> },
     Func(Box<Ty>, Box<Ty>),
 }
@@ -70,6 +72,20 @@ fn fmt_ty_prec(
                 fmt_ty_prec(f, t, PREC_FUNC, vars)?;
             }
             write!(f, "}}")
+        }
+        Ty::RecordOpen(fields) => {
+            write!(f, "{{")?;
+            for (i, (k, t)) in fields.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{k}: ")?;
+                fmt_ty_prec(f, t, PREC_FUNC, vars)?;
+            }
+            if !fields.is_empty() {
+                write!(f, ", ")?;
+            }
+            write!(f, "...}}")
         }
         Ty::App { head, args } => {
             if parent_prec > PREC_APP {
@@ -165,6 +181,26 @@ fn unify_in(subst: &mut Subst, a: Ty, b: Ty) -> Result<()> {
 
             Ok(())
         }
+        (Ty::RecordOpen(req), Ty::Record(actual)) | (Ty::Record(actual), Ty::RecordOpen(req)) => {
+            let actual: HashMap<String, Ty> = actual.into_iter().collect();
+            for (k, t_req) in req {
+                let t_act = actual
+                    .get(&k)
+                    .ok_or_else(|| Error::msg("record field mismatch"))?;
+                unify_in(subst, t_req, t_act.clone())?;
+            }
+            Ok(())
+        }
+        (Ty::RecordOpen(a), Ty::RecordOpen(b)) => {
+            let a: HashMap<String, Ty> = a.into_iter().collect();
+            let b: HashMap<String, Ty> = b.into_iter().collect();
+            for (k, ta) in a {
+                if let Some(tb) = b.get(&k) {
+                    unify_in(subst, ta, tb.clone())?;
+                }
+            }
+            Ok(())
+        }
         (Ty::App { head: ha, args: aa }, Ty::App { head: hb, args: ab }) => {
             if aa.len() != ab.len() {
                 return Err(Error::msg("type application arity mismatch"));
@@ -218,7 +254,9 @@ fn occurs_in(subst: &Subst, seen: &mut HashSet<u32>, v: u32, t: &Ty) -> bool {
         }
         Ty::List(t) => occurs_in(subst, seen, v, t),
         Ty::Tuple(ts) => ts.iter().any(|t| occurs_in(subst, seen, v, t)),
-        Ty::Record(fields) => fields.iter().any(|(_, t)| occurs_in(subst, seen, v, t)),
+        Ty::Record(fields) | Ty::RecordOpen(fields) => {
+            fields.iter().any(|(_, t)| occurs_in(subst, seen, v, t))
+        }
         Ty::App { head, args } => {
             occurs_in(subst, seen, v, head) || args.iter().any(|t| occurs_in(subst, seen, v, t))
         }
@@ -236,6 +274,12 @@ pub fn apply(subst: &Subst, t: Ty) -> Ty {
         Ty::List(t) => Ty::List(Box::new(apply(subst, *t))),
         Ty::Tuple(ts) => Ty::Tuple(ts.into_iter().map(|t| apply(subst, t)).collect()),
         Ty::Record(fields) => Ty::Record(
+            fields
+                .into_iter()
+                .map(|(n, t)| (n, apply(subst, t)))
+                .collect(),
+        ),
+        Ty::RecordOpen(fields) => Ty::RecordOpen(
             fields
                 .into_iter()
                 .map(|(n, t)| (n, apply(subst, t)))
@@ -308,7 +352,9 @@ pub fn ftv_ty(ty: &Ty) -> HashSet<u32> {
         Ty::Con(_) => HashSet::new(),
         Ty::List(t) => ftv_ty(t),
         Ty::Tuple(ts) => ts.iter().flat_map(ftv_ty).collect(),
-        Ty::Record(fields) => fields.iter().flat_map(|(_, t)| ftv_ty(t)).collect(),
+        Ty::Record(fields) | Ty::RecordOpen(fields) => {
+            fields.iter().flat_map(|(_, t)| ftv_ty(t)).collect()
+        }
         Ty::App { head, args } => {
             let mut s = ftv_ty(head);
             for t in args {
@@ -358,6 +404,12 @@ fn replace_vars(ty: &Ty, m: &HashMap<u32, Ty>) -> Ty {
         Ty::List(t) => Ty::List(Box::new(replace_vars(t, m))),
         Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| replace_vars(t, m)).collect()),
         Ty::Record(fields) => Ty::Record(
+            fields
+                .iter()
+                .map(|(n, t)| (n.clone(), replace_vars(t, m)))
+                .collect(),
+        ),
+        Ty::RecordOpen(fields) => Ty::RecordOpen(
             fields
                 .iter()
                 .map(|(n, t)| (n.clone(), replace_vars(t, m)))
@@ -451,6 +503,14 @@ fn infer_pat_in(
                 .collect::<Result<Vec<_>>>()?;
             out.sort_by(|(a, _), (b, _)| a.cmp(b));
             Ok(Ty::Record(out))
+        }
+        Pattern::RecordLoose(fields) => {
+            let mut out = fields
+                .iter()
+                .map(|(n, p)| Ok((n.clone(), infer_pat_in(cx, subst, env, p, binds, seen)?)))
+                .collect::<Result<Vec<_>>>()?;
+            out.sort_by(|(a, _), (b, _)| a.cmp(b));
+            Ok(Ty::RecordOpen(out))
         }
         Pattern::Cons(hd, tl) => {
             let elem = cx.fresh();

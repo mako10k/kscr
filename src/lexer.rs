@@ -52,6 +52,7 @@ pub enum TokenKind {
     RBrace,
     Colon,
     ColonColon,
+    Ellipsis,
     At,
     Question,
     LeftArrow,
@@ -223,6 +224,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::OrOr,
             });
             i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"...") {
+            tokens.push(Token {
+                kind: TokenKind::Ellipsis,
+            });
+            i += 3;
             continue;
         }
 

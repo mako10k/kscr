@@ -728,8 +728,15 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     let pat = parse_pattern(ts)?;
     fields.push((name, pat));
 
+    let mut loose = false;
     while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
         ts.bump();
+        if matches!(ts.peek_kind(), Some(TokenKind::Ellipsis)) {
+            ts.bump();
+            loose = true;
+            break;
+        }
+
         let name = ts.expect_ident()?;
         ts.expect(TokenKind::Colon)?;
         let pat = parse_pattern(ts)?;
@@ -737,7 +744,11 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     }
 
     ts.expect(TokenKind::RBrace)?;
-    Ok(ast::Pattern::Record(fields))
+    Ok(if loose {
+        ast::Pattern::RecordLoose(fields)
+    } else {
+        ast::Pattern::Record(fields)
+    })
 }
 
 fn parse_infix_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
@@ -1025,6 +1036,7 @@ impl TokenStream {
                 | Some(TokenKind::Comma)
                 | Some(TokenKind::Colon)
                 | Some(TokenKind::At)
+                | Some(TokenKind::Ellipsis)
                 | Some(TokenKind::RParen)
                 | Some(TokenKind::RBracket)
                 | Some(TokenKind::RBrace)
