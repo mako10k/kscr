@@ -195,6 +195,20 @@ fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
                 })
                 .collect::<Result<Vec<_>>>()?,
         },
+        Expr::Annot { expr, .. } => lower_expr(expr)?,
+        Expr::Where { expr, bindings } => {
+            let mut bs = Vec::new();
+            for b in bindings {
+                let ast::Pattern::Var(name) = &b.pat else {
+                    return Err(Error::msg("IR lowering supports only variable where-bindings"));
+                };
+                bs.push((name.clone(), lower_expr(&b.expr)?));
+            }
+            IrExpr::Let {
+                bindings: bs,
+                body: Box::new(lower_expr(expr)?),
+            }
+        }
         _ => return Err(Error::msg("expression is not supported in IR lowering yet")),
     })
 }
