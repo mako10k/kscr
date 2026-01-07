@@ -460,6 +460,12 @@ pub enum Value {
     BuiltinLtInt1(Box<Value>),
     BuiltinLeInt,
     BuiltinLeInt1(Box<Value>),
+    BuiltinGtInt,
+    BuiltinGtInt1(Box<Value>),
+    BuiltinGeInt,
+    BuiltinGeInt1(Box<Value>),
+    BuiltinNeInt,
+    BuiltinNeInt1(Box<Value>),
     BuiltinAnd,
     BuiltinAnd1(Box<Value>),
     BuiltinOr,
@@ -596,6 +602,18 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "<=" {
         return Ok(Value::BuiltinLeInt);
+    }
+
+    if name == ">" {
+        return Ok(Value::BuiltinGtInt);
+    }
+
+    if name == ">=" {
+        return Ok(Value::BuiltinGeInt);
+    }
+
+    if name == "/=" {
+        return Ok(Value::BuiltinNeInt);
     }
 
     if name == "&&" {
@@ -869,6 +887,12 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinLtInt1(a) => lt_int(g, *a, arg),
         Value::BuiltinLeInt => Ok(Value::BuiltinLeInt1(Box::new(arg))),
         Value::BuiltinLeInt1(a) => le_int(g, *a, arg),
+        Value::BuiltinGtInt => Ok(Value::BuiltinGtInt1(Box::new(arg))),
+        Value::BuiltinGtInt1(a) => gt_int(g, *a, arg),
+        Value::BuiltinGeInt => Ok(Value::BuiltinGeInt1(Box::new(arg))),
+        Value::BuiltinGeInt1(a) => ge_int(g, *a, arg),
+        Value::BuiltinNeInt => Ok(Value::BuiltinNeInt1(Box::new(arg))),
+        Value::BuiltinNeInt1(a) => ne_int(g, *a, arg),
         Value::BuiltinAnd => Ok(Value::BuiltinAnd1(Box::new(arg))),
         Value::BuiltinAnd1(a) => and_bool(g, *a, arg),
         Value::BuiltinOr => Ok(Value::BuiltinOr1(Box::new(arg))),
@@ -994,6 +1018,30 @@ fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("<= expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("<= expects Integer")) };
     Ok(Value::Bool(parse_i64(&a)? <= parse_i64(&b)?))
+}
+
+fn gt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("> expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg("> expects Integer")) };
+    Ok(Value::Bool(parse_i64(&a)? > parse_i64(&b)?))
+}
+
+fn ge_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg(">= expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg(">= expects Integer")) };
+    Ok(Value::Bool(parse_i64(&a)? >= parse_i64(&b)?))
+}
+
+fn ne_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("/= expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg("/= expects Integer")) };
+    Ok(Value::Bool(parse_i64(&a)? != parse_i64(&b)?))
 }
 
 fn and_bool(g: &Globals, a: Value, b: Value) -> Result<Value> {

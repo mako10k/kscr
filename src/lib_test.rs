@@ -416,6 +416,16 @@ fn ir_run_main_lt_le_operators() {
 }
 
 #[test]
+fn ir_run_main_gt_ge_ne_operators() {
+    let src = "main = case (2 > 1) of\n  True -> case (2 >= 2) of\n    True -> case (1 /= 2) of\n      True -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn ir_run_main_and_or_short_circuit() {
     let src = "main = let\n  bad = case True of\n    False -> True\nin case (False && bad) of\n  False -> case (True || bad) of\n    True -> IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
