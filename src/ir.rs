@@ -1129,16 +1129,43 @@ fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
     Ok(Value::String(if a { "True" } else { "False" }.to_string()))
 }
 
+fn show_value_str(g: &Globals, v: Value) -> Result<String> {
+    let v = force_value(g, v)?;
+    Ok(match v {
+        Value::Integer(s) => parse_i64(&s)?.to_string(),
+        Value::Bool(b) => if b { "True" } else { "False" }.to_string(),
+        Value::String(s) => s,
+        Value::Char(c) => c.to_string(),
+        Value::Unit => "()".to_string(),
+        Value::Tuple(vs) => {
+            let mut parts = Vec::new();
+            for v in vs {
+                parts.push(show_value_str(g, v)?);
+            }
+            format!("({})", parts.join(", "))
+        }
+        Value::ListNil | Value::ListCons(_, _) => {
+            let elems = list_to_vec(g, v)?;
+            let mut parts = Vec::new();
+            for e in elems {
+                parts.push(show_value_str(g, e)?);
+            }
+            format!("[{}]", parts.join(", "))
+        }
+        Value::Record(mut fields) => {
+            fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+            let mut parts = Vec::new();
+            for (k, v) in fields {
+                parts.push(format!("{k}: {}", show_value_str(g, v)?));
+            }
+            format!("{{{}}}", parts.join(", "))
+        }
+        _ => return Err(Error::msg("show/toString expects a printable value")),
+    })
+}
+
 fn show_to_string(g: &Globals, a: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    match a {
-        Value::Integer(s) => int_to_string(g, Value::Integer(s)),
-        Value::Bool(b) => bool_to_string(g, Value::Bool(b)),
-        Value::String(s) => Ok(Value::String(s)),
-        Value::Char(c) => Ok(Value::String(c.to_string())),
-        Value::Unit => Ok(Value::String("()".to_string())),
-        _ => Err(Error::msg("show/toString expects a printable value")),
-    }
+    Ok(Value::String(show_value_str(g, a)?))
 }
 
 fn match_pat(

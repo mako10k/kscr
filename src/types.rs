@@ -1192,12 +1192,30 @@ fn show_instance(ty: &Ty) -> Option<bool> {
             name.as_str(),
             "Integer" | "Bool" | "String" | "Char" | "Unit"
         )),
-        Ty::List(_)
-        | Ty::Tuple(_)
-        | Ty::Record(_)
-        | Ty::RecordOpen(_)
-        | Ty::App { .. }
-        | Ty::Func(_, _) => Some(false),
+        Ty::List(t) => show_instance(t),
+        Ty::Tuple(ts) => {
+            let mut any_unknown = false;
+            for t in ts {
+                match show_instance(t) {
+                    Some(true) => {}
+                    Some(false) => return Some(false),
+                    None => any_unknown = true,
+                }
+            }
+            Some(!any_unknown)
+        }
+        Ty::Record(fields) => {
+            let mut any_unknown = false;
+            for (_, t) in fields {
+                match show_instance(t) {
+                    Some(true) => {}
+                    Some(false) => return Some(false),
+                    None => any_unknown = true,
+                }
+            }
+            Some(!any_unknown)
+        }
+        Ty::RecordOpen(_) | Ty::App { .. } | Ty::Func(_, _) => Some(false),
     }
 }
 
@@ -2456,6 +2474,19 @@ x = do
         let src = "x = show (\\y -> y)\n";
         let m = crate::parser::parse_module(src).unwrap();
         let _ = infer_module(&m).unwrap_err();
+    }
+
+    #[test]
+    fn infer_show_list_tuple_record() {
+        let src = "a = show [1, 2]\n\
+ b = show (1, True)\n\
+ c = show {a: 1, b: True}\n";
+        let m = crate::parser::parse_module(src).unwrap();
+        let env = infer_module(&m).unwrap();
+
+        assert_eq!(env.get("a").unwrap(), &Scheme::mono(Ty::Con("String".to_string())));
+        assert_eq!(env.get("b").unwrap(), &Scheme::mono(Ty::Con("String".to_string())));
+        assert_eq!(env.get("c").unwrap(), &Scheme::mono(Ty::Con("String".to_string())));
     }
 
     #[test]
