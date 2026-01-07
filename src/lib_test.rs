@@ -515,6 +515,26 @@ fn ir_run_main_io_unit() {
 }
 
 #[test]
+fn ir_run_main_cons_pattern_matches() {
+    let src = "main = case [1, 2] of\n  x:xs -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_cons_pattern_is_lazy_in_tail() {
+    let src = "main = let\n  bad = case True of\n    False -> 0\n  xs = [1, bad]\nin case xs of\n  x:xt -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn ir_let_is_lazy() {
     let src = "main = let\n  x = case True of\n    False -> ()\nin IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();

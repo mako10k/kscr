@@ -860,6 +860,18 @@ fn match_pat(
             }
             Some(out)
         }
+        (P::Cons(hd, tl), Value::List(vs)) => {
+            if vs.is_empty() {
+                return Ok(None);
+            }
+            let mut out = std::collections::HashMap::new();
+            let Some(b_hd) = match_pat(g, env, hd, &vs[0])? else { return Ok(None) };
+            out.extend(b_hd);
+            let rest = Value::List(vs[1..].to_vec());
+            let Some(b_tl) = match_pat(g, env, tl, &rest)? else { return Ok(None) };
+            out.extend(b_tl);
+            Some(out)
+        }
         (P::Record(fs), Value::Record(vs)) => {
             if fs.len() != vs.len() {
                 return Ok(None);
