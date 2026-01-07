@@ -471,6 +471,18 @@ fn ir_lowering_pattern_let() {
 }
 
 #[test]
+fn ir_lowering_pattern_where() {
+    let src = "x = a where\n  (a, b) = (1, 2)\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
+        panic!("expected single binding");
+    };
+    assert!(matches!(expr, crate::ir::IrExpr::Case { .. }));
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
