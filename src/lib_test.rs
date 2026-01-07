@@ -455,7 +455,7 @@ fn ir_lowering_do_expr() {
     let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
         panic!("expected single binding");
     };
-    assert!(matches!(expr, crate::ir::IrExpr::Do(_)));
+    assert!(matches!(expr, crate::ir::IrExpr::IoBind { .. }));
 }
 
 #[test]

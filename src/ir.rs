@@ -46,12 +46,6 @@ pub struct IrCaseArm {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IrDoStmt {
-    Bind { pat: IrPattern, expr: IrExpr },
-    Expr(IrExpr),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrExpr {
     Unit,
     Integer(String),
@@ -75,7 +69,11 @@ pub enum IrExpr {
         expr: Box<IrExpr>,
         arms: Vec<IrCaseArm>,
     },
-    Do(Vec<IrDoStmt>),
+    IoBind {
+        action: Box<IrExpr>,
+        param: String,
+        body: Box<IrExpr>,
+    },
     List(Vec<IrExpr>),
     Tuple(Vec<IrExpr>),
     Record(Vec<(String, IrExpr)>),
@@ -83,7 +81,7 @@ pub enum IrExpr {
 
 pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
     let mut items = Vec::new();
-    let mut tmp_no = 0usize;
+    let mut fresh = 0usize;
 
     for it in &module.items {
         let ast::Item::Binding(b) = it else {
@@ -92,7 +90,7 @@ pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
 
         match &b.pat {
             ast::Pattern::Var(name) => {
-                let expr = lower_expr(&b.expr)?;
+                let expr = lower_expr(&b.expr, &mut fresh)?;
                 items.push(IrItem::Binding {
                     name: name.clone(),
                     expr,
@@ -107,14 +105,14 @@ pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
                     ));
                 }
 
-                let tmp = format!("_ir_top{tmp_no}");
-                tmp_no += 1;
+                let tmp = format!("_ir_top{fresh}");
+                fresh += 1;
                 items.push(IrItem::Binding {
                     name: tmp.clone(),
-                    expr: lower_expr(&b.expr)?,
+                    expr: lower_expr(&b.expr, &mut fresh)?,
                 });
 
-                let ir_pat = lower_pat(pat)?;
+                let ir_pat = lower_pat(pat, &mut fresh)?;
                 for v in vars {
                     items.push(IrItem::Binding {
                         name: v.clone(),
@@ -133,6 +131,63 @@ pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
     }
 
     Ok(IrModule { items })
+}
+
+fn lower_do(stmts: &[ast::DoStmt], fresh: &mut usize) -> Result<IrExpr> {
+    if stmts.is_empty() {
+        return Err(Error::msg("empty do"));
+    }
+
+    let mut it = stmts.iter().rev();
+    let Some(ast::DoStmt::Expr(last)) = it.next() else {
+        return Err(Error::msg("do must end with expression"));
+    };
+    let mut acc = lower_expr(last, fresh)?;
+
+    for stmt in it {
+        match stmt {
+            ast::DoStmt::Expr(e) => {
+                let tmp = format!("_do{fresh}");
+                *fresh += 1;
+                acc = IrExpr::IoBind {
+                    action: Box::new(lower_expr(e, fresh)?),
+                    param: tmp,
+                    body: Box::new(acc),
+                };
+            }
+            ast::DoStmt::Bind { pat, expr } => {
+                let tmp = format!("_do{fresh}");
+                *fresh += 1;
+
+                let body = match pat {
+                    ast::Pattern::Var(name) => IrExpr::IoBind {
+                        action: Box::new(lower_expr(expr, fresh)?),
+                        param: name.clone(),
+                        body: Box::new(acc),
+                    },
+                    other => {
+                        let ir_pat = lower_pat(other, fresh)?;
+                        IrExpr::IoBind {
+                            action: Box::new(lower_expr(expr, fresh)?),
+                            param: tmp.clone(),
+                            body: Box::new(IrExpr::Case {
+                                expr: Box::new(IrExpr::Var(tmp)),
+                                arms: vec![IrCaseArm {
+                                    pat: ir_pat,
+                                    guard: None,
+                                    body: acc,
+                                }],
+                            }),
+                        }
+                    }
+                };
+
+                acc = body;
+            }
+        }
+    }
+
+    Ok(acc)
 }
 
 fn collect_pat_vars(pat: &ast::Pattern, out: &mut std::collections::BTreeSet<String>) {
@@ -182,39 +237,56 @@ fn lower_lit_expr(expr: &ast::Expr) -> Result<IrLiteral> {
     })
 }
 
-fn lower_pat(pat: &ast::Pattern) -> Result<IrPattern> {
+fn lower_pat(pat: &ast::Pattern, fresh: &mut usize) -> Result<IrPattern> {
     use ast::Pattern;
     Ok(match pat {
         Pattern::Var(n) => IrPattern::Var(n.clone()),
         Pattern::Wildcard => IrPattern::Wildcard,
         Pattern::Hole(_) => IrPattern::Wildcard,
         Pattern::Literal(e) => IrPattern::Literal(lower_lit_expr(e)?),
-        Pattern::Tuple(ps) => IrPattern::Tuple(ps.iter().map(lower_pat).collect::<Result<Vec<_>>>()?),
-        Pattern::List(ps) => IrPattern::List(ps.iter().map(lower_pat).collect::<Result<Vec<_>>>()?),
+        Pattern::Tuple(ps) => IrPattern::Tuple(
+            ps.iter()
+                .map(|p| lower_pat(p, fresh))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::List(ps) => IrPattern::List(
+            ps.iter()
+                .map(|p| lower_pat(p, fresh))
+                .collect::<Result<Vec<_>>>()?,
+        ),
         Pattern::Record(fields) => IrPattern::Record(
             fields
                 .iter()
-                .map(|(n, p)| Ok((n.clone(), lower_pat(p)?)))
+                .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
         Pattern::RecordLoose(fields) => IrPattern::RecordLoose(
             fields
                 .iter()
-                .map(|(n, p)| Ok((n.clone(), lower_pat(p)?)))
+                .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::Cons(a, b) => IrPattern::Cons(Box::new(lower_pat(a)?), Box::new(lower_pat(b)?)),
-        Pattern::Or(a, b) => IrPattern::Or(Box::new(lower_pat(a)?), Box::new(lower_pat(b)?)),
-        Pattern::As(n, p) => IrPattern::As(n.clone(), Box::new(lower_pat(p)?)),
-        Pattern::View(p, e) => IrPattern::View(Box::new(lower_pat(p)?), Box::new(lower_expr(e)?)),
+        Pattern::Cons(a, b) => IrPattern::Cons(
+            Box::new(lower_pat(a, fresh)?),
+            Box::new(lower_pat(b, fresh)?),
+        ),
+        Pattern::Or(a, b) => IrPattern::Or(Box::new(lower_pat(a, fresh)?), Box::new(lower_pat(b, fresh)?)),
+        Pattern::As(n, p) => IrPattern::As(n.clone(), Box::new(lower_pat(p, fresh)?)),
+        Pattern::View(p, e) => IrPattern::View(
+            Box::new(lower_pat(p, fresh)?),
+            Box::new(lower_expr(e, fresh)?),
+        ),
         Pattern::Constructor { name, args } => IrPattern::Constructor {
             name: name.clone(),
-            args: args.iter().map(lower_pat).collect::<Result<Vec<_>>>()?,
+            args: args
+                .iter()
+                .map(|p| lower_pat(p, fresh))
+                .collect::<Result<Vec<_>>>()?,
         },
     })
 }
 
-fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
+fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
     use ast::Expr;
     Ok(match expr { 
         // literals
@@ -229,37 +301,40 @@ fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
         Expr::Ctor(v) => IrExpr::Var(v.clone()),
         Expr::Lambda { params, body } => IrExpr::Lambda {
             params: params.clone(),
-            body: Box::new(lower_expr(body)?),
+            body: Box::new(lower_expr(body, fresh)?),
         },
         Expr::Apply { func, args } => IrExpr::Apply {
-            func: Box::new(lower_expr(func)?),
-            args: args.iter().map(lower_expr).collect::<Result<Vec<_>>>()?,
+            func: Box::new(lower_expr(func, fresh)?),
+            args: args
+                .iter()
+                .map(|e| lower_expr(e, fresh))
+                .collect::<Result<Vec<_>>>()?,
         },
         Expr::If {
             cond,
             then_branch,
             else_branch,
         } => IrExpr::If {
-            cond: Box::new(lower_expr(cond)?),
-            then_branch: Box::new(lower_expr(then_branch)?),
-            else_branch: Box::new(lower_expr(else_branch)?),
+            cond: Box::new(lower_expr(cond, fresh)?),
+            then_branch: Box::new(lower_expr(then_branch, fresh)?),
+            else_branch: Box::new(lower_expr(else_branch, fresh)?),
         },
         Expr::Let { bindings, body } => {
             // Lower sequential let-bindings.
-            let mut acc = lower_expr(body)?;
+            let mut acc = lower_expr(body, fresh)?;
             for b in bindings.iter().rev() {
                 match &b.pat {
                     ast::Pattern::Var(name) => {
                         acc = IrExpr::Let {
-                            bindings: vec![(name.clone(), lower_expr(&b.expr)?)],
+                            bindings: vec![(name.clone(), lower_expr(&b.expr, fresh)?)],
                             body: Box::new(acc),
                         };
                     }
                     pat => {
                         acc = IrExpr::Case {
-                            expr: Box::new(lower_expr(&b.expr)?),
+                            expr: Box::new(lower_expr(&b.expr, fresh)?),
                             arms: vec![IrCaseArm {
-                                pat: lower_pat(pat)?,
+                                pat: lower_pat(pat, fresh)?,
                                 guard: None,
                                 body: acc,
                             }],
@@ -269,58 +344,53 @@ fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
             }
             acc
         }
-        Expr::List(es) => IrExpr::List(es.iter().map(lower_expr).collect::<Result<Vec<_>>>()?),
-        Expr::Tuple(es) => IrExpr::Tuple(es.iter().map(lower_expr).collect::<Result<Vec<_>>>()?),
+        Expr::List(es) => IrExpr::List(
+            es.iter()
+                .map(|e| lower_expr(e, fresh))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Expr::Tuple(es) => IrExpr::Tuple(
+            es.iter()
+                .map(|e| lower_expr(e, fresh))
+                .collect::<Result<Vec<_>>>()?,
+        ),
         Expr::Record(fields) => IrExpr::Record(
             fields
                 .iter()
-                .map(|(n, e)| Ok((n.clone(), lower_expr(e)?)))
+                .map(|(n, e)| Ok((n.clone(), lower_expr(e, fresh)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
         Expr::Case { expr, arms } => IrExpr::Case {
-            expr: Box::new(lower_expr(expr)?),
+            expr: Box::new(lower_expr(expr, fresh)?),
             arms: arms
                 .iter()
                 .map(|a| {
                     Ok(IrCaseArm {
-                        pat: lower_pat(&a.pat)?,
-                        guard: a.guard.as_ref().map(lower_expr).transpose()?,
-                        body: lower_expr(&a.body)?,
+                        pat: lower_pat(&a.pat, fresh)?,
+                        guard: a.guard.as_ref().map(|e| lower_expr(e, fresh)).transpose()?,
+                        body: lower_expr(&a.body, fresh)?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
         },
-        Expr::Do(stmts) => IrExpr::Do(
-            stmts
-                .iter()
-                .map(|s| {
-                    Ok(match s {
-                        ast::DoStmt::Bind { pat, expr } => IrDoStmt::Bind {
-                            pat: lower_pat(pat)?,
-                            expr: lower_expr(expr)?,
-                        },
-                        ast::DoStmt::Expr(e) => IrDoStmt::Expr(lower_expr(e)?),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ),
-        Expr::Annot { expr, .. } => lower_expr(expr)?,
+        Expr::Do(stmts) => lower_do(stmts, fresh)?,
+        Expr::Annot { expr, .. } => lower_expr(expr, fresh)?,
         Expr::Where { expr, bindings } => {
             // Lower sequential where-bindings.
-            let mut acc = lower_expr(expr)?;
+            let mut acc = lower_expr(expr, fresh)?;
             for b in bindings.iter().rev() {
                 match &b.pat {
                     ast::Pattern::Var(name) => {
                         acc = IrExpr::Let {
-                            bindings: vec![(name.clone(), lower_expr(&b.expr)?)],
+                            bindings: vec![(name.clone(), lower_expr(&b.expr, fresh)?)],
                             body: Box::new(acc),
                         };
                     }
                     pat => {
                         acc = IrExpr::Case {
-                            expr: Box::new(lower_expr(&b.expr)?),
+                            expr: Box::new(lower_expr(&b.expr, fresh)?),
                             arms: vec![IrCaseArm {
-                                pat: lower_pat(pat)?,
+                                pat: lower_pat(pat, fresh)?,
                                 guard: None,
                                 body: acc,
                             }],
