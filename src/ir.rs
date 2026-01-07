@@ -405,6 +405,23 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum IoAction {
+    Pure(Value),
+    Print(String),
+    Bind {
+        action: Box<IoAction>,
+        param: String,
+        body: Box<IrExpr>,
+        env: std::collections::HashMap<String, Value>,
+    },
+    Then {
+        first: Box<IoAction>,
+        then_expr: Box<IrExpr>,
+        env: std::collections::HashMap<String, Value>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Unit,
     Integer(String),
@@ -415,7 +432,7 @@ pub enum Value {
     Tuple(Vec<Value>),
     List(Vec<Value>),
     Record(Vec<(String, Value)>),
-    Io(Box<Value>),
+    IoAction(Box<IoAction>),
     IoCtor,
     BuiltinPrint,
     Closure {
@@ -440,10 +457,10 @@ struct Globals {
 pub fn run_main(module: &IrModule) -> Result<Value> {
     let g = Globals::from_module(module);
     let v = eval_var(&g, &std::collections::HashMap::new(), "main")?;
-    let Value::Io(inner) = v else {
+    let Value::IoAction(action) = v else {
         return Err(Error::msg("main did not evaluate to an IO action"));
     };
-    Ok(*inner)
+    run_io(&g, *action)
 }
 
 impl Globals {
@@ -588,34 +605,76 @@ fn eval_expr(
         }
         IrExpr::IoBind { action, param, body } => {
             let act = eval_expr(g, env, action)?;
-            let Value::Io(v) = act else {
-                return Err(Error::msg("IoBind action did not evaluate to IO"));
+            let Value::IoAction(act) = act else {
+                return Err(Error::msg("IoBind action did not evaluate to an IO action"));
             };
-            let mut env2 = env.clone();
-            env2.insert(param.clone(), *v);
-            eval_expr(g, &env2, body)?
+            Value::IoAction(Box::new(IoAction::Bind {
+                action: act,
+                param: param.clone(),
+                body: body.clone(),
+                env: env.clone(),
+            }))
         }
         IrExpr::IoThen { first, then_expr } => {
             let act = eval_expr(g, env, first)?;
-            let Value::Io(_) = act else {
-                return Err(Error::msg("IoThen first did not evaluate to IO"));
+            let Value::IoAction(act) = act else {
+                return Err(Error::msg("IoThen first did not evaluate to an IO action"));
             };
-            eval_expr(g, env, then_expr)?
+            Value::IoAction(Box::new(IoAction::Then {
+                first: act,
+                then_expr: then_expr.clone(),
+                env: env.clone(),
+            }))
         }
     })
 }
 
+fn run_io(g: &Globals, action: IoAction) -> Result<Value> {
+    match action {
+        IoAction::Pure(v) => Ok(v),
+        IoAction::Print(s) => {
+            use std::io::Write;
+            print!("{s}");
+            std::io::stdout().flush().ok();
+            Ok(Value::Unit)
+        }
+        IoAction::Bind {
+            action,
+            param,
+            body,
+            mut env,
+        } => {
+            let v = run_io(g, *action)?;
+            env.insert(param, v);
+            let act = eval_expr(g, &env, &body)?;
+            let Value::IoAction(act) = act else {
+                return Err(Error::msg("IoBind body did not evaluate to an IO action"));
+            };
+            run_io(g, *act)
+        }
+        IoAction::Then {
+            first,
+            then_expr,
+            env,
+        } => {
+            let _ = run_io(g, *first)?;
+            let act = eval_expr(g, &env, &then_expr)?;
+            let Value::IoAction(act) = act else {
+                return Err(Error::msg("IoThen body did not evaluate to an IO action"));
+            };
+            run_io(g, *act)
+        }
+    }
+}
+
 fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
     match fun {
-        Value::IoCtor => Ok(Value::Io(Box::new(arg))),
+        Value::IoCtor => Ok(Value::IoAction(Box::new(IoAction::Pure(arg)))),
         Value::BuiltinPrint => {
             let Value::String(s) = arg else {
                 return Err(Error::msg("print expects String"));
             };
-            use std::io::Write;
-            print!("{s}");
-            std::io::stdout().flush().ok();
-            Ok(Value::Io(Box::new(Value::Unit)))
+            Ok(Value::IoAction(Box::new(IoAction::Print(s))))
         }
         Value::Closure {
             mut params,
@@ -642,7 +701,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         | Value::Tuple(_)
         | Value::List(_)
         | Value::Record(_)
-        | Value::Io(_) => Err(Error::msg("attempted to apply a non-function")),
+        | Value::IoAction(_) => Err(Error::msg("attempted to apply a non-function")),
     }
 }
 
