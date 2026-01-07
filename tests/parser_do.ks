@@ -1,4 +1,4 @@
 main = do
-  x <- f 1
-  y <- g x
-  h x y
+  (x, y) <- f 1
+  z <- g x
+  h x y z

@@ -304,19 +304,18 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             return Err(Error::msg("unexpected EOF in do"));
         }
 
-        // Minimal: bind statement is `name <- expr`.
-        if let Some(TokenKind::Ident(_)) = ts.peek_kind() {
-            let save = ts.i;
-            let name = ts.expect_ident()?;
+        // Bind statement is `pat <- expr`.
+        let save = ts.i;
+        if let Ok(pat) = parse_pattern(ts) {
             if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
                 ts.bump();
                 let expr = parse_expr(ts, Stop::LineEnd)?;
-                stmts.push(ast::DoStmt::Bind { name, expr });
+                stmts.push(ast::DoStmt::Bind { pat, expr });
                 ts.consume_line_end();
                 continue;
             }
-            ts.i = save;
         }
+        ts.i = save;
 
         let expr = parse_expr(ts, Stop::LineEnd)?;
         stmts.push(ast::DoStmt::Expr(expr));

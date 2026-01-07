@@ -97,7 +97,7 @@ pub enum Expr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DoStmt {
-    Bind { name: String, expr: Expr },
+    Bind { pat: Pattern, expr: Expr },
     Expr(Expr),
 }
 

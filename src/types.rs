@@ -922,11 +922,10 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                 let stmt_no = i + 1;
                 let is_last = stmt_no == n;
                 match stmt {
-                    ast::DoStmt::Bind { name, expr } => {
+                    ast::DoStmt::Bind { pat, expr } => {
                         let env_in = apply_env(&s, &env2);
-                        let (s_e, t_e) = infer_expr_in(cx, &env_in, expr).map_err(|e| {
-                            Error::msg(format!("in do stmt {stmt_no} ({name} <-): {e}"))
-                        })?;
+                        let (s_e, t_e) = infer_expr_in(cx, &env_in, expr)
+                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
                         s = compose(&s_e, &s);
 
                         let a = cx.fresh();
@@ -934,12 +933,21 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                             head: Box::new(Ty::Con("IO".to_string())),
                             args: vec![a.clone()],
                         };
-                        let su = unify(apply(&s, t_e), apply(&s, io_a)).map_err(|e| {
-                            Error::msg(format!("in do stmt {stmt_no} ({name} <-): {e}"))
-                        })?;
+                        let su = unify(apply(&s, t_e), apply(&s, io_a))
+                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
                         s = compose(&su, &s);
 
-                        env2.insert(name, Scheme::mono(apply(&s, a)));
+                        let mut binds = Vec::new();
+                        let mut seen = HashSet::new();
+                        let pat_ty = infer_pat_in(cx, &mut s, &env2, &pat, &mut binds, &mut seen)
+                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
+                        let su_pat = unify(apply(&s, pat_ty), apply(&s, a))
+                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
+                        s = compose(&su_pat, &s);
+
+                        for (name, t) in binds {
+                            env2.insert(name, Scheme::mono(apply(&s, t)));
+                        }
                         last_ty = None;
                     }
                     ast::DoStmt::Expr(e) => {
@@ -1138,8 +1146,8 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .into_iter()
                 .map(|s| {
                     Ok(match s {
-                        ast::DoStmt::Bind { name, expr } => ast::DoStmt::Bind {
-                            name,
+                        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                            pat,
                             expr: expand_expr(expr, aliases)?,
                         },
                         ast::DoStmt::Expr(e) => ast::DoStmt::Expr(expand_expr(e, aliases)?),
