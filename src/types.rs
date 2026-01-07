@@ -297,14 +297,24 @@ pub fn apply(subst: &Subst, t: Ty) -> Ty {
 // --- Milestone 2.2.1/2.2.2: Schemes + minimal expression inference ---
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Constraint {
+    Show(Ty),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scheme {
     pub vars: Vec<u32>,
+    pub constraints: Vec<Constraint>,
     pub ty: Ty,
 }
 
 impl Scheme {
     pub fn mono(ty: Ty) -> Self {
-        Self { vars: vec![], ty }
+        Self {
+            vars: vec![],
+            constraints: vec![],
+            ty,
+        }
     }
 }
 
@@ -370,8 +380,17 @@ pub fn ftv_ty(ty: &Ty) -> HashSet<u32> {
     }
 }
 
+fn ftv_constraint(c: &Constraint) -> HashSet<u32> {
+    match c {
+        Constraint::Show(t) => ftv_ty(t),
+    }
+}
+
 pub fn ftv_scheme(s: &Scheme) -> HashSet<u32> {
     let mut ftv = ftv_ty(&s.ty);
+    for c in &s.constraints {
+        ftv.extend(ftv_constraint(c));
+    }
     for v in &s.vars {
         ftv.remove(v);
     }
@@ -386,7 +405,11 @@ pub fn generalize(env: &TypeEnv, ty: Ty) -> Scheme {
     let env_ftv = ftv_env(env);
     let mut vars: Vec<u32> = ftv_ty(&ty).difference(&env_ftv).copied().collect();
     vars.sort_unstable();
-    Scheme { vars, ty }
+    Scheme {
+        vars,
+        constraints: vec![],
+        ty,
+    }
 }
 
 pub fn instantiate(cx: &mut InferCtx, s: &Scheme) -> Ty {
@@ -423,10 +446,21 @@ fn replace_vars(ty: &Ty, m: &HashMap<u32, Ty>) -> Ty {
     }
 }
 
+fn apply_constraint(subst: &Subst, c: &Constraint) -> Constraint {
+    match c {
+        Constraint::Show(t) => Constraint::Show(apply(subst, t.clone())),
+    }
+}
+
 fn apply_scheme(subst: &Subst, s: &Scheme) -> Scheme {
     if s.vars.is_empty() {
         return Scheme {
             vars: vec![],
+            constraints: s
+                .constraints
+                .iter()
+                .map(|c| apply_constraint(subst, c))
+                .collect(),
             ty: apply(subst, s.ty.clone()),
         };
     }
@@ -438,6 +472,11 @@ fn apply_scheme(subst: &Subst, s: &Scheme) -> Scheme {
 
     Scheme {
         vars: s.vars.clone(),
+        constraints: s
+            .constraints
+            .iter()
+            .map(|c| apply_constraint(&sub, c))
+            .collect(),
         ty: apply(&sub, s.ty.clone()),
     }
 }
@@ -688,6 +727,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "IO".to_string(),
         Scheme {
             vars: vec![a],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Var(a)),
                 Box::new(Ty::App {
@@ -709,6 +749,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "concatMap".to_string(),
         Scheme {
             vars: vec![a, b],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Func(
                     Box::new(Ty::Var(a)),
@@ -727,6 +768,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "+".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -742,6 +784,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "-".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -757,6 +800,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "*".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -772,6 +816,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "/".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -787,6 +832,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "==".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -802,6 +848,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "<".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -817,6 +864,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "<=".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -832,6 +880,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         ">".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -847,6 +896,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         ">=".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -862,6 +912,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "/=".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Func(
@@ -877,6 +928,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "&&".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Bool".to_string())),
                 Box::new(Ty::Func(
@@ -892,6 +944,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "||".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Bool".to_string())),
                 Box::new(Ty::Func(
@@ -907,6 +960,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "not".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Bool".to_string())),
                 Box::new(Ty::Con("Bool".to_string())),
@@ -919,6 +973,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "intToString".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
                 Box::new(Ty::Con("String".to_string())),
@@ -931,6 +986,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "boolToString".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Bool".to_string())),
                 Box::new(Ty::Con("String".to_string())),
@@ -944,6 +1000,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "show".to_string(),
         Scheme {
             vars: vec![v],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Var(v)),
                 Box::new(Ty::Con("String".to_string())),
@@ -957,6 +1014,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "toString".to_string(),
         Scheme {
             vars: vec![v],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Var(v)),
                 Box::new(Ty::Con("String".to_string())),
@@ -970,6 +1028,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "stdoutWrite".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("String".to_string())),
                 Box::new(Ty::App {
@@ -986,6 +1045,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "stdinReadLine".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::App {
                 head: Box::new(Ty::Con("IO".to_string())),
                 args: vec![Ty::Con("String".to_string())],
@@ -1001,6 +1061,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "readLine".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::App {
                 head: Box::new(Ty::Con("IO".to_string())),
                 args: vec![Ty::Con("String".to_string())],
@@ -1016,6 +1077,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         "print".to_string(),
         Scheme {
             vars: vec![],
+            constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("String".to_string())),
                 Box::new(Ty::App {
@@ -1067,7 +1129,7 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
 
             let mut vars: Vec<u32> = ftv_ty(&ty).into_iter().collect();
             vars.sort_unstable();
-            env.insert(ctor.name.clone(), Scheme { vars, ty });
+            env.insert(ctor.name.clone(), Scheme { vars, constraints: vec![], ty });
         }
     }
 
@@ -1901,6 +1963,7 @@ mod inference_tests {
     fn scheme_display_renames_vars() {
         let s = Scheme {
             vars: vec![2],
+            constraints: vec![],
             ty: Ty::List(Box::new(Ty::Var(2))),
         };
         assert_eq!(format!("{s}"), "forall a. [a]");
