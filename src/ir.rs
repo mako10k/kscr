@@ -425,9 +425,16 @@ pub enum Value {
     },
 }
 
+#[derive(Clone)]
+enum MemoValue {
+    Unevaluated,
+    Evaluating,
+    Evaluated(Value),
+}
+
 struct Globals {
     defs: std::collections::HashMap<String, IrExpr>,
-    memo: std::cell::RefCell<std::collections::HashMap<String, Option<Value>>>,
+    memo: std::cell::RefCell<std::collections::HashMap<String, MemoValue>>,
 }
 
 pub fn run_main(module: &IrModule) -> Result<Value> {
@@ -446,7 +453,7 @@ impl Globals {
         for it in &module.items {
             let IrItem::Binding { name, expr } = it;
             defs.insert(name.clone(), expr.clone());
-            memo.insert(name.clone(), None);
+            memo.insert(name.clone(), MemoValue::Unevaluated);
         }
         Self {
             defs,
@@ -475,13 +482,24 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
         return Err(Error::msg(format!("unbound variable: {name}")));
     }
 
-    if let Some(v) = g.memo.borrow().get(name).cloned().flatten() {
-        return Ok(v);
+    match g.memo.borrow().get(name).cloned() {
+        Some(MemoValue::Evaluated(v)) => return Ok(v),
+        Some(MemoValue::Evaluating) => {
+            return Err(Error::msg(format!("cyclic definition: {name}")))
+        }
+        Some(MemoValue::Unevaluated) => {}
+        None => {}
     }
+
+    g.memo
+        .borrow_mut()
+        .insert(name.to_string(), MemoValue::Evaluating);
 
     let expr = g.defs.get(name).unwrap().clone();
     let v = eval_expr(g, &std::collections::HashMap::new(), &expr)?;
-    g.memo.borrow_mut().insert(name.to_string(), Some(v.clone()));
+    g.memo
+        .borrow_mut()
+        .insert(name.to_string(), MemoValue::Evaluated(v.clone()));
     Ok(v)
 }
 

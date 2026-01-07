@@ -525,6 +525,18 @@ fn ir_run_main_with_print() {
 }
 
 #[test]
+fn ir_run_main_detects_cycle() {
+    use crate::ir::{IrExpr, IrItem, IrModule};
+    let ir = IrModule {
+        items: vec![IrItem::Binding {
+            name: "main".to_string(),
+            expr: IrExpr::Var("main".to_string()),
+        }],
+    };
+    assert!(crate::ir::run_main(&ir).is_err());
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
