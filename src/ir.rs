@@ -435,7 +435,6 @@ pub enum Value {
     Record(Vec<(String, Value)>),
     IoAction(Box<IoAction>),
     IoCtor,
-    BuiltinPrint,
     BuiltinStdoutWrite,
     Closure {
         params: Vec<String>,
@@ -507,10 +506,10 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
     }
 
     if name == "print" {
-        // NOTE: currently a builtin for observability.
+        // NOTE: temporary name for observability.
         // In the future, `print` should become a library function built on top of IO primitives
         // such as `stdoutWrite`.
-        return Ok(Value::BuiltinPrint);
+        return Ok(Value::BuiltinStdoutWrite);
     }
 
     if !g.defs.contains_key(name) {
@@ -700,12 +699,6 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinStdoutWrite => {
             let Value::String(s) = arg else {
                 return Err(Error::msg("stdoutWrite expects String"));
-            };
-            Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
-        }
-        Value::BuiltinPrint => {
-            let Value::String(s) = arg else {
-                return Err(Error::msg("print expects String"));
             };
             Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
         }
