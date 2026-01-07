@@ -190,7 +190,10 @@ Patterns and variable bindings are central to the type system, enabling expressi
 - **Tuple Pattern**: Matches tuple structure (e.g., `(a, b)`).
 - **List Pattern**: Matches list literals (e.g., `[a, b, c]`).
 - **Cons Pattern**: Matches head and tail of a list (e.g., `x : xs`).
-- **Record Pattern (Strict/Loose)**: Matches record fields exactly or partially (e.g., `{x, y}` or `{x, ...}`).
+- **Record Pattern (Strict/Loose)**: Matches record fields exactly or partially (e.g., `{x: p, y: q}` or `{x: p, ...}` / `{x: p, ...rest}`).
+  - A loose record pattern `{x: p, ...}` gives the scrutinee an *open-record type* (required fields + residual row).
+  - `{x: p, ...rest}` additionally binds `rest` to the residual record, and introduces `Lacks x rest` constraints so that `rest` cannot contain any required field labels.
+  - If such a value is passed to `show`, the type checker requires a constraint that the residual row is also `Show` (see `ShowRow` in `TypeClassesPlan.md`).
 - **Data Pattern**: Matches algebraic data constructors (e.g., `Just x`).
 - **Or Pattern**: Matches if either subpattern matches (e.g., `p1 | p2`).
 - **View Pattern**: Applies a function before matching (e.g., `p <- f`).

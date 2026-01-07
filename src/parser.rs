@@ -391,12 +391,102 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
 fn parse_annot(ts: &mut TokenStream, expr: ast::Expr, stop: Stop) -> Result<ast::Expr> {
     ts.expect(TokenKind::ColonColon)?;
 
-    let ty = parse_type_expr(ts, stop, is_type_end)?;
+    let ty = parse_qual_type(ts, stop)?;
 
     Ok(ast::Expr::Annot {
         expr: Box::new(expr),
         ty,
     })
+}
+
+fn is_pred_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
+    matches!(
+        kind,
+        None
+            | Some(TokenKind::Newline)
+            | Some(TokenKind::Comma)
+            | Some(TokenKind::RParen)
+            | Some(TokenKind::FatArrow)
+            | Some(TokenKind::Dedent)
+    )
+}
+
+fn parse_predicate(ts: &mut TokenStream, stop: Stop) -> Result<ast::Predicate> {
+    let name = ts.expect_ident()?;
+    match name.as_str() {
+        "Show" => Ok(ast::Predicate::Show(parse_type_expr(ts, stop, is_pred_end)?)),
+        "ShowRow" => Ok(ast::Predicate::ShowRow(parse_type_expr(ts, stop, is_pred_end)?)),
+        "Lacks" => {
+            let label = match ts.bump() {
+                Some(TokenKind::String(s)) => s,
+                _ => return Err(Error::msg("expected string literal after Lacks")),
+            };
+            let row = parse_type_expr(ts, stop, is_pred_end)?;
+            Ok(ast::Predicate::Lacks { label, row })
+        }
+        _ => Err(Error::msg("unknown constraint predicate")),
+    }
+}
+
+fn parse_qual_type(ts: &mut TokenStream, stop: Stop) -> Result<ast::QualType> {
+    // (p1, p2, ...) => T
+    // We only treat parentheses as predicate groups when they are followed by `=>`.
+    let is_qual_parens = if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+        let mut depth: i32 = 0;
+        let mut j = ts.i;
+        let mut ok = false;
+        while let Some(tok) = ts.tokens.get(j) {
+            match &tok.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        ok = matches!(ts.tokens.get(j + 1).map(|t| &t.kind), Some(TokenKind::FatArrow));
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            j += 1;
+        }
+        ok
+    } else {
+        false
+    };
+
+    if is_qual_parens {
+        ts.bump();
+        let mut preds = Vec::new();
+        preds.push(parse_predicate(ts, stop)?);
+        while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            ts.bump();
+            preds.push(parse_predicate(ts, stop)?);
+        }
+        ts.expect(TokenKind::RParen)?;
+        ts.expect(TokenKind::FatArrow)?;
+        let ty = parse_type_expr(ts, stop, is_type_end)?;
+        return Ok(ast::QualType { preds, ty });
+    }
+
+    // p => T (single predicate)
+    {
+        let save2 = ts.i;
+        if let Ok(pred) = parse_predicate(ts, stop) {
+            if matches!(ts.peek_kind(), Some(TokenKind::FatArrow)) {
+                ts.bump();
+                let ty = parse_type_expr(ts, stop, is_type_end)?;
+                return Ok(ast::QualType {
+                    preds: vec![pred],
+                    ty,
+                });
+            }
+        }
+        ts.i = save2;
+    }
+
+    // Just a type.
+    let ty = parse_type_expr(ts, stop, is_type_end)?;
+    Ok(ast::QualType { preds: vec![], ty })
 }
 
 fn is_type_end(kind: Option<&TokenKind>, stop: Stop) -> bool {
@@ -405,6 +495,7 @@ fn is_type_end(kind: Option<&TokenKind>, stop: Stop) -> bool {
         | Some(TokenKind::Newline)
         | Some(TokenKind::Comma)
         | Some(TokenKind::RParen)
+        | Some(TokenKind::FatArrow)
         | Some(TokenKind::RBracket)
         | Some(TokenKind::RBrace)
         | Some(TokenKind::Dedent)
@@ -544,8 +635,20 @@ fn parse_type_atom(
             let ty = parse_type_expr(ts, stop, is_record_field_type_end)?;
             fields.push((name, ty));
 
+            let mut rest: Option<ast::Type> = None;
             while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
                 ts.bump();
+
+                if matches!(ts.peek_kind(), Some(TokenKind::Ellipsis)) {
+                    ts.bump();
+                    rest = Some(if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
+                        ast::Type::Var(ts.expect_ident()?)
+                    } else {
+                        ast::Type::Var(ts.fresh_name("r"))
+                    });
+                    break;
+                }
+
                 let name = ts.expect_ident()?;
                 ts.expect(TokenKind::Colon)?;
                 let ty = parse_type_expr(ts, stop, is_record_field_type_end)?;
@@ -553,7 +656,10 @@ fn parse_type_atom(
             }
 
             ts.expect(TokenKind::RBrace)?;
-            Ok(ast::Type::Record(fields))
+            Ok(match rest {
+                Some(r) => ast::Type::RecordOpen(fields, Box::new(r)),
+                None => ast::Type::Record(fields),
+            })
         }
         _ => Err(Error::msg("expected type")),
     }
@@ -782,11 +888,19 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     fields.push((name, pat));
 
     let mut loose = false;
+    let mut rest: Option<String> = None;
     while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
         ts.bump();
         if matches!(ts.peek_kind(), Some(TokenKind::Ellipsis)) {
             ts.bump();
             loose = true;
+            if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
+                let n = ts.expect_ident()?;
+                if n.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    return Err(Error::msg("...rest must be a variable"));
+                }
+                rest = Some(n);
+            }
             break;
         }
 
@@ -798,7 +912,7 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
 
     ts.expect(TokenKind::RBrace)?;
     Ok(if loose {
-        ast::Pattern::RecordLoose(fields)
+        ast::Pattern::RecordLoose(fields, rest)
     } else {
         ast::Pattern::Record(fields)
     })

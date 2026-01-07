@@ -40,6 +40,7 @@ pub enum TokenKind {
     Ge,
     AndAnd,
     OrOr,
+    FatArrow,
     Eq,
     Pipe,
     Backslash,
@@ -180,6 +181,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
         if bytes[i..].starts_with(b"<-") {
             tokens.push(Token {
                 kind: TokenKind::LeftArrow,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"=>") {
+            tokens.push(Token {
+                kind: TokenKind::FatArrow,
             });
             i += 2;
             continue;

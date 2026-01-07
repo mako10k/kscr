@@ -30,7 +30,7 @@ pub enum IrPattern {
     Tuple(Vec<IrPattern>),
     List(Vec<IrPattern>),
     Record(Vec<(String, IrPattern)>),
-    RecordLoose(Vec<(String, IrPattern)>),
+    RecordLoose(Vec<(String, IrPattern)>, Option<String>),
     Cons(Box<IrPattern>, Box<IrPattern>),
     Constructor { name: String, args: Vec<IrPattern> },
     Or(Box<IrPattern>, Box<IrPattern>),
@@ -90,6 +90,43 @@ pub enum IrExpr {
 pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
     let mut items = Vec::new();
     let mut fresh = 0usize;
+
+    // Lower `data` declarations into constructor bindings.
+    // For now, constructors are encoded as records: { __ctor: "CtorName", __args: [...] }.
+    for it in &module.items {
+        let ast::Item::DataDecl(d) = it else {
+            continue;
+        };
+
+        for ctor in &d.ctors {
+            let ctor_name = ctor.name.clone();
+            let arity = ctor.args.len();
+
+            let args_expr = IrExpr::List(
+                (0..arity)
+                    .map(|i| IrExpr::Var(format!("_arg{i}")))
+                    .collect(),
+            );
+            let body = IrExpr::Record(vec![
+                ("__ctor".to_string(), IrExpr::String(ctor_name.clone())),
+                ("__args".to_string(), args_expr),
+            ]);
+
+            let expr = if arity == 0 {
+                body
+            } else {
+                IrExpr::Lambda {
+                    params: (0..arity).map(|i| format!("_arg{i}")).collect(),
+                    body: Box::new(body),
+                }
+            };
+
+            items.push(IrItem::Binding {
+                name: ctor_name,
+                expr,
+            });
+        }
+    }
 
     for it in &module.items {
         let ast::Item::Binding(b) = it else {
@@ -210,9 +247,17 @@ fn collect_pat_vars(pat: &ast::Pattern, out: &mut std::collections::BTreeSet<Str
                 collect_pat_vars(p, out);
             }
         }
-        Pattern::Record(fs) | Pattern::RecordLoose(fs) => {
+        Pattern::Record(fs) => {
             for (_, p) in fs {
                 collect_pat_vars(p, out);
+            }
+        }
+        Pattern::RecordLoose(fs, rest) => {
+            for (_, p) in fs {
+                collect_pat_vars(p, out);
+            }
+            if let Some(n) = rest {
+                out.insert(n.clone());
             }
         }
         Pattern::Cons(a, b) | Pattern::Or(a, b) => {
@@ -265,11 +310,12 @@ fn lower_pat(pat: &ast::Pattern, fresh: &mut usize) -> Result<IrPattern> {
                 .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::RecordLoose(fields) => IrPattern::RecordLoose(
+        Pattern::RecordLoose(fields, rest) => IrPattern::RecordLoose(
             fields
                 .iter()
                 .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh)?)))
                 .collect::<Result<Vec<_>>>()?,
+            rest.clone(),
         ),
         Pattern::Cons(a, b) => IrPattern::Cons(
             Box::new(lower_pat(a, fresh)?),
@@ -1129,13 +1175,45 @@ fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
     Ok(Value::String(if a { "True" } else { "False" }.to_string()))
 }
 
+fn quote_string(s: &str) -> String {
+    let mut out = String::new();
+    out.push('"');
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn quote_char(c: char) -> String {
+    let mut out = String::new();
+    out.push('\'');
+    match c {
+        '\\' => out.push_str("\\\\"),
+        '\'' => out.push_str("\\\'"),
+        '\n' => out.push_str("\\n"),
+        '\t' => out.push_str("\\t"),
+        '\r' => out.push_str("\\r"),
+        other => out.push(other),
+    }
+    out.push('\'');
+    out
+}
+
 fn show_value_str(g: &Globals, v: Value) -> Result<String> {
     let v = force_value(g, v)?;
     Ok(match v {
         Value::Integer(s) => parse_i64(&s)?.to_string(),
         Value::Bool(b) => if b { "True" } else { "False" }.to_string(),
-        Value::String(s) => s,
-        Value::Char(c) => c.to_string(),
+        Value::String(s) => quote_string(&s),
+        Value::Char(c) => quote_char(c),
         Value::Unit => "()".to_string(),
         Value::Tuple(vs) => {
             let mut parts = Vec::new();
@@ -1153,6 +1231,29 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
             format!("[{}]", parts.join(", "))
         }
         Value::Record(mut fields) => {
+            // Pretty-print constructor encoding: { __ctor: "C", __args: [...] }
+            let ctor = fields
+                .iter()
+                .find_map(|(k, v)| if k == "__ctor" { Some(v.clone()) } else { None });
+            let args = fields
+                .iter()
+                .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
+
+            if let (Some(ctor), Some(args)) = (ctor, args) {
+                let ctor = force_value(g, ctor)?;
+                if let Value::String(ctor) = ctor {
+                    let elems = list_to_vec(g, args)?;
+                    if elems.is_empty() {
+                        return Ok(ctor);
+                    }
+                    let mut parts = Vec::new();
+                    for e in elems {
+                        parts.push(show_value_str(g, e)?);
+                    }
+                    return Ok(format!("{ctor} {}", parts.join(" ")));
+                }
+            }
+
             fields.sort_by(|(a, _), (b, _)| a.cmp(b));
             let mut parts = Vec::new();
             for (k, v) in fields {
@@ -1246,15 +1347,28 @@ fn match_pat(
             }
             Some(out)
         }
-        (P::RecordLoose(fs), Value::Record(vs)) => {
+        (P::RecordLoose(fs, rest), Value::Record(vs)) => {
             let mut out = std::collections::HashMap::new();
+
+            let mut required = std::collections::HashSet::new();
             for (name, p) in fs {
+                required.insert(name.clone());
                 let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
                     return Ok(None);
                 };
                 let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
                 out.extend(b);
             }
+
+            if let Some(rest) = rest {
+                let rest_fields: Vec<(String, Value)> = vs
+                    .iter()
+                    .filter(|(k, _)| !required.contains(k))
+                    .cloned()
+                    .collect();
+                out.insert(rest.clone(), Value::Record(rest_fields));
+            }
+
             Some(out)
         }
         (P::As(n, p), v) => {
@@ -1276,4 +1390,54 @@ fn match_pat(
         }
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod show_roundtrip_tests {
+    use super::*;
+
+    fn eval_show_str(s: &str) -> Result<String> {
+        let src = format!("x = {s}\nmain = IO ()\n");
+        let m = crate::parser::parse_module(&src)?;
+        let tm = crate::types::typecheck(m)?;
+        let ir = crate::ir::lower_to_ir(&tm.module)?;
+        let g = Globals::from_module(&ir);
+        let v = eval_var(&g, &std::collections::HashMap::new(), "x")?;
+        show_value_str(&g, v)
+    }
+
+    fn list_of(elems: Vec<Value>) -> Value {
+        let mut out = Value::ListNil;
+        for e in elems.into_iter().rev() {
+            out = Value::ListCons(Box::new(e), Box::new(out));
+        }
+        out
+    }
+
+    #[test]
+    fn show_value_str_roundtrips_through_parser_for_literals() {
+        let g0 = Globals::from_module(&IrModule { items: vec![] });
+
+        let cases = vec![
+            Value::Integer("123".to_string()),
+            Value::Bool(true),
+            Value::Unit,
+            Value::Char('\n'),
+            Value::Char('\\'),
+            Value::String("hello".to_string()),
+            Value::String("a\n\"b\\c".to_string()),
+            Value::Tuple(vec![Value::Integer("1".to_string()), Value::String("x".to_string())]),
+            list_of(vec![Value::Integer("1".to_string()), Value::Integer("2".to_string())]),
+            Value::Record(vec![
+                ("a".to_string(), Value::Integer("1".to_string())),
+                ("b".to_string(), Value::String("x".to_string())),
+            ]),
+        ];
+
+        for v in cases {
+            let s1 = show_value_str(&g0, v).unwrap();
+            let s2 = eval_show_str(&s1).unwrap_or_else(|e| panic!("failed to roundtrip: {s1}: {e}"));
+            assert_eq!(s1, s2);
+        }
+    }
 }

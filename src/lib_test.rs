@@ -276,7 +276,17 @@ fn parser_record_loose_pattern() {
     let m = crate::parser::parse_module("{x: a, ...} = r\n").unwrap();
     use crate::ast::{Item, Pattern};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::RecordLoose(_))),
+        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::RecordLoose(_, _))),
+        _ => panic!("expected binding"),
+    }
+}
+
+#[test]
+fn parser_record_loose_pattern_with_rest() {
+    let m = crate::parser::parse_module("{x: a, ...r} = r0\n").unwrap();
+    use crate::ast::{Item, Pattern};
+    match &m.items[0] {
+        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::RecordLoose(_, Some(rest)) if rest == "r")),
         _ => panic!("expected binding"),
     }
 }
@@ -286,6 +296,14 @@ fn typecheck_record_loose_pattern_binds_fields() {
     let m = crate::parser::parse_module("{x: a, ...} = {x: 1, y: 2}\n").unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     assert_eq!(tm.inferred["a"].to_string(), "Integer");
+}
+
+#[test]
+fn typecheck_record_loose_pattern_binds_rest() {
+    let m = crate::parser::parse_module("{x: a, ...r} = {x: 1, y: 2}\n").unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    assert_eq!(tm.inferred["a"].to_string(), "Integer");
+    assert_eq!(tm.inferred["r"].to_string(), "{y: Integer}");
 }
 
 #[test]
@@ -560,7 +578,7 @@ fn ir_lowering_loose_record_pattern() {
     let crate::ir::IrExpr::Case { arms, .. } = expr else {
         panic!("expected case");
     };
-    assert!(matches!(arms[0].pat, crate::ir::IrPattern::RecordLoose(_)));
+    assert!(matches!(arms[0].pat, crate::ir::IrPattern::RecordLoose(_, _)));
 }
 
 #[test]
@@ -1052,7 +1070,7 @@ fn parser_type_annotations() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 3);
 
-    use crate::ast::{Expr, Item, Type};
+    use crate::ast::{Expr, Item, QualType, Type};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
@@ -1060,7 +1078,7 @@ fn parser_type_annotations() {
     assert!(matches!(
         b0.expr,
         Expr::Annot {
-            ty: Type::Integer,
+            ty: QualType { ty: Type::Integer, .. },
             ..
         }
     ));
@@ -1071,7 +1089,7 @@ fn parser_type_annotations() {
     assert!(matches!(
         b1.expr,
         Expr::Annot {
-            ty: Type::Float64,
+            ty: QualType { ty: Type::Float64, .. },
             ..
         }
     ));
@@ -1085,7 +1103,7 @@ fn parser_type_annotations() {
     assert!(matches!(
         v[0],
         Expr::Annot {
-            ty: Type::Integer,
+            ty: QualType { ty: Type::Integer, .. },
             ..
         }
     ));
@@ -1097,7 +1115,7 @@ fn parser_type_exprs() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 5);
 
-    use crate::ast::{Expr, Item, Type};
+    use crate::ast::{Expr, Item, QualType, Type};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
@@ -1105,7 +1123,7 @@ fn parser_type_exprs() {
     assert!(matches!(
         b0.expr,
         Expr::Annot {
-            ty: Type::List(_),
+            ty: QualType { ty: Type::List(_), .. },
             ..
         }
     ));
@@ -1116,7 +1134,7 @@ fn parser_type_exprs() {
     assert!(matches!(
         b1.expr,
         Expr::Annot {
-            ty: Type::Tuple(_),
+            ty: QualType { ty: Type::Tuple(_), .. },
             ..
         }
     ));
@@ -1127,7 +1145,7 @@ fn parser_type_exprs() {
     assert!(matches!(
         b2.expr,
         Expr::Annot {
-            ty: Type::Record(_),
+            ty: QualType { ty: Type::Record(_), .. },
             ..
         }
     ));
@@ -1138,7 +1156,7 @@ fn parser_type_exprs() {
     assert!(matches!(
         b3.expr,
         Expr::Annot {
-            ty: Type::App { .. },
+            ty: QualType { ty: Type::App { .. }, .. },
             ..
         }
     ));
@@ -1149,7 +1167,7 @@ fn parser_type_exprs() {
     assert!(matches!(
         b4.expr,
         Expr::Annot {
-            ty: Type::Func(_, _),
+            ty: QualType { ty: Type::Func(_, _), .. },
             ..
         }
     ));
@@ -1169,7 +1187,7 @@ fn parser_type_holes() {
     let Expr::Annot { ty, .. } = &b0.expr else {
         panic!("expected annotation");
     };
-    assert_eq!(ty, &Type::Hole(None));
+    assert_eq!(&ty.ty, &Type::Hole(None));
 
     let Item::Binding(b1) = &module.items[1] else {
         panic!("expected binding");
@@ -1177,7 +1195,7 @@ fn parser_type_holes() {
     let Expr::Annot { ty, .. } = &b1.expr else {
         panic!("expected annotation");
     };
-    assert_eq!(ty, &Type::Hole(Some("t".to_string())));
+    assert_eq!(&ty.ty, &Type::Hole(Some("t".to_string())));
 
     let Item::Binding(b2) = &module.items[2] else {
         panic!("expected binding");
@@ -1185,7 +1203,7 @@ fn parser_type_holes() {
     let Expr::Annot { ty, .. } = &b2.expr else {
         panic!("expected annotation");
     };
-    assert_eq!(ty, &Type::List(Box::new(Type::Hole(None))));
+    assert_eq!(&ty.ty, &Type::List(Box::new(Type::Hole(None))));
 
     let Item::Binding(b3) = &module.items[3] else {
         panic!("expected binding");
@@ -1194,7 +1212,7 @@ fn parser_type_holes() {
         panic!("expected annotation");
     };
     assert_eq!(
-        ty,
+        &ty.ty,
         &Type::Tuple(vec![Type::Hole(Some("a".to_string())), Type::Hole(None)])
     );
 }
@@ -1222,13 +1240,13 @@ fn typecheck_expands_type_aliases() {
     let Expr::Annot { ty, .. } = &b0.expr else {
         panic!("expected annotation");
     };
-    assert_eq!(ty, &Type::List(Box::new(Type::Char)));
+    assert_eq!(&ty.ty, &Type::List(Box::new(Type::Char)));
 
     let b1 = find_binding("z");
     let Expr::Annot { ty, .. } = &b1.expr else {
         panic!("expected annotation");
     };
-    assert_eq!(ty, &Type::Tuple(vec![Type::Integer, Type::Bool]));
+    assert_eq!(&ty.ty, &Type::Tuple(vec![Type::Integer, Type::Bool]));
 
     use crate::types::{Scheme, Ty};
     assert_eq!(

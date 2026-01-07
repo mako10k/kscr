@@ -83,7 +83,7 @@ pub enum Expr {
     },
     Annot {
         expr: Box<Expr>,
-        ty: Type,
+        ty: QualType,
     },
     Do(Vec<DoStmt>),
     Case {
@@ -121,7 +121,10 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     List(Vec<Pattern>),
     Record(Vec<(String, Pattern)>),
-    RecordLoose(Vec<(String, Pattern)>),
+    /// Loose record pattern: `{a: p, ...}` or `{a: p, ...rest}`.
+    ///
+    /// When `rest` is present, it is bound to the residual record.
+    RecordLoose(Vec<(String, Pattern)>, Option<String>),
     Cons(Box<Pattern>, Box<Pattern>),
     Or(Box<Pattern>, Box<Pattern>),
     As(String, Box<Pattern>),
@@ -141,9 +144,27 @@ pub enum Type {
     List(Box<Type>),
     Tuple(Vec<Type>),
     Record(Vec<(String, Type)>),
+    /// Open record type: `{a: T, ...r}`.
+    ///
+    /// `r` is the residual row.
+    RecordOpen(Vec<(String, Type)>, Box<Type>),
 
     Hole(Option<String>),
+    /// Type identifier (lowercase names are treated as type variables; uppercase as constructors).
     Var(String),
     App { head: Box<Type>, args: Vec<Type> },
     Func(Box<Type>, Box<Type>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Predicate {
+    Show(Type),
+    ShowRow(Type),
+    Lacks { label: String, row: Type },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QualType {
+    pub preds: Vec<Predicate>,
+    pub ty: Type,
 }
