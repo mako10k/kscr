@@ -417,6 +417,7 @@ pub enum Value {
     Record(Vec<(String, Value)>),
     Io(Box<Value>),
     IoCtor,
+    BuiltinPrint,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -462,6 +463,10 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
     if name == "IO" {
         // Built-in IO constructor used by the minimal typecheck prelude.
         return Ok(Value::IoCtor);
+    }
+
+    if name == "print" {
+        return Ok(Value::BuiltinPrint);
     }
 
     if !g.defs.contains_key(name) {
@@ -556,7 +561,7 @@ fn eval_expr(
                             continue;
                         }
                     }
-                    return Ok(eval_expr(g, &env_arm, &arm.body)?);
+                    return eval_expr(g, &env_arm, &arm.body);
                 }
             }
             return Err(Error::msg("non-exhaustive case"));
@@ -583,6 +588,15 @@ fn eval_expr(
 fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
     match fun {
         Value::IoCtor => Ok(Value::Io(Box::new(arg))),
+        Value::BuiltinPrint => {
+            let Value::String(s) = arg else {
+                return Err(Error::msg("print expects String"));
+            };
+            use std::io::Write;
+            print!("{s}");
+            std::io::stdout().flush().ok();
+            Ok(Value::Io(Box::new(Value::Unit)))
+        }
         Value::Closure {
             mut params,
             body,

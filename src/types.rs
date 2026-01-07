@@ -722,6 +722,21 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // print :: String -> IO Unit
+    env.insert(
+        "print".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("String".to_string())),
+                Box::new(Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![Ty::Con("Unit".to_string())],
+                }),
+            ),
+        },
+    );
+
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
             continue;
