@@ -456,6 +456,16 @@ fn ir_run_main_not_builtin() {
 }
 
 #[test]
+fn ir_run_main_int_bool_to_string() {
+    let src = "main = do\n  stdoutWrite (intToString (1 + 2))\n  stdoutWrite (boolToString (1 == 1))\n  IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn typecheck_list_comprehension_with_guard() {
     let m = crate::parser::parse_module("xs = [x | x <- [1, 2], True]\n").unwrap();
     let tm = crate::types::typecheck(m).unwrap();

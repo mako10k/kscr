@@ -914,6 +914,30 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // intToString :: Integer -> String
+    env.insert(
+        "intToString".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Integer".to_string())),
+                Box::new(Ty::Con("String".to_string())),
+            ),
+        },
+    );
+
+    // boolToString :: Bool -> String
+    env.insert(
+        "boolToString".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Bool".to_string())),
+                Box::new(Ty::Con("String".to_string())),
+            ),
+        },
+    );
+
     // stdoutWrite :: String -> IO Unit
     // Low-level IO primitive used as a building block for higher-level IO.
     env.insert(

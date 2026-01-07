@@ -473,6 +473,8 @@ pub enum Value {
     BuiltinOr,
     BuiltinOr1(Box<Value>),
     BuiltinNot,
+    BuiltinIntToString,
+    BuiltinBoolToString,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -633,6 +635,14 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "not" {
         return Ok(Value::BuiltinNot);
+    }
+
+    if name == "intToString" {
+        return Ok(Value::BuiltinIntToString);
+    }
+
+    if name == "boolToString" {
+        return Ok(Value::BuiltinBoolToString);
     }
 
     if name == "stdinReadLine" {
@@ -911,6 +921,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinOr => Ok(Value::BuiltinOr1(Box::new(arg))),
         Value::BuiltinOr1(a) => or_bool(g, *a, arg),
         Value::BuiltinNot => not_bool(g, arg),
+        Value::BuiltinIntToString => int_to_string(g, arg),
+        Value::BuiltinBoolToString => bool_to_string(g, arg),
         Value::Closure {
             mut params,
             body,
@@ -1097,6 +1109,18 @@ fn not_bool(g: &Globals, a: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let Value::Bool(a) = a else { return Err(Error::msg("not expects Bool")) };
     Ok(Value::Bool(!a))
+}
+
+fn int_to_string(g: &Globals, a: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("intToString expects Integer")) };
+    Ok(Value::String(parse_i64(&a)?.to_string()))
+}
+
+fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let Value::Bool(a) = a else { return Err(Error::msg("boolToString expects Bool")) };
+    Ok(Value::String(if a { "True" } else { "False" }.to_string()))
 }
 
 fn match_pat(
