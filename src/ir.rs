@@ -404,7 +404,7 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
     })
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum IoAction {
     Pure(Value),
     StdoutWrite(String),
@@ -422,7 +422,7 @@ pub enum IoAction {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     Unit,
     Integer(String),
@@ -433,6 +433,7 @@ pub enum Value {
     Tuple(Vec<Value>),
     List(Vec<Value>),
     Record(Vec<(String, Value)>),
+    Thunk(std::rc::Rc<std::cell::RefCell<ThunkState>>),
     IoAction(Box<IoAction>),
     IoCtor,
     BuiltinStdoutWrite,
@@ -441,6 +442,16 @@ pub enum Value {
         body: Box<IrExpr>,
         env: std::collections::HashMap<String, Value>,
     },
+}
+
+#[derive(Debug)]
+pub enum ThunkState {
+    Unevaluated {
+        expr: IrExpr,
+        env: std::collections::HashMap<String, Value>,
+    },
+    Evaluating,
+    Evaluated(Value),
 }
 
 #[derive(Clone)]
@@ -480,9 +491,47 @@ impl Globals {
     }
 }
 
+fn force_value(g: &Globals, v: Value) -> Result<Value> {
+    match v {
+        Value::Thunk(t) => force_thunk(g, &t),
+        other => Ok(other),
+    }
+}
+
+fn force_thunk(g: &Globals, t: &std::rc::Rc<std::cell::RefCell<ThunkState>>) -> Result<Value> {
+    {
+        let st = t.borrow();
+        if let ThunkState::Evaluated(v) = &*st {
+            return Ok(v.clone());
+        }
+        if matches!(&*st, ThunkState::Evaluating) {
+            return Err(Error::msg("cyclic thunk"));
+        }
+    }
+
+    let (expr, env) = {
+        let mut st = t.borrow_mut();
+        match std::mem::replace(&mut *st, ThunkState::Evaluating) {
+            ThunkState::Unevaluated { expr, env } => (expr, env),
+            ThunkState::Evaluated(v) => {
+                *st = ThunkState::Evaluated(v.clone());
+                return Ok(v);
+            }
+            ThunkState::Evaluating => {
+                *st = ThunkState::Evaluating;
+                return Err(Error::msg("cyclic thunk"));
+            }
+        }
+    };
+
+    let v = eval_expr(g, &env, &expr)?;
+    *t.borrow_mut() = ThunkState::Evaluated(v.clone());
+    Ok(v)
+}
+
 fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &str) -> Result<Value> {
     if let Some(v) = env.get(name) {
-        return Ok(v.clone());
+        return force_value(g, v.clone());
     }
 
     if name == "IO" {
@@ -580,8 +629,11 @@ fn eval_expr(
         IrExpr::Let { bindings, body } => {
             let mut env2 = env.clone();
             for (name, e) in bindings {
-                let v = eval_expr(g, &env2, e)?;
-                env2.insert(name.clone(), v);
+                let t = std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
+                    expr: e.clone(),
+                    env: env2.clone(),
+                }));
+                env2.insert(name.clone(), Value::Thunk(t));
             }
             eval_expr(g, &env2, body)?
         }
@@ -727,6 +779,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         | Value::Tuple(_)
         | Value::List(_)
         | Value::Record(_)
+        | Value::Thunk(_)
         | Value::IoAction(_) => Err(Error::msg("attempted to apply a non-function")),
     }
 }
