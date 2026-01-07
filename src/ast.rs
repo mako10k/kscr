@@ -90,6 +90,10 @@ pub enum Expr {
         expr: Box<Expr>,
         arms: Vec<CaseArm>,
     },
+    Cons {
+        head: Box<Expr>,
+        tail: Box<Expr>,
+    },
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Record(Vec<(String, Expr)>),

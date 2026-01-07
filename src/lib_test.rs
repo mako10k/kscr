@@ -191,6 +191,16 @@ fn parser_cons_pattern() {
 }
 
 #[test]
+fn parser_cons_expr() {
+    let m = crate::parser::parse_module("xs = 1:[]\n").unwrap();
+    use crate::ast::{Expr, Item};
+    match &m.items[0] {
+        Item::Binding(b) => assert!(matches!(&b.expr, Expr::Cons { .. })),
+        _ => panic!("expected binding"),
+    }
+}
+
+#[test]
 fn typecheck_cons_pattern_binds() {
     let src = "x:xs = [1, 2]\n";
     let m = crate::parser::parse_module(src).unwrap();
@@ -201,6 +211,13 @@ fn typecheck_cons_pattern_binds() {
     assert_eq!(names, vec!["x".to_string(), "xs".to_string()]);
 
     assert_eq!(tm.inferred["x"].to_string(), "Integer");
+    assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
+}
+
+#[test]
+fn typecheck_cons_expr() {
+    let m = crate::parser::parse_module("xs = 1:[]\n").unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
     assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
 }
 
@@ -517,6 +534,26 @@ fn ir_run_main_io_unit() {
 #[test]
 fn ir_run_main_cons_pattern_matches() {
     let src = "main = case [1, 2] of\n  x:xs -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_cons_expr_and_pattern() {
+    let src = "main = case (1:[]) of\n  x:xs -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_cons_expr_head_is_lazy() {
+    let src = "main = let\n  bad = case True of\n    False -> 0\nin case (bad:[]) of\n  _:xs -> IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();

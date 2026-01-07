@@ -78,6 +78,10 @@ pub enum IrExpr {
         first: Box<IrExpr>,
         then_expr: Box<IrExpr>,
     },
+    Cons {
+        head: Box<IrExpr>,
+        tail: Box<IrExpr>,
+    },
     List(Vec<IrExpr>),
     Tuple(Vec<IrExpr>),
     Record(Vec<(String, IrExpr)>),
@@ -345,6 +349,10 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
             }
             acc
         }
+        Expr::Cons { head, tail } => IrExpr::Cons {
+            head: Box::new(lower_expr(head, fresh)?),
+            tail: Box::new(lower_expr(tail, fresh)?),
+        },
         Expr::List(es) => IrExpr::List(
             es.iter()
                 .map(|e| lower_expr(e, fresh))
@@ -639,6 +647,22 @@ fn eval_expr(
                 env2.insert(name.clone(), Value::Thunk(t));
             }
             eval_expr(g, &env2, body)?
+        }
+        IrExpr::Cons { head, tail } => {
+            let hd = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
+                expr: (**head).clone(),
+                env: env.clone(),
+            })));
+
+            let tl = force_value(g, eval_expr(g, env, tail)?)?;
+            let Value::List(vs) = tl else {
+                return Err(Error::msg("cons tail did not evaluate to List"));
+            };
+
+            let mut out = Vec::with_capacity(vs.len() + 1);
+            out.push(hd);
+            out.extend(vs);
+            Value::List(out)
         }
         IrExpr::List(es) => Value::List(
             es.iter()

@@ -966,6 +966,21 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
             Ok((s, Ty::Tuple(ts)))
         }
 
+        Expr::Cons { head, tail } => {
+            let (s_hd, t_hd) = infer_expr_in(cx, env, *head)?;
+            let env2 = apply_env(&s_hd, env);
+            let (s_tl, t_tl) = infer_expr_in(cx, &env2, *tail)?;
+            let mut s = compose(&s_tl, &s_hd);
+
+            let elem = cx.fresh();
+            let su_tl = unify(apply(&s, t_tl), Ty::List(Box::new(elem.clone())))?;
+            s = compose(&su_tl, &s);
+            let su_hd = unify(apply(&s, t_hd), apply(&s, elem.clone()))?;
+            s = compose(&su_hd, &s);
+
+            Ok((s.clone(), Ty::List(Box::new(apply(&s, elem)))))
+        }
+
         Expr::List(elems) => {
             if elems.is_empty() {
                 return Ok((Subst::new(), Ty::List(Box::new(cx.fresh()))));
@@ -1445,6 +1460,10 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+        },
+        Expr::Cons { head, tail } => Expr::Cons {
+            head: Box::new(expand_expr(*head, aliases)?),
+            tail: Box::new(expand_expr(*tail, aliases)?),
         },
         Expr::List(v) => Expr::List(
             v.into_iter()

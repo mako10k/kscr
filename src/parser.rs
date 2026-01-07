@@ -812,10 +812,12 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
     let mut lhs = parse_application(ts, stop)?;
 
     while ts.can_continue_expr(stop) {
+        let is_cons = matches!(ts.peek_kind(), Some(TokenKind::Colon));
         let (prec, is_backtick) = match ts.peek_kind() {
             Some(TokenKind::Backtick) => (60u8, true),
             Some(TokenKind::Star) | Some(TokenKind::Slash) => (70u8, false),
             Some(TokenKind::Plus) | Some(TokenKind::Minus) => (60u8, false),
+            Some(TokenKind::Colon) => (55u8, false),
             Some(TokenKind::EqEq)
             | Some(TokenKind::SlashEq)
             | Some(TokenKind::Lt)
@@ -842,6 +844,7 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
                 Some(TokenKind::Minus) => "-".to_string(),
                 Some(TokenKind::Star) => "*".to_string(),
                 Some(TokenKind::Slash) => "/".to_string(),
+                Some(TokenKind::Colon) => ":".to_string(),
                 Some(TokenKind::EqEq) => "==".to_string(),
                 Some(TokenKind::SlashEq) => "/=".to_string(),
                 Some(TokenKind::Lt) => "<".to_string(),
@@ -854,10 +857,17 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
             }
         };
 
-        let rhs = parse_binops(ts, stop, prec + 1)?;
-        lhs = ast::Expr::Apply {
-            func: Box::new(ast::Expr::Var(op)),
-            args: vec![lhs, rhs],
+        let rhs = parse_binops(ts, stop, if is_cons { prec } else { prec + 1 })?;
+        lhs = if is_cons {
+            ast::Expr::Cons {
+                head: Box::new(lhs),
+                tail: Box::new(rhs),
+            }
+        } else {
+            ast::Expr::Apply {
+                func: Box::new(ast::Expr::Var(op)),
+                args: vec![lhs, rhs],
+            }
         };
     }
 
