@@ -306,6 +306,20 @@ fn typecheck_or_pattern_requires_same_binds() {
 }
 
 #[test]
+fn typecheck_case_guard_bool() {
+    let src = "f = \\x -> case x of\n  _ | if True then True else False -> 1\n  _ -> 0\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    crate::types::typecheck(m).unwrap();
+}
+
+#[test]
+fn typecheck_case_guard_must_be_bool() {
+    let src = "f = \\x -> case x of\n  _ | let y = 1 in y -> 1\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    assert!(crate::types::typecheck(m).is_err());
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
@@ -482,7 +496,7 @@ fn parser_golden_case_expr() {
         Item::Binding(b) => match &b.expr {
             Expr::Case { arms, .. } => {
                 assert_eq!(arms.len(), 1);
-                assert!(matches!(arms[0].0, Pattern::Wildcard));
+                assert!(matches!(arms[0].pat, Pattern::Wildcard));
             }
             _ => panic!("expected case"),
         },
@@ -493,8 +507,8 @@ fn parser_golden_case_expr() {
         Item::Binding(b) => match &b.expr {
             Expr::Case { arms, .. } => {
                 assert_eq!(arms.len(), 2);
-                assert!(matches!(arms[0].0, Pattern::Literal(Expr::Bool(true))));
-                assert!(matches!(arms[1].0, Pattern::Literal(Expr::Bool(false))));
+                assert!(matches!(arms[0].pat, Pattern::Literal(Expr::Bool(true))));
+                assert!(matches!(arms[1].pat, Pattern::Literal(Expr::Bool(false))));
             }
             _ => panic!("expected case"),
         },
@@ -559,13 +573,15 @@ fn parser_case_patterns() {
         panic!("expected case");
     };
 
-    assert_eq!(arms.len(), 6);
-    assert!(matches!(arms[0].0, Pattern::Literal(Expr::Unit)));
-    assert!(matches!(arms[1].0, Pattern::Tuple(_)));
-    assert!(matches!(arms[2].0, Pattern::List(_)));
-    assert!(matches!(arms[3].0, Pattern::Record(_)));
-    assert!(matches!(arms[4].0, Pattern::Constructor { .. }));
-    assert!(matches!(arms[5].0, Pattern::Or(_, _)));
+    assert_eq!(arms.len(), 7);
+    assert!(matches!(arms[0].pat, Pattern::Literal(Expr::Unit)));
+    assert!(matches!(arms[1].pat, Pattern::Tuple(_)));
+    assert!(matches!(arms[2].pat, Pattern::List(_)));
+    assert!(matches!(arms[3].pat, Pattern::Record(_)));
+    assert!(matches!(arms[4].pat, Pattern::Constructor { .. }));
+    assert!(matches!(arms[5].pat, Pattern::Wildcard));
+    assert!(arms[5].guard.is_some());
+    assert!(matches!(arms[6].pat, Pattern::Or(_, _)));
 }
 
 #[test]

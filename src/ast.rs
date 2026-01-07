@@ -88,11 +88,18 @@ pub enum Expr {
     Do(Vec<DoStmt>),
     Case {
         expr: Box<Expr>,
-        arms: Vec<(Pattern, Expr)>,
+        arms: Vec<CaseArm>,
     },
     List(Vec<Expr>),
     Tuple(Vec<Expr>),
     Record(Vec<(String, Expr)>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaseArm {
+    pub pat: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Expr,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

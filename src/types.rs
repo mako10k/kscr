@@ -999,8 +999,10 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                 .map_err(|e| Error::msg(format!("in case scrutinee: {e}")))?;
             let mut out_ty = cx.fresh();
 
-            for (i, (pat, arm_expr)) in arms.into_iter().enumerate() {
+            for (i, arm) in arms.into_iter().enumerate() {
                 let arm_no = i + 1;
+                let ast::CaseArm { pat, guard, body } = arm;
+
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
                 let pat_ty = infer_pat_in(cx, &mut s, env, &pat, &mut binds, &mut seen)
@@ -1015,7 +1017,17 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
                     env_arm.insert(name, Scheme::mono(apply(&s, t)));
                 }
 
-                let (s_arm, arm_ty) = infer_expr_in(cx, &env_arm, arm_expr)
+                if let Some(g) = guard {
+                    let (s_g, t_g) = infer_expr_in(cx, &env_arm, g)
+                        .map_err(|e| Error::msg(format!("in case arm {arm_no} guard: {e}")))?;
+                    s = compose(&s_g, &s);
+                    let su_g = unify(apply(&s, t_g), Ty::Con("Bool".to_string()))
+                        .map_err(|e| Error::msg(format!("in case arm {arm_no} guard: {e}")))?;
+                    s = compose(&su_g, &s);
+                    env_arm = apply_env(&s, &env_arm);
+                }
+
+                let (s_arm, arm_ty) = infer_expr_in(cx, &env_arm, body)
                     .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
                 s = compose(&s_arm, &s);
 
@@ -1329,7 +1341,13 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
             expr: Box::new(expand_expr(*expr, aliases)?),
             arms: arms
                 .into_iter()
-                .map(|(p, e)| Ok((expand_pat(p, aliases)?, expand_expr(e, aliases)?)))
+                .map(|a| {
+                    Ok(ast::CaseArm {
+                        pat: expand_pat(a.pat, aliases)?,
+                        guard: a.guard.map(|g| expand_expr(g, aliases)).transpose()?,
+                        body: expand_expr(a.body, aliases)?,
+                    })
+                })
                 .collect::<Result<Vec<_>>>()?,
         },
         Expr::List(v) => Expr::List(
@@ -1578,8 +1596,16 @@ mod inference_tests {
         let e = infer_expr(ast::Expr::Case {
             expr: Box::new(ast::Expr::Integer("1".to_string())),
             arms: vec![
-                (ast::Pattern::Wildcard, ast::Expr::Var("y".to_string())),
-                (ast::Pattern::Wildcard, ast::Expr::Integer("0".to_string())),
+                ast::CaseArm {
+                    pat: ast::Pattern::Wildcard,
+                    guard: None,
+                    body: ast::Expr::Var("y".to_string()),
+                },
+                ast::CaseArm {
+                    pat: ast::Pattern::Wildcard,
+                    guard: None,
+                    body: ast::Expr::Integer("0".to_string()),
+                },
             ],
         })
         .unwrap_err();
@@ -1900,11 +1926,16 @@ x = do
             body: Box::new(ast::Expr::Case {
                 expr: Box::new(ast::Expr::Var("x".to_string())),
                 arms: vec![
-                    (
-                        ast::Pattern::Literal(ast::Expr::Integer("0".to_string())),
-                        ast::Expr::Bool(true),
-                    ),
-                    (ast::Pattern::Wildcard, ast::Expr::Bool(false)),
+                    ast::CaseArm {
+                        pat: ast::Pattern::Literal(ast::Expr::Integer("0".to_string())),
+                        guard: None,
+                        body: ast::Expr::Bool(true),
+                    },
+                    ast::CaseArm {
+                        pat: ast::Pattern::Wildcard,
+                        guard: None,
+                        body: ast::Expr::Bool(false),
+                    },
                 ],
             }),
         })
@@ -1949,11 +1980,16 @@ x = case Just 1 of
             body: Box::new(ast::Expr::Case {
                 expr: Box::new(ast::Expr::Var("x".to_string())),
                 arms: vec![
-                    (
-                        ast::Pattern::Literal(ast::Expr::Integer("0".to_string())),
-                        ast::Expr::Bool(true),
-                    ),
-                    (ast::Pattern::Wildcard, ast::Expr::Integer("1".to_string())),
+                    ast::CaseArm {
+                        pat: ast::Pattern::Literal(ast::Expr::Integer("0".to_string())),
+                        guard: None,
+                        body: ast::Expr::Bool(true),
+                    },
+                    ast::CaseArm {
+                        pat: ast::Pattern::Wildcard,
+                        guard: None,
+                        body: ast::Expr::Integer("1".to_string()),
+                    },
                 ],
             }),
         })

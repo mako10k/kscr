@@ -4,4 +4,5 @@ p = case v of
   [x, y] -> x
   {a: x, b: y} -> x
   Just x -> x
+  _ | if True then True else False -> 0
   0 | 1 -> 0

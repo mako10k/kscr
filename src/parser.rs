@@ -352,10 +352,33 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             return Err(Error::msg("unexpected EOF in case"));
         }
 
-        let pat = parse_pattern(ts)?;
+        let mut pat = parse_cons_pattern(ts)?;
+
+        // Disambiguation: prefer `or-pattern` when `| <pattern> ->` is possible;
+        // otherwise treat it as a case guard `| <expr> ->`.
+        while matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+            let save = ts.i;
+            ts.bump();
+            if let Ok(rhs) = parse_cons_pattern(ts) {
+                if matches!(ts.peek_kind(), Some(TokenKind::Arrow)) {
+                    pat = ast::Pattern::Or(Box::new(pat), Box::new(rhs));
+                    continue;
+                }
+            }
+            ts.i = save;
+            break;
+        }
+
+        let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+            ts.bump();
+            Some(parse_expr(ts, Stop::Pattern)?)
+        } else {
+            None
+        };
+
         ts.expect(TokenKind::Arrow)?;
         let body = parse_expr(ts, Stop::LineEnd)?;
-        arms.push((pat, body));
+        arms.push(ast::CaseArm { pat, guard, body });
         ts.consume_line_end();
     }
 
