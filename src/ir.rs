@@ -13,6 +13,36 @@ pub enum IrItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrLiteral {
+    Unit,
+    Integer(String),
+    Float64(String),
+    Bool(bool),
+    String(String),
+    Char(char),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrPattern {
+    Var(String),
+    Wildcard,
+    Literal(IrLiteral),
+    Tuple(Vec<IrPattern>),
+    List(Vec<IrPattern>),
+    Record(Vec<(String, IrPattern)>),
+    Cons(Box<IrPattern>, Box<IrPattern>),
+    Constructor { name: String, args: Vec<IrPattern> },
+    Or(Box<IrPattern>, Box<IrPattern>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IrCaseArm {
+    pub pat: IrPattern,
+    pub guard: Option<IrExpr>,
+    pub body: IrExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrExpr {
     Unit,
     Integer(String),
@@ -31,6 +61,10 @@ pub enum IrExpr {
     Let {
         bindings: Vec<(String, IrExpr)>,
         body: Box<IrExpr>,
+    },
+    Case {
+        expr: Box<IrExpr>,
+        arms: Vec<IrCaseArm>,
     },
     List(Vec<IrExpr>),
     Tuple(Vec<IrExpr>),
@@ -55,9 +89,53 @@ pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
     Ok(IrModule { items })
 }
 
-fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
+fn lower_lit_expr(expr: &ast::Expr) -> Result<IrLiteral> {
     use ast::Expr;
     Ok(match expr {
+        Expr::Unit => IrLiteral::Unit,
+        Expr::Integer(s) => IrLiteral::Integer(s.clone()),
+        Expr::Float64(s) => IrLiteral::Float64(s.clone()),
+        Expr::Bool(b) => IrLiteral::Bool(*b),
+        Expr::String(s) => IrLiteral::String(s.clone()),
+        Expr::Char(c) => IrLiteral::Char(*c),
+        _ => return Err(Error::msg("unsupported literal")),
+    })
+}
+
+fn lower_pat(pat: &ast::Pattern) -> Result<IrPattern> {
+    use ast::Pattern;
+    Ok(match pat {
+        Pattern::Var(n) => IrPattern::Var(n.clone()),
+        Pattern::Wildcard => IrPattern::Wildcard,
+        Pattern::Hole(_) => return Err(Error::msg("hole pattern is not supported in IR lowering yet")),
+        Pattern::Literal(e) => IrPattern::Literal(lower_lit_expr(e)?),
+        Pattern::Tuple(ps) => IrPattern::Tuple(ps.iter().map(lower_pat).collect::<Result<Vec<_>>>()?),
+        Pattern::List(ps) => IrPattern::List(ps.iter().map(lower_pat).collect::<Result<Vec<_>>>()?),
+        Pattern::Record(fields) => IrPattern::Record(
+            fields
+                .iter()
+                .map(|(n, p)| Ok((n.clone(), lower_pat(p)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::RecordLoose(_) => {
+            return Err(Error::msg("loose record pattern is not supported in IR lowering yet"));
+        }
+        Pattern::Cons(a, b) => IrPattern::Cons(Box::new(lower_pat(a)?), Box::new(lower_pat(b)?)),
+        Pattern::Or(a, b) => IrPattern::Or(Box::new(lower_pat(a)?), Box::new(lower_pat(b)?)),
+        Pattern::As(_, _) => return Err(Error::msg("as-pattern is not supported in IR lowering yet")),
+        Pattern::View(_, _) => return Err(Error::msg("view-pattern is not supported in IR lowering yet")),
+        Pattern::Constructor { name, args } => IrPattern::Constructor {
+            name: name.clone(),
+            args: args.iter().map(lower_pat).collect::<Result<Vec<_>>>()?,
+        },
+    })
+}
+
+fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
+    use ast::Expr;
+    Ok(match expr { 
+        // literals
+
         Expr::Unit => IrExpr::Unit,
         Expr::Integer(s) => IrExpr::Integer(s.clone()),
         Expr::Float64(s) => IrExpr::Float64(s.clone()),
@@ -104,6 +182,19 @@ fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
                 .map(|(n, e)| Ok((n.clone(), lower_expr(e)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
+        Expr::Case { expr, arms } => IrExpr::Case {
+            expr: Box::new(lower_expr(expr)?),
+            arms: arms
+                .iter()
+                .map(|a| {
+                    Ok(IrCaseArm {
+                        pat: lower_pat(&a.pat)?,
+                        guard: a.guard.as_ref().map(lower_expr).transpose()?,
+                        body: lower_expr(&a.body)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        },
         _ => return Err(Error::msg("expression is not supported in IR lowering yet")),
     })
 }
