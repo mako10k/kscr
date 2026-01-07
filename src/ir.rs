@@ -110,7 +110,7 @@ fn lower_pat(pat: &ast::Pattern) -> Result<IrPattern> {
     Ok(match pat {
         Pattern::Var(n) => IrPattern::Var(n.clone()),
         Pattern::Wildcard => IrPattern::Wildcard,
-        Pattern::Hole(_) => return Err(Error::msg("hole pattern is not supported in IR lowering yet")),
+        Pattern::Hole(_) => IrPattern::Wildcard,
         Pattern::Literal(e) => IrPattern::Literal(lower_lit_expr(e)?),
         Pattern::Tuple(ps) => IrPattern::Tuple(ps.iter().map(lower_pat).collect::<Result<Vec<_>>>()?),
         Pattern::List(ps) => IrPattern::List(ps.iter().map(lower_pat).collect::<Result<Vec<_>>>()?),
