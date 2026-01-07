@@ -110,6 +110,7 @@ pub enum Pattern {
     List(Vec<Pattern>),
     Record(Vec<(String, Pattern)>),
     Cons(Box<Pattern>, Box<Pattern>),
+    As(String, Box<Pattern>),
     Constructor { name: String, args: Vec<Pattern> },
 }
 

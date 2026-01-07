@@ -205,6 +205,35 @@ fn typecheck_cons_pattern_binds() {
 }
 
 #[test]
+fn parser_as_pattern() {
+    let m = crate::parser::parse_module("xs@_ = [1]\n").unwrap();
+    use crate::ast::{Item, Pattern};
+    match &m.items[0] {
+        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::As(_, _))),
+        _ => panic!("expected binding"),
+    }
+}
+
+#[test]
+fn typecheck_as_pattern_binds() {
+    let src = "xs@_ = [1]\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
+}
+
+#[test]
+fn typecheck_as_pattern_with_cons_binds_all() {
+    let src = "xs@(x:xt) = [1, 2]\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+
+    assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
+    assert_eq!(tm.inferred["x"].to_string(), "Integer");
+    assert_eq!(tm.inferred["xt"].to_string(), "[Integer]");
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

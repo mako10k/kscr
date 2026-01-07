@@ -52,6 +52,7 @@ pub enum TokenKind {
     RBrace,
     Colon,
     ColonColon,
+    At,
     Question,
     LeftArrow,
 }
@@ -355,6 +356,11 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             tokens.push(Token {
                 kind: TokenKind::Colon,
             });
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'@' {
+            tokens.push(Token { kind: TokenKind::At });
             i += 1;
             continue;
         }

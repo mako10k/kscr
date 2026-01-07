@@ -467,6 +467,14 @@ fn infer_pat_in(
 
             Ok(apply(subst, Ty::List(Box::new(elem))))
         }
+        Pattern::As(name, p) => {
+            if !seen.insert(name.clone()) {
+                return Err(Error::msg("duplicate pattern variable"));
+            }
+            let t = infer_pat_in(cx, subst, env, p, binds, seen)?;
+            binds.push((name.clone(), apply(subst, t.clone())));
+            Ok(t)
+        }
         Pattern::Constructor { name, args } => {
             let scheme = env
                 .get(name)

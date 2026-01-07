@@ -583,6 +583,16 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
 fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     let mut pat = parse_pattern_atom(ts)?;
 
+    // As-pattern: x @ pat
+    if let ast::Pattern::Var(name) = &pat {
+        if matches!(ts.peek_kind(), Some(TokenKind::At)) {
+            let name = name.clone();
+            ts.bump();
+            let inner = parse_pattern(ts)?;
+            pat = ast::Pattern::As(name, Box::new(inner));
+        }
+    }
+
     // Constructor application: Just x y
     if let ast::Pattern::Constructor { name, mut args } = pat {
         while ts.can_continue_pattern() {
@@ -1006,6 +1016,7 @@ impl TokenStream {
                 | Some(TokenKind::Eq)
                 | Some(TokenKind::Comma)
                 | Some(TokenKind::Colon)
+                | Some(TokenKind::At)
                 | Some(TokenKind::RParen)
                 | Some(TokenKind::RBracket)
                 | Some(TokenKind::RBrace)
