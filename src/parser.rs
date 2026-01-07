@@ -185,6 +185,7 @@ enum Stop {
     Else,
     In,
     Of,
+    Pattern,
 }
 
 fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
@@ -306,7 +307,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
 
         // Bind statement is `pat <- expr`.
         let save = ts.i;
-        if let Ok(pat) = parse_pattern(ts) {
+        if let Ok(pat) = parse_pattern_no_view(ts) {
             if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
                 ts.bump();
                 let expr = parse_expr(ts, Stop::LineEnd)?;
@@ -581,6 +582,14 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
 }
 
 fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    parse_pattern_inner(ts, true)
+}
+
+fn parse_pattern_no_view(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    parse_pattern_inner(ts, false)
+}
+
+fn parse_pattern_inner(ts: &mut TokenStream, allow_view: bool) -> Result<ast::Pattern> {
     let mut pat = parse_pattern_atom(ts)?;
 
     // As-pattern: x @ pat
@@ -588,7 +597,7 @@ fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
         if matches!(ts.peek_kind(), Some(TokenKind::At)) {
             let name = name.clone();
             ts.bump();
-            let inner = parse_pattern(ts)?;
+            let inner = parse_pattern_inner(ts, allow_view)?;
             pat = ast::Pattern::As(name, Box::new(inner));
         }
     }
@@ -604,8 +613,15 @@ fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     // Cons pattern: x : xs (right-associative)
     if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
         ts.bump();
-        let tail = parse_pattern(ts)?;
+        let tail = parse_pattern_inner(ts, allow_view)?;
         return Ok(ast::Pattern::Cons(Box::new(pat), Box::new(tail)));
+    }
+
+    // View pattern: pat <- expr
+    if allow_view && matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
+        ts.bump();
+        let e = parse_expr(ts, Stop::Pattern)?;
+        return Ok(ast::Pattern::View(Box::new(pat), Box::new(e)));
     }
 
     Ok(pat)
@@ -1021,6 +1037,9 @@ impl TokenStream {
             (Stop::Else, Some(TokenKind::KwElse)) => false,
             (Stop::In, Some(TokenKind::KwIn)) => false,
             (Stop::Of, Some(TokenKind::KwOf)) => false,
+            (Stop::Pattern, Some(TokenKind::Arrow | TokenKind::Eq | TokenKind::Comma)) => false,
+            (Stop::Pattern, Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace)) => false,
+            (Stop::Pattern, Some(TokenKind::Dedent)) => false,
             (Stop::LineEnd, _) => true,
             _ => true,
         }
@@ -1032,6 +1051,7 @@ impl TokenStream {
             None | Some(TokenKind::Newline)
                 | Some(TokenKind::Dedent)
                 | Some(TokenKind::Arrow)
+                | Some(TokenKind::LeftArrow)
                 | Some(TokenKind::Eq)
                 | Some(TokenKind::Comma)
                 | Some(TokenKind::Colon)

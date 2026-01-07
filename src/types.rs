@@ -536,6 +536,25 @@ fn infer_pat_in(
             binds.push((name.clone(), apply(subst, t.clone())));
             Ok(t)
         }
+        Pattern::View(p, e) => {
+            let t_scrut = cx.fresh();
+            let t_view = infer_pat_in(cx, subst, env, p, binds, seen)?;
+
+            let env_in = apply_env(subst, env);
+            let (s_e, t_e) = infer_expr_in(cx, &env_in, (**e).clone())?;
+            *subst = compose(&s_e, subst);
+
+            let su = unify(
+                apply(subst, t_e),
+                Ty::Func(
+                    Box::new(apply(subst, t_scrut.clone())),
+                    Box::new(apply(subst, t_view)),
+                ),
+            )?;
+            *subst = compose(&su, subst);
+
+            Ok(apply(subst, t_scrut))
+        }
         Pattern::Constructor { name, args } => {
             let scheme = env
                 .get(name)
@@ -1120,7 +1139,7 @@ fn collect_type_aliases(module: &ast::Module) -> HashMap<String, ast::TypeAlias>
 fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Result<ast::Item> {
     match item {
         ast::Item::Binding(b) => Ok(ast::Item::Binding(ast::Binding {
-            pat: b.pat,
+            pat: expand_pat(b.pat, aliases)?,
             expr: expand_expr(b.expr, aliases)?,
         })),
         ast::Item::TypeAlias(ta) => Ok(ast::Item::TypeAlias(ast::TypeAlias {
@@ -1148,6 +1167,51 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
         })),
         it @ (ast::Item::Import(_) | ast::Item::Export(_)) => Ok(it),
     }
+}
+
+fn expand_pat(pat: ast::Pattern, aliases: &HashMap<String, ast::TypeAlias>) -> Result<ast::Pattern> {
+    use ast::Pattern;
+    Ok(match pat {
+        Pattern::Var(_) | Pattern::Wildcard | Pattern::Hole(_) | Pattern::Literal(_) => pat,
+        Pattern::Tuple(ps) => Pattern::Tuple(
+            ps.into_iter()
+                .map(|p| expand_pat(p, aliases))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::List(ps) => Pattern::List(
+            ps.into_iter()
+                .map(|p| expand_pat(p, aliases))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::Record(fields) => Pattern::Record(
+            fields
+                .into_iter()
+                .map(|(n, p)| Ok((n, expand_pat(p, aliases)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::RecordLoose(fields) => Pattern::RecordLoose(
+            fields
+                .into_iter()
+                .map(|(n, p)| Ok((n, expand_pat(p, aliases)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::Cons(a, b) => Pattern::Cons(
+            Box::new(expand_pat(*a, aliases)?),
+            Box::new(expand_pat(*b, aliases)?),
+        ),
+        Pattern::As(name, p) => Pattern::As(name, Box::new(expand_pat(*p, aliases)?)),
+        Pattern::View(p, e) => Pattern::View(
+            Box::new(expand_pat(*p, aliases)?),
+            Box::new(expand_expr(*e, aliases)?),
+        ),
+        Pattern::Constructor { name, args } => Pattern::Constructor {
+            name,
+            args: args
+                .into_iter()
+                .map(|p| expand_pat(p, aliases))
+                .collect::<Result<Vec<_>>>()?,
+        },
+    })
 }
 
 fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Result<ast::Expr> {
@@ -1178,7 +1242,7 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .into_iter()
                 .map(|b| {
                     Ok(ast::Binding {
-                        pat: b.pat,
+                        pat: expand_pat(b.pat, aliases)?,
                         expr: expand_expr(b.expr, aliases)?,
                     })
                 })
@@ -1191,7 +1255,7 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .into_iter()
                 .map(|b| {
                     Ok(ast::Binding {
-                        pat: b.pat,
+                        pat: expand_pat(b.pat, aliases)?,
                         expr: expand_expr(b.expr, aliases)?,
                     })
                 })
@@ -1207,7 +1271,7 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .map(|s| {
                     Ok(match s {
                         ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
-                            pat,
+                            pat: expand_pat(pat, aliases)?,
                             expr: expand_expr(expr, aliases)?,
                         },
                         ast::DoStmt::Expr(e) => ast::DoStmt::Expr(expand_expr(e, aliases)?),
@@ -1219,7 +1283,7 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
             expr: Box::new(expand_expr(*expr, aliases)?),
             arms: arms
                 .into_iter()
-                .map(|(p, e)| Ok((p, expand_expr(e, aliases)?)))
+                .map(|(p, e)| Ok((expand_pat(p, aliases)?, expand_expr(e, aliases)?)))
                 .collect::<Result<Vec<_>>>()?,
         },
         Expr::List(v) => Expr::List(
