@@ -74,6 +74,10 @@ pub enum IrExpr {
         param: String,
         body: Box<IrExpr>,
     },
+    IoThen {
+        first: Box<IrExpr>,
+        then_expr: Box<IrExpr>,
+    },
     List(Vec<IrExpr>),
     Tuple(Vec<IrExpr>),
     Record(Vec<(String, IrExpr)>),
@@ -147,12 +151,9 @@ fn lower_do(stmts: &[ast::DoStmt], fresh: &mut usize) -> Result<IrExpr> {
     for stmt in it {
         match stmt {
             ast::DoStmt::Expr(e) => {
-                let tmp = format!("_do{fresh}");
-                *fresh += 1;
-                acc = IrExpr::IoBind {
-                    action: Box::new(lower_expr(e, fresh)?),
-                    param: tmp,
-                    body: Box::new(acc),
+                acc = IrExpr::IoThen {
+                    first: Box::new(lower_expr(e, fresh)?),
+                    then_expr: Box::new(acc),
                 };
             }
             ast::DoStmt::Bind { pat, expr } => {

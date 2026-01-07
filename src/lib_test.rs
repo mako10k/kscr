@@ -459,6 +459,18 @@ fn ir_lowering_do_expr() {
 }
 
 #[test]
+fn ir_lowering_do_then() {
+    let src = "x = do\n  IO 1\n  IO 2\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
+        panic!("expected single binding");
+    };
+    assert!(matches!(expr, crate::ir::IrExpr::IoThen { .. }));
+}
+
+#[test]
 fn ir_lowering_pattern_let() {
     let src = "x = let (a, b) = (1, 2) in a\n";
     let m = crate::parser::parse_module(src).unwrap();
