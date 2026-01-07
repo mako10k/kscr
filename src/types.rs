@@ -422,6 +422,7 @@ fn infer_pat_in(
             Expr::Float64(_) => Ty::Con("Float64".to_string()),
             Expr::Bool(_) => Ty::Con("Bool".to_string()),
             Expr::String(_) => Ty::Con("String".to_string()),
+            Expr::Char(_) => Ty::Con("Char".to_string()),
             _ => return Err(Error::msg("unsupported literal pattern")),
         }),
         Pattern::Tuple(ps) => Ok(Ty::Tuple(
@@ -449,6 +450,22 @@ fn infer_pat_in(
                 .collect::<Result<Vec<_>>>()?;
             out.sort_by(|(a, _), (b, _)| a.cmp(b));
             Ok(Ty::Record(out))
+        }
+        Pattern::Cons(hd, tl) => {
+            let elem = cx.fresh();
+            let t_hd = infer_pat_in(cx, subst, env, hd, binds, seen)?;
+            let t_tl = infer_pat_in(cx, subst, env, tl, binds, seen)?;
+
+            let su_hd = unify(apply(subst, t_hd), apply(subst, elem.clone()))?;
+            *subst = compose(&su_hd, subst);
+
+            let su_tl = unify(
+                apply(subst, t_tl),
+                apply(subst, Ty::List(Box::new(elem.clone()))),
+            )?;
+            *subst = compose(&su_tl, subst);
+
+            Ok(apply(subst, Ty::List(Box::new(elem))))
         }
         Pattern::Constructor { name, args } => {
             let scheme = env
@@ -625,6 +642,7 @@ fn infer_expr_in(cx: &mut InferCtx, env: &TypeEnv, expr: ast::Expr) -> Result<(S
         Expr::Float64(_) => Ok((Subst::new(), Ty::Con("Float64".to_string()))),
         Expr::Bool(true) | Expr::Bool(false) => Ok((Subst::new(), Ty::Con("Bool".to_string()))),
         Expr::String(_) => Ok((Subst::new(), Ty::Con("String".to_string()))),
+        Expr::Char(_) => Ok((Subst::new(), Ty::Con("Char".to_string()))),
 
         Expr::Var(name) => {
             let s = env

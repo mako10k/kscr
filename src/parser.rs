@@ -63,6 +63,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 | TokenKind::Integer(_)
                 | TokenKind::Float(_)
                 | TokenKind::String(_)
+                | TokenKind::Char(_)
                 | TokenKind::True
                 | TokenKind::False,
             ) => parse_binding(ts)?,
@@ -590,6 +591,13 @@ fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
         pat = ast::Pattern::Constructor { name, args };
     }
 
+    // Cons pattern: x : xs (right-associative)
+    if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
+        ts.bump();
+        let tail = parse_pattern(ts)?;
+        return Ok(ast::Pattern::Cons(Box::new(pat), Box::new(tail)));
+    }
+
     Ok(pat)
 }
 
@@ -635,6 +643,10 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
         },
         Some(TokenKind::String(_)) => match ts.bump() {
             Some(TokenKind::String(s)) => Ok(ast::Pattern::Literal(ast::Expr::String(s))),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::Char(_)) => match ts.bump() {
+            Some(TokenKind::Char(ch)) => Ok(ast::Pattern::Literal(ast::Expr::Char(ch))),
             _ => unreachable!(),
         },
 
@@ -788,6 +800,7 @@ fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                 | TokenKind::Integer(_)
                 | TokenKind::Float(_)
                 | TokenKind::String(_)
+                | TokenKind::Char(_)
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::LBracket
@@ -828,6 +841,10 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
         },
         Some(TokenKind::String(_)) => match ts.bump() {
             Some(TokenKind::String(s)) => Ok(ast::Expr::String(s)),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::Char(_)) => match ts.bump() {
+            Some(TokenKind::Char(ch)) => Ok(ast::Expr::Char(ch)),
             _ => unreachable!(),
         },
         Some(TokenKind::Ident(_)) => match ts.bump() {
@@ -988,6 +1005,7 @@ impl TokenStream {
                 | Some(TokenKind::Arrow)
                 | Some(TokenKind::Eq)
                 | Some(TokenKind::Comma)
+                | Some(TokenKind::Colon)
                 | Some(TokenKind::RParen)
                 | Some(TokenKind::RBracket)
                 | Some(TokenKind::RBrace)

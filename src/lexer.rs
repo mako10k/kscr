@@ -4,6 +4,7 @@ pub enum TokenKind {
     Integer(String),
     Float(String),
     String(String),
+    Char(char),
     True,
     False,
 
@@ -362,6 +363,49 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::Question,
             });
             i += 1;
+            continue;
+        }
+
+        // Char literal
+        if bytes[i] == b'\'' {
+            i += 1;
+            if i >= bytes.len() {
+                return Err(crate::error::Error::msg("unterminated char literal"));
+            }
+
+            let ch = if bytes[i] == b'\\' {
+                i += 1;
+                if i >= bytes.len() {
+                    return Err(crate::error::Error::msg("unterminated char literal"));
+                }
+                let ch = match bytes[i] {
+                    b'n' => '\n',
+                    b't' => '\t',
+                    b'r' => '\r',
+                    b'\'' => '\'',
+                    b'\\' => '\\',
+                    other => other as char,
+                };
+                i += 1;
+                ch
+            } else {
+                let s = &src[i..];
+                let ch = s
+                    .chars()
+                    .next()
+                    .ok_or_else(|| crate::error::Error::msg("unterminated char literal"))?;
+                i += ch.len_utf8();
+                ch
+            };
+
+            if i >= bytes.len() || bytes[i] != b'\'' {
+                return Err(crate::error::Error::msg("unterminated char literal"));
+            }
+            i += 1;
+
+            tokens.push(Token {
+                kind: TokenKind::Char(ch),
+            });
             continue;
         }
 

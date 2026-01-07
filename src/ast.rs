@@ -57,6 +57,7 @@ pub enum Expr {
     Float64(String),
     Bool(bool),
     String(String),
+    Char(char),
     Var(String),
     Ctor(String),
     Lambda {
@@ -108,6 +109,7 @@ pub enum Pattern {
     Tuple(Vec<Pattern>),
     List(Vec<Pattern>),
     Record(Vec<(String, Pattern)>),
+    Cons(Box<Pattern>, Box<Pattern>),
     Constructor { name: String, args: Vec<Pattern> },
 }
 

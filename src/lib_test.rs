@@ -159,6 +159,52 @@ fn lexer_skips_shebang() {
 }
 
 #[test]
+fn lexer_char_literal() {
+    let tokens = crate::lexer::lex("x = 'a'\ny = '\\n'\n").unwrap();
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| t.kind != crate::lexer::TokenKind::Newline)
+        .collect();
+
+    assert!(matches!(tokens[2].kind, crate::lexer::TokenKind::Char('a')));
+    assert!(matches!(tokens[5].kind, crate::lexer::TokenKind::Char('\n')));
+}
+
+#[test]
+fn parser_char_literal() {
+    let m = crate::parser::parse_module("x = 'a'\n").unwrap();
+    use crate::ast::{Expr, Item};
+    match &m.items[0] {
+        Item::Binding(b) => assert!(matches!(b.expr, Expr::Char('a'))),
+        _ => panic!("expected binding"),
+    }
+}
+
+#[test]
+fn parser_cons_pattern() {
+    let m = crate::parser::parse_module("x:xs = ys\n").unwrap();
+    use crate::ast::{Item, Pattern};
+    match &m.items[0] {
+        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::Cons(_, _))),
+        _ => panic!("expected binding"),
+    }
+}
+
+#[test]
+fn typecheck_cons_pattern_binds() {
+    let src = "x:xs = [1, 2]\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+
+    let mut names: Vec<_> = tm.inferred.keys().cloned().collect();
+    names.sort();
+    assert_eq!(names, vec!["x".to_string(), "xs".to_string()]);
+
+    assert_eq!(tm.inferred["x"].to_string(), "Integer");
+    assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
