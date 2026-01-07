@@ -938,6 +938,32 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // show :: a -> String
+    let Ty::Var(v) = cx.fresh() else { unreachable!() };
+    env.insert(
+        "show".to_string(),
+        Scheme {
+            vars: vec![v],
+            ty: Ty::Func(
+                Box::new(Ty::Var(v)),
+                Box::new(Ty::Con("String".to_string())),
+            ),
+        },
+    );
+
+    // toString :: a -> String
+    let Ty::Var(v) = cx.fresh() else { unreachable!() };
+    env.insert(
+        "toString".to_string(),
+        Scheme {
+            vars: vec![v],
+            ty: Ty::Func(
+                Box::new(Ty::Var(v)),
+                Box::new(Ty::Con("String".to_string())),
+            ),
+        },
+    );
+
     // stdoutWrite :: String -> IO Unit
     // Low-level IO primitive used as a building block for higher-level IO.
     env.insert(

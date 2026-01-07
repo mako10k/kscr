@@ -475,6 +475,7 @@ pub enum Value {
     BuiltinNot,
     BuiltinIntToString,
     BuiltinBoolToString,
+    BuiltinShow,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -643,6 +644,10 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "boolToString" {
         return Ok(Value::BuiltinBoolToString);
+    }
+
+    if name == "show" || name == "toString" {
+        return Ok(Value::BuiltinShow);
     }
 
     if name == "stdinReadLine" {
@@ -923,6 +928,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinNot => not_bool(g, arg),
         Value::BuiltinIntToString => int_to_string(g, arg),
         Value::BuiltinBoolToString => bool_to_string(g, arg),
+        Value::BuiltinShow => show_to_string(g, arg),
         Value::Closure {
             mut params,
             body,
@@ -1121,6 +1127,18 @@ fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let Value::Bool(a) = a else { return Err(Error::msg("boolToString expects Bool")) };
     Ok(Value::String(if a { "True" } else { "False" }.to_string()))
+}
+
+fn show_to_string(g: &Globals, a: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    match a {
+        Value::Integer(s) => int_to_string(g, Value::Integer(s)),
+        Value::Bool(b) => bool_to_string(g, Value::Bool(b)),
+        Value::String(s) => Ok(Value::String(s)),
+        Value::Char(c) => Ok(Value::String(c.to_string())),
+        Value::Unit => Ok(Value::String("()".to_string())),
+        _ => Err(Error::msg("show/toString expects a printable value")),
+    }
 }
 
 fn match_pat(
