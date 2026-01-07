@@ -642,19 +642,43 @@ fn eval_expr(
         }
         IrExpr::List(es) => Value::List(
             es.iter()
-                .map(|e| eval_expr(g, env, e))
-                .collect::<Result<Vec<_>>>()?,
+                .map(|e| {
+                    Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
+                        ThunkState::Unevaluated {
+                            expr: e.clone(),
+                            env: env.clone(),
+                        },
+                    )))
+                })
+                .collect(),
         ),
         IrExpr::Tuple(es) => Value::Tuple(
             es.iter()
-                .map(|e| eval_expr(g, env, e))
-                .collect::<Result<Vec<_>>>()?,
+                .map(|e| {
+                    Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
+                        ThunkState::Unevaluated {
+                            expr: e.clone(),
+                            env: env.clone(),
+                        },
+                    )))
+                })
+                .collect(),
         ),
         IrExpr::Record(fields) => Value::Record(
             fields
                 .iter()
-                .map(|(n, e)| Ok((n.clone(), eval_expr(g, env, e)?)))
-                .collect::<Result<Vec<_>>>()?,
+                .map(|(n, e)| {
+                    (
+                        n.clone(),
+                        Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
+                            ThunkState::Unevaluated {
+                                expr: e.clone(),
+                                env: env.clone(),
+                            },
+                        ))),
+                    )
+                })
+                .collect(),
         ),
         IrExpr::Case { expr, arms } => {
             let scrut = eval_expr(g, env, expr)?;
@@ -795,13 +819,19 @@ fn match_pat(
     val: &Value,
 ) -> Result<Option<std::collections::HashMap<String, Value>>> {
     use IrPattern as P;
-    Ok(match (pat, val) {
-        (P::Wildcard, _) => Some(std::collections::HashMap::new()),
-        (P::Var(n), v) => {
+
+    match pat {
+        P::Wildcard => return Ok(Some(std::collections::HashMap::new())),
+        P::Var(n) => {
             let mut m = std::collections::HashMap::new();
-            m.insert(n.clone(), v.clone());
-            Some(m)
+            m.insert(n.clone(), val.clone());
+            return Ok(Some(m));
         }
+        _ => {}
+    }
+
+    let val = force_value(g, val.clone())?;
+    Ok(match (pat, &val) {
         (P::Literal(l), v) => {
             let ok = match (l, v) {
                 (IrLiteral::Unit, Value::Unit) => true,

@@ -535,6 +535,16 @@ fn ir_apply_args_are_lazy() {
 }
 
 #[test]
+fn ir_tuple_elems_are_lazy() {
+    let src = "main = let\n  bad = case True of\n    False -> ()\n  x = (1, bad)\n  first = case x of\n    (a, b) -> a\nin do\n  IO first\n  IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn ir_run_main_with_print() {
     let src = "main = do\n  print \"hi\"\n  IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
