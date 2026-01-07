@@ -3,7 +3,7 @@
 This document describes the type system and related structural features of the lazy evaluation scripting language.
 
 ## Purpose
-- Describes primitive and composite types, polymorphism, type holes, contextual overloading, module system, and indent grouping.
+- Describes primitive and composite types, polymorphism, type holes, module system, and indent grouping.
 - For language semantics and evaluation, see `LanguageSemantics.md`.
 - For grammar and syntax, see `LanguageBNF.md`.
 - For internal representation, see `IntermediateRepresentation.md`.
@@ -67,36 +67,16 @@ The compiler may lower surface types to LLVM-aligned backend types for literals 
 
 ---
 
-## 3. Contextual Overloading
+## 3. Overloading (Deprecated)
 
-Contextual overloading allows variable bindings and function definitions to resolve differently depending on the expected type context. This enables limited ad-hoc polymorphism without explicit type classes.
+The original design included *contextual overloading* (selecting a definition based on expected type context).
+This approach is **not implemented** in the current `kscr` compiler, and the design is considered deprecated.
 
-### Definition Syntax
-A variable or function can have multiple definitions, each annotated with a type. The actual binding is selected based on the type expected by the surrounding context.
+For now, ad-hoc polymorphism is handled either by:
+- explicit, separate names (e.g. `intToString`, `boolToString`), or
+- a small number of polymorphic builtins (e.g. `show/toString :: forall a. a -> String`) with runtime behavior.
 
-#### Example
-```
-plus :: Integer -> Integer -> Integer
-plus x y = x + y
-
-plus :: [a] -> [a] -> [a]
-plus xs ys = xs ++ ys
-
-f = plus 1 2        # resolves to Integer addition
-g = plus [1] [2,3]  # resolves to list concatenation
-```
-In this example, `plus` is overloaded for both integers and lists. The type checker selects the appropriate definition based on the type of the arguments and the expected result type.
-
-### Type Inference
-During type inference, the compiler uses the expected type from the context to disambiguate overloaded bindings. If the context is ambiguous or insufficient, a type error is reported.
-
-### Restrictions
-- Overloading is only allowed when all definitions are unambiguous in their usage contexts.
-- In surface typing, implicit conversions are not performed.
-- During IR elaboration, integer widening subtyping (`iN <: iM`) may be used internally; other conversions require boundary checked casts.
-
-### Comparison
-This mechanism is similar to Haskell's type classes, but does not require explicit class declarations. It is also related to ML's value restriction and SML's ad-hoc overloading.
+Future direction: introduce type classes (constraints + dictionary passing) for principled overloading.
 
 ---
 
@@ -122,7 +102,7 @@ module MyModule where
 
 ### Type System Integration
 - Types, type synonyms, and data types can be defined and exported from modules.
-- Type variables and contextual overloads are resolved within module boundaries unless explicitly re-exported.
+- Type variables are resolved within module boundaries unless explicitly re-exported.
 
 ### Re-export and Dependency
 - Modules can re-export imported definitions for building layered APIs.
@@ -184,7 +164,7 @@ In this example, all indented lines under `module Main where` belong to the `Mai
 The language employs static type inference to ensure type safety at compile time.
 
 ### Hindley-Milner Type Inference
-- The type system is based on Hindley-Milner type inference, extended with contextual overloading.
+- The type system is based on Hindley-Milner type inference.
 - Types are inferred automatically for expressions without explicit annotations.
 - Type annotations can be provided for clarity or to resolve ambiguities.
 - Integer literals default to `Integer`; when constrained at boundaries to a backend integer type (e.g., `i32`), the compiler inserts a checked cast.

@@ -55,15 +55,15 @@ Scope notes:
 
 ---
 
-## Milestone 3 — Contextual Overloading (Design-Constrained)
+## Milestone 3 — Type Classes (Future)
 
-### Mid-goal 3.1 — Overload resolution rules
-- **Small-goal 3.1.1**: Define resolution algorithm precisely (expected type drives selection).
-- **Small-goal 3.1.2**: Enforce coherence: ambiguous resolutions are errors.
+### Mid-goal 3.1 — Constraints + dictionaries
+- **Small-goal 3.1.1**: Represent constraints in types (e.g. `Show a => a -> String`).
+- **Small-goal 3.1.2**: Lower constraints via dictionary passing in IR.
 
-### Mid-goal 3.2 — Minimal viable overloading
-- **Small-goal 3.2.1**: Support overloading for a small, explicit set of names (e.g., `plus` sample).
-- **Small-goal 3.2.2**: Expand the overloading mechanism only after tests prove stability.
+### Mid-goal 3.2 — Minimal `Show`
+- **Small-goal 3.2.1**: Implement `Show` for primitive types.
+- **Small-goal 3.2.2**: Expand only after tests prove stability.
 
 ---
 

@@ -466,7 +466,7 @@ fn ir_run_main_int_bool_to_string() {
 }
 
 #[test]
-fn ir_run_main_show_to_string_overload() {
+fn ir_run_main_show_to_string() {
     let src = "main = do\n  stdoutWrite (show (1 + 2))\n  stdoutWrite (toString (1 == 1))\n  IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
