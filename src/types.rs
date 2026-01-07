@@ -528,6 +528,48 @@ fn infer_pat_in(
 
             Ok(apply(subst, Ty::List(Box::new(elem))))
         }
+        Pattern::Or(a, b) => {
+            let base_len = binds.len();
+            let base_seen = seen.clone();
+            let base_binds = binds.clone();
+
+            let mut binds_a = base_binds.clone();
+            let mut seen_a = base_seen.clone();
+            let t_a = infer_pat_in(cx, subst, env, a, &mut binds_a, &mut seen_a)?;
+
+            let mut binds_b = base_binds;
+            let mut seen_b = base_seen;
+            let t_b = infer_pat_in(cx, subst, env, b, &mut binds_b, &mut seen_b)?;
+
+            let su_t = unify(apply(subst, t_a.clone()), apply(subst, t_b.clone()))?;
+            *subst = compose(&su_t, subst);
+
+            let map_a: HashMap<String, Ty> = binds_a[base_len..]
+                .iter()
+                .map(|(n, t)| (n.clone(), t.clone()))
+                .collect();
+            let map_b: HashMap<String, Ty> = binds_b[base_len..]
+                .iter()
+                .map(|(n, t)| (n.clone(), t.clone()))
+                .collect();
+
+            if map_a.len() != map_b.len() || map_a.keys().any(|k| !map_b.contains_key(k)) {
+                return Err(Error::msg("or-pattern must bind the same variables"));
+            }
+
+            let mut names: Vec<_> = map_a.keys().cloned().collect();
+            names.sort();
+            for n in names {
+                let ta = map_a.get(&n).unwrap().clone();
+                let tb = map_b.get(&n).unwrap().clone();
+                let su = unify(apply(subst, ta.clone()), apply(subst, tb))?;
+                *subst = compose(&su, subst);
+                let _ = seen.insert(n.clone());
+                binds.push((n, apply(subst, ta)));
+            }
+
+            Ok(apply(subst, t_a))
+        }
         Pattern::As(name, p) => {
             if !seen.insert(name.clone()) {
                 return Err(Error::msg("duplicate pattern variable"));
@@ -1199,7 +1241,11 @@ fn expand_pat(pat: ast::Pattern, aliases: &HashMap<String, ast::TypeAlias>) -> R
             Box::new(expand_pat(*a, aliases)?),
             Box::new(expand_pat(*b, aliases)?),
         ),
-        Pattern::As(name, p) => Pattern::As(name, Box::new(expand_pat(*p, aliases)?)),
+        Pattern::Or(a, b) => Pattern::Or(
+            Box::new(expand_pat(*a, aliases)?),
+            Box::new(expand_pat(*b, aliases)?),
+        ),
+        Pattern::As(name, p) => Pattern::As(name, Box::new(expand_pat(*p, aliases)?)), 
         Pattern::View(p, e) => Pattern::View(
             Box::new(expand_pat(*p, aliases)?),
             Box::new(expand_expr(*e, aliases)?),

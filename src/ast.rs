@@ -112,6 +112,7 @@ pub enum Pattern {
     Record(Vec<(String, Pattern)>),
     RecordLoose(Vec<(String, Pattern)>),
     Cons(Box<Pattern>, Box<Pattern>),
+    Or(Box<Pattern>, Box<Pattern>),
     As(String, Box<Pattern>),
     View(Box<Pattern>, Box<Expr>),
     Constructor { name: String, args: Vec<Pattern> },

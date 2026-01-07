@@ -4,3 +4,4 @@ p = case v of
   [x, y] -> x
   {a: x, b: y} -> x
   Just x -> x
+  0 | 1 -> 0

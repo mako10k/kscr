@@ -292,6 +292,20 @@ id = \\x -> x\n\
 }
 
 #[test]
+fn typecheck_or_pattern_case_arm() {
+    let src = "f = \\x -> case x of\n  0 | 1 -> 1\n  _ -> 0\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    crate::types::typecheck(m).unwrap();
+}
+
+#[test]
+fn typecheck_or_pattern_requires_same_binds() {
+    let src = "f = \\x -> case x of\n  0 | y -> 1\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    assert!(crate::types::typecheck(m).is_err());
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
@@ -545,12 +559,13 @@ fn parser_case_patterns() {
         panic!("expected case");
     };
 
-    assert_eq!(arms.len(), 5);
+    assert_eq!(arms.len(), 6);
     assert!(matches!(arms[0].0, Pattern::Literal(Expr::Unit)));
     assert!(matches!(arms[1].0, Pattern::Tuple(_)));
     assert!(matches!(arms[2].0, Pattern::List(_)));
     assert!(matches!(arms[3].0, Pattern::Record(_)));
     assert!(matches!(arms[4].0, Pattern::Constructor { .. }));
+    assert!(matches!(arms[5].0, Pattern::Or(_, _)));
 }
 
 #[test]

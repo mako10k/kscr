@@ -582,6 +582,33 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
 }
 
 fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    parse_or_pattern(ts)
+}
+
+fn parse_or_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    let mut pat = parse_cons_pattern(ts)?;
+    while matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+        ts.bump();
+        let rhs = parse_cons_pattern(ts)?;
+        pat = ast::Pattern::Or(Box::new(pat), Box::new(rhs));
+    }
+    Ok(pat)
+}
+
+fn parse_cons_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    let pat = parse_app_pattern(ts)?;
+
+    // Cons pattern: x : xs (right-associative)
+    if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
+        ts.bump();
+        let tail = parse_cons_pattern(ts)?;
+        return Ok(ast::Pattern::Cons(Box::new(pat), Box::new(tail)));
+    }
+
+    Ok(pat)
+}
+
+fn parse_app_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     let mut pat = parse_pattern_atom(ts)?;
 
     // As-pattern: x @ pat
@@ -600,13 +627,6 @@ fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
             args.push(parse_pattern_atom(ts)?);
         }
         pat = ast::Pattern::Constructor { name, args };
-    }
-
-    // Cons pattern: x : xs (right-associative)
-    if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
-        ts.bump();
-        let tail = parse_pattern(ts)?;
-        return Ok(ast::Pattern::Cons(Box::new(pat), Box::new(tail)));
     }
 
     Ok(pat)
@@ -1049,6 +1069,7 @@ impl TokenStream {
                 | Some(TokenKind::Eq)
                 | Some(TokenKind::Comma)
                 | Some(TokenKind::Colon)
+                | Some(TokenKind::Pipe)
                 | Some(TokenKind::At)
                 | Some(TokenKind::Ellipsis)
                 | Some(TokenKind::RParen)
