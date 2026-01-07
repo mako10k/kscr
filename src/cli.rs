@@ -1,4 +1,4 @@
-use crate::{ast, parser, types, Result};
+use crate::{ast, ir, parser, types, Result};
 use std::collections::HashSet;
 
 pub fn run<I, S>(mut args: I) -> Result<()>
@@ -58,6 +58,17 @@ where
                 "{}",
                 render_typecheck_report(&tm.module, tm.inferred, show_all)
             );
+            Ok(())
+        }
+        "ir" => {
+            let path = args
+                .next()
+                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
+            let src = std::fs::read_to_string(path.into())?;
+            let ast = parser::parse_module(&src)?;
+            let tm = types::typecheck(ast)?;
+            let irm = ir::lower_to_ir(&tm.module)?;
+            println!("{irm:#?}");
             Ok(())
         }
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
@@ -125,7 +136,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   (imports are not supported yet)\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   (imports are not supported yet)\n  ir <file>         Typecheck then lower to IR (debug)\n  help              Show this help\n"
     );
 }
 

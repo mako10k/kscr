@@ -353,6 +353,17 @@ fn typecheck_list_comprehension_with_pattern_bind() {
 }
 
 #[test]
+fn ir_lowering_basic_binding() {
+    let m = crate::parser::parse_module("x = if True then 1 else 2\n").unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    assert!(matches!(
+        &ir.items[..],
+        [crate::ir::IrItem::Binding { name, .. }] if name == "x"
+    ));
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
