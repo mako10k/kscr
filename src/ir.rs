@@ -472,6 +472,7 @@ pub enum Value {
     BuiltinAnd1(Box<Value>),
     BuiltinOr,
     BuiltinOr1(Box<Value>),
+    BuiltinNot,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -628,6 +629,10 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "||" {
         return Ok(Value::BuiltinOr);
+    }
+
+    if name == "not" {
+        return Ok(Value::BuiltinNot);
     }
 
     if name == "stdinReadLine" {
@@ -905,6 +910,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinAnd1(a) => and_bool(g, *a, arg),
         Value::BuiltinOr => Ok(Value::BuiltinOr1(Box::new(arg))),
         Value::BuiltinOr1(a) => or_bool(g, *a, arg),
+        Value::BuiltinNot => not_bool(g, arg),
         Value::Closure {
             mut params,
             body,
@@ -1085,6 +1091,12 @@ fn or_bool(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Bool(b) = b else { return Err(Error::msg("|| expects Bool")) };
     Ok(Value::Bool(b))
+}
+
+fn not_bool(g: &Globals, a: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let Value::Bool(a) = a else { return Err(Error::msg("not expects Bool")) };
+    Ok(Value::Bool(!a))
 }
 
 fn match_pat(

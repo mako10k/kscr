@@ -902,6 +902,18 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // not :: Bool -> Bool
+    env.insert(
+        "not".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("Bool".to_string())),
+                Box::new(Ty::Con("Bool".to_string())),
+            ),
+        },
+    );
+
     // stdoutWrite :: String -> IO Unit
     // Low-level IO primitive used as a building block for higher-level IO.
     env.insert(
