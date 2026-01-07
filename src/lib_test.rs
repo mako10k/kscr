@@ -273,7 +273,7 @@ fn typecheck_record_loose_pattern_binds_fields() {
 
 #[test]
 fn parser_view_pattern() {
-    let m = crate::parser::parse_module("Just n <- id = x\n").unwrap();
+    let m = crate::parser::parse_module("(Just n <- id) = x\n").unwrap();
     use crate::ast::{Item, Pattern};
     match &m.items[0] {
         Item::Binding(b) => assert!(matches!(&b.pat, Pattern::View(_, _))),
@@ -285,7 +285,7 @@ fn parser_view_pattern() {
 fn typecheck_view_pattern_binds() {
     let src = "data Maybe a = Nothing | Just a\n\
 id = \\x -> x\n\
-Just n <- id = Just 1\n";
+(Just n <- id) = Just 1\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     assert_eq!(tm.inferred["n"].to_string(), "Integer");

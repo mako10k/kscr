@@ -307,7 +307,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
 
         // Bind statement is `pat <- expr`.
         let save = ts.i;
-        if let Ok(pat) = parse_pattern_no_view(ts) {
+        if let Ok(pat) = parse_pattern(ts) {
             if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
                 ts.bump();
                 let expr = parse_expr(ts, Stop::LineEnd)?;
@@ -582,14 +582,6 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
 }
 
 fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
-    parse_pattern_inner(ts, true)
-}
-
-fn parse_pattern_no_view(ts: &mut TokenStream) -> Result<ast::Pattern> {
-    parse_pattern_inner(ts, false)
-}
-
-fn parse_pattern_inner(ts: &mut TokenStream, allow_view: bool) -> Result<ast::Pattern> {
     let mut pat = parse_pattern_atom(ts)?;
 
     // As-pattern: x @ pat
@@ -597,7 +589,7 @@ fn parse_pattern_inner(ts: &mut TokenStream, allow_view: bool) -> Result<ast::Pa
         if matches!(ts.peek_kind(), Some(TokenKind::At)) {
             let name = name.clone();
             ts.bump();
-            let inner = parse_pattern_inner(ts, allow_view)?;
+            let inner = parse_pattern(ts)?;
             pat = ast::Pattern::As(name, Box::new(inner));
         }
     }
@@ -613,15 +605,8 @@ fn parse_pattern_inner(ts: &mut TokenStream, allow_view: bool) -> Result<ast::Pa
     // Cons pattern: x : xs (right-associative)
     if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
         ts.bump();
-        let tail = parse_pattern_inner(ts, allow_view)?;
+        let tail = parse_pattern(ts)?;
         return Ok(ast::Pattern::Cons(Box::new(pat), Box::new(tail)));
-    }
-
-    // View pattern: pat <- expr
-    if allow_view && matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
-        ts.bump();
-        let e = parse_expr(ts, Stop::Pattern)?;
-        return Ok(ast::Pattern::View(Box::new(pat), Box::new(e)));
     }
 
     Ok(pat)
@@ -697,6 +682,15 @@ fn parse_paren_or_tuple_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     }
 
     let first = parse_pattern(ts)?;
+
+    // View pattern must be parenthesized: (pat <- expr)
+    if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
+        ts.bump();
+        let expr = parse_expr(ts, Stop::Pattern)?;
+        ts.expect(TokenKind::RParen)?;
+        return Ok(ast::Pattern::View(Box::new(first), Box::new(expr)));
+    }
+
     if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
         let mut elems = vec![first];
         while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
