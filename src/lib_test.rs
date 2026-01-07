@@ -234,6 +234,27 @@ fn typecheck_as_pattern_with_cons_binds_all() {
 }
 
 #[test]
+fn parser_hole_pattern() {
+    let m = crate::parser::parse_module("? = 1\n?x = 2\n").unwrap();
+    use crate::ast::{Item, Pattern};
+    match &m.items[0] {
+        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::Hole(None))),
+        _ => panic!("expected binding"),
+    }
+    match &m.items[1] {
+        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::Hole(Some(name)) if name == "x")),
+        _ => panic!("expected binding"),
+    }
+}
+
+#[test]
+fn typecheck_hole_pattern_binds_nothing() {
+    let m = crate::parser::parse_module("? = [1]\n").unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    assert!(tm.inferred.is_empty());
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

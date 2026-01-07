@@ -105,6 +105,7 @@ pub enum DoStmt {
 pub enum Pattern {
     Var(String),
     Wildcard,
+    Hole(Option<String>),
     Literal(Expr),
     Tuple(Vec<Pattern>),
     List(Vec<Pattern>),

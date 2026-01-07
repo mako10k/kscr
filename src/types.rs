@@ -416,6 +416,7 @@ fn infer_pat_in(
             Ok(t)
         }
         Pattern::Wildcard => Ok(cx.fresh()),
+        Pattern::Hole(_) => Ok(cx.fresh()),
         Pattern::Literal(e) => Ok(match e {
             Expr::Unit => Ty::Con("Unit".to_string()),
             Expr::Integer(_) => Ty::Con("Integer".to_string()),

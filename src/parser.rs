@@ -65,7 +65,8 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 | TokenKind::String(_)
                 | TokenKind::Char(_)
                 | TokenKind::True
-                | TokenKind::False,
+                | TokenKind::False
+                | TokenKind::Question,
             ) => parse_binding(ts)?,
             Some(_) => return Err(Error::msg("unexpected token at top-level")),
             None => break,
@@ -620,6 +621,14 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
         Some(TokenKind::Ident(s)) if s == "_" => {
             ts.bump();
             Ok(ast::Pattern::Wildcard)
+        }
+        Some(TokenKind::Question) => {
+            ts.bump();
+            let name = match ts.peek_kind() {
+                Some(TokenKind::Ident(_)) => Some(ts.expect_ident()?),
+                _ => None,
+            };
+            Ok(ast::Pattern::Hole(name))
         }
         Some(TokenKind::Ident(_)) => match ts.bump() {
             Some(TokenKind::Ident(s)) => {
