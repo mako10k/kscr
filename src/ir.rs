@@ -439,7 +439,8 @@ pub enum Value {
     String(String),
     Char(char),
     Tuple(Vec<Value>),
-    List(Vec<Value>),
+    ListNil,
+    ListCons(Box<Value>, Box<Value>),
     Record(Vec<(String, Value)>),
     Thunk(std::rc::Rc<std::cell::RefCell<ThunkState>>),
     IoAction(Box<IoAction>),
@@ -653,29 +654,23 @@ fn eval_expr(
                 expr: (**head).clone(),
                 env: env.clone(),
             })));
-
-            let tl = force_value(g, eval_expr(g, env, tail)?)?;
-            let Value::List(vs) = tl else {
-                return Err(Error::msg("cons tail did not evaluate to List"));
-            };
-
-            let mut out = Vec::with_capacity(vs.len() + 1);
-            out.push(hd);
-            out.extend(vs);
-            Value::List(out)
+            let tl = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
+                expr: (**tail).clone(),
+                env: env.clone(),
+            })));
+            Value::ListCons(Box::new(hd), Box::new(tl))
         }
-        IrExpr::List(es) => Value::List(
-            es.iter()
-                .map(|e| {
-                    Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
-                        ThunkState::Unevaluated {
-                            expr: e.clone(),
-                            env: env.clone(),
-                        },
-                    )))
-                })
-                .collect(),
-        ),
+        IrExpr::List(es) => {
+            let mut out = Value::ListNil;
+            for e in es.iter().rev() {
+                let hd = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
+                    expr: e.clone(),
+                    env: env.clone(),
+                })));
+                out = Value::ListCons(Box::new(hd), Box::new(out));
+            }
+            out
+        },
         IrExpr::Tuple(es) => Value::Tuple(
             es.iter()
                 .map(|e| {
@@ -829,7 +824,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         | Value::Char(_)
         | Value::Unit
         | Value::Tuple(_)
-        | Value::List(_)
+        | Value::ListNil
+        | Value::ListCons(_, _)
         | Value::Record(_)
         | Value::Thunk(_)
         | Value::IoAction(_) => Err(Error::msg("attempted to apply a non-function")),
@@ -876,23 +872,27 @@ fn match_pat(
             }
             Some(out)
         }
-        (P::List(ps), Value::List(vs)) if ps.len() == vs.len() => {
+        (P::List(ps), v) => {
             let mut out = std::collections::HashMap::new();
-            for (p, v) in ps.iter().zip(vs.iter()) {
-                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+            let mut cur = v.clone();
+            for p in ps.iter() {
+                let cur_forced = force_value(g, cur)?;
+                let Value::ListCons(h, t) = cur_forced else { return Ok(None) };
+                let Some(b) = match_pat(g, env, p, &h)? else { return Ok(None) };
                 out.extend(b);
+                cur = *t;
             }
-            Some(out)
+            let cur = force_value(g, cur)?;
+            if matches!(cur, Value::ListNil) { Some(out) } else { None }
         }
-        (P::Cons(hd, tl), Value::List(vs)) => {
-            if vs.is_empty() {
-                return Ok(None);
-            }
+        (P::Cons(hd, tl), v) => {
+            let v = v.clone();
+            let v = force_value(g, v)?;
+            let Value::ListCons(h, t) = v else { return Ok(None) };
             let mut out = std::collections::HashMap::new();
-            let Some(b_hd) = match_pat(g, env, hd, &vs[0])? else { return Ok(None) };
+            let Some(b_hd) = match_pat(g, env, hd, &h)? else { return Ok(None) };
             out.extend(b_hd);
-            let rest = Value::List(vs[1..].to_vec());
-            let Some(b_tl) = match_pat(g, env, tl, &rest)? else { return Ok(None) };
+            let Some(b_tl) = match_pat(g, env, tl, &t)? else { return Ok(None) };
             out.extend(b_tl);
             Some(out)
         }
