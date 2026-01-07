@@ -525,6 +525,16 @@ fn ir_run_main_with_print() {
 }
 
 #[test]
+fn ir_run_main_with_stdout_write() {
+    let src = "main = do\n  stdoutWrite \"hi\"\n  IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn ir_run_main_detects_cycle() {
     use crate::ir::{IrExpr, IrItem, IrModule};
     let ir = IrModule {

@@ -407,7 +407,7 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IoAction {
     Pure(Value),
-    Print(String),
+    StdoutWrite(String),
     Bind {
         action: Box<IoAction>,
         param: String,
@@ -435,6 +435,7 @@ pub enum Value {
     IoAction(Box<IoAction>),
     IoCtor,
     BuiltinPrint,
+    BuiltinStdoutWrite,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -489,9 +490,14 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
         return Ok(Value::IoCtor);
     }
 
+    if name == "stdoutWrite" {
+        return Ok(Value::BuiltinStdoutWrite);
+    }
+
     if name == "print" {
-        // NOTE: Temporary builtin for observability while IO primitives are still evolving;
-        // eventually `print` should be a library function implemented in terms of lower-level IO.
+        // NOTE: currently a builtin for observability.
+        // In the future, `print` should become a library function built on top of IO primitives
+        // such as `stdoutWrite`.
         return Ok(Value::BuiltinPrint);
     }
 
@@ -632,7 +638,7 @@ fn eval_expr(
 fn run_io(g: &Globals, action: IoAction) -> Result<Value> {
     match action {
         IoAction::Pure(v) => Ok(v),
-        IoAction::Print(s) => {
+        IoAction::StdoutWrite(s) => {
             use std::io::Write;
             print!("{s}");
             std::io::stdout().flush().ok();
@@ -670,11 +676,17 @@ fn run_io(g: &Globals, action: IoAction) -> Result<Value> {
 fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
     match fun {
         Value::IoCtor => Ok(Value::IoAction(Box::new(IoAction::Pure(arg)))),
+        Value::BuiltinStdoutWrite => {
+            let Value::String(s) = arg else {
+                return Err(Error::msg("stdoutWrite expects String"));
+            };
+            Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
+        }
         Value::BuiltinPrint => {
             let Value::String(s) = arg else {
                 return Err(Error::msg("print expects String"));
             };
-            Ok(Value::IoAction(Box::new(IoAction::Print(s))))
+            Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
         }
         Value::Closure {
             mut params,

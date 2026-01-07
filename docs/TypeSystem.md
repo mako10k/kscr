@@ -140,8 +140,8 @@ module Main where
 	main = print (add 1 2)
 ```
 
-Note: the current `kscr` implementation provides `print` as a temporary built-in for observability.
-In the future, `print` is expected to be implemented as a library function on top of lower-level IO primitives.
+Note: the current `kscr` implementation provides `stdoutWrite` as a low-level IO primitive, and `print` as a temporary built-in for observability.
+In the future, `print` is expected to be implemented as a library function on top of lower-level IO primitives such as `stdoutWrite`.
 
 ### Compilation Units
 - Each module is compiled separately. Only exported definitions are visible to other modules.

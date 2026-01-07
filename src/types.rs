@@ -722,9 +722,26 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // stdoutWrite :: String -> IO Unit
+    // Low-level IO primitive used as a building block for higher-level IO.
+    env.insert(
+        "stdoutWrite".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("String".to_string())),
+                Box::new(Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![Ty::Con("Unit".to_string())],
+                }),
+            ),
+        },
+    );
+
     // print :: String -> IO Unit
-    // NOTE: Temporary builtin for observability while IO primitives are still evolving;
-    // eventually `print` should be a library function implemented in terms of lower-level IO.
+    // NOTE: currently a builtin for observability.
+    // In the future, `print` should become a library function built on top of IO primitives
+    // such as `stdoutWrite`.
     env.insert(
         "print".to_string(),
         Scheme {
