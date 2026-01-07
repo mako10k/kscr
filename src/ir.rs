@@ -175,17 +175,29 @@ fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
             else_branch: Box::new(lower_expr(else_branch)?),
         },
         Expr::Let { bindings, body } => {
-            let mut bs = Vec::new();
-            for b in bindings {
-                let ast::Pattern::Var(name) = &b.pat else {
-                    return Err(Error::msg("IR lowering supports only variable let-bindings"));
-                };
-                bs.push((name.clone(), lower_expr(&b.expr)?));
+            // Lower sequential let-bindings.
+            let mut acc = lower_expr(body)?;
+            for b in bindings.iter().rev() {
+                match &b.pat {
+                    ast::Pattern::Var(name) => {
+                        acc = IrExpr::Let {
+                            bindings: vec![(name.clone(), lower_expr(&b.expr)?)],
+                            body: Box::new(acc),
+                        };
+                    }
+                    pat => {
+                        acc = IrExpr::Case {
+                            expr: Box::new(lower_expr(&b.expr)?),
+                            arms: vec![IrCaseArm {
+                                pat: lower_pat(pat)?,
+                                guard: None,
+                                body: acc,
+                            }],
+                        };
+                    }
+                }
             }
-            IrExpr::Let {
-                bindings: bs,
-                body: Box::new(lower_expr(body)?),
-            }
+            acc
         }
         Expr::List(es) => IrExpr::List(es.iter().map(lower_expr).collect::<Result<Vec<_>>>()?),
         Expr::Tuple(es) => IrExpr::Tuple(es.iter().map(lower_expr).collect::<Result<Vec<_>>>()?),
@@ -236,6 +248,5 @@ fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
                 body: Box::new(lower_expr(expr)?),
             }
         }
-        _ => return Err(Error::msg("expression is not supported in IR lowering yet")),
     })
 }
