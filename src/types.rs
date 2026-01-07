@@ -723,6 +723,8 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
     );
 
     // print :: String -> IO Unit
+    // NOTE: Temporary builtin for observability while IO primitives are still evolving;
+    // eventually `print` should be a library function implemented in terms of lower-level IO.
     env.insert(
         "print".to_string(),
         Scheme {

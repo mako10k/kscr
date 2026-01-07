@@ -466,6 +466,8 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
     }
 
     if name == "print" {
+        // NOTE: Temporary builtin for observability while IO primitives are still evolving;
+        // eventually `print` should be a library function implemented in terms of lower-level IO.
         return Ok(Value::BuiltinPrint);
     }
 
