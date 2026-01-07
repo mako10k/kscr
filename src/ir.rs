@@ -408,6 +408,7 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
 pub enum IoAction {
     Pure(Value),
     StdoutWrite(String),
+    StdinReadLine,
     Bind {
         action: Box<IoAction>,
         param: String,
@@ -492,6 +493,17 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "stdoutWrite" {
         return Ok(Value::BuiltinStdoutWrite);
+    }
+
+    if name == "stdinReadLine" {
+        return Ok(Value::IoAction(Box::new(IoAction::StdinReadLine)));
+    }
+
+    if name == "readLine" {
+        // NOTE: currently a builtin for early ergonomics.
+        // In the future, `readLine` should become a library function built on top of IO primitives
+        // such as `stdinReadLine`.
+        return Ok(Value::IoAction(Box::new(IoAction::StdinReadLine)));
     }
 
     if name == "print" {
@@ -643,6 +655,15 @@ fn run_io(g: &Globals, action: IoAction) -> Result<Value> {
             print!("{s}");
             std::io::stdout().flush().ok();
             Ok(Value::Unit)
+        }
+        IoAction::StdinReadLine => {
+            use std::io::BufRead;
+            let mut s = String::new();
+            std::io::stdin().lock().read_line(&mut s)?;
+            while s.ends_with(['\n', '\r']) {
+                s.pop();
+            }
+            Ok(Value::String(s))
         }
         IoAction::Bind {
             action,

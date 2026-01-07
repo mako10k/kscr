@@ -738,6 +738,34 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // stdinReadLine :: IO String
+    // Low-level IO primitive used as a building block for higher-level IO.
+    env.insert(
+        "stdinReadLine".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::App {
+                head: Box::new(Ty::Con("IO".to_string())),
+                args: vec![Ty::Con("String".to_string())],
+            },
+        },
+    );
+
+    // readLine :: IO String
+    // NOTE: currently a builtin for early ergonomics.
+    // In the future, `readLine` should become a library function built on top of IO primitives
+    // such as `stdinReadLine`.
+    env.insert(
+        "readLine".to_string(),
+        Scheme {
+            vars: vec![],
+            ty: Ty::App {
+                head: Box::new(Ty::Con("IO".to_string())),
+                args: vec![Ty::Con("String".to_string())],
+            },
+        },
+    );
+
     // print :: String -> IO Unit
     // NOTE: currently a builtin for observability.
     // In the future, `print` should become a library function built on top of IO primitives

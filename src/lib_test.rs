@@ -535,6 +535,14 @@ fn ir_run_main_with_stdout_write() {
 }
 
 #[test]
+fn ir_typechecks_read_line() {
+    let src = "main = do\n  x <- readLine\n  stdoutWrite x\n  IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let _ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+}
+
+#[test]
 fn ir_run_main_detects_cycle() {
     use crate::ir::{IrExpr, IrItem, IrModule};
     let ir = IrModule {

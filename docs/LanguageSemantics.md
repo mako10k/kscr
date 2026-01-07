@@ -36,7 +36,7 @@ The language is designed for functional programming with default lazy (thunk-bas
 ```
 do {
 	x <- readLine;
-	print (x + 1)
+	stdoutWrite x
 }
 ```
 This block represents a sequence of `IO` actions: reading a line, then printing a value. Each action is an `IO` computation, and the result is composed monadically.

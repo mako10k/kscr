@@ -140,8 +140,9 @@ module Main where
 	main = print (add 1 2)
 ```
 
-Note: the current `kscr` implementation provides `stdoutWrite` as a low-level IO primitive, and `print` as a temporary built-in for observability.
-In the future, `print` is expected to be implemented as a library function on top of lower-level IO primitives such as `stdoutWrite`.
+Note: the current `kscr` implementation provides low-level IO primitives such as `stdoutWrite` and `stdinReadLine`.
+For early ergonomics/observability, `readLine` and `print` are currently provided as temporary built-ins.
+In the future, `readLine`/`print` are expected to be implemented as library functions on top of lower-level IO primitives such as `stdinReadLine`/`stdoutWrite`.
 
 ### Compilation Units
 - Each module is compiled separately. Only exported definitions are visible to other modules.
@@ -163,7 +164,7 @@ module Main where
 	main :: IO ()
 	main = do
 		x <- readLine
-		print (x + 1)
+		stdoutWrite x
 ```
 In this example, all indented lines under `module Main where` belong to the `Main` module. The `do` block is also grouped by indentation.
 
