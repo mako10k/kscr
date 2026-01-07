@@ -977,11 +977,113 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
         return Ok(ast::Expr::List(Vec::new()));
     }
 
-    let mut elems = Vec::new();
-    elems.push(parse_expr(ts, Stop::LineEnd)?);
+    let first = parse_expr(ts, Stop::Pattern)?;
+
+    // List comprehension: [ expr | generator_list ]
+    if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+        ts.bump();
+
+        enum Gen {
+            Bind(ast::Pattern, ast::Expr),
+            Guard(ast::Expr),
+        }
+
+        let mut gens = Vec::new();
+        loop {
+            let save = ts.i;
+            if let Ok(pat) = parse_pattern(ts) {
+                if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
+                    ts.bump();
+                    let rhs = parse_expr(ts, Stop::Pattern)?;
+                    gens.push(Gen::Bind(pat, rhs));
+                } else {
+                    ts.i = save;
+                    let e = parse_expr(ts, Stop::Pattern)?;
+                    gens.push(Gen::Guard(e));
+                }
+            } else {
+                ts.i = save;
+                let e = parse_expr(ts, Stop::Pattern)?;
+                gens.push(Gen::Guard(e));
+            }
+
+            if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+                ts.bump();
+                continue;
+            }
+            break;
+        }
+
+        ts.expect(TokenKind::RBracket)?;
+
+        let mut out = ast::Expr::List(vec![first]);
+        for g in gens.into_iter().rev() {
+            out = match g {
+                Gen::Guard(cond) => ast::Expr::If {
+                    cond: Box::new(cond),
+                    then_branch: Box::new(out),
+                    else_branch: Box::new(ast::Expr::List(Vec::new())),
+                },
+                Gen::Bind(pat, xs) => match pat {
+                    ast::Pattern::Var(name) => ast::Expr::Apply {
+                        func: Box::new(ast::Expr::Var("concatMap".to_string())),
+                        args: vec![
+                            ast::Expr::Lambda {
+                                params: vec![name],
+                                body: Box::new(out),
+                            },
+                            xs,
+                        ],
+                    },
+                    ast::Pattern::Wildcard => ast::Expr::Apply {
+                        func: Box::new(ast::Expr::Var("concatMap".to_string())),
+                        args: vec![
+                            ast::Expr::Lambda {
+                                params: vec!["_".to_string()],
+                                body: Box::new(out),
+                            },
+                            xs,
+                        ],
+                    },
+                    other_pat => {
+                        let tmp = ts.fresh_name("_lc");
+                        ast::Expr::Apply {
+                            func: Box::new(ast::Expr::Var("concatMap".to_string())),
+                            args: vec![
+                                ast::Expr::Lambda {
+                                    params: vec![tmp.clone()],
+                                    body: Box::new(ast::Expr::Case {
+                                        expr: Box::new(ast::Expr::Var(tmp)),
+                                        arms: vec![
+                                            ast::CaseArm {
+                                                pat: other_pat,
+                                                guard: None,
+                                                body: out,
+                                            },
+                                            ast::CaseArm {
+                                                pat: ast::Pattern::Wildcard,
+                                                guard: None,
+                                                body: ast::Expr::List(Vec::new()),
+                                            },
+                                        ],
+                                    }),
+                                },
+                                xs,
+                            ],
+                        }
+                    }
+                },
+            };
+        }
+
+        return Ok(out);
+    }
+
+    // List literal: [e1, e2, ...]
+    let mut elems = vec![first];
     while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
         ts.bump();
-        elems.push(parse_expr(ts, Stop::LineEnd)?);
+        elems.push(parse_expr(ts, Stop::Pattern)?);
     }
 
     ts.expect(TokenKind::RBracket)?;
@@ -1017,11 +1119,22 @@ fn parse_record_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 struct TokenStream {
     tokens: Vec<lexer::Token>,
     i: usize,
+    gensym: u32,
 }
 
 impl TokenStream {
     fn new(tokens: Vec<lexer::Token>) -> Self {
-        Self { tokens, i: 0 }
+        Self {
+            tokens,
+            i: 0,
+            gensym: 0,
+        }
+    }
+
+    fn fresh_name(&mut self, prefix: &str) -> String {
+        let n = self.gensym;
+        self.gensym += 1;
+        format!("{prefix}{n}")
     }
 
     fn is_eof(&self) -> bool {

@@ -332,6 +332,27 @@ fn typecheck_main_must_be_io_unit() {
 }
 
 #[test]
+fn typecheck_list_comprehension_simple() {
+    let m = crate::parser::parse_module("xs = [x | x <- [1, 2]]\n").unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
+}
+
+#[test]
+fn typecheck_list_comprehension_with_guard() {
+    let m = crate::parser::parse_module("xs = [x | x <- [1, 2], True]\n").unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
+}
+
+#[test]
+fn typecheck_list_comprehension_with_pattern_bind() {
+    let m = crate::parser::parse_module("xs = [a | (a, b) <- [(1, 2)]]\n").unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

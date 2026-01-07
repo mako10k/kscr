@@ -698,6 +698,30 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // concatMap :: forall a b. (a -> [b]) -> [a] -> [b]
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
+    let Ty::Var(b) = cx.fresh() else {
+        unreachable!()
+    };
+    env.insert(
+        "concatMap".to_string(),
+        Scheme {
+            vars: vec![a, b],
+            ty: Ty::Func(
+                Box::new(Ty::Func(
+                    Box::new(Ty::Var(a)),
+                    Box::new(Ty::List(Box::new(Ty::Var(b)))),
+                )),
+                Box::new(Ty::Func(
+                    Box::new(Ty::List(Box::new(Ty::Var(a)))),
+                    Box::new(Ty::List(Box::new(Ty::Var(b)))),
+                )),
+            ),
+        },
+    );
+
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
             continue;
