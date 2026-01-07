@@ -483,6 +483,16 @@ fn ir_lowering_pattern_where() {
 }
 
 #[test]
+fn ir_lowering_top_level_pattern_binding() {
+    let src = "(a, b) = (1, 2)\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    assert!(ir.items.iter().any(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == "a")));
+    assert!(ir.items.iter().any(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == "b")));
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

@@ -83,20 +83,90 @@ pub enum IrExpr {
 
 pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
     let mut items = Vec::new();
+    let mut tmp_no = 0usize;
+
     for it in &module.items {
         let ast::Item::Binding(b) = it else {
             continue;
         };
-        let ast::Pattern::Var(name) = &b.pat else {
-            return Err(Error::msg("IR lowering supports only variable bindings"));
-        };
-        let expr = lower_expr(&b.expr)?;
-        items.push(IrItem::Binding {
-            name: name.clone(),
-            expr,
-        });
+
+        match &b.pat {
+            ast::Pattern::Var(name) => {
+                let expr = lower_expr(&b.expr)?;
+                items.push(IrItem::Binding {
+                    name: name.clone(),
+                    expr,
+                });
+            }
+            pat => {
+                let mut vars = std::collections::BTreeSet::new();
+                collect_pat_vars(pat, &mut vars);
+                if vars.is_empty() {
+                    return Err(Error::msg(
+                        "IR lowering supports only bindings that introduce variables",
+                    ));
+                }
+
+                let tmp = format!("_ir_top{tmp_no}");
+                tmp_no += 1;
+                items.push(IrItem::Binding {
+                    name: tmp.clone(),
+                    expr: lower_expr(&b.expr)?,
+                });
+
+                let ir_pat = lower_pat(pat)?;
+                for v in vars {
+                    items.push(IrItem::Binding {
+                        name: v.clone(),
+                        expr: IrExpr::Case {
+                            expr: Box::new(IrExpr::Var(tmp.clone())),
+                            arms: vec![IrCaseArm {
+                                pat: ir_pat.clone(),
+                                guard: None,
+                                body: IrExpr::Var(v),
+                            }],
+                        },
+                    });
+                }
+            }
+        }
     }
+
     Ok(IrModule { items })
+}
+
+fn collect_pat_vars(pat: &ast::Pattern, out: &mut std::collections::BTreeSet<String>) {
+    use ast::Pattern;
+    match pat {
+        Pattern::Var(n) => {
+            out.insert(n.clone());
+        }
+        Pattern::As(n, p) => {
+            out.insert(n.clone());
+            collect_pat_vars(p, out);
+        }
+        Pattern::Tuple(ps) | Pattern::List(ps) => {
+            for p in ps {
+                collect_pat_vars(p, out);
+            }
+        }
+        Pattern::Record(fs) | Pattern::RecordLoose(fs) => {
+            for (_, p) in fs {
+                collect_pat_vars(p, out);
+            }
+        }
+        Pattern::Cons(a, b) | Pattern::Or(a, b) => {
+            collect_pat_vars(a, out);
+            collect_pat_vars(b, out);
+        }
+        Pattern::Constructor { args, .. } => {
+            for p in args {
+                collect_pat_vars(p, out);
+            }
+        }
+        Pattern::View(p, _) => collect_pat_vars(p, out),
+        Pattern::Wildcard | Pattern::Hole(_) | Pattern::Literal(_) => {}
+    }
 }
 
 fn lower_lit_expr(expr: &ast::Expr) -> Result<IrLiteral> {
