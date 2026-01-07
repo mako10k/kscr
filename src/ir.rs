@@ -446,6 +446,8 @@ pub enum Value {
     IoAction(Box<IoAction>),
     IoCtor,
     BuiltinStdoutWrite,
+    BuiltinConcatMap,
+    BuiltinConcatMap1(Box<Value>),
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -550,6 +552,10 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "stdoutWrite" {
         return Ok(Value::BuiltinStdoutWrite);
+    }
+
+    if name == "concatMap" {
+        return Ok(Value::BuiltinConcatMap);
     }
 
     if name == "stdinReadLine" {
@@ -801,6 +807,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
             };
             Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
         }
+        Value::BuiltinConcatMap => Ok(Value::BuiltinConcatMap1(Box::new(arg))),
+        Value::BuiltinConcatMap1(f) => concat_map(g, *f, arg),
         Value::Closure {
             mut params,
             body,
@@ -830,6 +838,42 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         | Value::Thunk(_)
         | Value::IoAction(_) => Err(Error::msg("attempted to apply a non-function")),
     }
+}
+
+fn list_to_vec(g: &Globals, mut v: Value) -> Result<Vec<Value>> {
+    let mut out = Vec::new();
+    loop {
+        v = force_value(g, v)?;
+        match v {
+            Value::ListNil => return Ok(out),
+            Value::ListCons(h, t) => {
+                out.push(*h);
+                v = *t;
+            }
+            other => return Err(Error::msg(format!("expected List, got {other:?}"))),
+        }
+    }
+}
+
+fn vec_to_list(mut elems: Vec<Value>) -> Value {
+    let mut out = Value::ListNil;
+    while let Some(v) = elems.pop() {
+        out = Value::ListCons(Box::new(v), Box::new(out));
+    }
+    out
+}
+
+fn concat_map(g: &Globals, f: Value, xs: Value) -> Result<Value> {
+    let f = force_value(g, f)?;
+    let xs = list_to_vec(g, xs)?;
+    let mut out = Vec::new();
+
+    for x in xs {
+        let ys = apply_one(g, f.clone(), x)?;
+        out.extend(list_to_vec(g, ys)?);
+    }
+
+    Ok(vec_to_list(out))
 }
 
 fn match_pat(
