@@ -35,6 +35,7 @@ pub enum IrPattern {
     Constructor { name: String, args: Vec<IrPattern> },
     Or(Box<IrPattern>, Box<IrPattern>),
     As(String, Box<IrPattern>),
+    View(Box<IrPattern>, Box<IrExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,7 +129,7 @@ fn lower_pat(pat: &ast::Pattern) -> Result<IrPattern> {
         Pattern::Cons(a, b) => IrPattern::Cons(Box::new(lower_pat(a)?), Box::new(lower_pat(b)?)),
         Pattern::Or(a, b) => IrPattern::Or(Box::new(lower_pat(a)?), Box::new(lower_pat(b)?)),
         Pattern::As(n, p) => IrPattern::As(n.clone(), Box::new(lower_pat(p)?)),
-        Pattern::View(_, _) => return Err(Error::msg("view-pattern is not supported in IR lowering yet")),
+        Pattern::View(p, e) => IrPattern::View(Box::new(lower_pat(p)?), Box::new(lower_expr(e)?)),
         Pattern::Constructor { name, args } => IrPattern::Constructor {
             name: name.clone(),
             args: args.iter().map(lower_pat).collect::<Result<Vec<_>>>()?,
