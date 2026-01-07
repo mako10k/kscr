@@ -46,6 +46,12 @@ pub struct IrCaseArm {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IrDoStmt {
+    Bind { pat: IrPattern, expr: IrExpr },
+    Expr(IrExpr),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrExpr {
     Unit,
     Integer(String),
@@ -69,6 +75,7 @@ pub enum IrExpr {
         expr: Box<IrExpr>,
         arms: Vec<IrCaseArm>,
     },
+    Do(Vec<IrDoStmt>),
     List(Vec<IrExpr>),
     Tuple(Vec<IrExpr>),
     Record(Vec<(String, IrExpr)>),
@@ -201,6 +208,20 @@ fn lower_expr(expr: &ast::Expr) -> Result<IrExpr> {
                 })
                 .collect::<Result<Vec<_>>>()?,
         },
+        Expr::Do(stmts) => IrExpr::Do(
+            stmts
+                .iter()
+                .map(|s| {
+                    Ok(match s {
+                        ast::DoStmt::Bind { pat, expr } => IrDoStmt::Bind {
+                            pat: lower_pat(pat)?,
+                            expr: lower_expr(expr)?,
+                        },
+                        ast::DoStmt::Expr(e) => IrDoStmt::Expr(lower_expr(e)?),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        ),
         Expr::Annot { expr, .. } => lower_expr(expr)?,
         Expr::Where { expr, bindings } => {
             let mut bs = Vec::new();
