@@ -1176,6 +1176,16 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
 
     let inferred = infer_module(&module)?;
 
+    if let Some(main) = inferred.get("main") {
+        let expected = Ty::App {
+            head: Box::new(Ty::Con("IO".to_string())),
+            args: vec![Ty::Con("Unit".to_string())],
+        };
+        if !main.vars.is_empty() || main.ty != expected {
+            return Err(Error::msg("main must have type IO Unit"));
+        }
+    }
+
     Ok(TypedModule { module, inferred })
 }
 

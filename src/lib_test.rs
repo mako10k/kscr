@@ -320,6 +320,18 @@ fn typecheck_case_guard_must_be_bool() {
 }
 
 #[test]
+fn typecheck_main_must_be_io_unit() {
+    let m_ok = crate::parser::parse_module("main = IO ()\n").unwrap();
+    crate::types::typecheck(m_ok).unwrap();
+
+    let m_bad = crate::parser::parse_module("main = 1\n").unwrap();
+    assert!(crate::types::typecheck(m_bad).is_err());
+
+    let m_bad2 = crate::parser::parse_module("main = IO 1\n").unwrap();
+    assert!(crate::types::typecheck(m_bad2).is_err());
+}
+
+#[test]
 fn parser_golden_expr() {
     let src = std::fs::read_to_string("tests/parser_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();
