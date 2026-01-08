@@ -602,6 +602,40 @@ mod tests {
     }
 
     #[test]
+    fn cli_import_as_blocks_unqualified_ctor_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_import_as_blocks_unqualified_ctor_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Maybe, values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing]\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A as OM\n  xs = [a | Just a <- OM.values]\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "typecheck".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        let e = run(args.into_iter()).unwrap_err();
+        assert!(format!("{e}").contains("unknown constructor"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cli_run_record_pattern_smoke() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_record_pattern_smoke_{}.ks",
