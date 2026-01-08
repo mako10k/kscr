@@ -87,9 +87,29 @@ pub enum IrExpr {
     Record(Vec<(String, IrExpr)>),
 }
 
+fn collect_ctor_aliases(module: &ast::Module) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for it in &module.items {
+        let ast::Item::Binding(b) = it else {
+            continue;
+        };
+        let ast::Pattern::Var(name) = &b.pat else {
+            continue;
+        };
+        match &b.expr {
+            ast::Expr::Var(v) | ast::Expr::Ctor(v) if v.contains('.') => {
+                out.insert(name.clone(), v.clone());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
     let mut items = Vec::new();
     let mut fresh = 0usize;
+    let ctor_aliases = collect_ctor_aliases(module);
 
     // Lower `data` declarations into constructor bindings.
     // For now, constructors are encoded as records: { __ctor: "CtorName", __args: [...] }.
@@ -135,7 +155,7 @@ pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
 
         match &b.pat {
             ast::Pattern::Var(name) => {
-                let expr = lower_expr(&b.expr, &mut fresh)?;
+                let expr = lower_expr(&b.expr, &mut fresh, &ctor_aliases)?;
                 items.push(IrItem::Binding {
                     name: name.clone(),
                     expr,
@@ -154,10 +174,10 @@ pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
                 fresh += 1;
                 items.push(IrItem::Binding {
                     name: tmp.clone(),
-                    expr: lower_expr(&b.expr, &mut fresh)?,
+                    expr: lower_expr(&b.expr, &mut fresh, &ctor_aliases)?,
                 });
 
-                let ir_pat = lower_pat(pat, &mut fresh)?;
+                let ir_pat = lower_pat(pat, &mut fresh, &ctor_aliases)?;
                 for v in vars {
                     items.push(IrItem::Binding {
                         name: v.clone(),
@@ -178,7 +198,11 @@ pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
     Ok(IrModule { items })
 }
 
-fn lower_do(stmts: &[ast::DoStmt], fresh: &mut usize) -> Result<IrExpr> {
+fn lower_do(
+    stmts: &[ast::DoStmt],
+    fresh: &mut usize,
+    ctor_aliases: &std::collections::HashMap<String, String>,
+) -> Result<IrExpr> {
     if stmts.is_empty() {
         return Err(Error::msg("empty do"));
     }
@@ -187,13 +211,13 @@ fn lower_do(stmts: &[ast::DoStmt], fresh: &mut usize) -> Result<IrExpr> {
     let Some(ast::DoStmt::Expr(last)) = it.next() else {
         return Err(Error::msg("do must end with expression"));
     };
-    let mut acc = lower_expr(last, fresh)?;
+    let mut acc = lower_expr(last, fresh, ctor_aliases)?;
 
     for stmt in it {
         match stmt {
             ast::DoStmt::Expr(e) => {
                 acc = IrExpr::IoThen {
-                    first: Box::new(lower_expr(e, fresh)?),
+                    first: Box::new(lower_expr(e, fresh, ctor_aliases)?),
                     then_expr: Box::new(acc),
                 };
             }
@@ -203,14 +227,14 @@ fn lower_do(stmts: &[ast::DoStmt], fresh: &mut usize) -> Result<IrExpr> {
 
                 let body = match pat {
                     ast::Pattern::Var(name) => IrExpr::IoBind {
-                        action: Box::new(lower_expr(expr, fresh)?),
+                        action: Box::new(lower_expr(expr, fresh, ctor_aliases)?),
                         param: name.clone(),
                         body: Box::new(acc),
                     },
                     other => {
-                        let ir_pat = lower_pat(other, fresh)?;
+                        let ir_pat = lower_pat(other, fresh, ctor_aliases)?;
                         IrExpr::IoBind {
-                            action: Box::new(lower_expr(expr, fresh)?),
+                            action: Box::new(lower_expr(expr, fresh, ctor_aliases)?),
                             param: tmp.clone(),
                             body: Box::new(IrExpr::Case {
                                 expr: Box::new(IrExpr::Var(tmp)),
@@ -287,7 +311,11 @@ fn lower_lit_expr(expr: &ast::Expr) -> Result<IrLiteral> {
     })
 }
 
-fn lower_pat(pat: &ast::Pattern, fresh: &mut usize) -> Result<IrPattern> {
+fn lower_pat(
+    pat: &ast::Pattern,
+    fresh: &mut usize,
+    ctor_aliases: &std::collections::HashMap<String, String>,
+) -> Result<IrPattern> {
     use ast::Pattern;
     Ok(match pat {
         Pattern::Var(n) => IrPattern::Var(n.clone()),
@@ -296,48 +324,59 @@ fn lower_pat(pat: &ast::Pattern, fresh: &mut usize) -> Result<IrPattern> {
         Pattern::Literal(e) => IrPattern::Literal(lower_lit_expr(e)?),
         Pattern::Tuple(ps) => IrPattern::Tuple(
             ps.iter()
-                .map(|p| lower_pat(p, fresh))
+                .map(|p| lower_pat(p, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         ),
         Pattern::List(ps) => IrPattern::List(
             ps.iter()
-                .map(|p| lower_pat(p, fresh))
+                .map(|p| lower_pat(p, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         ),
         Pattern::Record(fields) => IrPattern::Record(
             fields
                 .iter()
-                .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh)?)))
+                .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh, ctor_aliases)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
         Pattern::RecordLoose(fields, rest) => IrPattern::RecordLoose(
             fields
                 .iter()
-                .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh)?)))
+                .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh, ctor_aliases)?)))
                 .collect::<Result<Vec<_>>>()?,
             rest.clone(),
         ),
         Pattern::Cons(a, b) => IrPattern::Cons(
-            Box::new(lower_pat(a, fresh)?),
-            Box::new(lower_pat(b, fresh)?),
+            Box::new(lower_pat(a, fresh, ctor_aliases)?),
+            Box::new(lower_pat(b, fresh, ctor_aliases)?),
         ),
-        Pattern::Or(a, b) => IrPattern::Or(Box::new(lower_pat(a, fresh)?), Box::new(lower_pat(b, fresh)?)),
-        Pattern::As(n, p) => IrPattern::As(n.clone(), Box::new(lower_pat(p, fresh)?)),
+        Pattern::Or(a, b) => IrPattern::Or(Box::new(lower_pat(a, fresh, ctor_aliases)?), Box::new(lower_pat(b, fresh, ctor_aliases)?)),
+        Pattern::As(n, p) => IrPattern::As(n.clone(), Box::new(lower_pat(p, fresh, ctor_aliases)?)),
         Pattern::View(p, e) => IrPattern::View(
-            Box::new(lower_pat(p, fresh)?),
-            Box::new(lower_expr(e, fresh)?),
+            Box::new(lower_pat(p, fresh, ctor_aliases)?),
+            Box::new(lower_expr(e, fresh, ctor_aliases)?),
         ),
-        Pattern::Constructor { name, args } => IrPattern::Constructor {
-            name: name.clone(),
-            args: args
-                .iter()
-                .map(|p| lower_pat(p, fresh))
-                .collect::<Result<Vec<_>>>()?,
-        },
+        Pattern::Constructor { name, args } => {
+            let name = if name.contains('.') {
+                name.clone()
+            } else {
+                ctor_aliases.get(name).cloned().unwrap_or_else(|| name.clone())
+            };
+            IrPattern::Constructor {
+                name,
+                args: args
+                    .iter()
+                    .map(|p| lower_pat(p, fresh, ctor_aliases))
+                    .collect::<Result<Vec<_>>>()?,
+            }
+        }
     })
 }
 
-fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
+fn lower_expr(
+    expr: &ast::Expr,
+    fresh: &mut usize,
+    ctor_aliases: &std::collections::HashMap<String, String>,
+) -> Result<IrExpr> {
     use ast::Expr;
     Ok(match expr { 
         // literals
@@ -352,13 +391,13 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
         Expr::Ctor(v) => IrExpr::Var(v.clone()),
         Expr::Lambda { params, body } => IrExpr::Lambda {
             params: params.clone(),
-            body: Box::new(lower_expr(body, fresh)?),
+            body: Box::new(lower_expr(body, fresh, ctor_aliases)?),
         },
         Expr::Apply { func, args } => IrExpr::Apply {
-            func: Box::new(lower_expr(func, fresh)?),
+            func: Box::new(lower_expr(func, fresh, ctor_aliases)?),
             args: args
                 .iter()
-                .map(|e| lower_expr(e, fresh))
+                .map(|e| lower_expr(e, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         },
         Expr::If {
@@ -366,26 +405,26 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
             then_branch,
             else_branch,
         } => IrExpr::If {
-            cond: Box::new(lower_expr(cond, fresh)?),
-            then_branch: Box::new(lower_expr(then_branch, fresh)?),
-            else_branch: Box::new(lower_expr(else_branch, fresh)?),
+            cond: Box::new(lower_expr(cond, fresh, ctor_aliases)?),
+            then_branch: Box::new(lower_expr(then_branch, fresh, ctor_aliases)?),
+            else_branch: Box::new(lower_expr(else_branch, fresh, ctor_aliases)?),
         },
         Expr::Let { bindings, body } => {
             // Lower sequential let-bindings.
-            let mut acc = lower_expr(body, fresh)?;
+            let mut acc = lower_expr(body, fresh, ctor_aliases)?;
             for b in bindings.iter().rev() {
                 match &b.pat {
                     ast::Pattern::Var(name) => {
                         acc = IrExpr::Let {
-                            bindings: vec![(name.clone(), lower_expr(&b.expr, fresh)?)],
+                            bindings: vec![(name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?)],
                             body: Box::new(acc),
                         };
                     }
                     pat => {
                         acc = IrExpr::Case {
-                            expr: Box::new(lower_expr(&b.expr, fresh)?),
+                            expr: Box::new(lower_expr(&b.expr, fresh, ctor_aliases)?),
                             arms: vec![IrCaseArm {
-                                pat: lower_pat(pat, fresh)?,
+                                pat: lower_pat(pat, fresh, ctor_aliases)?,
                                 guard: None,
                                 body: acc,
                             }],
@@ -396,56 +435,56 @@ fn lower_expr(expr: &ast::Expr, fresh: &mut usize) -> Result<IrExpr> {
             acc
         }
         Expr::Cons { head, tail } => IrExpr::Cons {
-            head: Box::new(lower_expr(head, fresh)?),
-            tail: Box::new(lower_expr(tail, fresh)?),
+            head: Box::new(lower_expr(head, fresh, ctor_aliases)?),
+            tail: Box::new(lower_expr(tail, fresh, ctor_aliases)?),
         },
         Expr::List(es) => IrExpr::List(
             es.iter()
-                .map(|e| lower_expr(e, fresh))
+                .map(|e| lower_expr(e, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         ),
         Expr::Tuple(es) => IrExpr::Tuple(
             es.iter()
-                .map(|e| lower_expr(e, fresh))
+                .map(|e| lower_expr(e, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         ),
         Expr::Record(fields) => IrExpr::Record(
             fields
                 .iter()
-                .map(|(n, e)| Ok((n.clone(), lower_expr(e, fresh)?)))
+                .map(|(n, e)| Ok((n.clone(), lower_expr(e, fresh, ctor_aliases)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
         Expr::Case { expr, arms } => IrExpr::Case {
-            expr: Box::new(lower_expr(expr, fresh)?),
+            expr: Box::new(lower_expr(expr, fresh, ctor_aliases)?),
             arms: arms
                 .iter()
                 .map(|a| {
                     Ok(IrCaseArm {
-                        pat: lower_pat(&a.pat, fresh)?,
-                        guard: a.guard.as_ref().map(|e| lower_expr(e, fresh)).transpose()?,
-                        body: lower_expr(&a.body, fresh)?,
+                        pat: lower_pat(&a.pat, fresh, ctor_aliases)?,
+                        guard: a.guard.as_ref().map(|e| lower_expr(e, fresh, ctor_aliases)).transpose()?,
+                        body: lower_expr(&a.body, fresh, ctor_aliases)?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
         },
-        Expr::Do(stmts) => lower_do(stmts, fresh)?,
-        Expr::Annot { expr, .. } => lower_expr(expr, fresh)?,
+        Expr::Do(stmts) => lower_do(stmts, fresh, ctor_aliases)?,
+        Expr::Annot { expr, .. } => lower_expr(expr, fresh, ctor_aliases)?,
         Expr::Where { expr, bindings } => {
             // Lower sequential where-bindings.
-            let mut acc = lower_expr(expr, fresh)?;
+            let mut acc = lower_expr(expr, fresh, ctor_aliases)?;
             for b in bindings.iter().rev() {
                 match &b.pat {
                     ast::Pattern::Var(name) => {
                         acc = IrExpr::Let {
-                            bindings: vec![(name.clone(), lower_expr(&b.expr, fresh)?)],
+                            bindings: vec![(name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?)],
                             body: Box::new(acc),
                         };
                     }
                     pat => {
                         acc = IrExpr::Case {
-                            expr: Box::new(lower_expr(&b.expr, fresh)?),
+                            expr: Box::new(lower_expr(&b.expr, fresh, ctor_aliases)?),
                             arms: vec![IrCaseArm {
-                                pat: lower_pat(pat, fresh)?,
+                                pat: lower_pat(pat, fresh, ctor_aliases)?,
                                 guard: None,
                                 body: acc,
                             }],
@@ -1382,6 +1421,34 @@ fn match_pat(
             } else {
                 match_pat(g, env, b, v)?
             }
+        }
+        (P::Constructor { name, args }, Value::Record(vs)) => {
+            let Some((_, ctor_v)) = vs.iter().find(|(n, _)| n == "__ctor") else {
+                return Ok(None);
+            };
+            let ctor_v = force_value(g, ctor_v.clone())?;
+            let Value::String(ctor_name) = ctor_v else {
+                return Ok(None);
+            };
+            if &ctor_name != name {
+                return Ok(None);
+            }
+
+            let Some((_, args_v)) = vs.iter().find(|(n, _)| n == "__args") else {
+                return Ok(None);
+            };
+            let args_v = force_value(g, args_v.clone())?;
+            let vs = list_to_vec(g, args_v)?;
+            if args.len() != vs.len() {
+                return Ok(None);
+            }
+
+            let mut out = std::collections::HashMap::new();
+            for (p, v) in args.iter().zip(vs.iter()) {
+                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                out.extend(b);
+            }
+            Some(out)
         }
         (P::View(p, e), v) => {
             let fv = eval_expr(g, env, e)?;
