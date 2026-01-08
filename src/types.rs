@@ -2264,8 +2264,16 @@ fn public_items(module: &ast::Module) -> Result<Vec<ast::Item>> {
             }
             ast::Item::DataDecl(d) => {
                 if let Some(exports) = &exports {
+                    let type_exported = exports.contains(&d.name);
                     let any_ctor = d.ctors.iter().any(|c| exports.contains(&c.name));
-                    if !exports.contains(&d.name) && !any_ctor {
+
+                    if any_ctor && !type_exported {
+                        return Err(Error::msg(
+                            "exporting data constructors requires exporting the type name",
+                        ));
+                    }
+
+                    if !type_exported {
                         continue;
                     }
                 }
@@ -2785,6 +2793,57 @@ mod inference_tests {
             })],
         };
         assert!(typecheck(m).is_err());
+    }
+
+    #[test]
+    fn typecheck_file_imports_data_type_exported_by_type_name() {
+        let dir = std::env::temp_dir().join(format!("kscr_typecheck_file_imports_ok_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Maybe\n  data Maybe a = Nothing | Just a\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  x = Just 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_rejects_exporting_ctor_without_type() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_imports_bad_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Just\n  data Maybe a = Nothing | Just a\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  x = Just 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        assert!(typecheck_file(&main).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
