@@ -2225,49 +2225,56 @@ impl ModuleLoader {
             self.collect_imports(&imported, imported_dir, out)?;
 
             if self.emitted.insert(p) {
-                out.extend(public_items(&imported));
+                out.extend(public_items(&imported)?);
             }
         }
         Ok(())
     }
 }
 
-fn public_items(module: &ast::Module) -> Vec<ast::Item> {
+fn public_items(module: &ast::Module) -> Result<Vec<ast::Item>> {
     let exports = exported_names(module);
-    module
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            ast::Item::Import(_) | ast::Item::Export(_) => None,
+    let mut out = Vec::new();
+
+    for it in &module.items {
+        match it {
+            ast::Item::Import(_) | ast::Item::Export(_) => {}
             ast::Item::Binding(b) => {
                 if let Some(exports) = &exports {
                     let mut names = HashSet::new();
                     pat_defined_names(&b.pat, &mut names);
                     if !names.iter().any(|n| exports.contains(n)) {
-                        return None;
+                        continue;
+                    }
+                    if !names.iter().all(|n| exports.contains(n)) {
+                        return Err(Error::msg(
+                            "export list must include all names bound by exported binding",
+                        ));
                     }
                 }
-                Some(ast::Item::Binding(b.clone()))
+                out.push(ast::Item::Binding(b.clone()));
             }
             ast::Item::TypeAlias(ta) => {
                 if let Some(exports) = &exports {
                     if !exports.contains(&ta.name) {
-                        return None;
+                        continue;
                     }
                 }
-                Some(ast::Item::TypeAlias(ta.clone()))
+                out.push(ast::Item::TypeAlias(ta.clone()));
             }
             ast::Item::DataDecl(d) => {
                 if let Some(exports) = &exports {
                     let any_ctor = d.ctors.iter().any(|c| exports.contains(&c.name));
                     if !exports.contains(&d.name) && !any_ctor {
-                        return None;
+                        continue;
                     }
                 }
-                Some(ast::Item::DataDecl(d.clone()))
+                out.push(ast::Item::DataDecl(d.clone()));
             }
-        })
-        .collect()
+        }
+    }
+
+    Ok(out)
 }
 
 fn push_item_checked(items: &mut Vec<ast::Item>, defined: &mut HashSet<String>, it: ast::Item) -> Result<()> {
