@@ -2133,7 +2133,7 @@ fn load_module_with_imports(entry: &Path) -> Result<ast::Module> {
 
     let mut loader = ModuleLoader {
         cache: HashMap::new(),
-        stack: Vec::new(),
+        stack: vec![entry.clone()],
         emitted: HashSet::new(),
     };
 
@@ -2174,14 +2174,8 @@ impl ModuleLoader {
             return Ok(m.clone());
         }
 
-        if self.stack.iter().any(|p| p == path) {
-            return Err(Error::msg("cyclic imports"));
-        }
-
-        self.stack.push(path.to_path_buf());
         let src = std::fs::read_to_string(path)?;
         let m = parser::parse_module(&src)?;
-        self.stack.pop();
 
         self.cache.insert(path.to_path_buf(), m.clone());
         Ok(m)
@@ -2207,6 +2201,15 @@ impl ModuleLoader {
             let p = std::fs::canonicalize(dir.join(format!("{}.ks", id.module)))
                 .map_err(|_| Error::msg(format!("cannot find module file for import {}", id.module)))?;
 
+            if let Some(pos) = self.stack.iter().position(|x| x == &p) {
+                let mut chain: Vec<String> = self.stack[pos..]
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect();
+                chain.push(p.display().to_string());
+                return Err(Error::msg(format!("cyclic imports: {}", chain.join(" -> "))));
+            }
+
             let imported = self.load_ast(&p)?;
             let Some(name) = &imported.name else {
                 return Err(Error::msg(format!(
@@ -2221,8 +2224,10 @@ impl ModuleLoader {
                 )));
             }
 
+            self.stack.push(p.clone());
             let imported_dir = p.parent().unwrap_or(dir);
             self.collect_imports(&imported, imported_dir, out)?;
+            self.stack.pop();
 
             if self.emitted.insert(p) {
                 out.extend(public_items(&imported)?);
@@ -2843,6 +2848,27 @@ mod inference_tests {
         .unwrap();
 
         assert!(typecheck_file(&main).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_reports_cyclic_imports() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_cyclic_imports_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  import B\n  x = 1\n").unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(&b, "module B where\n  import A\n  y = 2\n").unwrap();
+
+        let e = typecheck_file(&a).unwrap_err();
+        assert!(format!("{e}").contains("cyclic imports"));
+
         let _ = std::fs::remove_dir_all(dir);
     }
 
