@@ -383,4 +383,65 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn cli_run_record_pattern_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_record_pattern_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  r = {a: 1, b: 2}\n  x = case r of\n    {b: y, a: z} -> y + z\n  main = do\n    print (intToString x)\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_record_loose_pattern_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_record_loose_pattern_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  r = {a: 1, b: 2, c: 3}\n  x = case r of\n    {b: y, ...} -> y\n  main = do\n    print (intToString x)\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_rejects_recursive_value_definition() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_rejects_recursive_value_definition_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  x = x\n  main = IO ()\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        let e = run(args.into_iter()).unwrap_err();
+        assert!(format!("{e}").contains("unbound variable: x"));
+        let _ = std::fs::remove_file(path);
+    }
 }
