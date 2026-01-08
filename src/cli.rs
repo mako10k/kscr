@@ -492,6 +492,26 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_tuple_pattern_does_not_force_fields_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_tuple_pattern_does_not_force_fields_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  bad = 1 / 0\n  x = case (bad, 2) of\n    (a, b) -> b\n  main = do\n    print (intToString x)\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn cli_run_case_forces_scrutinee_smoke() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_case_forces_scrutinee_smoke_{}.ks",
