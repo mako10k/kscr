@@ -2230,64 +2230,22 @@ impl ModuleLoader {
             self.stack.pop();
 
             if self.emitted.insert(p) {
-                out.extend(public_items(&imported)?);
+                out.extend(import_items(&imported));
             }
         }
         Ok(())
     }
 }
 
-fn public_items(module: &ast::Module) -> Result<Vec<ast::Item>> {
-    let exports = exported_names(module);
-    let mut out = Vec::new();
-
-    for it in &module.items {
-        match it {
-            ast::Item::Import(_) | ast::Item::Export(_) => {}
-            ast::Item::Binding(b) => {
-                if let Some(exports) = &exports {
-                    let mut names = HashSet::new();
-                    pat_defined_names(&b.pat, &mut names);
-                    if !names.iter().any(|n| exports.contains(n)) {
-                        continue;
-                    }
-                    if !names.iter().all(|n| exports.contains(n)) {
-                        return Err(Error::msg(
-                            "export list must include all names bound by exported binding",
-                        ));
-                    }
-                }
-                out.push(ast::Item::Binding(b.clone()));
-            }
-            ast::Item::TypeAlias(ta) => {
-                if let Some(exports) = &exports {
-                    if !exports.contains(&ta.name) {
-                        continue;
-                    }
-                }
-                out.push(ast::Item::TypeAlias(ta.clone()));
-            }
-            ast::Item::DataDecl(d) => {
-                if let Some(exports) = &exports {
-                    let type_exported = exports.contains(&d.name);
-                    let any_ctor = d.ctors.iter().any(|c| exports.contains(&c.name));
-
-                    if any_ctor && !type_exported {
-                        return Err(Error::msg(
-                            "exporting data constructors requires exporting the type name",
-                        ));
-                    }
-
-                    if !type_exported {
-                        continue;
-                    }
-                }
-                out.push(ast::Item::DataDecl(d.clone()));
-            }
-        }
-    }
-
-    Ok(out)
+fn import_items(module: &ast::Module) -> Vec<ast::Item> {
+    module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            ast::Item::Import(_) | ast::Item::Export(_) => None,
+            it => Some(it.clone()),
+        })
+        .collect()
 }
 
 fn push_item_checked(items: &mut Vec<ast::Item>, defined: &mut HashSet<String>, it: ast::Item) -> Result<()> {
@@ -2350,20 +2308,6 @@ fn pat_defined_names(p: &ast::Pattern, out: &mut HashSet<String>) {
             }
         }
         Pattern::Wildcard | Pattern::Hole(_) | Pattern::Literal(_) => {}
-    }
-}
-
-fn exported_names(module: &ast::Module) -> Option<HashSet<String>> {
-    let mut out = HashSet::new();
-    for it in &module.items {
-        if let ast::Item::Export(ed) = it {
-            out.extend(ed.names.iter().cloned());
-        }
-    }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
     }
 }
 
@@ -2825,9 +2769,9 @@ mod inference_tests {
     }
 
     #[test]
-    fn typecheck_file_rejects_exporting_ctor_without_type() {
+    fn typecheck_file_imports_module_with_private_helpers() {
         let dir = std::env::temp_dir().join(format!(
-            "kscr_typecheck_file_imports_bad_{}",
+            "kscr_typecheck_file_imports_helpers_{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2836,18 +2780,18 @@ mod inference_tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Just\n  data Maybe a = Nothing | Just a\n",
+            "module A where\n  export f\n  g = \\x -> x\n  f = \\y -> g y\n",
         )
         .unwrap();
 
         let main = dir.join("Main.ks");
         std::fs::write(
             &main,
-            "module Main where\n  import A\n  x = Just 1\n  main = IO ()\n",
+            "module Main where\n  import A\n  x = f 1\n  main = IO ()\n",
         )
         .unwrap();
 
-        assert!(typecheck_file(&main).is_err());
+        let _tm = typecheck_file(&main).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
