@@ -33,7 +33,7 @@ fn parser_binding_patterns() {
 
 #[test]
 fn parser_qualified_names_desugar() {
-    let m = crate::parser::parse_module("y = OM.x\n").unwrap();
+    let m = crate::parser::parse_module("y = A.B.OM.x\n").unwrap();
     let crate::ast::Item::Binding(b) = &m.items[0] else {
         panic!("expected binding");
     };

@@ -1,13 +1,12 @@
 use crate::{ast, error::Error, lexer, lexer::TokenKind, Result};
 
 fn parse_maybe_qualified_ident(ts: &mut TokenStream) -> Result<String> {
-    let _qual = ts.expect_ident()?;
-    if matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
+    let mut last = ts.expect_ident()?;
+    while matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
         ts.bump();
-        ts.expect_ident()
-    } else {
-        Ok(_qual)
+        last = ts.expect_ident()?;
     }
+    Ok(last)
 }
 
 pub fn parse_module(src: &str) -> Result<ast::Module> {
