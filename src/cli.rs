@@ -313,4 +313,74 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn cli_run_list_case_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_list_case_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  xs = [1, 2]\n  x = case xs of\n    [a, b] -> a + b\n    _ -> 0\n  main = do\n    print (intToString x)\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_do_bind_ctor_pattern_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_do_bind_ctor_pattern_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  data Maybe a = Nothing | Just a\n  main = do\n    Just n <- IO (Just 1)\n    print (intToString n)\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_import_as_blocks_unqualified_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_import_as_blocks_unqualified_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  export x\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A as OM\n  y = x + 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "typecheck".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        let e = run(args.into_iter()).unwrap_err();
+        assert!(format!("{e}").contains("unbound variable: x"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
