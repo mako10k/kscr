@@ -2176,9 +2176,7 @@ fn module_allowed_qualifiers(module: &ast::Module) -> HashSet<String> {
             ast::Item::Import(id) => Some(id),
             _ => None,
         })
-        .flat_map(|id| {
-            std::iter::once(id.module.clone()).chain(id.as_name.clone())
-        })
+        .map(|id| id.as_name.clone().unwrap_or_else(|| id.module.clone()))
         .collect()
 }
 
@@ -2538,21 +2536,99 @@ fn import_items(module: &ast::Module) -> Vec<ast::Item> {
         .collect()
 }
 
+fn module_exported_names(module: &ast::Module) -> HashSet<String> {
+    let mut exports = HashSet::new();
+    for it in &module.items {
+        if let ast::Item::Export(ed) = it {
+            exports.extend(ed.names.iter().cloned());
+        }
+    }
+
+    if exports.is_empty() {
+        let mut all = HashSet::new();
+        for it in &module.items {
+            match it {
+                ast::Item::Binding(b) => pat_defined_names(&b.pat, &mut all),
+                ast::Item::TypeAlias(ta) => {
+                    all.insert(ta.name.clone());
+                }
+                ast::Item::DataDecl(d) => {
+                    all.insert(d.name.clone());
+                    all.extend(d.ctors.iter().map(|c| c.name.clone()));
+                }
+                ast::Item::Import(_) | ast::Item::Export(_) => {}
+            }
+        }
+        return all;
+    }
+
+    // If a data type name is exported, also export its constructors.
+    for it in &module.items {
+        let ast::Item::DataDecl(d) = it else {
+            continue;
+        };
+        if exports.contains(&d.name) {
+            exports.extend(d.ctors.iter().map(|c| c.name.clone()));
+        }
+    }
+
+    exports
+}
+
 fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result<Vec<ast::Item>> {
-    let unqualified = decl.as_name.is_none();
+    // Haskell-leaning behavior:
+    // - `import A` brings unqualified exports + qualifier `A.`
+    // - `import A as OM` acts like `import qualified A as OM` (qualified-only)
+    if let Some(as_name) = &decl.as_name {
+        return qualify_items(module, as_name);
+    }
 
     let mut out = Vec::new();
-    if unqualified {
-        out.extend(import_items(module));
-    }
 
     // Always provide module-qualified names (A.x).
     out.extend(qualify_items(module, &decl.module)?);
 
-    // If `as` is present, treat it like Haskell's `import qualified ... as ...`.
-    if let Some(as_name) = &decl.as_name {
-        if as_name != &decl.module {
-            out.extend(qualify_items(module, as_name)?);
+    // Bring unqualified exports as simple forwarders: `x = A.x`.
+    let exports = module_exported_names(module);
+
+    let mut values = HashSet::new();
+    let mut type_aliases = HashMap::new();
+    for it in import_items(module) {
+        match it {
+            ast::Item::Binding(b) => pat_defined_names(&b.pat, &mut values),
+            ast::Item::TypeAlias(ta) => {
+                type_aliases.insert(ta.name.clone(), ta);
+            }
+            ast::Item::DataDecl(d) => {
+                values.extend(d.ctors.iter().map(|c| c.name.clone()));
+            }
+            ast::Item::Import(_) | ast::Item::Export(_) => {}
+        }
+    }
+
+    for n in exports.iter() {
+        if values.contains(n) {
+            out.push(ast::Item::Binding(ast::Binding {
+                pat: ast::Pattern::Var(n.clone()),
+                expr: ast::Expr::Var(format!("{}.{}", decl.module, n)),
+            }));
+        }
+
+        if let Some(ta) = type_aliases.get(n) {
+            let head = ast::Type::Var(format!("{}.{}", decl.module, ta.name));
+            let ty = if ta.params.is_empty() {
+                head
+            } else {
+                ast::Type::App {
+                    head: Box::new(head),
+                    args: ta.params.iter().cloned().map(ast::Type::Var).collect(),
+                }
+            };
+            out.push(ast::Item::TypeAlias(ast::TypeAlias {
+                name: ta.name.clone(),
+                params: ta.params.clone(),
+                ty,
+            }));
         }
     }
 
@@ -3463,6 +3539,35 @@ mod inference_tests {
         .unwrap();
 
         let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_imports_respect_exports_unqualified() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_imports_exports_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export f\n  g = \\x -> x\n  f = \\y -> g y\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  x = g 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let e = typecheck_file(&main).unwrap_err();
+        assert!(format!("{e}").contains("unbound variable: g"));
+
         let _ = std::fs::remove_dir_all(dir);
     }
 
