@@ -2192,11 +2192,6 @@ impl ModuleLoader {
                 continue;
             };
 
-            if id.as_name.is_some() {
-                return Err(Error::msg(
-                    "qualified imports are not supported yet (import ... as ...)",
-                ));
-            }
 
             let p = std::fs::canonicalize(dir.join(format!("{}.ks", id.module)))
                 .map_err(|_| Error::msg(format!("cannot find module file for import {}", id.module)))?;
@@ -2788,6 +2783,29 @@ mod inference_tests {
         std::fs::write(
             &main,
             "module Main where\n  import A\n  x = f 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_import_as_allows_dotted_refs() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_import_as_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A as OM\n  y = OM.x + 1\n  main = IO ()\n",
         )
         .unwrap();
 
