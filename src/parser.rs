@@ -1291,6 +1291,108 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
         return Ok(ast::Expr::Unit);
     }
 
+    // Sections + operator prefixification:
+    //   (op)      => op
+    //   (op x)    => \a -> a `op` x
+    //   (x op)    => \a -> x `op` a
+    {
+        let save = ts.i;
+        if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
+            || matches!(
+                ts.peek_kind(),
+                Some(
+                    TokenKind::Plus
+                        | TokenKind::Minus
+                        | TokenKind::Star
+                        | TokenKind::Slash
+                        | TokenKind::PlusPlus
+                        | TokenKind::EqEq
+                        | TokenKind::SlashEq
+                        | TokenKind::Lt
+                        | TokenKind::Le
+                        | TokenKind::Gt
+                        | TokenKind::Ge
+                        | TokenKind::AndAnd
+                        | TokenKind::OrOr
+                )
+            )
+        {
+            let op = if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
+                ts.expect(TokenKind::Backtick)?;
+                let op = ts.expect_ident()?;
+                ts.expect(TokenKind::Backtick)?;
+                op
+            } else {
+                parse_fixity_op(ts)?
+            };
+
+            if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+                ts.bump();
+                return Ok(ast::Expr::Var(op));
+            }
+
+            let rhs = parse_expr(ts, Stop::LineEnd)?;
+            ts.expect(TokenKind::RParen)?;
+            let param = ts.fresh_name("__section");
+            return Ok(ast::Expr::Lambda {
+                params: vec![param.clone()],
+                body: Box::new(ast::Expr::Apply {
+                    func: Box::new(ast::Expr::Var(op)),
+                    args: vec![ast::Expr::Var(param), rhs],
+                }),
+            });
+        }
+        ts.i = save;
+    }
+
+    {
+        let save = ts.i;
+        if let Ok(lhs) = parse_application(ts, Stop::LineEnd) {
+            if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
+                || matches!(
+                    ts.peek_kind(),
+                    Some(
+                        TokenKind::Plus
+                            | TokenKind::Minus
+                            | TokenKind::Star
+                            | TokenKind::Slash
+                            | TokenKind::PlusPlus
+                            | TokenKind::EqEq
+                            | TokenKind::SlashEq
+                            | TokenKind::Lt
+                            | TokenKind::Le
+                            | TokenKind::Gt
+                            | TokenKind::Ge
+                            | TokenKind::AndAnd
+                            | TokenKind::OrOr
+                    )
+                )
+            {
+                let op = if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
+                    ts.expect(TokenKind::Backtick)?;
+                    let op = ts.expect_ident()?;
+                    ts.expect(TokenKind::Backtick)?;
+                    op
+                } else {
+                    parse_fixity_op(ts)?
+                };
+
+                if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+                    ts.bump();
+                    let param = ts.fresh_name("__section");
+                    return Ok(ast::Expr::Lambda {
+                        params: vec![param.clone()],
+                        body: Box::new(ast::Expr::Apply {
+                            func: Box::new(ast::Expr::Var(op)),
+                            args: vec![lhs, ast::Expr::Var(param)],
+                        }),
+                    });
+                }
+            }
+        }
+        ts.i = save;
+    }
+
     let first = parse_expr(ts, Stop::LineEnd)?;
     if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
         let mut elems = vec![first];

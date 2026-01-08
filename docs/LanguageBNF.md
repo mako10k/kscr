@@ -222,4 +222,8 @@ Infix operators follow standard precedence and associativity rules:
 ### Infix Notation
 Any binary function can be used as an infix operator by enclosing it in backticks: ``a `f` b`` is equivalent to `f a b`. See `IntermediateRepresentation.md` for details on infix operator handling in the IR.
 
+### Sections (operator prefixification / partial application)
+- `(op)` turns an operator into a normal function.
+- `(op x)` and `(x op)` are supported as operator sections and desugar to lambdas.
+
 ---
