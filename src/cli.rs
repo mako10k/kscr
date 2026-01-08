@@ -224,4 +224,93 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    #[test]
+    fn cli_run_do_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_do_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  main = do\n    print \"hello\"\n    print \"world\"\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_import_data_case_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_import_data_case_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Maybe\n  data Maybe a = Nothing | Just a\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  x = case Just 1 of\n    Just n -> n\n    Nothing -> 0\n  main = do\n    print (intToString x)\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cli_run_transitive_import_qualified_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_transitive_import_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  export x\n  x = 1\n").unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(
+            &b,
+            "module B where\n  export y\n  import A as OM\n  y = OM.x + 1\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import B\n  main = do\n    print (intToString y)\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
