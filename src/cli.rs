@@ -1,6 +1,6 @@
 use crate::{ast, ir, parser, types, Result};
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::Path;
 
 pub fn run<I, S>(mut args: I) -> Result<()>
 where
@@ -51,8 +51,7 @@ where
                 other => other.to_string(),
             };
 
-            let module = load_module_with_imports(Path::new(&path))?;
-            let tm = types::typecheck(module)?;
+            let tm = types::typecheck_file(Path::new(&path))?;
 
             print!(
                 "{}",
@@ -65,8 +64,7 @@ where
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
                 .into();
-            let module = load_module_with_imports(Path::new(&path))?;
-            let tm = types::typecheck(module)?;
+            let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
             println!("{irm:#?}");
             Ok(())
@@ -76,8 +74,7 @@ where
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
                 .into();
-            let module = load_module_with_imports(Path::new(&path))?;
-            let tm = types::typecheck(module)?;
+            let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
             let v = ir::run_main(&irm)?;
             match v {
@@ -87,217 +84,6 @@ where
             Ok(())
         }
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
-    }
-}
-
-fn load_module_with_imports(entry: &Path) -> Result<ast::Module> {
-    let entry = std::fs::canonicalize(entry)?;
-    let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
-
-    let mut loader = ModuleLoader {
-        cache: HashMap::new(),
-        stack: Vec::new(),
-        emitted: HashSet::new(),
-    };
-
-    let entry_mod = loader.load_ast(&entry)?;
-
-    let mut items = Vec::new();
-    let mut defined = HashSet::new();
-
-    let mut deps = Vec::new();
-    loader.collect_imports(&entry_mod, entry_dir, &mut deps)?;
-
-    for it in deps {
-        push_item_checked(&mut items, &mut defined, it)?;
-    }
-
-    for it in entry_mod.items {
-        if matches!(it, ast::Item::Import(_)) {
-            continue;
-        }
-        push_item_checked(&mut items, &mut defined, it)?;
-    }
-
-    Ok(ast::Module {
-        name: entry_mod.name,
-        items,
-    })
-}
-
-struct ModuleLoader {
-    cache: HashMap<PathBuf, ast::Module>,
-    stack: Vec<PathBuf>,
-    emitted: HashSet<PathBuf>,
-}
-
-impl ModuleLoader {
-    fn load_ast(&mut self, path: &Path) -> Result<ast::Module> {
-        if let Some(m) = self.cache.get(path) {
-            return Ok(m.clone());
-        }
-
-        if self.stack.iter().any(|p| p == path) {
-            return Err(crate::error::Error::msg("cyclic imports"));
-        }
-
-        self.stack.push(path.to_path_buf());
-        let src = std::fs::read_to_string(path)?;
-        let m = parser::parse_module(&src)?;
-        self.stack.pop();
-
-        self.cache.insert(path.to_path_buf(), m.clone());
-        Ok(m)
-    }
-
-    fn collect_imports(
-        &mut self,
-        module: &ast::Module,
-        dir: &Path,
-        out: &mut Vec<ast::Item>,
-    ) -> Result<()> {
-        for it in &module.items {
-            let ast::Item::Import(id) = it else {
-                continue;
-            };
-
-            if id.as_name.is_some() {
-                return Err(crate::error::Error::msg(
-                    "qualified imports are not supported yet (import ... as ...)",
-                ));
-            }
-
-            let p = std::fs::canonicalize(dir.join(format!("{}.ks", id.module))).map_err(|_| {
-                crate::error::Error::msg(format!("cannot find module file for import {}", id.module))
-            })?;
-
-            let imported = self.load_ast(&p)?;
-            let Some(name) = &imported.name else {
-                return Err(crate::error::Error::msg(format!(
-                    "imported module {} must have a module header",
-                    id.module
-                )));
-            };
-            if name != &id.module {
-                return Err(crate::error::Error::msg(format!(
-                    "module name mismatch: import {} but file declares module {}",
-                    id.module, name
-                )));
-            }
-
-            let imported_dir = p.parent().unwrap_or(dir);
-            self.collect_imports(&imported, imported_dir, out)?;
-
-            if self.emitted.insert(p) {
-                out.extend(public_items(&imported));
-            }
-        }
-        Ok(())
-    }
-}
-
-fn public_items(module: &ast::Module) -> Vec<ast::Item> {
-    let exports = exported_names(module);
-    module
-        .items
-        .iter()
-        .filter_map(|it| match it {
-            ast::Item::Import(_) | ast::Item::Export(_) => None,
-            ast::Item::Binding(b) => {
-                if let Some(exports) = &exports {
-                    let mut names = HashSet::new();
-                    pat_defined_names(&b.pat, &mut names);
-                    if !names.iter().any(|n| exports.contains(n)) {
-                        return None;
-                    }
-                }
-                Some(ast::Item::Binding(b.clone()))
-            }
-            ast::Item::TypeAlias(ta) => {
-                if let Some(exports) = &exports {
-                    if !exports.contains(&ta.name) {
-                        return None;
-                    }
-                }
-                Some(ast::Item::TypeAlias(ta.clone()))
-            }
-            ast::Item::DataDecl(d) => {
-                if let Some(exports) = &exports {
-                    let any_ctor = d.ctors.iter().any(|c| exports.contains(&c.name));
-                    if !exports.contains(&d.name) && !any_ctor {
-                        return None;
-                    }
-                }
-                Some(ast::Item::DataDecl(d.clone()))
-            }
-        })
-        .collect()
-}
-
-fn push_item_checked(
-    items: &mut Vec<ast::Item>,
-    defined: &mut HashSet<String>,
-    it: ast::Item,
-) -> Result<()> {
-    let mut names = HashSet::new();
-    item_defined_names(&it, &mut names);
-    for n in names {
-        if !defined.insert(n.clone()) {
-            return Err(crate::error::Error::msg(format!("name conflict: {n}")));
-        }
-    }
-    items.push(it);
-    Ok(())
-}
-
-fn item_defined_names(it: &ast::Item, out: &mut HashSet<String>) {
-    match it {
-        ast::Item::Binding(b) => pat_defined_names(&b.pat, out),
-        ast::Item::TypeAlias(ta) => {
-            out.insert(ta.name.clone());
-        }
-        ast::Item::DataDecl(d) => {
-            out.insert(d.name.clone());
-            out.extend(d.ctors.iter().map(|c| c.name.clone()));
-        }
-        ast::Item::Import(_) | ast::Item::Export(_) => {}
-    }
-}
-
-fn pat_defined_names(p: &ast::Pattern, out: &mut HashSet<String>) {
-    use ast::Pattern;
-    match p {
-        Pattern::Var(n) => {
-            out.insert(n.clone());
-        }
-        Pattern::As(n, p) => {
-            out.insert(n.clone());
-            pat_defined_names(p, out);
-        }
-        Pattern::Tuple(ps) | Pattern::List(ps) => {
-            for p in ps {
-                pat_defined_names(p, out);
-            }
-        }
-        Pattern::Record(fs) | Pattern::RecordLoose(fs, _) => {
-            for (_, p) in fs {
-                pat_defined_names(p, out);
-            }
-            if let Pattern::RecordLoose(_, Some(rest)) = p {
-                out.insert(rest.clone());
-            }
-        }
-        Pattern::Cons(a, b) | Pattern::Or(a, b) => {
-            pat_defined_names(a, out);
-            pat_defined_names(b, out);
-        }
-        Pattern::View(p, _) => pat_defined_names(p, out),
-        Pattern::Constructor { args, .. } => {
-            for p in args {
-                pat_defined_names(p, out);
-            }
-        }
-        Pattern::Wildcard | Pattern::Hole(_) | Pattern::Literal(_) => {}
     }
 }
 
