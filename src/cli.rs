@@ -669,6 +669,36 @@ mod tests {
     }
 
     #[test]
+    fn cli_import_as_blocks_module_qualifier_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_import_as_blocks_module_qualifier_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  export x\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A as OM\n  y = A.x + 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "typecheck".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        let e = run(args.into_iter()).unwrap_err();
+        assert!(format!("{e}").contains("unknown qualifier A"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cli_import_does_not_import_unexported_ctor_smoke() {
         let dir = std::env::temp_dir().join(format!(
             "kscr_cli_import_does_not_import_unexported_ctor_smoke_{}",
