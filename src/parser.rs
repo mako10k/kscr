@@ -1,4 +1,5 @@
 use crate::{ast, error::Error, lexer, lexer::TokenKind, Result};
+use std::collections::HashMap;
 
 fn parse_maybe_qualified_ident(ts: &mut TokenStream) -> Result<String> {
     let mut s = ts.expect_ident()?;
@@ -23,7 +24,8 @@ fn is_upper_by_last_segment(s: &str) -> bool {
 
 pub fn parse_module(src: &str) -> Result<ast::Module> {
     let tokens = lexer::lex(src)?;
-    let mut ts = TokenStream::new(tokens);
+    let fixities = collect_fixities(&tokens);
+    let mut ts = TokenStream::new(tokens, fixities);
 
     ts.skip_newlines();
 
@@ -33,6 +35,116 @@ pub fn parse_module(src: &str) -> Result<ast::Module> {
         let items = parse_items_until(&mut ts, StopAt::Eof)?;
         Ok(ast::Module { name: None, items })
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Assoc {
+    Left,
+    Right,
+    Non,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Fixity {
+    prec: u8,
+    assoc: Assoc,
+}
+
+fn default_fixity(op: &str) -> Fixity {
+    match op {
+        "*" | "/" => Fixity {
+            prec: 70,
+            assoc: Assoc::Left,
+        },
+        "+" | "-" | "++" => Fixity {
+            prec: 60,
+            assoc: Assoc::Left,
+        },
+        "==" | "/=" | "<" | "<=" | ">" | ">=" => Fixity {
+            prec: 50,
+            assoc: Assoc::Left,
+        },
+        "&&" => Fixity {
+            prec: 40,
+            assoc: Assoc::Left,
+        },
+        "||" => Fixity {
+            prec: 30,
+            assoc: Assoc::Left,
+        },
+        _ => Fixity {
+            // Default used for backtick infix, and for any other operator-like names.
+            prec: 60,
+            assoc: Assoc::Left,
+        },
+    }
+}
+
+fn token_op_name(kind: &TokenKind) -> Option<String> {
+    Some(match kind {
+        TokenKind::Ident(s) => s.clone(),
+        TokenKind::Plus => "+".to_string(),
+        TokenKind::Minus => "-".to_string(),
+        TokenKind::Star => "*".to_string(),
+        TokenKind::Slash => "/".to_string(),
+        TokenKind::PlusPlus => "++".to_string(),
+        TokenKind::Colon => ":".to_string(),
+        TokenKind::EqEq => "==".to_string(),
+        TokenKind::SlashEq => "/=".to_string(),
+        TokenKind::Lt => "<".to_string(),
+        TokenKind::Le => "<=".to_string(),
+        TokenKind::Gt => ">".to_string(),
+        TokenKind::Ge => ">=".to_string(),
+        TokenKind::AndAnd => "&&".to_string(),
+        TokenKind::OrOr => "||".to_string(),
+        _ => return None,
+    })
+}
+
+fn collect_fixities(tokens: &[lexer::Token]) -> HashMap<String, Fixity> {
+    let mut out = HashMap::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let assoc = match &tokens[i].kind {
+            TokenKind::KwInfix => Some(Assoc::Non),
+            TokenKind::KwInfixl => Some(Assoc::Left),
+            TokenKind::KwInfixr => Some(Assoc::Right),
+            _ => None,
+        };
+        let Some(assoc) = assoc else {
+            i += 1;
+            continue;
+        };
+        i += 1;
+
+        let Some(lexer::Token {
+            kind: TokenKind::Integer(p),
+        }) = tokens.get(i)
+        else {
+            continue;
+        };
+        let Ok(prec) = p.parse::<u8>() else {
+            continue;
+        };
+        i += 1;
+
+        while i < tokens.len() {
+            match &tokens[i].kind {
+                TokenKind::Newline | TokenKind::Dedent => break,
+                TokenKind::Comma => {
+                    i += 1;
+                    continue;
+                }
+                k => {
+                    if let Some(op) = token_op_name(k) {
+                        out.insert(op, Fixity { prec, assoc });
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
 }
 
 fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
@@ -74,6 +186,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
         let item = match ts.peek_kind() {
             Some(TokenKind::KwImport) => parse_import_decl(ts)?,
             Some(TokenKind::KwExport) => parse_export_decl(ts)?,
+            Some(TokenKind::KwInfix | TokenKind::KwInfixl | TokenKind::KwInfixr) => parse_fixity_decl(ts)?,
             Some(TokenKind::KwData) => parse_data_decl(ts)?,
             Some(TokenKind::KwType) => parse_type_alias(ts)?,
             Some(
@@ -190,6 +303,50 @@ fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     }
 
     Ok(ast::Item::Export(ast::ExportDecl { names }))
+}
+
+fn parse_fixity_op(ts: &mut TokenStream) -> Result<String> {
+    match ts.bump() {
+        Some(TokenKind::Ident(s)) => Ok(s),
+        Some(TokenKind::Plus) => Ok("+".to_string()),
+        Some(TokenKind::Minus) => Ok("-".to_string()),
+        Some(TokenKind::Star) => Ok("*".to_string()),
+        Some(TokenKind::Slash) => Ok("/".to_string()),
+        Some(TokenKind::PlusPlus) => Ok("++".to_string()),
+        Some(TokenKind::Colon) => Ok(":".to_string()),
+        Some(TokenKind::EqEq) => Ok("==".to_string()),
+        Some(TokenKind::SlashEq) => Ok("/=".to_string()),
+        Some(TokenKind::Lt) => Ok("<".to_string()),
+        Some(TokenKind::Le) => Ok("<=".to_string()),
+        Some(TokenKind::Gt) => Ok(">".to_string()),
+        Some(TokenKind::Ge) => Ok(">=".to_string()),
+        Some(TokenKind::AndAnd) => Ok("&&".to_string()),
+        Some(TokenKind::OrOr) => Ok("||".to_string()),
+        _ => Err(Error::msg("expected operator name")),
+    }
+}
+
+fn parse_fixity_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+    let assoc = match ts.bump() {
+        Some(TokenKind::KwInfix) => ast::FixityAssoc::Infix,
+        Some(TokenKind::KwInfixl) => ast::FixityAssoc::Infixl,
+        Some(TokenKind::KwInfixr) => ast::FixityAssoc::Infixr,
+        _ => return Err(Error::msg("expected fixity keyword")),
+    };
+
+    let prec = match ts.bump() {
+        Some(TokenKind::Integer(s)) => s.parse::<u8>().map_err(|_| Error::msg("invalid fixity precedence"))?,
+        _ => return Err(Error::msg("expected fixity precedence")),
+    };
+
+    let mut ops = Vec::new();
+    ops.push(parse_fixity_op(ts)?);
+    while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        ts.bump();
+        ops.push(parse_fixity_op(ts)?);
+    }
+
+    Ok(ast::Item::Fixity(ast::FixityDecl { assoc, prec, ops }))
 }
 
 fn parse_binding(ts: &mut TokenStream) -> Result<ast::Item> {
@@ -946,53 +1103,90 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
     let mut lhs = parse_application(ts, stop)?;
 
     while ts.can_continue_expr(stop) {
+        let save = ts.i;
         let is_cons = matches!(ts.peek_kind(), Some(TokenKind::Colon));
-        let (prec, is_backtick) = match ts.peek_kind() {
-            Some(TokenKind::Backtick) => (60u8, true),
-            Some(TokenKind::Star) | Some(TokenKind::Slash) => (70u8, false),
-            Some(TokenKind::Plus) | Some(TokenKind::PlusPlus) | Some(TokenKind::Minus) => (60u8, false),
-            Some(TokenKind::Colon) => (55u8, false),
-            Some(TokenKind::EqEq)
-            | Some(TokenKind::SlashEq)
-            | Some(TokenKind::Lt)
-            | Some(TokenKind::Le)
-            | Some(TokenKind::Gt)
-            | Some(TokenKind::Ge) => (50u8, false),
-            Some(TokenKind::AndAnd) => (40u8, false),
-            Some(TokenKind::OrOr) => (30u8, false),
+
+        let (op, fixity) = match ts.peek_kind() {
+            Some(TokenKind::Backtick) => {
+                ts.expect(TokenKind::Backtick)?;
+                let op = ts.expect_ident()?;
+                ts.expect(TokenKind::Backtick)?;
+                (op.clone(), ts.fixity(&op))
+            }
+            Some(TokenKind::Star) => {
+                ts.bump();
+                ("*".to_string(), ts.fixity("*"))
+            }
+            Some(TokenKind::Slash) => {
+                ts.bump();
+                ("/".to_string(), ts.fixity("/"))
+            }
+            Some(TokenKind::Plus) => {
+                ts.bump();
+                ("+".to_string(), ts.fixity("+"))
+            }
+            Some(TokenKind::Minus) => {
+                ts.bump();
+                ("-".to_string(), ts.fixity("-"))
+            }
+            Some(TokenKind::PlusPlus) => {
+                ts.bump();
+                ("++".to_string(), ts.fixity("++"))
+            }
+            Some(TokenKind::Colon) => {
+                ts.bump();
+                (":".to_string(), Fixity { prec: 55, assoc: Assoc::Right })
+            }
+            Some(TokenKind::EqEq) => {
+                ts.bump();
+                ("==".to_string(), ts.fixity("=="))
+            }
+            Some(TokenKind::SlashEq) => {
+                ts.bump();
+                ("/=".to_string(), ts.fixity("/="))
+            }
+            Some(TokenKind::Lt) => {
+                ts.bump();
+                ("<".to_string(), ts.fixity("<"))
+            }
+            Some(TokenKind::Le) => {
+                ts.bump();
+                ("<=".to_string(), ts.fixity("<="))
+            }
+            Some(TokenKind::Gt) => {
+                ts.bump();
+                (">".to_string(), ts.fixity(">"))
+            }
+            Some(TokenKind::Ge) => {
+                ts.bump();
+                (">=".to_string(), ts.fixity(">="))
+            }
+            Some(TokenKind::AndAnd) => {
+                ts.bump();
+                ("&&".to_string(), ts.fixity("&&"))
+            }
+            Some(TokenKind::OrOr) => {
+                ts.bump();
+                ("||".to_string(), ts.fixity("||"))
+            }
             _ => break,
         };
 
-        if prec < min_prec {
+        if fixity.prec < min_prec {
+            ts.i = save;
             break;
         }
 
-        let op = if is_backtick {
-            ts.expect(TokenKind::Backtick)?;
-            let op = ts.expect_ident()?;
-            ts.expect(TokenKind::Backtick)?;
-            op
+        let rhs_min_prec = if is_cons {
+            fixity.prec
         } else {
-            match ts.bump() {
-                Some(TokenKind::Plus) => "+".to_string(),
-                Some(TokenKind::PlusPlus) => "++".to_string(),
-                Some(TokenKind::Minus) => "-".to_string(),
-                Some(TokenKind::Star) => "*".to_string(),
-                Some(TokenKind::Slash) => "/".to_string(),
-                Some(TokenKind::Colon) => ":".to_string(),
-                Some(TokenKind::EqEq) => "==".to_string(),
-                Some(TokenKind::SlashEq) => "/=".to_string(),
-                Some(TokenKind::Lt) => "<".to_string(),
-                Some(TokenKind::Le) => "<=".to_string(),
-                Some(TokenKind::Gt) => ">".to_string(),
-                Some(TokenKind::Ge) => ">=".to_string(),
-                Some(TokenKind::AndAnd) => "&&".to_string(),
-                Some(TokenKind::OrOr) => "||".to_string(),
-                _ => unreachable!(),
+            match fixity.assoc {
+                Assoc::Right => fixity.prec,
+                _ => fixity.prec + 1,
             }
         };
 
-        let rhs = parse_binops(ts, stop, if is_cons { prec } else { prec + 1 })?;
+        let rhs = parse_binops(ts, stop, rhs_min_prec)?;
         lhs = if is_cons {
             ast::Expr::Cons {
                 head: Box::new(lhs),
@@ -1263,15 +1457,21 @@ struct TokenStream {
     tokens: Vec<lexer::Token>,
     i: usize,
     gensym: u32,
+    fixities: HashMap<String, Fixity>,
 }
 
 impl TokenStream {
-    fn new(tokens: Vec<lexer::Token>) -> Self {
+    fn new(tokens: Vec<lexer::Token>, fixities: HashMap<String, Fixity>) -> Self {
         Self {
             tokens,
             i: 0,
             gensym: 0,
+            fixities,
         }
+    }
+
+    fn fixity(&self, op: &str) -> Fixity {
+        self.fixities.get(op).copied().unwrap_or_else(|| default_fixity(op))
     }
 
     fn fresh_name(&mut self, prefix: &str) -> String {

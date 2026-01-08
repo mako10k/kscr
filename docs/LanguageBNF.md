@@ -217,7 +217,7 @@ Infix operators follow standard precedence and associativity rules:
 - Comparison operators (`==`, `<`, etc.) have lower precedence
 - Logical operators (`&&`, `||`) have the lowest precedence
 - Function application has the highest precedence
-- Custom infix operators can have their precedence defined (implementation-specific)
+- Custom infix operators can have their precedence/associativity defined via fixity declarations: `infixl n op`, `infixr n op`, `infix n op` (parser-level)
 
 ### Infix Notation
 Any binary function can be used as an infix operator by enclosing it in backticks: ``a `f` b`` is equivalent to `f a b`. See `IntermediateRepresentation.md` for details on infix operator handling in the IR.

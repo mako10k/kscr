@@ -2468,7 +2468,7 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
                     }
                     ast::Item::DataDecl(dd)
                 }
-                x @ (ast::Item::Import(_) | ast::Item::Export(_)) => x,
+                x @ (ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_)) => x,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -2550,7 +2550,7 @@ fn import_items(module: &ast::Module) -> Vec<ast::Item> {
         .items
         .iter()
         .filter_map(|it| match it {
-            ast::Item::Import(_) | ast::Item::Export(_) => None,
+            ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => None,
             it => Some(it.clone()),
         })
         .collect()
@@ -2576,7 +2576,7 @@ fn module_exported_names(module: &ast::Module) -> HashSet<String> {
                     all.insert(d.name.clone());
                     all.extend(d.ctors.iter().map(|c| c.name.clone()));
                 }
-                ast::Item::Import(_) | ast::Item::Export(_) => {}
+                ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
             }
         }
         return all;
@@ -2622,7 +2622,7 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
             ast::Item::DataDecl(d) => {
                 values.extend(d.ctors.iter().map(|c| c.name.clone()));
             }
-            ast::Item::Import(_) | ast::Item::Export(_) => {}
+            ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
         }
     }
 
@@ -2670,7 +2670,7 @@ fn qualify_items(module: &ast::Module, qual: &str) -> Result<Vec<ast::Item>> {
                 types.insert(d.name.clone());
                 ctors.extend(d.ctors.iter().map(|c| c.name.clone()));
             }
-            ast::Item::Import(_) | ast::Item::Export(_) => {}
+            ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
         }
     }
 
@@ -2722,7 +2722,7 @@ fn qualify_item(
             }
             ast::Item::DataDecl(d)
         }
-        x @ (ast::Item::Import(_) | ast::Item::Export(_)) => x,
+        x @ (ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_)) => x,
     })
 }
 
@@ -3037,7 +3037,7 @@ fn item_defined_names(it: &ast::Item, out: &mut HashSet<String>) {
             out.insert(d.name.clone());
             out.extend(d.ctors.iter().map(|c| c.name.clone()));
         }
-        ast::Item::Import(_) | ast::Item::Export(_) => {}
+        ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
     }
 }
 
@@ -3149,7 +3149,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 })
                 .collect::<Result<Vec<_>>>()?,
         })),
-        it @ (ast::Item::Import(_) | ast::Item::Export(_)) => Ok(it),
+        it @ (ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_)) => Ok(it),
     }
 }
 

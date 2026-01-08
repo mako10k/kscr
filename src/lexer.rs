@@ -22,6 +22,9 @@ pub enum TokenKind {
     KwElse,
     KwType,
     KwData,
+    KwInfix,
+    KwInfixl,
+    KwInfixr,
 
     Newline,
     Indent,
@@ -567,6 +570,9 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 "else" => TokenKind::KwElse,
                 "type" => TokenKind::KwType,
                 "data" => TokenKind::KwData,
+                "infix" => TokenKind::KwInfix,
+                "infixl" => TokenKind::KwInfixl,
+                "infixr" => TokenKind::KwInfixr,
                 _ => TokenKind::Ident(word.to_string()),
             };
             tokens.push(Token { kind });

@@ -8,6 +8,7 @@ pub struct Module {
 pub enum Item {
     Import(ImportDecl),
     Export(ExportDecl),
+    Fixity(FixityDecl),
     Binding(Binding),
     TypeAlias(TypeAlias),
     DataDecl(DataDecl),
@@ -22,6 +23,20 @@ pub struct ImportDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportDecl {
     pub names: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FixityAssoc {
+    Infix,
+    Infixl,
+    Infixr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixityDecl {
+    pub assoc: FixityAssoc,
+    pub prec: u8,
+    pub ops: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
