@@ -2183,17 +2183,13 @@ fn module_allowed_qualifiers(module: &ast::Module) -> HashSet<String> {
 }
 
 fn desugar_qualified_ref(name: &str, allowed: &HashSet<String>) -> Result<String> {
-    if !name.contains('.') {
-        return Ok(name.to_string());
-    }
-    let mut it = name.split('.');
-    let Some(qual) = it.next() else {
+    let Some((qual, _)) = name.rsplit_once('.') else {
         return Ok(name.to_string());
     };
     if !allowed.contains(qual) {
         return Err(Error::msg(format!("unknown qualifier {qual} in {name}")));
     }
-    Ok(name.rsplit('.').next().unwrap_or(name).to_string())
+    Ok(name.to_string())
 }
 
 fn desugar_qualified_expr(expr: ast::Expr, allowed: &HashSet<String>) -> Result<ast::Expr> {
@@ -2524,7 +2520,7 @@ impl ModuleLoader {
             self.stack.pop();
 
             if self.emitted.insert(p) {
-                out.extend(import_items(&imported));
+                out.extend(import_items_for_decl(&imported, id)?);
             }
         }
         Ok(())
@@ -2540,6 +2536,387 @@ fn import_items(module: &ast::Module) -> Vec<ast::Item> {
             it => Some(it.clone()),
         })
         .collect()
+}
+
+fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result<Vec<ast::Item>> {
+    let unqualified = decl.as_name.is_none();
+
+    let mut out = Vec::new();
+    if unqualified {
+        out.extend(import_items(module));
+    }
+
+    // Always provide module-qualified names (A.x).
+    out.extend(qualify_items(module, &decl.module)?);
+
+    // If `as` is present, treat it like Haskell's `import qualified ... as ...`.
+    if let Some(as_name) = &decl.as_name {
+        if as_name != &decl.module {
+            out.extend(qualify_items(module, as_name)?);
+        }
+    }
+
+    Ok(out)
+}
+
+fn qualify_items(module: &ast::Module, qual: &str) -> Result<Vec<ast::Item>> {
+    let mut values = HashSet::new();
+    let mut types = HashSet::new();
+    let mut ctors = HashSet::new();
+
+    for it in import_items(module) {
+        match &it {
+            ast::Item::Binding(b) => pat_defined_names(&b.pat, &mut values),
+            ast::Item::TypeAlias(ta) => {
+                types.insert(ta.name.clone());
+            }
+            ast::Item::DataDecl(d) => {
+                types.insert(d.name.clone());
+                ctors.extend(d.ctors.iter().map(|c| c.name.clone()));
+            }
+            ast::Item::Import(_) | ast::Item::Export(_) => {}
+        }
+    }
+
+    let val_map: HashMap<String, String> = values
+        .iter()
+        .map(|n| (n.clone(), format!("{qual}.{n}")))
+        .collect();
+    let type_map: HashMap<String, String> = types
+        .iter()
+        .map(|n| (n.clone(), format!("{qual}.{n}")))
+        .collect();
+    let ctor_map: HashMap<String, String> = ctors
+        .iter()
+        .map(|n| (n.clone(), format!("{qual}.{n}")))
+        .collect();
+
+    import_items(module)
+        .into_iter()
+        .map(|it| qualify_item(it, &val_map, &type_map, &ctor_map))
+        .collect::<Result<Vec<_>>>()
+}
+
+fn qualify_item(
+    it: ast::Item,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<ast::Item> {
+    Ok(match it {
+        ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
+            pat: qualify_pat_binders(b.pat, val_map)?,
+            expr: qualify_expr(b.expr, val_map, type_map, ctor_map)?,
+        }),
+        ast::Item::TypeAlias(mut ta) => {
+            ta.name = type_map.get(&ta.name).cloned().unwrap_or(ta.name);
+            ta.ty = qualify_type(ta.ty, type_map)?;
+            ast::Item::TypeAlias(ta)
+        }
+        ast::Item::DataDecl(mut d) => {
+            d.name = type_map.get(&d.name).cloned().unwrap_or(d.name);
+            for ctor in &mut d.ctors {
+                ctor.name = ctor_map.get(&ctor.name).cloned().unwrap_or(ctor.name.clone());
+                ctor.args = ctor
+                    .args
+                    .clone()
+                    .into_iter()
+                    .map(|t| qualify_type(t, type_map))
+                    .collect::<Result<Vec<_>>>()?;
+            }
+            ast::Item::DataDecl(d)
+        }
+        x @ (ast::Item::Import(_) | ast::Item::Export(_)) => x,
+    })
+}
+
+fn qualify_expr(
+    expr: ast::Expr,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<ast::Expr> {
+    use ast::Expr;
+    Ok(match expr {
+        Expr::Var(n) => Expr::Var(val_map.get(&n).cloned().unwrap_or(n)),
+        Expr::Ctor(n) => Expr::Ctor(ctor_map.get(&n).cloned().unwrap_or(n)),
+        Expr::Lambda { params, body } => Expr::Lambda {
+            params,
+            body: Box::new(qualify_expr(*body, val_map, type_map, ctor_map)?),
+        },
+        Expr::Apply { func, args } => Expr::Apply {
+            func: Box::new(qualify_expr(*func, val_map, type_map, ctor_map)?),
+            args: args
+                .into_iter()
+                .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => Expr::If {
+            cond: Box::new(qualify_expr(*cond, val_map, type_map, ctor_map)?),
+            then_branch: Box::new(qualify_expr(*then_branch, val_map, type_map, ctor_map)?),
+            else_branch: Box::new(qualify_expr(*else_branch, val_map, type_map, ctor_map)?),
+        },
+        Expr::Let { bindings, body } => Expr::Let {
+            bindings: bindings
+                .into_iter()
+                .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
+                .collect::<Result<Vec<_>>>()?,
+            body: Box::new(qualify_expr(*body, val_map, type_map, ctor_map)?),
+        },
+        Expr::Where { expr, bindings } => Expr::Where {
+            expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
+            bindings: bindings
+                .into_iter()
+                .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Expr::Annot { expr, ty } => Expr::Annot {
+            expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
+            ty: qualify_qual_type(ty, type_map)?,
+        },
+        Expr::Do(stmts) => Expr::Do(
+            stmts
+                .into_iter()
+                .map(|s| qualify_do_stmt(s, val_map, type_map, ctor_map))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Expr::Case { expr, arms } => Expr::Case {
+            expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
+            arms: arms
+                .into_iter()
+                .map(|a| qualify_case_arm(a, val_map, type_map, ctor_map))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Expr::Cons { head, tail } => Expr::Cons {
+            head: Box::new(qualify_expr(*head, val_map, type_map, ctor_map)?),
+            tail: Box::new(qualify_expr(*tail, val_map, type_map, ctor_map)?),
+        },
+        Expr::List(es) => Expr::List(
+            es.into_iter()
+                .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Expr::Tuple(es) => Expr::Tuple(
+            es.into_iter()
+                .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Expr::Record(fs) => Expr::Record(
+            fs.into_iter()
+                .map(|(l, e)| Ok((l, qualify_expr(e, val_map, type_map, ctor_map)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        x => x,
+    })
+}
+
+fn qualify_case_arm(
+    arm: ast::CaseArm,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<ast::CaseArm> {
+    Ok(ast::CaseArm {
+        pat: qualify_pat_nonbinders(arm.pat, ctor_map, val_map, type_map)?,
+        guard: arm
+            .guard
+            .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
+            .transpose()?,
+        body: qualify_expr(arm.body, val_map, type_map, ctor_map)?,
+    })
+}
+
+fn qualify_do_stmt(
+    stmt: ast::DoStmt,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<ast::DoStmt> {
+    Ok(match stmt {
+        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+            pat: qualify_pat_nonbinders(pat, ctor_map, val_map, type_map)?,
+            expr: qualify_expr(expr, val_map, type_map, ctor_map)?,
+        },
+        ast::DoStmt::Expr(e) => ast::DoStmt::Expr(qualify_expr(e, val_map, type_map, ctor_map)?),
+    })
+}
+
+fn qualify_local_binding(
+    b: ast::Binding,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<ast::Binding> {
+    Ok(ast::Binding {
+        pat: qualify_pat_nonbinders(b.pat, ctor_map, val_map, type_map)?,
+        expr: qualify_expr(b.expr, val_map, type_map, ctor_map)?,
+    })
+}
+
+fn qualify_pat_binders(p: ast::Pattern, val_map: &HashMap<String, String>) -> Result<ast::Pattern> {
+    use ast::Pattern;
+    Ok(match p {
+        Pattern::Var(n) => Pattern::Var(val_map.get(&n).cloned().unwrap_or(n)),
+        Pattern::As(n, p) => Pattern::As(
+            val_map.get(&n).cloned().unwrap_or(n),
+            Box::new(qualify_pat_binders(*p, val_map)?),
+        ),
+        Pattern::Tuple(ps) => Pattern::Tuple(
+            ps.into_iter()
+                .map(|p| qualify_pat_binders(p, val_map))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::List(ps) => Pattern::List(
+            ps.into_iter()
+                .map(|p| qualify_pat_binders(p, val_map))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::Record(fs) => Pattern::Record(
+            fs.into_iter()
+                .map(|(l, p)| Ok((l, qualify_pat_binders(p, val_map)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::RecordLoose(fs, rest) => Pattern::RecordLoose(
+            fs.into_iter()
+                .map(|(l, p)| Ok((l, qualify_pat_binders(p, val_map)?)))
+                .collect::<Result<Vec<_>>>()?,
+            rest.map(|n| val_map.get(&n).cloned().unwrap_or(n)),
+        ),
+        Pattern::Cons(a, b) => Pattern::Cons(
+            Box::new(qualify_pat_binders(*a, val_map)?),
+            Box::new(qualify_pat_binders(*b, val_map)?),
+        ),
+        Pattern::Or(a, b) => Pattern::Or(
+            Box::new(qualify_pat_binders(*a, val_map)?),
+            Box::new(qualify_pat_binders(*b, val_map)?),
+        ),
+        Pattern::View(p, e) => Pattern::View(
+            Box::new(qualify_pat_binders(*p, val_map)?),
+            e,
+        ),
+        Pattern::Constructor { name, args } => Pattern::Constructor { name, args },
+        x => x,
+    })
+}
+
+fn qualify_pat_nonbinders(
+    p: ast::Pattern,
+    ctor_map: &HashMap<String, String>,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+) -> Result<ast::Pattern> {
+    let _ = type_map;
+    use ast::Pattern;
+    Ok(match p {
+        Pattern::Tuple(ps) => Pattern::Tuple(
+            ps.into_iter()
+                .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::List(ps) => Pattern::List(
+            ps.into_iter()
+                .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::Record(fs) => Pattern::Record(
+            fs.into_iter()
+                .map(|(l, p)| Ok((l, qualify_pat_nonbinders(p, ctor_map, val_map, type_map)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::RecordLoose(fs, rest) => Pattern::RecordLoose(
+            fs.into_iter()
+                .map(|(l, p)| Ok((l, qualify_pat_nonbinders(p, ctor_map, val_map, type_map)?)))
+                .collect::<Result<Vec<_>>>()?,
+            rest,
+        ),
+        Pattern::Cons(a, b) => Pattern::Cons(
+            Box::new(qualify_pat_nonbinders(*a, ctor_map, val_map, type_map)?),
+            Box::new(qualify_pat_nonbinders(*b, ctor_map, val_map, type_map)?),
+        ),
+        Pattern::Or(a, b) => Pattern::Or(
+            Box::new(qualify_pat_nonbinders(*a, ctor_map, val_map, type_map)?),
+            Box::new(qualify_pat_nonbinders(*b, ctor_map, val_map, type_map)?),
+        ),
+        Pattern::As(n, p) => Pattern::As(
+            n,
+            Box::new(qualify_pat_nonbinders(*p, ctor_map, val_map, type_map)?),
+        ),
+        Pattern::View(p, e) => Pattern::View(
+            Box::new(qualify_pat_nonbinders(*p, ctor_map, val_map, type_map)?),
+            Box::new(qualify_expr(*e, val_map, type_map, ctor_map)?),
+        ),
+        Pattern::Constructor { name, args } => Pattern::Constructor {
+            name: ctor_map.get(&name).cloned().unwrap_or(name),
+            args: args
+                .into_iter()
+                .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Pattern::Literal(e) => Pattern::Literal(qualify_expr(e, val_map, type_map, ctor_map)?),
+        x => x,
+    })
+}
+
+fn qualify_type(ty: ast::Type, type_map: &HashMap<String, String>) -> Result<ast::Type> {
+    use ast::Type;
+    Ok(match ty {
+        Type::List(t) => Type::List(Box::new(qualify_type(*t, type_map)?)),
+        Type::Tuple(ts) => Type::Tuple(
+            ts.into_iter()
+                .map(|t| qualify_type(t, type_map))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Type::Record(fs) => Type::Record(
+            fs.into_iter()
+                .map(|(l, t)| Ok((l, qualify_type(t, type_map)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Type::RecordOpen(fs, r) => Type::RecordOpen(
+            fs.into_iter()
+                .map(|(l, t)| Ok((l, qualify_type(t, type_map)?)))
+                .collect::<Result<Vec<_>>>()?,
+            Box::new(qualify_type(*r, type_map)?),
+        ),
+        Type::Var(n) => Type::Var(type_map.get(&n).cloned().unwrap_or(n)),
+        Type::App { head, args } => Type::App {
+            head: Box::new(qualify_type(*head, type_map)?),
+            args: args
+                .into_iter()
+                .map(|t| qualify_type(t, type_map))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Type::Func(a, b) => Type::Func(
+            Box::new(qualify_type(*a, type_map)?),
+            Box::new(qualify_type(*b, type_map)?),
+        ),
+        x => x,
+    })
+}
+
+fn qualify_predicate(p: ast::Predicate, type_map: &HashMap<String, String>) -> Result<ast::Predicate> {
+    Ok(match p {
+        ast::Predicate::Show(t) => ast::Predicate::Show(qualify_type(t, type_map)?),
+        ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(qualify_type(t, type_map)?),
+        ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
+            label,
+            row: qualify_type(row, type_map)?,
+        },
+    })
+}
+
+fn qualify_qual_type(qt: ast::QualType, type_map: &HashMap<String, String>) -> Result<ast::QualType> {
+    Ok(ast::QualType {
+        preds: qt
+            .preds
+            .into_iter()
+            .map(|p| qualify_predicate(p, type_map))
+            .collect::<Result<Vec<_>>>()?,
+        ty: qualify_type(qt.ty, type_map)?,
+    })
 }
 
 fn push_item_checked(items: &mut Vec<ast::Item>, defined: &mut HashSet<String>, it: ast::Item) -> Result<()> {
@@ -3105,6 +3482,32 @@ mod inference_tests {
         std::fs::write(
             &main,
             "module Main where\n  import A as OM\n  y = OM.x + 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_import_as_disambiguates_same_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_import_as_disambiguates_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  x = 1\n").unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(&b, "module B where\n  x = 2\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A as A1\n  import B as B1\n  y = A1.x + B1.x\n  main = IO ()\n",
         )
         .unwrap();
 
