@@ -1,5 +1,5 @@
 module Prelude where
-  export print, readLine, id, map, filter, concat
+  export print, readLine, id, map, filter, concat, append
 
   print = stdoutWrite
 
@@ -12,3 +12,5 @@ module Prelude where
   filter = \p -> \xs -> concatMap (\x -> if p x then [x] else []) xs
 
   concat = \xss -> concatMap (\xs -> xs) xss
+
+  append = \a -> \b -> a ++ b

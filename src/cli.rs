@@ -253,7 +253,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  import Prelude\n  inc = \\x -> x + 1\n  main = do\n    print (show (map inc [1, 2]))\n    print (show (filter (\\x -> x == 2) [1, 2, 3]))\n    print (show (concat [[1], [2, 3]]))\n",
+            "module Main where\n  import Prelude\n  inc = \\x -> x + 1\n  main = do\n    print (show (map inc [1, 2]))\n    print (show (filter (\\x -> x == 2) [1, 2, 3]))\n    print (show (concat [[1], [2, 3]]))\n    print (\"hello\" ++ \"world\")\n    print (append \"hello\" \"world\")\n",
         )
         .unwrap();
         let args = vec![

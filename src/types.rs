@@ -1170,6 +1170,22 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // ++ :: String -> String -> String
+    env.insert(
+        "++".to_string(),
+        Scheme {
+            vars: vec![],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("String".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("String".to_string())),
+                    Box::new(Ty::Con("String".to_string())),
+                )),
+            ),
+        },
+    );
+
     // show :: Show a => a -> String
     let Ty::Var(v) = cx.fresh() else { unreachable!() };
     env.insert(

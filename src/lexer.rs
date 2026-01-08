@@ -30,6 +30,7 @@ pub enum TokenKind {
     Dot,
     Backtick,
     Plus,
+    PlusPlus,
     Minus,
     Star,
     Slash,
@@ -231,6 +232,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
         if bytes[i..].starts_with(b"||") {
             tokens.push(Token {
                 kind: TokenKind::OrOr,
+            });
+            i += 2;
+            continue;
+        }
+        if bytes[i..].starts_with(b"++") {
+            tokens.push(Token {
+                kind: TokenKind::PlusPlus,
             });
             i += 2;
             continue;

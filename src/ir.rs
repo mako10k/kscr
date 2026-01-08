@@ -560,6 +560,8 @@ pub enum Value {
     BuiltinNot,
     BuiltinIntToString,
     BuiltinBoolToString,
+    BuiltinStrAppend,
+    BuiltinStrAppend1(Box<Value>),
     BuiltinShow,
     Closure {
         params: Vec<String>,
@@ -729,6 +731,10 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "boolToString" {
         return Ok(Value::BuiltinBoolToString);
+    }
+
+    if name == "++" {
+        return Ok(Value::BuiltinStrAppend);
     }
 
     if name == "show" || name == "toString" {
@@ -1013,6 +1019,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinNot => not_bool(g, arg),
         Value::BuiltinIntToString => int_to_string(g, arg),
         Value::BuiltinBoolToString => bool_to_string(g, arg),
+        Value::BuiltinStrAppend => Ok(Value::BuiltinStrAppend1(Box::new(arg))),
+        Value::BuiltinStrAppend1(a) => str_append(g, *a, arg),
         Value::BuiltinShow => show_to_string(g, arg),
         Value::Closure {
             mut params,
@@ -1212,6 +1220,14 @@ fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let Value::Bool(a) = a else { return Err(Error::msg("boolToString expects Bool")) };
     Ok(Value::String(if a { "True" } else { "False" }.to_string()))
+}
+
+fn str_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::String(a) = a else { return Err(Error::msg("++ expects String")) };
+    let Value::String(b) = b else { return Err(Error::msg("++ expects String")) };
+    Ok(Value::String(format!("{a}{b}")))
 }
 
 fn quote_string(s: &str) -> String {

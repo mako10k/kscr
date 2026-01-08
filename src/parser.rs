@@ -950,7 +950,7 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
         let (prec, is_backtick) = match ts.peek_kind() {
             Some(TokenKind::Backtick) => (60u8, true),
             Some(TokenKind::Star) | Some(TokenKind::Slash) => (70u8, false),
-            Some(TokenKind::Plus) | Some(TokenKind::Minus) => (60u8, false),
+            Some(TokenKind::Plus) | Some(TokenKind::PlusPlus) | Some(TokenKind::Minus) => (60u8, false),
             Some(TokenKind::Colon) => (55u8, false),
             Some(TokenKind::EqEq)
             | Some(TokenKind::SlashEq)
@@ -975,6 +975,7 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
         } else {
             match ts.bump() {
                 Some(TokenKind::Plus) => "+".to_string(),
+                Some(TokenKind::PlusPlus) => "++".to_string(),
                 Some(TokenKind::Minus) => "-".to_string(),
                 Some(TokenKind::Star) => "*".to_string(),
                 Some(TokenKind::Slash) => "/".to_string(),

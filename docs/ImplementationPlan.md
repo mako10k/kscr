@@ -82,6 +82,10 @@ Scope notes:
 
 ## Milestone 5 — Runtime + IR Interpreter (Correctness First)
 
+### Note: String representation (future)
+- **Current (MVP):** plain `String` values + minimal primitives (e.g. concatenation) for basic usability.
+- **Future direction:** make String an internal structure where we can explicitly control **substrings**, **interning**, and **concatenation/ropes** via dedicated builtin primitives (so stdlib can choose policies without Rust-side ad-hoc helpers).
+
 ### Mid-goal 5.1 — Thunk runtime
 - **Small-goal 5.1.1**: Implement thunk states (Unevaluated/Evaluating/Evaluated) and memoization.
 - **Small-goal 5.1.2**: Implement blackholing/cycle detection policy.
