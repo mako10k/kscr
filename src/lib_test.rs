@@ -37,7 +37,7 @@ fn parser_qualified_names_desugar() {
     let crate::ast::Item::Binding(b) = &m.items[0] else {
         panic!("expected binding");
     };
-    assert!(matches!(&b.expr, crate::ast::Expr::Var(s) if s == "x"));
+    assert!(matches!(&b.expr, crate::ast::Expr::Var(s) if s == "A.B.OM.x"));
 
     let m = crate::parser::parse_module("x = 1 :: OM.Integer\n").unwrap();
     let crate::ast::Item::Binding(b) = &m.items[0] else {

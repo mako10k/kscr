@@ -2168,6 +2168,304 @@ struct ModuleLoader {
     emitted: HashSet<PathBuf>,
 }
 
+fn module_allowed_qualifiers(module: &ast::Module) -> HashSet<String> {
+    module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            ast::Item::Import(id) => Some(id),
+            _ => None,
+        })
+        .flat_map(|id| {
+            std::iter::once(id.module.clone()).chain(id.as_name.clone())
+        })
+        .collect()
+}
+
+fn desugar_qualified_ref(name: &str, allowed: &HashSet<String>) -> Result<String> {
+    if !name.contains('.') {
+        return Ok(name.to_string());
+    }
+    let mut it = name.split('.');
+    let Some(qual) = it.next() else {
+        return Ok(name.to_string());
+    };
+    if !allowed.contains(qual) {
+        return Err(Error::msg(format!("unknown qualifier {qual} in {name}")));
+    }
+    Ok(name.rsplit('.').next().unwrap_or(name).to_string())
+}
+
+fn desugar_qualified_expr(expr: ast::Expr, allowed: &HashSet<String>) -> Result<ast::Expr> {
+    use ast::Expr;
+    Ok(match expr {
+        Expr::Var(n) => Expr::Var(desugar_qualified_ref(&n, allowed)?),
+        Expr::Ctor(n) => Expr::Ctor(desugar_qualified_ref(&n, allowed)?),
+        Expr::Lambda { params, body } => Expr::Lambda {
+            params,
+            body: Box::new(desugar_qualified_expr(*body, allowed)?),
+        },
+        Expr::Apply { func, args } => Expr::Apply {
+            func: Box::new(desugar_qualified_expr(*func, allowed)?),
+            args: args
+                .into_iter()
+                .map(|e| desugar_qualified_expr(e, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => Expr::If {
+            cond: Box::new(desugar_qualified_expr(*cond, allowed)?),
+            then_branch: Box::new(desugar_qualified_expr(*then_branch, allowed)?),
+            else_branch: Box::new(desugar_qualified_expr(*else_branch, allowed)?),
+        },
+        Expr::Let { bindings, body } => Expr::Let {
+            bindings: bindings
+                .into_iter()
+                .map(|b| desugar_qualified_binding(b, allowed))
+                .collect::<Result<Vec<_>>>()?,
+            body: Box::new(desugar_qualified_expr(*body, allowed)?),
+        },
+        Expr::Where { expr, bindings } => Expr::Where {
+            expr: Box::new(desugar_qualified_expr(*expr, allowed)?),
+            bindings: bindings
+                .into_iter()
+                .map(|b| desugar_qualified_binding(b, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Expr::Annot { expr, ty } => Expr::Annot {
+            expr: Box::new(desugar_qualified_expr(*expr, allowed)?),
+            ty: desugar_qualified_qual_type(ty, allowed)?,
+        },
+        Expr::Do(stmts) => Expr::Do(
+            stmts
+                .into_iter()
+                .map(|s| desugar_qualified_do_stmt(s, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Expr::Case { expr, arms } => Expr::Case {
+            expr: Box::new(desugar_qualified_expr(*expr, allowed)?),
+            arms: arms
+                .into_iter()
+                .map(|a| desugar_qualified_case_arm(a, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Expr::Cons { head, tail } => Expr::Cons {
+            head: Box::new(desugar_qualified_expr(*head, allowed)?),
+            tail: Box::new(desugar_qualified_expr(*tail, allowed)?),
+        },
+        Expr::List(es) => Expr::List(
+            es.into_iter()
+                .map(|e| desugar_qualified_expr(e, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Expr::Tuple(es) => Expr::Tuple(
+            es.into_iter()
+                .map(|e| desugar_qualified_expr(e, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Expr::Record(fs) => Expr::Record(
+            fs.into_iter()
+                .map(|(l, e)| Ok((l, desugar_qualified_expr(e, allowed)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        x => x,
+    })
+}
+
+fn desugar_qualified_case_arm(arm: ast::CaseArm, allowed: &HashSet<String>) -> Result<ast::CaseArm> {
+    Ok(ast::CaseArm {
+        pat: desugar_qualified_pattern(arm.pat, allowed)?,
+        guard: arm
+            .guard
+            .map(|e| desugar_qualified_expr(e, allowed))
+            .transpose()?,
+        body: desugar_qualified_expr(arm.body, allowed)?,
+    })
+}
+
+fn desugar_qualified_do_stmt(stmt: ast::DoStmt, allowed: &HashSet<String>) -> Result<ast::DoStmt> {
+    Ok(match stmt {
+        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+            pat: desugar_qualified_pattern(pat, allowed)?,
+            expr: desugar_qualified_expr(expr, allowed)?,
+        },
+        ast::DoStmt::Expr(e) => ast::DoStmt::Expr(desugar_qualified_expr(e, allowed)?),
+    })
+}
+
+fn desugar_qualified_binding(b: ast::Binding, allowed: &HashSet<String>) -> Result<ast::Binding> {
+    Ok(ast::Binding {
+        pat: desugar_qualified_pattern(b.pat, allowed)?,
+        expr: desugar_qualified_expr(b.expr, allowed)?,
+    })
+}
+
+fn desugar_qualified_pattern(p: ast::Pattern, allowed: &HashSet<String>) -> Result<ast::Pattern> {
+    use ast::Pattern;
+    Ok(match p {
+        Pattern::Var(n) => {
+            if n.contains('.') {
+                return Err(Error::msg(format!(
+                    "qualified name is not allowed in binder: {n}"
+                )));
+            }
+            Pattern::Var(n)
+        }
+        Pattern::As(n, p) => {
+            if n.contains('.') {
+                return Err(Error::msg(format!(
+                    "qualified name is not allowed in binder: {n}"
+                )));
+            }
+            Pattern::As(n, Box::new(desugar_qualified_pattern(*p, allowed)?))
+        }
+        Pattern::Tuple(ps) => Pattern::Tuple(
+            ps.into_iter()
+                .map(|p| desugar_qualified_pattern(p, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::List(ps) => Pattern::List(
+            ps.into_iter()
+                .map(|p| desugar_qualified_pattern(p, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::Record(fs) => Pattern::Record(
+            fs.into_iter()
+                .map(|(l, p)| Ok((l, desugar_qualified_pattern(p, allowed)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Pattern::RecordLoose(fs, rest) => {
+            if rest.as_ref().is_some_and(|n| n.contains('.')) {
+                return Err(Error::msg(format!(
+                    "qualified name is not allowed in binder: {}",
+                    rest.unwrap()
+                )));
+            }
+            Pattern::RecordLoose(
+                fs.into_iter()
+                    .map(|(l, p)| Ok((l, desugar_qualified_pattern(p, allowed)?)))
+                    .collect::<Result<Vec<_>>>()?,
+                rest,
+            )
+        }
+        Pattern::Cons(a, b) => Pattern::Cons(
+            Box::new(desugar_qualified_pattern(*a, allowed)?),
+            Box::new(desugar_qualified_pattern(*b, allowed)?),
+        ),
+        Pattern::Or(a, b) => Pattern::Or(
+            Box::new(desugar_qualified_pattern(*a, allowed)?),
+            Box::new(desugar_qualified_pattern(*b, allowed)?),
+        ),
+        Pattern::View(p, e) => Pattern::View(
+            Box::new(desugar_qualified_pattern(*p, allowed)?),
+            Box::new(desugar_qualified_expr(*e, allowed)?),
+        ),
+        Pattern::Constructor { name, args } => Pattern::Constructor {
+            name: desugar_qualified_ref(&name, allowed)?,
+            args: args
+                .into_iter()
+                .map(|p| desugar_qualified_pattern(p, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Pattern::Literal(e) => Pattern::Literal(desugar_qualified_expr(e, allowed)?),
+        x => x,
+    })
+}
+
+fn desugar_qualified_type(ty: ast::Type, allowed: &HashSet<String>) -> Result<ast::Type> {
+    use ast::Type;
+    Ok(match ty {
+        Type::List(t) => Type::List(Box::new(desugar_qualified_type(*t, allowed)?)),
+        Type::Tuple(ts) => Type::Tuple(
+            ts.into_iter()
+                .map(|t| desugar_qualified_type(t, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Type::Record(fs) => Type::Record(
+            fs.into_iter()
+                .map(|(l, t)| Ok((l, desugar_qualified_type(t, allowed)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Type::RecordOpen(fs, r) => Type::RecordOpen(
+            fs.into_iter()
+                .map(|(l, t)| Ok((l, desugar_qualified_type(t, allowed)?)))
+                .collect::<Result<Vec<_>>>()?,
+            Box::new(desugar_qualified_type(*r, allowed)?),
+        ),
+        Type::Var(n) => Type::Var(desugar_qualified_ref(&n, allowed)?),
+        Type::App { head, args } => Type::App {
+            head: Box::new(desugar_qualified_type(*head, allowed)?),
+            args: args
+                .into_iter()
+                .map(|t| desugar_qualified_type(t, allowed))
+                .collect::<Result<Vec<_>>>()?,
+        },
+        Type::Func(a, b) => Type::Func(
+            Box::new(desugar_qualified_type(*a, allowed)?),
+            Box::new(desugar_qualified_type(*b, allowed)?),
+        ),
+        x => x,
+    })
+}
+
+fn desugar_qualified_predicate(p: ast::Predicate, allowed: &HashSet<String>) -> Result<ast::Predicate> {
+    Ok(match p {
+        ast::Predicate::Show(t) => ast::Predicate::Show(desugar_qualified_type(t, allowed)?),
+        ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(desugar_qualified_type(t, allowed)?),
+        ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
+            label,
+            row: desugar_qualified_type(row, allowed)?,
+        },
+    })
+}
+
+fn desugar_qualified_qual_type(qt: ast::QualType, allowed: &HashSet<String>) -> Result<ast::QualType> {
+    Ok(ast::QualType {
+        preds: qt
+            .preds
+            .into_iter()
+            .map(|p| desugar_qualified_predicate(p, allowed))
+            .collect::<Result<Vec<_>>>()?,
+        ty: desugar_qualified_type(qt.ty, allowed)?,
+    })
+}
+
+fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
+    let allowed = module_allowed_qualifiers(module);
+
+    module.items = module
+        .items
+        .clone()
+        .into_iter()
+        .map(|it| {
+            Ok(match it {
+                ast::Item::Binding(b) => ast::Item::Binding(desugar_qualified_binding(b, &allowed)?),
+                ast::Item::TypeAlias(mut ta) => {
+                    ta.ty = desugar_qualified_type(ta.ty, &allowed)?;
+                    ast::Item::TypeAlias(ta)
+                }
+                ast::Item::DataDecl(mut dd) => {
+                    for ctor in &mut dd.ctors {
+                        ctor.args = ctor
+                            .args
+                            .clone()
+                            .into_iter()
+                            .map(|t| desugar_qualified_type(t, &allowed))
+                            .collect::<Result<Vec<_>>>()?;
+                    }
+                    ast::Item::DataDecl(dd)
+                }
+                x @ (ast::Item::Import(_) | ast::Item::Export(_)) => x,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(())
+}
+
 impl ModuleLoader {
     fn load_ast(&mut self, path: &Path) -> Result<ast::Module> {
         if let Some(m) = self.cache.get(path) {
@@ -2175,7 +2473,8 @@ impl ModuleLoader {
         }
 
         let src = std::fs::read_to_string(path)?;
-        let m = parser::parse_module(&src)?;
+        let mut m = parser::parse_module(&src)?;
+        desugar_module_qualified_names(&mut m)?;
 
         self.cache.insert(path.to_path_buf(), m.clone());
         Ok(m)
@@ -2810,6 +3109,54 @@ mod inference_tests {
         .unwrap();
 
         let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_allows_module_qualifier_without_as() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_module_qualifier_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  y = A.x + 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_rejects_unknown_qualifier() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_unknown_qualifier_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  y = Q.x + 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let e = typecheck_file(&main).unwrap_err();
+        assert!(format!("{e}").contains("unknown qualifier Q"));
+
         let _ = std::fs::remove_dir_all(dir);
     }
 

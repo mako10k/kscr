@@ -1,12 +1,24 @@
 use crate::{ast, error::Error, lexer, lexer::TokenKind, Result};
 
 fn parse_maybe_qualified_ident(ts: &mut TokenStream) -> Result<String> {
-    let mut last = ts.expect_ident()?;
+    let mut s = ts.expect_ident()?;
     while matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
         ts.bump();
-        last = ts.expect_ident()?;
+        s.push('.');
+        s.push_str(&ts.expect_ident()?);
     }
-    Ok(last)
+    Ok(s)
+}
+
+fn last_qualified_segment(s: &str) -> &str {
+    s.rsplit('.').next().unwrap_or(s)
+}
+
+fn is_upper_by_last_segment(s: &str) -> bool {
+    last_qualified_segment(s)
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase())
 }
 
 pub fn parse_module(src: &str) -> Result<ast::Module> {
@@ -595,7 +607,8 @@ fn parse_type_atom(
         }
         Some(TokenKind::Ident(_)) => {
             let s = parse_maybe_qualified_ident(ts)?;
-            Ok(match s.as_str() {
+            let last = last_qualified_segment(&s);
+            Ok(match last {
                 "Integer" => ast::Type::Integer,
                 "Bool" => ast::Type::Bool,
                 "Float64" => ast::Type::Float64,
@@ -790,7 +803,7 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
         }
         Some(TokenKind::Ident(_)) => {
             let s = parse_maybe_qualified_ident(ts)?;
-            if s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            if is_upper_by_last_segment(&s) {
                 Ok(ast::Pattern::Constructor {
                     name: s,
                     args: vec![],
@@ -1062,7 +1075,7 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
         },
         Some(TokenKind::Ident(_)) => {
             let s = parse_maybe_qualified_ident(ts)?;
-            if s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            if is_upper_by_last_segment(&s) {
                 Ok(ast::Expr::Ctor(s))
             } else {
                 Ok(ast::Expr::Var(s))
