@@ -344,6 +344,27 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_list_comprehension_skips_failed_pattern_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_list_comprehension_skips_failed_pattern_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  data Maybe a = Nothing | Just a\n  xs = [a | Just a <- [Just 1, Nothing, Just 3]]\n  main = do\n    print (show xs)\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn cli_run_list_case_smoke() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_list_case_smoke_{}.ks",
