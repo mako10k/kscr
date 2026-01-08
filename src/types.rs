@@ -2485,8 +2485,12 @@ impl ModuleLoader {
                 continue;
             };
 
-
-            let p = std::fs::canonicalize(dir.join(format!("{}.ks", id.module)))
+            let local = dir.join(format!("{}.ks", id.module));
+            let p = std::fs::canonicalize(&local)
+                .or_else(|_| {
+                    let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+                    std::fs::canonicalize(stdlib.join(format!("{}.ks", id.module)))
+                })
                 .map_err(|_| Error::msg(format!("cannot find module file for import {}", id.module)))?;
 
             if let Some(pos) = self.stack.iter().position(|x| x == &p) {

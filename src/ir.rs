@@ -739,14 +739,14 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
         return Ok(Value::IoAction(Box::new(IoAction::StdinReadLine)));
     }
 
-    if name == "readLine" {
+    if name == "readLine" && !g.defs.contains_key(name) {
         // NOTE: currently a builtin for early ergonomics.
         // In the future, `readLine` should become a library function built on top of IO primitives
         // such as `stdinReadLine`.
         return Ok(Value::IoAction(Box::new(IoAction::StdinReadLine)));
     }
 
-    if name == "print" {
+    if name == "print" && !g.defs.contains_key(name) {
         // NOTE: temporary name for observability.
         // In the future, `print` should become a library function built on top of IO primitives
         // such as `stdoutWrite`.
