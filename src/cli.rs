@@ -512,6 +512,26 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_unused_top_level_is_not_evaluated_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_unused_top_level_is_not_evaluated_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  x = 1 / 0\n  main = do\n    print \"ok\"\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn cli_run_list_comprehension_guard_smoke() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_list_comprehension_guard_smoke_{}.ks",
