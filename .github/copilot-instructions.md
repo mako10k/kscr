@@ -41,7 +41,18 @@ These checks are mandatory for all AI agent-driven changes.
 
 ## Essential Knowledge & Workflow
 - Refer to `docs/` for language specification and design intent (e.g., `LanguageBNF.md`, `TypeSystem.md`).
-- To add new language features or syntax:
+
+### Current project policy (execution-first)
+- Prefer making the system runnable end-to-end over adding more surface syntax.
+- Avoid further Source⇒AST churn unless a failing end-to-end test proves it is required.
+- First add/expand **run smoke tests** that exercise:
+  - `kscr run` over multiple files (`import` traversal)
+  - qualified refs (`OM.x`), export/import boundaries
+  - `data` + constructors, `case`, `do`
+- Only after smoke tests are in place, incrementally fill gaps in typecheck/IR/runtime that those tests expose.
+- If design choices are ambiguous, lean toward **Haskell-like semantics** (especially for import/qualified name resolution).
+
+- To add new language features or syntax (only when required by a failing test):
   1. Extend `lexer.rs`
   2. Update `parser.rs`
   3. Modify `ast.rs`
