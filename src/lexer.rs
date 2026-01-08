@@ -27,6 +27,7 @@ pub enum TokenKind {
     Indent,
     Dedent,
     Comma,
+    Dot,
     Backtick,
     Plus,
     Minus,
@@ -239,6 +240,13 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 kind: TokenKind::Ellipsis,
             });
             i += 3;
+            continue;
+        }
+        if bytes[i] == b'.' {
+            tokens.push(Token {
+                kind: TokenKind::Dot,
+            });
+            i += 1;
             continue;
         }
 

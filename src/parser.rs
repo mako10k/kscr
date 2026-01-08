@@ -1,5 +1,15 @@
 use crate::{ast, error::Error, lexer, lexer::TokenKind, Result};
 
+fn parse_maybe_qualified_ident(ts: &mut TokenStream) -> Result<String> {
+    let _qual = ts.expect_ident()?;
+    if matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
+        ts.bump();
+        ts.expect_ident()
+    } else {
+        Ok(_qual)
+    }
+}
+
 pub fn parse_module(src: &str) -> Result<ast::Module> {
     let tokens = lexer::lex(src)?;
     let mut ts = TokenStream::new(tokens);
@@ -584,17 +594,17 @@ fn parse_type_atom(
             };
             Ok(ast::Type::Hole(name))
         }
-        Some(TokenKind::Ident(_)) => match ts.bump() {
-            Some(TokenKind::Ident(s)) => Ok(match s.as_str() {
+        Some(TokenKind::Ident(_)) => {
+            let s = parse_maybe_qualified_ident(ts)?;
+            Ok(match s.as_str() {
                 "Integer" => ast::Type::Integer,
                 "Bool" => ast::Type::Bool,
                 "Float64" => ast::Type::Float64,
                 "Char" => ast::Type::Char,
                 "String" => ast::Type::String,
                 _ => ast::Type::Var(s),
-            }),
-            _ => unreachable!(),
-        },
+            })
+        }
         Some(TokenKind::LParen) => {
             ts.expect(TokenKind::LParen)?;
             if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
@@ -779,19 +789,17 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
             };
             Ok(ast::Pattern::Hole(name))
         }
-        Some(TokenKind::Ident(_)) => match ts.bump() {
-            Some(TokenKind::Ident(s)) => {
-                if s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    Ok(ast::Pattern::Constructor {
-                        name: s,
-                        args: vec![],
-                    })
-                } else {
-                    Ok(ast::Pattern::Var(s))
-                }
+        Some(TokenKind::Ident(_)) => {
+            let s = parse_maybe_qualified_ident(ts)?;
+            if s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                Ok(ast::Pattern::Constructor {
+                    name: s,
+                    args: vec![],
+                })
+            } else {
+                Ok(ast::Pattern::Var(s))
             }
-            _ => unreachable!(),
-        },
+        }
 
         Some(TokenKind::True) => {
             ts.bump();
@@ -1053,16 +1061,14 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
             Some(TokenKind::Char(ch)) => Ok(ast::Expr::Char(ch)),
             _ => unreachable!(),
         },
-        Some(TokenKind::Ident(_)) => match ts.bump() {
-            Some(TokenKind::Ident(s)) => {
-                if s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    Ok(ast::Expr::Ctor(s))
-                } else {
-                    Ok(ast::Expr::Var(s))
-                }
+        Some(TokenKind::Ident(_)) => {
+            let s = parse_maybe_qualified_ident(ts)?;
+            if s.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                Ok(ast::Expr::Ctor(s))
+            } else {
+                Ok(ast::Expr::Var(s))
             }
-            _ => unreachable!(),
-        },
+        }
         Some(TokenKind::LBracket) => parse_list_expr(ts),
         Some(TokenKind::LParen) => parse_paren_or_tuple_expr(ts),
         Some(TokenKind::LBrace) => parse_record_expr(ts),

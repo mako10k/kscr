@@ -32,6 +32,24 @@ fn parser_binding_patterns() {
 }
 
 #[test]
+fn parser_qualified_names_desugar() {
+    let m = crate::parser::parse_module("y = OM.x\n").unwrap();
+    let crate::ast::Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(&b.expr, crate::ast::Expr::Var(s) if s == "x"));
+
+    let m = crate::parser::parse_module("x = 1 :: OM.Integer\n").unwrap();
+    let crate::ast::Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+    let crate::ast::Expr::Annot { ty, .. } = &b.expr else {
+        panic!("expected annotation");
+    };
+    assert!(matches!(ty.ty, crate::ast::Type::Integer));
+}
+
+#[test]
 fn parser_module_import_export() {
     let src = std::fs::read_to_string("tests/module_import_export.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
