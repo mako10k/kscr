@@ -492,6 +492,27 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_case_forces_scrutinee_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_case_forces_scrutinee_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  x = case (1 / 0) of\n    _ -> 1\n  main = do\n    print (intToString x)\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        let e = run(args.into_iter()).unwrap_err();
+        assert!(format!("{e}").contains("division by zero"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn cli_run_case_guard_smoke() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_case_guard_smoke_{}.ks",
