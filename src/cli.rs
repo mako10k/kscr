@@ -335,6 +335,26 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_case_guard_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_case_guard_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  x = case 1 of\n    n | n == 1 -> n + 41\n    _ -> 0\n  main = do\n    print (intToString x)\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn cli_run_do_bind_ctor_pattern_smoke() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_do_bind_ctor_pattern_smoke_{}.ks",
