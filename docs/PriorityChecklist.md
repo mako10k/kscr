@@ -54,8 +54,8 @@ Status: 完了（MVP）
 - コマンド: `:type <expr>`, `:quit`
 - 実装は既存パイプライン（parse→typecheck→IR→run）を再利用し、毎回フルtypecheckでもOK
 
-Status: Next
-- [ ] 実装 + 最小テスト（REPLコアを関数化してユニットテスト）
+Status: Done
+- [x] 実装 + 最小テスト（REPLコアを関数化してユニットテスト）（commit: `acd80da`）
 
 ## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
 目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
