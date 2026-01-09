@@ -11,7 +11,19 @@ Last updated: 2026-01-09
 
 ## P0 — End-to-end smoke tests (import traversal)
 目的: 実行系が「複数ファイル」「import traversal」「export/import境界」「qualified ref」まで end-to-end で動くことを最優先で担保。
-- [x] 既存のCLIスモーク群で概ね担保（`src/cli.rs`）
+
+Status: 進行中（継続追加OK / ただし“実装済みを再実装”しないよう、下記の完了項目を基準にする）
+
+### Done
+- [x] run: import traversal（A→B→Main）を跨いで実行できる（commit: `34c439d`）
+- [x] run: transitive import + qualified ref（`import A as OM; OM.x`）が動く（commit: `34c439d`）
+- [x] run: `import A` が unqualified 参照（`x`）と module qualifier（`A.x`）の両方を許す（commit: `4904ba6`）
+- [x] typecheck: export/import 境界が効き、未exportは入らない（commit: `4904ba6`）
+- [x] run: `import A as A1` / `import B as B1` で同名の衝突を qualified で解消できる（commit: `f276e02`）
+- [x] typecheck: cyclic imports を検出し、エラー文に `cyclic imports` が含まれる（commit: `f276e02`）
+
+### Next
+- [ ] import traversal: data/constructors + case + do を跨いだより実戦的なスモークを追加（必要になったら）
 
 ## P1 — Exceptions via IO (throw/catch/try)
 目的: `throw/catch/try` をIOレイヤで実装し、伝播/捕捉/try(Either化)をスモークで保証。
@@ -24,6 +36,15 @@ Last updated: 2026-01-09
 - `let a = ...; b = ... in ...`
 - `where { a = ...; b = ... }`
 - [x] 実装・テスト完了（commit: `4d0c477` + 追加テスト/修正）
+
+## P12 — Haskell風の関数clause/ガード (parser desugar)
+目的: Haskell風の書き味（複数clause、ガード、let/where内clause）を AST 拡張せずにパーサで desugar して、既存の型推論/IR/ランタイム変更を最小化する。
+
+Status: 完了（MVP）
+- [x] top-level: 同名の関数clauseを集約し、単一binding（lambda + case）へdesugar（commit: `71c33a7`）
+- [x] guard付き関数clause（`f x | guard = body`）を受理し `CaseArm.guard` に載せる（commit: `5bf35e1`）
+- [x] let/where内でも同様に clause を集約して desugar（commit: `5bf35e1`）
+- [x] `|` の曖昧性回避: 関数引数の or-pattern は括弧必須（例: `f (0 | 1) = ...`）（commit: `5bf35e1`）
 
 ## P3 — Haskellと違う可能性がある仕様 (スキップ可)
 目的: 仕様書に書いてあっても、Haskellと差が出そう/設計が曖昧なら勝手に実装しない。
