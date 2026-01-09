@@ -46,6 +46,17 @@ Status: 完了（MVP）
 - [x] let/where内でも同様に clause を集約して desugar（commit: `5bf35e1`）
 - [x] `|` の曖昧性回避: 関数引数の or-pattern は括弧必須（例: `f (0 | 1) = ...`）（commit: `5bf35e1`）
 
+## P14 — Interactive REPL (MVP)
+目的: `kscr repl` で対話的に式/定義を評価できるようにし、言語の試行錯誤を速くする。
+
+範囲(MVP):
+- 単行入力（式 or `name = expr`）
+- コマンド: `:type <expr>`, `:quit`
+- 実装は既存パイプライン（parse→typecheck→IR→run）を再利用し、毎回フルtypecheckでもOK
+
+Status: Next
+- [ ] 実装 + 最小テスト（REPLコアを関数化してユニットテスト）
+
 ## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
 目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
 
