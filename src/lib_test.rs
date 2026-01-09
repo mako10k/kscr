@@ -32,6 +32,54 @@ fn parser_binding_patterns() {
 }
 
 #[test]
+fn parser_fun_clause_desugar_single_clause_multi_args() {
+    let m = crate::parser::parse_module("f x y = x\n").unwrap();
+    assert_eq!(m.items.len(), 1);
+
+    use crate::ast::{Expr, Item, Pattern};
+
+    let Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(&b.pat, Pattern::Var(name) if name == "f"));
+
+    let Expr::Lambda { params, body } = &b.expr else {
+        panic!("expected lambda");
+    };
+    assert_eq!(params.len(), 2);
+
+    let Expr::Case { arms, .. } = &**body else {
+        panic!("expected case");
+    };
+    assert_eq!(arms.len(), 1);
+
+    assert!(matches!(
+        &arms[0].pat,
+        Pattern::Tuple(ps)
+            if matches!(&ps[..], [Pattern::Var(x), Pattern::Var(y)] if x == "x" && y == "y")
+    ));
+    assert!(matches!(&arms[0].body, Expr::Var(s) if s == "x"));
+}
+
+#[test]
+fn ir_run_main_fun_clauses_multi_clause_and_multi_args() {
+    let src = concat!(
+        "f 0 y = y\n",
+        "f x 0 = x\n",
+        "f _ _ = 9\n",
+        "main = case (f 0 5) of\n",
+        "  5 -> case (f 7 0) of\n",
+        "    7 -> case (f 1 2) of\n",
+        "      9 -> IO ()\n",
+    );
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn parser_qualified_names_desugar() {
     let m = crate::parser::parse_module("y = A.B.OM.x\n").unwrap();
     let crate::ast::Item::Binding(b) = &m.items[0] else {
