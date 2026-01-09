@@ -1297,6 +1297,9 @@ fn to_f32_checked(x: f64, ctx: &str) -> Result<f32> {
 }
 
 fn ffi_add_i32(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    #[cfg(feature = "unsafe_ffi")]
+    crate::debug::unsafe_used("ffiAddI32");
+
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("ffiAddI32 expects Integer")) };
@@ -1310,6 +1313,9 @@ fn ffi_add_i32(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn ffi_add_f32(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    #[cfg(feature = "unsafe_ffi")]
+    crate::debug::unsafe_used("ffiAddF32");
+
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
     let Value::Float64(a) = a else { return Err(Error::msg("ffiAddF32 expects Float64")) };

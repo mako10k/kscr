@@ -52,7 +52,7 @@ Status: 完了（MVP）
 - [ ] 追加の境界(FFIなど)は後続
 
 ## P6 — Minimal FFI boundary (unsafe-free scaffold)
-目的: 本物のC ABI呼び出しは `unsafe` を要求しゲートに反するため、まずは **FFI境界の振る舞い（引数/戻りのchecked cast）** を builtin でスモークできる形にする。
+目的: 本物のC ABI呼び出しは `unsafe` を要求しうるため、まずは **FFI境界の振る舞い（引数/戻りのchecked cast）** を builtin でスモークできる形にする。
 範囲:
 - `ffiAddI32 :: i32 -> i32 -> i32` など、backend numeric types を要求する builtin を追加
 - 呼び出し境界で range/overflow を検査し、失敗時は runtime error
@@ -64,6 +64,13 @@ Status: 完了（MVP）
 - [x] スモークテスト追加
 
 ---
+
+## P7 — Unsafe boundary isolation + tracing
+目的: 必要最小限の `unsafe`（FFI/特殊最適化/BigInt等）を **feature flag配下に隔離**し、デバッグ時に「unsafeが使われた」ことを追えるようにする。
+- 実装: `--features unsafe_ffi` 等で有効化（通常ビルドはoff）
+- 観測: `KSCR_DEBUG_UNSAFE=1` で実行すると unsafe 境界通過を stderr に出す
+
+Status: 進行中
 
 ## Notes
 - 以後「P5を実装」と言われたら **このファイルのP5** を実装する。

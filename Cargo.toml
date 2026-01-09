@@ -15,3 +15,9 @@ opt-level = 0
 
 [profile.release]
 opt-level = 3
+
+[features]
+# Optional features that may use `unsafe` are isolated behind flags.
+# Keep these disabled in normal builds; enable explicitly when experimenting.
+unsafe_ffi = []
+

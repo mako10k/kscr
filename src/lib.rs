@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod cli;
+pub mod debug;
 pub mod error;
 pub mod ir;
 pub mod lexer;
