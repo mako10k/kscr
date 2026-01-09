@@ -188,7 +188,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL (MVP)\n                   Commands: :type <expr>, :quit\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :load <path>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
     );
 }
 
