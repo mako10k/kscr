@@ -60,7 +60,7 @@ Recommended order:
   - tests: local-over-stdlib shadowing, tried-paths in error, module name mismatch (commit: `7985565`)
 - [x] **P13A: import文の表面構文をHaskell寄せ**（`import qualified A as OM` 等）
   - behavior: `import qualified` is qualified-only; `import A as OM` is unqualified+OM qualifier
-  - tests: updated existing smokes + added unqualified+qualifier smoke (commit: TBD)
+  - tests: updated existing smokes + added unqualified+qualifier smoke (commit: `2699f9e`)
 - [ ] **P13B: exportの粒度強化**（例: `export Maybe(..)` 等）
 
 ## P3 — Haskellと違う可能性がある仕様 (スキップ可)
