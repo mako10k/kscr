@@ -61,7 +61,8 @@ Recommended order:
 - [x] **P13A: import文の表面構文をHaskell寄せ**（`import qualified A as OM` 等）
   - behavior: `import qualified` is qualified-only; `import A as OM` is unqualified+OM qualifier
   - tests: updated existing smokes + added unqualified+qualifier smoke (commit: `2699f9e`)
-- [ ] **P13B: exportの粒度強化**（例: `export Maybe(..)` 等）
+- [x] **P13B: exportの粒度強化**（`export T(..)` / `export T(C1, C2)`）
+  - done: export spec parsing + ctor subset + qualified import cannot bypass (commit: `c11239d`)
 
 ## P3 — Haskellと違う可能性がある仕様 (スキップ可)
 目的: 仕様書に書いてあっても、Haskellと差が出そう/設計が曖昧なら勝手に実装しない。
