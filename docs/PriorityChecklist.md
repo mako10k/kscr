@@ -96,8 +96,8 @@ Status: Done
 - IR/ランタイム: 辞書表現（レコード）と呼び出し変換
 - 互換: Phase 1/2 の deriving は、最終的には `instance Show (T a)` などへ desugar できる形にする
 
-Status: Next
-- [ ] Phase 1: deriving Show の実装 + テスト + ゲート通過
+Status: Done (Phase 1)
+- [x] Phase 1: deriving Show の実装 + テスト + ゲート通過（commit: `e72ce94`）
 
 ## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
 目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
