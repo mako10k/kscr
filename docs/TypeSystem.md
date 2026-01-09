@@ -67,7 +67,47 @@ The compiler may lower surface types to LLVM-aligned backend types for literals 
 
 ---
 
-## 3. Overloading (Deprecated)
+## 3. Type Classes (Implemented)
+
+The language provides a principled type-class system for ad-hoc polymorphism.
+
+### Current Implementation
+- **Show typeclass**: Convert values to strings with `show :: Show a => a -> String`
+- **Eq typeclass**: Equality comparison with `(==) :: Eq a => a -> a -> Bool` and `(/=) :: Eq a => a -> a -> Bool`
+- **Dictionary passing**: Constraints are compiled to explicit dictionary arguments in IR
+- **Automatic deriving**: Use `deriving Show`, `deriving Eq`, or `deriving (Show, Eq)` on data declarations
+
+### Supported Types
+- Primitive types: `Integer`, `Bool`, `String`, `Char`, `Unit`, `Float64`
+- Structural types: lists `[a]`, tuples `(a, b, ...)`, records `{x: a, y: b}`
+- User-defined data types (via deriving)
+- Open-record types (with `ShowRow`/`EqRow` constraints)
+
+### Example
+```haskell
+-- Single typeclass
+data Maybe a = Nothing | Just a deriving Show
+
+-- Multiple typeclasses (requires parentheses)
+data Person = Person String Integer deriving (Eq, Show)
+
+-- Usage
+main = do
+  print (show (Person "Alice" 30))
+  print (show (Person "Bob" 25 == Person "Alice" 30))
+```
+
+### Design
+- Type schemes carry constraints: `forall a. Show a => a -> String`
+- Constraints are solved during type inference
+- Non-showable types (e.g., functions) are rejected at typecheck time
+- Dictionary passing ensures uniform runtime behavior
+
+For detailed implementation, see `TypeClassesPlan.md`.
+
+---
+
+## 4. Overloading (Deprecated)
 
 The original design included *contextual overloading* (selecting a definition based on expected type context).
 This approach is **not implemented** in the current `kscr` compiler, and the design is considered deprecated.
@@ -80,7 +120,17 @@ Future direction: introduce type classes (constraints + dictionary passing) for 
 
 ---
 
-## 4. Module System
+## 4. Overloading (Historical Note - Deprecated)
+
+The original design included *contextual overloading* (selecting a definition based on expected type context).
+This approach was **not implemented** and is considered deprecated.
+
+**Current approach:** Type classes (constraints + dictionary passing) provide principled ad-hoc polymorphism.
+See section 3 above for the implemented typeclass system.
+
+---
+
+## 5. Module System
 
 The language provides a module system for organizing code, managing namespaces, and supporting separate compilation.
 
@@ -129,7 +179,7 @@ In the future, `readLine`/`print` are expected to be implemented as library func
 
 ---
 
-## 5. Indent Grouping
+## 6. Indent Grouping
 
 The language supports indent-based grouping for structuring code blocks, similar to Python and Haskell's layout rule.
 
@@ -159,7 +209,7 @@ In this example, all indented lines under `module Main where` belong to the `Mai
 
 ---
 
-## 6. Type Inference and Safety
+## 7. Type Inference and Safety
 
 The language employs static type inference to ensure type safety at compile time.
 
@@ -177,7 +227,7 @@ The language employs static type inference to ensure type safety at compile time
 
 ---
 
-## 7. Patterns and Bindings
+## 8. Patterns and Bindings
 
 Patterns and variable bindings are central to the type system, enabling expressive deconstruction and safe value extraction.
 

@@ -1,15 +1,54 @@
-# Type Classes Implementation Plan (Draft)
+# Type Classes Implementation Plan
 
 This plan replaces the deprecated *contextual overloading* idea with a principled, minimal type-class system.
-Initial scope is intentionally small: **only `Show`**, but extended beyond primitives to cover:
-- primitive types
-- structural types (lists/tuples/records)
-- user-defined `data` types (auto-derived)
-- open-record types produced by `{..., ...}` patterns (requires a constraint on the residual row)
 
-Dictionary-passing in IR is still the intended long-term implementation, but the current compiler may implement `show` as a builtin while enforcing the same constraints at typecheck time.
+## Current Implementation Status
 
-## Goals (MVP)
+**✅ Implemented:**
+- `Show` typeclass with dictionary passing
+- `Eq` typeclass with dictionary passing
+- Automatic deriving for `Show` and `Eq` on data types
+- Constraint solving for primitive types, structural types, and user-defined data types
+- `ShowRow` and `EqRow` constraints for open-record types
+- Type inference integration with constraints
+
+**Scope:**
+- Primitive types: `Integer`, `Bool`, `String`, `Char`, `Unit`, `Float64`
+- Structural types: lists, tuples, records
+- User-defined `data` types (via `deriving Show` / `deriving Eq` / `deriving (Show, Eq)`)
+- Open-record types produced by `{..., ...}` patterns (requires constraints on the residual row)
+
+Dictionary-passing is implemented in the IR, and the type system enforces `Show` / `Eq` constraints at typecheck time.
+
+## Implementation Overview
+
+### Type System
+- Type schemes carry constraints: `Scheme { vars, constraints, ty }`
+- Constraint types: `Show(Ty)`, `ShowRow(Ty)`, `Eq(Ty)`, `EqRow(Ty)`
+- Constraint solving during type inference
+
+### Deriving Syntax
+```haskell
+-- Single typeclass
+data Maybe a = Nothing | Just a deriving Show
+
+-- Multiple typeclasses (requires parentheses)
+data Color = Red | Green | Blue deriving (Eq, Show)
+```
+
+### Examples
+
+```haskell
+-- Show example
+data Person = Person String Integer deriving Show
+main = stdoutWrite (show (Person "Alice" 30))
+
+-- Eq example
+data Color = Red | Green | Blue deriving (Eq, Show)
+main = stdoutWrite (show (Red == Blue))
+```
+
+## Goals (MVP) - Achieved
 - Allow `show :: Show a => a -> String` / `toString` to be typed without `forall a. a -> String` escape hatch.
 - Make `show` fail at **typecheck time** for non-`Show` values (e.g. functions), not at runtime.
 - Provide predictable, structural `Show` for composite values and `data` values.
