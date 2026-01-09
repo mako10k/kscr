@@ -69,6 +69,36 @@ Status: Done
 Status: Done
 - [x] 実装 + テスト + ゲート通過（commit: `29cb45f`）
 
+## P16 — Typeclasses roadmap (Deriving → Class/Instance)
+目的: 最終的に Haskell 風の `class` / `instance` を実装する。その前提として、まずは "deriving できるクラス" を段階的に導入し、言語/実装の足場を固める。
+
+### Phase 0 (現状)
+- 制約は内部固定（`Show` / `ShowRow` / `Lacks`）のみで、ユーザ定義クラス/インスタンスは書けない。
+- `Show` は構造的に解決（data宣言を見てフィールドの `Show` を要求）し、実行時の表示は builtin に依存。
+
+### Phase 1 (MVP): `deriving Show` を明示化
+目的: data型が "勝手に Show 可能" ではなく、明示的に `deriving Show` されたものだけが `Show` 制約を満たすようにする（Haskell 寄せ）。
+- 構文: `data T a = ... deriving (Show)` / `deriving Show`
+- 実装: AST/パーサで deriving リストを保持し、型検査側の `Show` 解決は `deriving Show` を前提にする。
+- 前提条件:
+  - data宣言が import traversal で一貫して収集できること（P0/P13D で担保済み）
+  - デフォルトビルドで unsafe 依存が入らないこと（ゲート維持）
+
+### Phase 2: `deriving Eq`（まだ class/instance 無し）
+目的: `Eq` を "構造的に" 解決できる範囲で導入し、`(==)` を data 型にも拡張する。
+- まずは deriving がある data のみに限定
+- 制約/推論/実行時の整合（Eq辞書はまだ導入せず builtin でOK）
+
+### Phase 3: `class`/`instance` (最終ゴール)
+目的: ユーザ定義クラス/インスタンス・制約付き多相（dictionary passing を含む）を実装。
+- 構文: `class C a where ...` / `instance C T where ...`
+- 型検査: インスタンス環境 + 解決（候補探索、曖昧性/重複、スコープ）
+- IR/ランタイム: 辞書表現（レコード）と呼び出し変換
+- 互換: Phase 1/2 の deriving は、最終的には `instance Show (T a)` などへ desugar できる形にする
+
+Status: Next
+- [ ] Phase 1: deriving Show の実装 + テスト + ゲート通過
+
 ## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
 目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
 
