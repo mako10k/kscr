@@ -67,10 +67,21 @@ Status: 完了（MVP）
 
 ## P7 — Unsafe boundary isolation + tracing
 目的: 必要最小限の `unsafe`（FFI/特殊最適化/BigInt等）を **feature flag配下に隔離**し、デバッグ時に「unsafeが使われた」ことを追えるようにする。
-- 実装: `--features unsafe_ffi` 等で有効化（通常ビルドはoff）
+- 実装: `--features unsafe_ffi/unsafe_bigint` 等で有効化（通常ビルドはoff）
 - 観測: `KSCR_DEBUG_UNSAFE=1` で実行すると unsafe 境界通過を stderr に出す
 
-Status: 進行中
+Status: 完了（MVP）
+- [x] feature flag を追加（unsafe_ffi / unsafe_bigint）
+- [x] `KSCR_DEBUG_UNSAFE=1` で 1回だけタグ出力
+
+## P8 — Optional BigInt Integer backend
+目的: `Integer` を任意精度に戻したい/検証したい場合に、unsafe依存を **feature flag配下** に隔離した上で利用できるようにする。
+範囲:
+- `--features unsafe_bigint` のとき `Integer` を `BigInt` として解釈
+- 既存の境界（`:: i32/i64` や ffiAddI32 等）で range check が効くこと
+- テスト: 巨大整数の加算が通ること（通常ビルドではエラーになること）
+
+Status: 完了（MVP）
 
 ## Notes
 - 以後「P5を実装」と言われたら **このファイルのP5** を実装する。

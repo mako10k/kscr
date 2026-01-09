@@ -20,4 +20,8 @@ opt-level = 3
 # Optional features that may use `unsafe` are isolated behind flags.
 # Keep these disabled in normal builds; enable explicitly when experimenting.
 unsafe_ffi = []
+unsafe_bigint = ["dep:num-bigint"]
+
+[dependencies]
+num-bigint = { version = "0.4", optional = true }
 

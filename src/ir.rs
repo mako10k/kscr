@@ -2,6 +2,11 @@
 
 use crate::{ast, error::Error, Result};
 
+#[cfg(feature = "unsafe_bigint")]
+type Integer = num_bigint::BigInt;
+#[cfg(not(feature = "unsafe_bigint"))]
+type Integer = i64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrModule {
     pub items: Vec<IrItem>,
@@ -565,7 +570,7 @@ pub enum IoAction {
 #[derive(Debug, Clone)]
 pub enum Value {
     Unit,
-    Integer(i64),
+    Integer(Integer),
     Float64(f64),
     Bool(bool),
     String(String),
@@ -875,7 +880,7 @@ fn eval_expr(
 ) -> Result<Value> {
     Ok(match expr {
         IrExpr::Unit => Value::Unit,
-        IrExpr::Integer(s) => Value::Integer(parse_i64(s)?),
+        IrExpr::Integer(s) => Value::Integer(parse_integer(s)?),
         IrExpr::Float64(s) => Value::Float64(parse_f64(s)?),
         IrExpr::Bool(b) => Value::Bool(*b),
         IrExpr::String(s) => Value::String(s.clone()),
@@ -1234,9 +1239,48 @@ fn concat_map(g: &Globals, f: Value, xs: Value) -> Result<Value> {
     Ok(vec_to_list(out))
 }
 
+#[cfg(not(feature = "unsafe_bigint"))]
 fn parse_i64(s: &str) -> Result<i64> {
     s.parse::<i64>()
         .map_err(|_| Error::msg(format!("invalid integer: {s}")))
+}
+
+fn int_from_i64(n: i64) -> Integer {
+    #[cfg(feature = "unsafe_bigint")]
+    {
+        num_bigint::BigInt::from(n)
+    }
+
+    #[cfg(not(feature = "unsafe_bigint"))]
+    {
+        n
+    }
+}
+
+fn parse_integer(s: &str) -> Result<Integer> {
+    #[cfg(feature = "unsafe_bigint")]
+    {
+        crate::debug::unsafe_used("bigint");
+        num_bigint::BigInt::parse_bytes(s.as_bytes(), 10)
+            .ok_or_else(|| Error::msg(format!("invalid integer: {s}")))
+    }
+
+    #[cfg(not(feature = "unsafe_bigint"))]
+    {
+        parse_i64(s)
+    }
+}
+
+fn int_is_zero(n: &Integer) -> bool {
+    #[cfg(feature = "unsafe_bigint")]
+    {
+        n == &num_bigint::BigInt::from(0)
+    }
+
+    #[cfg(not(feature = "unsafe_bigint"))]
+    {
+        *n == 0
+    }
 }
 
 fn parse_f64(s: &str) -> Result<f64> {
@@ -1251,15 +1295,39 @@ fn checked_cast(g: &Globals, v: Value, target: CastTarget) -> Result<Value> {
             let Value::Integer(n) = v else {
                 return Err(Error::msg("checked cast to i32 expects Integer"));
             };
-            if n < i32::MIN as i64 || n > i32::MAX as i64 {
-                return Err(Error::msg("integer out of range for i32"));
+
+            #[cfg(not(feature = "unsafe_bigint"))]
+            {
+                if n < i32::MIN as i64 || n > i32::MAX as i64 {
+                    return Err(Error::msg("integer out of range for i32"));
+                }
             }
+
+            #[cfg(feature = "unsafe_bigint")]
+            {
+                let min = num_bigint::BigInt::from(i32::MIN);
+                let max = num_bigint::BigInt::from(i32::MAX);
+                if n < min || n > max {
+                    return Err(Error::msg("integer out of range for i32"));
+                }
+            }
+
             Ok(Value::Integer(n))
         }
         CastTarget::I64 => {
             let Value::Integer(n) = v else {
                 return Err(Error::msg("checked cast to i64 expects Integer"));
             };
+
+            #[cfg(feature = "unsafe_bigint")]
+            {
+                let min = num_bigint::BigInt::from(i64::MIN);
+                let max = num_bigint::BigInt::from(i64::MAX);
+                if n < min || n > max {
+                    return Err(Error::msg("integer out of range for i64"));
+                }
+            }
+
             Ok(Value::Integer(n))
         }
         CastTarget::F32 => {
@@ -1281,11 +1349,27 @@ fn checked_cast(g: &Globals, v: Value, target: CastTarget) -> Result<Value> {
     }
 }
 
-fn to_i32_checked(n: i64, ctx: &str) -> Result<i32> {
-    if n < i32::MIN as i64 || n > i32::MAX as i64 {
-        return Err(Error::msg(format!("{ctx}: integer out of range for i32")));
+fn to_i32_checked(n: Integer, ctx: &str) -> Result<i32> {
+    #[cfg(not(feature = "unsafe_bigint"))]
+    {
+        if n < i32::MIN as i64 || n > i32::MAX as i64 {
+            return Err(Error::msg(format!("{ctx}: integer out of range for i32")));
+        }
+        Ok(n as i32)
     }
-    Ok(n as i32)
+
+    #[cfg(feature = "unsafe_bigint")]
+    {
+        let min = num_bigint::BigInt::from(i32::MIN);
+        let max = num_bigint::BigInt::from(i32::MAX);
+        if n < min || n > max {
+            return Err(Error::msg(format!("{ctx}: integer out of range for i32")));
+        }
+        Ok(n
+            .to_string()
+            .parse::<i32>()
+            .expect("range-checked BigInt should parse to i32"))
+    }
 }
 
 fn to_f32_checked(x: f64, ctx: &str) -> Result<f32> {
@@ -1309,7 +1393,7 @@ fn ffi_add_i32(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let out = a
         .checked_add(b)
         .ok_or_else(|| Error::msg("ffiAddI32: i32 overflow"))?;
-    Ok(Value::Integer(out as i64))
+    Ok(Value::Integer(int_from_i64(out as i64)))
 }
 
 fn ffi_add_f32(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1334,9 +1418,15 @@ fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("+ expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("+ expects Integer")) };
+
+    #[cfg(not(feature = "unsafe_bigint"))]
     let out = a
         .checked_add(b)
         .ok_or_else(|| Error::msg("integer overflow"))?;
+
+    #[cfg(feature = "unsafe_bigint")]
+    let out = a + b;
+
     Ok(Value::Integer(out))
 }
 
@@ -1345,9 +1435,15 @@ fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("- expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("- expects Integer")) };
+
+    #[cfg(not(feature = "unsafe_bigint"))]
     let out = a
         .checked_sub(b)
         .ok_or_else(|| Error::msg("integer overflow"))?;
+
+    #[cfg(feature = "unsafe_bigint")]
+    let out = a - b;
+
     Ok(Value::Integer(out))
 }
 
@@ -1356,9 +1452,15 @@ fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("* expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("* expects Integer")) };
+
+    #[cfg(not(feature = "unsafe_bigint"))]
     let out = a
         .checked_mul(b)
         .ok_or_else(|| Error::msg("integer overflow"))?;
+
+    #[cfg(feature = "unsafe_bigint")]
+    let out = a * b;
+
     Ok(Value::Integer(out))
 }
 
@@ -1368,11 +1470,15 @@ fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("/ expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("/ expects Integer")) };
 
-    if b == 0 {
+    if int_is_zero(&b) {
         return Err(Error::msg("division by zero"));
     }
 
+    #[cfg(not(feature = "unsafe_bigint"))]
     let out = a.checked_div(b).ok_or_else(|| Error::msg("integer overflow"))?;
+
+    #[cfg(feature = "unsafe_bigint")]
+    let out = a / b;
 
     Ok(Value::Integer(out))
 }
@@ -1591,7 +1697,17 @@ fn match_pat(
         (P::Literal(l), v) => {
             let ok = match (l, v) {
                 (IrLiteral::Unit, Value::Unit) => true,
-                (IrLiteral::Integer(a), Value::Integer(b)) => parse_i64(a)? == *b,
+                (IrLiteral::Integer(a), Value::Integer(b)) => {
+                    let aa = parse_integer(a)?;
+                    #[cfg(feature = "unsafe_bigint")]
+                    {
+                        aa == b.clone()
+                    }
+                    #[cfg(not(feature = "unsafe_bigint"))]
+                    {
+                        aa == *b
+                    }
+                },
                 (IrLiteral::Float64(a), Value::Float64(b)) => parse_f64(a)? == *b,
                 (IrLiteral::Bool(a), Value::Bool(b)) => a == b,
                 (IrLiteral::String(a), Value::String(b)) => a == b,
@@ -1741,22 +1857,26 @@ mod show_roundtrip_tests {
         out
     }
 
+    fn int(n: i64) -> Value {
+        Value::Integer(int_from_i64(n))
+    }
+
     #[test]
     fn show_value_str_roundtrips_through_parser_for_literals() {
         let g0 = Globals::from_module(&IrModule { items: vec![] });
 
         let cases = vec![
-            Value::Integer(123),
+            int(123),
             Value::Bool(true),
             Value::Unit,
             Value::Char('\n'),
             Value::Char('\\'),
             Value::String("hello".to_string()),
             Value::String("a\n\"b\\c".to_string()),
-            Value::Tuple(vec![Value::Integer(1), Value::String("x".to_string())]),
-            list_of(vec![Value::Integer(1), Value::Integer(2)]),
+            Value::Tuple(vec![int(1), Value::String("x".to_string())]),
+            list_of(vec![int(1), int(2)]),
             Value::Record(vec![
-                ("a".to_string(), Value::Integer(1)),
+                ("a".to_string(), int(1)),
                 ("b".to_string(), Value::String("x".to_string())),
             ]),
         ];

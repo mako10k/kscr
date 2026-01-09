@@ -502,6 +502,7 @@ fn ir_run_main_int_bool_to_string() {
 }
 
 #[test]
+#[cfg(not(feature = "unsafe_bigint"))]
 fn ir_run_main_integer_literal_overflow_is_error() {
     let src = "main = case 999999999999999999999999999999 of\n  0 -> IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
@@ -509,6 +510,17 @@ fn ir_run_main_integer_literal_overflow_is_error() {
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
     let err = crate::ir::run_main(&ir).unwrap_err();
     assert!(err.to_string().contains("invalid integer"));
+}
+
+#[test]
+#[cfg(feature = "unsafe_bigint")]
+fn ir_run_main_bigint_large_integer_ok() {
+    let src = "main = case (999999999999999999999999999999 + 1) of\n  1000000000000000000000000000000 -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]
