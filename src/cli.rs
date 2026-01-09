@@ -907,7 +907,7 @@ mod tests {
         let main = dir.join("Main.ks");
         std::fs::write(
             &main,
-            "module Main where\n  import A as OM\n  y = x + 1\n  main = IO ()\n",
+            "module Main where\n  import qualified A as OM\n  y = x + 1\n  main = IO ()\n",
         )
         .unwrap();
 
@@ -941,7 +941,7 @@ mod tests {
         let main = dir.join("Main.ks");
         std::fs::write(
             &main,
-            "module Main where\n  import A as OM\n  xs = [a | Just a <- OM.values]\n  main = IO ()\n",
+            "module Main where\n  import qualified A as OM\n  xs = [a | Just a <- OM.values]\n  main = IO ()\n",
         )
         .unwrap();
 
@@ -975,13 +975,42 @@ mod tests {
         let main = dir.join("Main.ks");
         std::fs::write(
             &main,
-            "module Main where\n  import A as OM\n  xs = [a | OM.Just a <- OM.values]\n  main = IO ()\n",
+            "module Main where\n  import qualified A as OM\n  xs = [a | OM.Just a <- OM.values]\n  main = IO ()\n",
         )
         .unwrap();
 
         let args = vec![
             "kscr".to_string(),
             "typecheck".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cli_import_as_allows_unqualified_and_renamed_qualifier_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_import_as_unqualified_and_qual_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  export x\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A as OM\n  y = x + OM.x\n  main = case (y == 2) of\n    True -> IO ()\n    False -> case (1 / 0) of\n      _ -> IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
             main.to_string_lossy().to_string(),
         ];
         run(args.into_iter()).unwrap();
@@ -1004,7 +1033,7 @@ mod tests {
         let main = dir.join("Main.ks");
         std::fs::write(
             &main,
-            "module Main where\n  import A as OM\n  y = A.x + 1\n  main = IO ()\n",
+            "module Main where\n  import qualified A as OM\n  y = A.x + 1\n  main = IO ()\n",
         )
         .unwrap();
 
@@ -1214,7 +1243,7 @@ mod tests {
         let main = dir.join("Main.ks");
         std::fs::write(
             &main,
-            "module Main where\n  import A as A1\n  import B as B1\n  y = A1.x + B1.x\n  main = case (y == 3) of\n    True -> IO ()\n    False -> case (1 / 0) of\n      _ -> IO ()\n",
+            "module Main where\n  import qualified A as A1\n  import qualified B as B1\n  y = A1.x + B1.x\n  main = case (y == 3) of\n    True -> IO ()\n    False -> case (1 / 0) of\n      _ -> IO ()\n",
         )
         .unwrap();
 

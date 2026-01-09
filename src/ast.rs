@@ -17,6 +17,7 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportDecl {
     pub module: String,
+    pub qualified: bool,
     pub as_name: Option<String>,
 }
 

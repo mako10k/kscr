@@ -2762,17 +2762,21 @@ fn module_exported_names(module: &ast::Module) -> HashSet<String> {
 fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result<Vec<ast::Item>> {
     // Haskell-leaning behavior:
     // - `import A` brings unqualified exports + qualifier `A.`
-    // - `import A as OM` acts like `import qualified A as OM` (qualified-only)
-    if let Some(as_name) = &decl.as_name {
-        return qualify_items(module, as_name);
+    // - `import A as OM` brings unqualified exports + qualifier `OM.`
+    // - `import qualified A` brings qualifier `A.` only (no unqualified)
+    // - `import qualified A as OM` brings qualifier `OM.` only (no unqualified)
+
+    let qual = decl.as_name.as_deref().unwrap_or(&decl.module);
+
+    // Always provide qualifier names.
+    let mut out = qualify_items(module, qual)?;
+
+    // Qualified-only imports do not bring unqualified names.
+    if decl.qualified {
+        return Ok(out);
     }
 
-    let mut out = Vec::new();
-
-    // Always provide module-qualified names (A.x).
-    out.extend(qualify_items(module, &decl.module)?);
-
-    // Bring unqualified exports as simple forwarders: `x = A.x`.
+    // Bring unqualified exports as simple forwarders: `x = QUAL.x`.
     let exports = module_exported_names(module);
 
     let mut values = HashSet::new();
@@ -2794,12 +2798,12 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
         if values.contains(n) {
             out.push(ast::Item::Binding(ast::Binding {
                 pat: ast::Pattern::Var(n.clone()),
-                expr: ast::Expr::Var(format!("{}.{}", decl.module, n)),
+                expr: ast::Expr::Var(format!("{qual}.{n}")),
             }));
         }
 
         if let Some(ta) = type_aliases.get(n) {
-            let head = ast::Type::Var(format!("{}.{}", decl.module, ta.name));
+            let head = ast::Type::Var(format!("{qual}.{}", ta.name));
             let ty = if ta.params.is_empty() {
                 head
             } else {
@@ -3728,6 +3732,7 @@ mod inference_tests {
             name: None,
             items: vec![ast::Item::Import(ast::ImportDecl {
                 module: "Foo".to_string(),
+                qualified: false,
                 as_name: None,
             })],
         };
@@ -3855,7 +3860,7 @@ mod inference_tests {
         let main = dir.join("Main.ks");
         std::fs::write(
             &main,
-            "module Main where\n  import A as A1\n  import B as B1\n  y = A1.x + B1.x\n  main = IO ()\n",
+            "module Main where\n  import qualified A as A1\n  import qualified B as B1\n  y = A1.x + B1.x\n  main = IO ()\n",
         )
         .unwrap();
 

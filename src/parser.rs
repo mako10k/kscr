@@ -309,6 +309,12 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
 
 fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwImport)?;
+
+    let qualified = matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s == "qualified");
+    if qualified {
+        ts.bump();
+    }
+
     let module = ts.expect_ident()?;
 
     let as_name = match ts.peek_kind() {
@@ -319,7 +325,11 @@ fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         _ => None,
     };
 
-    Ok(ast::Item::Import(ast::ImportDecl { module, as_name }))
+    Ok(ast::Item::Import(ast::ImportDecl {
+        module,
+        qualified,
+        as_name,
+    }))
 }
 
 fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
