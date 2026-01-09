@@ -1134,6 +1134,69 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_import_allows_unqualified_and_module_qualifier_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_import_unqual_and_qual_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  export x\n  x = 41\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  y = x + 1\n  z = A.x + 1\n  main = case (y == 42) of\n    True -> case (z == 42) of\n      True -> IO ()\n      False -> case (1 / 0) of\n        _ -> IO ()\n    False -> case (1 / 0) of\n      _ -> IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cli_typecheck_import_respects_exports_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_typecheck_import_exports_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export f\n  f x = x\n  g x = x + 1\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  y = g 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "typecheck".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        let e = run(args.into_iter()).unwrap_err();
+        assert!(format!("{e}").contains("unbound variable: g"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cli_run_import_fun_clauses_and_guards_smoke() {
         let dir = std::env::temp_dir().join(format!(
             "kscr_cli_run_import_fun_clauses_guards_smoke_{}",
