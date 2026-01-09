@@ -360,6 +360,8 @@ pub fn apply(subst: &Subst, t: Ty) -> Ty {
 pub enum Constraint {
     Show(Ty),
     ShowRow(Ty),
+    Eq(Ty),
+    EqRow(Ty),
     /// Field absence constraint for row types (records/open records/row variables).
     Lacks { label: String, row: Ty },
 }
@@ -393,6 +395,14 @@ fn fmt_constraint(
         }
         Constraint::ShowRow(t) => {
             write!(f, "ShowRow ")?;
+            fmt_ty_prec(f, t, 0, vars)
+        }
+        Constraint::Eq(t) => {
+            write!(f, "Eq ")?;
+            fmt_ty_prec(f, t, 0, vars)
+        }
+        Constraint::EqRow(t) => {
+            write!(f, "EqRow ")?;
             fmt_ty_prec(f, t, 0, vars)
         }
         Constraint::Lacks { label, row } => {
@@ -498,7 +508,7 @@ pub fn ftv_ty(ty: &Ty) -> HashSet<u32> {
 
 fn ftv_constraint(c: &Constraint) -> HashSet<u32> {
     match c {
-        Constraint::Show(t) | Constraint::ShowRow(t) => ftv_ty(t),
+        Constraint::Show(t) | Constraint::ShowRow(t) | Constraint::Eq(t) | Constraint::EqRow(t) => ftv_ty(t),
         Constraint::Lacks { row, .. } => ftv_ty(row),
     }
 }
@@ -546,6 +556,8 @@ fn replace_vars_constraint(c: &Constraint, m: &HashMap<u32, Ty>) -> Constraint {
     match c {
         Constraint::Show(t) => Constraint::Show(replace_vars(t, m)),
         Constraint::ShowRow(t) => Constraint::ShowRow(replace_vars(t, m)),
+        Constraint::Eq(t) => Constraint::Eq(replace_vars(t, m)),
+        Constraint::EqRow(t) => Constraint::EqRow(replace_vars(t, m)),
         Constraint::Lacks { label, row } => Constraint::Lacks {
             label: label.clone(),
             row: replace_vars(row, m),
@@ -598,6 +610,8 @@ fn apply_constraint(subst: &Subst, c: &Constraint) -> Constraint {
     match c {
         Constraint::Show(t) => Constraint::Show(apply(subst, t.clone())),
         Constraint::ShowRow(t) => Constraint::ShowRow(apply(subst, t.clone())),
+        Constraint::Eq(t) => Constraint::Eq(apply(subst, t.clone())),
+        Constraint::EqRow(t) => Constraint::EqRow(apply(subst, t.clone())),
         Constraint::Lacks { label, row } => Constraint::Lacks {
             label: label.clone(),
             row: apply(subst, row.clone()),
@@ -1043,16 +1057,17 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
-    // == :: Integer -> Integer -> Bool
+    // == :: Eq a => a -> a -> Bool
+    let Ty::Var(v) = cx.fresh() else { unreachable!() };
     env.insert(
         "==".to_string(),
         Scheme {
-            vars: vec![],
-            constraints: vec![],
+            vars: vec![v],
+            constraints: vec![Constraint::Eq(Ty::Var(v))],
             ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
+                Box::new(Ty::Var(v)),
                 Box::new(Ty::Func(
-                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(Ty::Var(v)),
                     Box::new(Ty::Con("Bool".to_string())),
                 )),
             ),
@@ -1123,16 +1138,17 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
-    // /= :: Integer -> Integer -> Bool
+    // /= :: Eq a => a -> a -> Bool
+    let Ty::Var(v) = cx.fresh() else { unreachable!() };
     env.insert(
         "/=".to_string(),
         Scheme {
-            vars: vec![],
-            constraints: vec![],
+            vars: vec![v],
+            constraints: vec![Constraint::Eq(Ty::Var(v))],
             ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
+                Box::new(Ty::Var(v)),
                 Box::new(Ty::Func(
-                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(Ty::Var(v)),
                     Box::new(Ty::Con("Bool".to_string())),
                 )),
             ),
@@ -1570,8 +1586,16 @@ fn show_primitives(name: &str) -> bool {
     matches!(name, "Integer" | "Bool" | "String" | "Char" | "Unit")
 }
 
+fn eq_primitives(name: &str) -> bool {
+    matches!(name, "Integer" | "Bool" | "String" | "Char" | "Unit" | "Float64")
+}
+
 fn data_derives_show(d: &ast::DataDecl) -> bool {
     d.deriving.iter().any(|c| c == "Show")
+}
+
+fn data_derives_eq(d: &ast::DataDecl) -> bool {
+    d.deriving.iter().any(|c| c == "Eq")
 }
 
 fn entails_show(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
@@ -1656,6 +1680,127 @@ fn entails_show_row(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> R
     })
 }
 
+fn entails_eq(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
+    Ok(match ty {
+        Ty::Var(_) => vec![Constraint::Eq(ty.clone())],
+        Ty::Con(name) => {
+            if eq_primitives(name) {
+                vec![]
+            } else if let Some(d) = data_env.get(name) {
+                if !data_derives_eq(d) {
+                    return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
+                }
+                if !d.params.is_empty() {
+                    return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
+                }
+                entails_eq_data_decl(data_env, d, &[], in_progress)?
+            } else {
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
+            }
+        }
+        Ty::List(t) => entails_eq(data_env, t, in_progress)?,
+        Ty::Tuple(ts) => {
+            let mut out = Vec::new();
+            for t in ts {
+                out.extend(entails_eq(data_env, t, in_progress)?);
+            }
+            out
+        }
+        Ty::Record(fields) => {
+            let mut out = Vec::new();
+            for (_, t) in fields {
+                out.extend(entails_eq(data_env, t, in_progress)?);
+            }
+            out
+        }
+        Ty::RecordOpen(fields, rest) => {
+            let mut out = Vec::new();
+            for (_, t) in fields {
+                out.extend(entails_eq(data_env, t, in_progress)?);
+            }
+            out.push(Constraint::EqRow((**rest).clone()));
+            out
+        }
+        Ty::App { head, args } => {
+            let Ty::Con(name) = &**head else {
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
+            };
+            let Some(d) = data_env.get(name) else {
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
+            };
+            if !data_derives_eq(d) {
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
+            }
+            if d.params.len() != args.len() {
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
+            }
+            entails_eq_data_decl(data_env, d, args, in_progress)?
+        }
+        Ty::Func(_, _) => return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}"))),
+    })
+}
+
+fn entails_eq_row(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
+    Ok(match ty {
+        Ty::Var(_) => vec![Constraint::EqRow(ty.clone())],
+        Ty::Record(fields) => {
+            let mut out = Vec::new();
+            for (_, t) in fields {
+                out.extend(entails_eq(data_env, t, in_progress)?);
+            }
+            out
+        }
+        Ty::RecordOpen(fields, rest) => {
+            let mut out = Vec::new();
+            for (_, t) in fields {
+                out.extend(entails_eq(data_env, t, in_progress)?);
+            }
+            out.extend(entails_eq_row(data_env, rest, in_progress)?);
+            out
+        }
+        _ => return Err(Error::msg(format!("cannot satisfy constraint: EqRow {ty}"))),
+    })
+}
+
+fn entails_eq_data_decl(
+    data_env: &DataEnv,
+    d: &ast::DataDecl,
+    args: &[Ty],
+    in_progress: &mut Vec<Ty>,
+) -> Result<Vec<Constraint>> {
+    let self_ty = if args.is_empty() {
+        Ty::Con(d.name.clone())
+    } else {
+        Ty::App {
+            head: Box::new(Ty::Con(d.name.clone())),
+            args: args.to_vec(),
+        }
+    };
+
+    if in_progress.contains(&self_ty) {
+        return Ok(vec![]);
+    }
+
+    in_progress.push(self_ty);
+    let mut out = Vec::new();
+
+    let mut param_map: HashMap<String, Ty> = HashMap::new();
+    for (p, a) in d.params.iter().zip(args.iter()) {
+        param_map.insert(p.clone(), a.clone());
+    }
+
+    for ctor in &d.ctors {
+        let mut holes = HashMap::new();
+        for t_ast in &ctor.args {
+            let t = lower_surface_type_with_tys(t_ast, &mut holes, &param_map)?;
+            out.extend(entails_eq(data_env, &t, in_progress)?);
+        }
+    }
+
+    in_progress.pop();
+    Ok(out)
+}
+
 fn entails_show_data_decl(
     data_env: &DataEnv,
     d: &ast::DataDecl,
@@ -1733,6 +1878,8 @@ fn simplify_constraints(data_env: &DataEnv, cs: Vec<Constraint>) -> Result<Vec<C
         match c {
             Constraint::Show(t) => out.extend(entails_show(data_env, &t, &mut in_progress)?),
             Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, &mut in_progress)?),
+            Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, &mut in_progress)?),
+            Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, &mut in_progress)?),
             Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
         }
     }
@@ -1837,6 +1984,14 @@ fn infer_expr_in(
                     ast::Predicate::ShowRow(t) => {
                         let t = lower_surface_type(cx, t, &mut holes);
                         cs1.push(Constraint::ShowRow(t));
+                    }
+                    ast::Predicate::Eq(t) => {
+                        let t = lower_surface_type(cx, t, &mut holes);
+                        cs1.push(Constraint::Eq(t));
+                    }
+                    ast::Predicate::EqRow(t) => {
+                        let t = lower_surface_type(cx, t, &mut holes);
+                        cs1.push(Constraint::EqRow(t));
                     }
                     ast::Predicate::Lacks { label, row } => {
                         let row = lower_surface_type(cx, row, &mut holes);
@@ -2590,6 +2745,8 @@ fn desugar_qualified_predicate(p: ast::Predicate, allowed: &HashSet<String>) -> 
     Ok(match p {
         ast::Predicate::Show(t) => ast::Predicate::Show(desugar_qualified_type(t, allowed)?),
         ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(desugar_qualified_type(t, allowed)?),
+        ast::Predicate::Eq(t) => ast::Predicate::Eq(desugar_qualified_type(t, allowed)?),
+        ast::Predicate::EqRow(t) => ast::Predicate::EqRow(desugar_qualified_type(t, allowed)?),
         ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
             label,
             row: desugar_qualified_type(row, allowed)?,
@@ -3217,6 +3374,8 @@ fn qualify_predicate(p: ast::Predicate, type_map: &HashMap<String, String>) -> R
     Ok(match p {
         ast::Predicate::Show(t) => ast::Predicate::Show(qualify_type(t, type_map)?),
         ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(qualify_type(t, type_map)?),
+        ast::Predicate::Eq(t) => ast::Predicate::Eq(qualify_type(t, type_map)?),
+        ast::Predicate::EqRow(t) => ast::Predicate::EqRow(qualify_type(t, type_map)?),
         ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
             label,
             row: qualify_type(row, type_map)?,
@@ -3357,6 +3516,155 @@ fn pat_defined_names(p: &ast::Pattern, out: &mut HashSet<String>) {
     }
 }
 
+fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
+    ast::Binding {
+        pat: b.pat,
+        expr: rewrite_show_calls_in_expr(b.expr),
+    }
+}
+
+fn rewrite_show_calls_in_expr(expr: ast::Expr) -> ast::Expr {
+    use ast::Expr;
+    match expr {
+        Expr::Lambda { params, body } => Expr::Lambda {
+            params,
+            body: Box::new(rewrite_show_calls_in_expr(*body)),
+        },
+        Expr::Apply { func, args } => {
+            let func = rewrite_show_calls_in_expr(*func);
+            let mut args: Vec<_> = args.into_iter().map(rewrite_show_calls_in_expr).collect();
+
+            match (&func, args.len()) {
+                (Expr::Var(n), 1) if n == "show" => {
+                    return Expr::Apply {
+                        func: Box::new(Expr::Var("__show".to_string())),
+                        args: vec![Expr::Var("__builtinShowDict".to_string()), args.remove(0)],
+                    };
+                }
+                (Expr::Var(n), 1) if n == "toString" => {
+                    return Expr::Apply {
+                        func: Box::new(Expr::Var("__toString".to_string())),
+                        args: vec![Expr::Var("__builtinShowDict".to_string()), args.remove(0)],
+                    };
+                }
+                (Expr::Var(n), 1) if n == "==" => {
+                    return Expr::Apply {
+                        func: Box::new(Expr::Var("__eq".to_string())),
+                        args: vec![Expr::Var("__builtinEqDict".to_string()), args.remove(0)],
+                    };
+                }
+                (Expr::Var(n), 2) if n == "==" => {
+                    let a = args.remove(0);
+                    let b = args.remove(0);
+                    return Expr::Apply {
+                        func: Box::new(Expr::Var("__eq".to_string())),
+                        args: vec![Expr::Var("__builtinEqDict".to_string()), a, b],
+                    };
+                }
+                (Expr::Var(n), 1) if n == "/=" => {
+                    return Expr::Apply {
+                        func: Box::new(Expr::Var("not".to_string())),
+                        args: vec![Expr::Apply {
+                            func: Box::new(Expr::Var("__eq".to_string())),
+                            args: vec![Expr::Var("__builtinEqDict".to_string()), args.remove(0)],
+                        }],
+                    };
+                }
+                (Expr::Var(n), 2) if n == "/=" => {
+                    let a = args.remove(0);
+                    let b = args.remove(0);
+                    return Expr::Apply {
+                        func: Box::new(Expr::Var("not".to_string())),
+                        args: vec![Expr::Apply {
+                            func: Box::new(Expr::Var("__eq".to_string())),
+                            args: vec![Expr::Var("__builtinEqDict".to_string()), a, b],
+                        }],
+                    };
+                }
+                _ => {}
+            }
+
+            Expr::Apply {
+                func: Box::new(func),
+                args,
+            }
+        }
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => Expr::If {
+            cond: Box::new(rewrite_show_calls_in_expr(*cond)),
+            then_branch: Box::new(rewrite_show_calls_in_expr(*then_branch)),
+            else_branch: Box::new(rewrite_show_calls_in_expr(*else_branch)),
+        },
+        Expr::Let { bindings, body } => Expr::Let {
+            bindings: bindings
+                .into_iter()
+                .map(rewrite_show_calls_in_binding)
+                .collect(),
+            body: Box::new(rewrite_show_calls_in_expr(*body)),
+        },
+        Expr::Where { expr, bindings } => Expr::Where {
+            expr: Box::new(rewrite_show_calls_in_expr(*expr)),
+            bindings: bindings
+                .into_iter()
+                .map(rewrite_show_calls_in_binding)
+                .collect(),
+        },
+        Expr::Annot { expr, ty } => Expr::Annot {
+            expr: Box::new(rewrite_show_calls_in_expr(*expr)),
+            ty,
+        },
+        Expr::Do(stmts) => Expr::Do(
+            stmts
+                .into_iter()
+                .map(|s| match s {
+                    ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                        pat,
+                        expr: rewrite_show_calls_in_expr(expr),
+                    },
+                    ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_show_calls_in_expr(e)),
+                })
+                .collect(),
+        ),
+        Expr::Case { expr, arms } => Expr::Case {
+            expr: Box::new(rewrite_show_calls_in_expr(*expr)),
+            arms: arms
+                .into_iter()
+                .map(|a| ast::CaseArm {
+                    pat: a.pat,
+                    guard: a.guard.map(rewrite_show_calls_in_expr),
+                    body: rewrite_show_calls_in_expr(a.body),
+                })
+                .collect(),
+        },
+        Expr::Cons { head, tail } => Expr::Cons {
+            head: Box::new(rewrite_show_calls_in_expr(*head)),
+            tail: Box::new(rewrite_show_calls_in_expr(*tail)),
+        },
+        Expr::List(es) => Expr::List(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
+        Expr::Tuple(es) => Expr::Tuple(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
+        Expr::Record(fs) => Expr::Record(
+            fs.into_iter()
+                .map(|(l, e)| (l, rewrite_show_calls_in_expr(e)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn rewrite_show_calls_in_module(module: &mut ast::Module) {
+    module.items = module
+        .items
+        .drain(..)
+        .map(|it| match it {
+            ast::Item::Binding(b) => ast::Item::Binding(rewrite_show_calls_in_binding(b)),
+            other => other,
+        })
+        .collect();
+}
+
 pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
     if module
         .items
@@ -3384,6 +3692,9 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
             return Err(Error::msg("main must have type IO Unit"));
         }
     }
+
+    // MVP: start routing `show`/`toString` calls through an explicit Show dictionary.
+    rewrite_show_calls_in_module(&mut module);
 
     Ok(TypedModule { module, inferred })
 }
@@ -3595,6 +3906,10 @@ fn expand_qual_type(ty: ast::QualType, aliases: &HashMap<String, ast::TypeAlias>
                 ast::Predicate::Show(t) => ast::Predicate::Show(expand_type(t, aliases, &mut stack)?),
                 ast::Predicate::ShowRow(t) => {
                     ast::Predicate::ShowRow(expand_type(t, aliases, &mut stack)?)
+                }
+                ast::Predicate::Eq(t) => ast::Predicate::Eq(expand_type(t, aliases, &mut stack)?),
+                ast::Predicate::EqRow(t) => {
+                    ast::Predicate::EqRow(expand_type(t, aliases, &mut stack)?)
                 }
                 ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
                     label,
@@ -4247,6 +4562,10 @@ mod inference_tests {
                 ast::Predicate::ShowRow(t) => {
                     cs.push(Constraint::ShowRow(lower_surface_type(&mut cx, t, &mut holes)))
                 }
+                ast::Predicate::Eq(t) => cs.push(Constraint::Eq(lower_surface_type(&mut cx, t, &mut holes))),
+                ast::Predicate::EqRow(t) => {
+                    cs.push(Constraint::EqRow(lower_surface_type(&mut cx, t, &mut holes)))
+                }
                 ast::Predicate::Lacks { label, row } => cs.push(Constraint::Lacks {
                     label: label.clone(),
                     row: lower_surface_type(&mut cx, row, &mut holes),
@@ -4299,6 +4618,8 @@ mod inference_tests {
         match c {
             Constraint::Show(t) => Constraint::Show(canon_ty_in(t, m, next)),
             Constraint::ShowRow(t) => Constraint::ShowRow(canon_ty_in(t, m, next)),
+            Constraint::Eq(t) => Constraint::Eq(canon_ty_in(t, m, next)),
+            Constraint::EqRow(t) => Constraint::EqRow(canon_ty_in(t, m, next)),
             Constraint::Lacks { label, row } => Constraint::Lacks {
                 label: label.clone(),
                 row: canon_ty_in(row, m, next),

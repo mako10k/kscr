@@ -596,6 +596,8 @@ pub enum Value {
     BuiltinMul1(Box<Value>),
     BuiltinDiv,
     BuiltinDiv1(Box<Value>),
+    BuiltinEq,
+    BuiltinEq1(Box<Value>),
     BuiltinEqInt,
     BuiltinEqInt1(Box<Value>),
     BuiltinLtInt,
@@ -606,6 +608,8 @@ pub enum Value {
     BuiltinGtInt1(Box<Value>),
     BuiltinGeInt,
     BuiltinGeInt1(Box<Value>),
+    BuiltinNe,
+    BuiltinNe1(Box<Value>),
     BuiltinNeInt,
     BuiltinNeInt1(Box<Value>),
     BuiltinAnd,
@@ -618,6 +622,11 @@ pub enum Value {
     BuiltinStrAppend,
     BuiltinStrAppend1(Box<Value>),
     BuiltinShow,
+    BuiltinShowDictApply,
+    BuiltinShowDictApply1(Box<Value>),
+    BuiltinEqDictApply,
+    BuiltinEqDictApply1(Box<Value>),
+    BuiltinEqDictApply2(Box<Value>, Box<Value>),
     BuiltinThrow,
     BuiltinCatch,
     BuiltinCatch1(Box<Value>),
@@ -764,7 +773,7 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
     }
 
     if name == "==" {
-        return Ok(Value::BuiltinEqInt);
+        return Ok(Value::BuiltinEq);
     }
 
     if name == "<" {
@@ -784,7 +793,7 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
     }
 
     if name == "/=" {
-        return Ok(Value::BuiltinNeInt);
+        return Ok(Value::BuiltinNe);
     }
 
     if name == "&&" {
@@ -813,6 +822,22 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "show" || name == "toString" {
         return Ok(Value::BuiltinShow);
+    }
+
+    if name == "__show" || name == "__toString" {
+        return Ok(Value::BuiltinShowDictApply);
+    }
+
+    if name == "__builtinShowDict" {
+        return Ok(Value::Record(vec![("show".to_string(), Value::BuiltinShow)]));
+    }
+
+    if name == "__eq" {
+        return Ok(Value::BuiltinEqDictApply);
+    }
+
+    if name == "__builtinEqDict" {
+        return Ok(Value::Record(vec![("eq".to_string(), Value::BuiltinEq)]));
     }
 
     if name == "throw" {
@@ -1141,6 +1166,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinMul1(a) => mul_int(g, *a, arg),
         Value::BuiltinDiv => Ok(Value::BuiltinDiv1(Box::new(arg))),
         Value::BuiltinDiv1(a) => div_int(g, *a, arg),
+        Value::BuiltinEq => Ok(Value::BuiltinEq1(Box::new(arg))),
+        Value::BuiltinEq1(a) => eq_value(g, *a, arg),
         Value::BuiltinEqInt => Ok(Value::BuiltinEqInt1(Box::new(arg))),
         Value::BuiltinEqInt1(a) => eq_int(g, *a, arg),
         Value::BuiltinLtInt => Ok(Value::BuiltinLtInt1(Box::new(arg))),
@@ -1151,6 +1178,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinGtInt1(a) => gt_int(g, *a, arg),
         Value::BuiltinGeInt => Ok(Value::BuiltinGeInt1(Box::new(arg))),
         Value::BuiltinGeInt1(a) => ge_int(g, *a, arg),
+        Value::BuiltinNe => Ok(Value::BuiltinNe1(Box::new(arg))),
+        Value::BuiltinNe1(a) => ne_value(g, *a, arg),
         Value::BuiltinNeInt => Ok(Value::BuiltinNeInt1(Box::new(arg))),
         Value::BuiltinNeInt1(a) => ne_int(g, *a, arg),
         Value::BuiltinAnd => Ok(Value::BuiltinAnd1(Box::new(arg))),
@@ -1162,6 +1191,11 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinBoolToString => bool_to_string(g, arg),
         Value::BuiltinStrAppend => Ok(Value::BuiltinStrAppend1(Box::new(arg))),
         Value::BuiltinStrAppend1(a) => str_append(g, *a, arg),
+        Value::BuiltinShowDictApply => Ok(Value::BuiltinShowDictApply1(Box::new(arg))),
+        Value::BuiltinShowDictApply1(d) => show_with_dict(g, *d, arg),
+        Value::BuiltinEqDictApply => Ok(Value::BuiltinEqDictApply1(Box::new(arg))),
+        Value::BuiltinEqDictApply1(d) => Ok(Value::BuiltinEqDictApply2(d, Box::new(arg))),
+        Value::BuiltinEqDictApply2(d, a) => eq_with_dict(g, *d, *a, arg),
         Value::BuiltinShow => show_to_string(g, arg),
         Value::BuiltinThrow => {
             let arg = force_value(g, arg)?;
@@ -1669,6 +1703,129 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
 
 fn show_to_string(g: &Globals, a: Value) -> Result<Value> {
     Ok(Value::String(show_value_str(g, a)?))
+}
+
+fn show_with_dict(g: &Globals, dict: Value, a: Value) -> Result<Value> {
+    let dict = force_value(g, dict)?;
+    let Value::Record(fields) = dict else {
+        return Err(Error::msg("__show/__toString expects a Show dictionary record"));
+    };
+
+    let Some((_, show_fn)) = fields.into_iter().find(|(k, _)| k == "show") else {
+        return Err(Error::msg("Show dictionary missing field: show"));
+    };
+    let show_fn = force_value(g, show_fn)?;
+    apply_one(g, show_fn, a)
+}
+
+fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+
+    Ok(match (a, b) {
+        (Value::Unit, Value::Unit) => true,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Char(a), Value::Char(b)) => a == b,
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Float64(a), Value::Float64(b)) => a == b,
+        (Value::Integer(a), Value::Integer(b)) => a == b,
+
+        (Value::Tuple(as_), Value::Tuple(bs)) => {
+            if as_.len() != bs.len() {
+                return Ok(false);
+            }
+            for (x, y) in as_.into_iter().zip(bs.into_iter()) {
+                if !eq_values(g, x, y)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+
+        (Value::ListNil, Value::ListNil) => true,
+        (Value::ListNil, Value::ListCons(_, _)) | (Value::ListCons(_, _), Value::ListNil) => false,
+        (Value::ListCons(a_hd, a_tl), Value::ListCons(b_hd, b_tl)) => {
+            eq_values(g, *a_hd, *b_hd)? && eq_values(g, *a_tl, *b_tl)?
+        }
+
+        (Value::Record(mut a_fields), Value::Record(mut b_fields)) => {
+            let a_ctor = a_fields
+                .iter()
+                .find_map(|(k, v)| if k == "__ctor" { Some(v.clone()) } else { None });
+            let a_args = a_fields
+                .iter()
+                .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
+            let b_ctor = b_fields
+                .iter()
+                .find_map(|(k, v)| if k == "__ctor" { Some(v.clone()) } else { None });
+            let b_args = b_fields
+                .iter()
+                .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
+
+            if let (Some(a_ctor), Some(a_args), Some(b_ctor), Some(b_args)) =
+                (a_ctor, a_args, b_ctor, b_args)
+            {
+                let a_ctor = force_value(g, a_ctor)?;
+                let b_ctor = force_value(g, b_ctor)?;
+                let (Value::String(a_ctor), Value::String(b_ctor)) = (a_ctor, b_ctor) else {
+                    return Ok(false);
+                };
+                if a_ctor != b_ctor {
+                    return Ok(false);
+                }
+                let a_elems = list_to_vec(g, a_args)?;
+                let b_elems = list_to_vec(g, b_args)?;
+                if a_elems.len() != b_elems.len() {
+                    return Ok(false);
+                }
+                for (x, y) in a_elems.into_iter().zip(b_elems.into_iter()) {
+                    if !eq_values(g, x, y)? {
+                        return Ok(false);
+                    }
+                }
+                return Ok(true);
+            }
+
+            a_fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+            b_fields.sort_by(|(a, _), (b, _)| a.cmp(b));
+            if a_fields.len() != b_fields.len() {
+                return Ok(false);
+            }
+            for ((ak, av), (bk, bv)) in a_fields.into_iter().zip(b_fields.into_iter()) {
+                if ak != bk {
+                    return Ok(false);
+                }
+                if !eq_values(g, av, bv)? {
+                    return Ok(false);
+                }
+            }
+            true
+        }
+
+        _ => return Err(Error::msg("== expects equatable values")),
+    })
+}
+
+fn eq_value(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    Ok(Value::Bool(eq_values(g, a, b)?))
+}
+
+fn ne_value(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    Ok(Value::Bool(!eq_values(g, a, b)?))
+}
+
+fn eq_with_dict(g: &Globals, dict: Value, a: Value, b: Value) -> Result<Value> {
+    let dict = force_value(g, dict)?;
+    let Value::Record(fields) = dict else {
+        return Err(Error::msg("__eq expects an Eq dictionary record"));
+    };
+
+    let Some((_, eq_fn)) = fields.into_iter().find(|(k, _)| k == "eq") else {
+        return Err(Error::msg("Eq dictionary missing field: eq"));
+    };
+    let eq_fn = force_value(g, eq_fn)?;
+    let f = apply_one(g, eq_fn, a)?;
+    apply_one(g, f, b)
 }
 
 fn match_pat(

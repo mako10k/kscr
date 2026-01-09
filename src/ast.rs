@@ -192,6 +192,8 @@ pub enum Type {
 pub enum Predicate {
     Show(Type),
     ShowRow(Type),
+    Eq(Type),
+    EqRow(Type),
     Lacks { label: String, row: Type },
 }
 
