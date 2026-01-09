@@ -529,8 +529,8 @@ pub enum IoAction {
 #[derive(Debug, Clone)]
 pub enum Value {
     Unit,
-    Integer(String),
-    Float64(String),
+    Integer(i64),
+    Float64(f64),
     Bool(bool),
     String(String),
     Char(char),
@@ -827,8 +827,8 @@ fn eval_expr(
 ) -> Result<Value> {
     Ok(match expr {
         IrExpr::Unit => Value::Unit,
-        IrExpr::Integer(s) => Value::Integer(s.clone()),
-        IrExpr::Float64(s) => Value::Float64(s.clone()),
+        IrExpr::Integer(s) => Value::Integer(parse_i64(s)?),
+        IrExpr::Float64(s) => Value::Float64(parse_f64(s)?),
         IrExpr::Bool(b) => Value::Bool(*b),
         IrExpr::String(s) => Value::String(s.clone()),
         IrExpr::Char(c) => Value::Char(*c),
@@ -1183,15 +1183,20 @@ fn parse_i64(s: &str) -> Result<i64> {
         .map_err(|_| Error::msg(format!("invalid integer: {s}")))
 }
 
+fn parse_f64(s: &str) -> Result<f64> {
+    s.parse::<f64>()
+        .map_err(|_| Error::msg(format!("invalid float64: {s}")))
+}
+
 fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("+ expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("+ expects Integer")) };
-    let out = parse_i64(&a)?
-        .checked_add(parse_i64(&b)?)
+    let out = a
+        .checked_add(b)
         .ok_or_else(|| Error::msg("integer overflow"))?;
-    Ok(Value::Integer(out.to_string()))
+    Ok(Value::Integer(out))
 }
 
 fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1199,10 +1204,10 @@ fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("- expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("- expects Integer")) };
-    let out = parse_i64(&a)?
-        .checked_sub(parse_i64(&b)?)
+    let out = a
+        .checked_sub(b)
         .ok_or_else(|| Error::msg("integer overflow"))?;
-    Ok(Value::Integer(out.to_string()))
+    Ok(Value::Integer(out))
 }
 
 fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1210,10 +1215,10 @@ fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("* expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("* expects Integer")) };
-    let out = parse_i64(&a)?
-        .checked_mul(parse_i64(&b)?)
+    let out = a
+        .checked_mul(b)
         .ok_or_else(|| Error::msg("integer overflow"))?;
-    Ok(Value::Integer(out.to_string()))
+    Ok(Value::Integer(out))
 }
 
 fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1222,16 +1227,13 @@ fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("/ expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("/ expects Integer")) };
 
-    let b = parse_i64(&b)?;
     if b == 0 {
         return Err(Error::msg("division by zero"));
     }
 
-    let out = parse_i64(&a)?
-        .checked_div(b)
-        .ok_or_else(|| Error::msg("integer overflow"))?;
+    let out = a.checked_div(b).ok_or_else(|| Error::msg("integer overflow"))?;
 
-    Ok(Value::Integer(out.to_string()))
+    Ok(Value::Integer(out))
 }
 
 fn eq_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1239,7 +1241,7 @@ fn eq_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("== expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("== expects Integer")) };
-    Ok(Value::Bool(parse_i64(&a)? == parse_i64(&b)?))
+    Ok(Value::Bool(a == b))
 }
 
 fn lt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1247,7 +1249,7 @@ fn lt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("< expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("< expects Integer")) };
-    Ok(Value::Bool(parse_i64(&a)? < parse_i64(&b)?))
+    Ok(Value::Bool(a < b))
 }
 
 fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1255,7 +1257,7 @@ fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("<= expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("<= expects Integer")) };
-    Ok(Value::Bool(parse_i64(&a)? <= parse_i64(&b)?))
+    Ok(Value::Bool(a <= b))
 }
 
 fn gt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1263,7 +1265,7 @@ fn gt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("> expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("> expects Integer")) };
-    Ok(Value::Bool(parse_i64(&a)? > parse_i64(&b)?))
+    Ok(Value::Bool(a > b))
 }
 
 fn ge_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1271,7 +1273,7 @@ fn ge_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg(">= expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg(">= expects Integer")) };
-    Ok(Value::Bool(parse_i64(&a)? >= parse_i64(&b)?))
+    Ok(Value::Bool(a >= b))
 }
 
 fn ne_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1279,7 +1281,7 @@ fn ne_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("/= expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("/= expects Integer")) };
-    Ok(Value::Bool(parse_i64(&a)? != parse_i64(&b)?))
+    Ok(Value::Bool(a != b))
 }
 
 fn and_bool(g: &Globals, a: Value, b: Value) -> Result<Value> {
@@ -1313,7 +1315,7 @@ fn not_bool(g: &Globals, a: Value) -> Result<Value> {
 fn int_to_string(g: &Globals, a: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let Value::Integer(a) = a else { return Err(Error::msg("intToString expects Integer")) };
-    Ok(Value::String(parse_i64(&a)?.to_string()))
+    Ok(Value::String(a.to_string()))
 }
 
 fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
@@ -1365,7 +1367,8 @@ fn quote_char(c: char) -> String {
 fn show_value_str(g: &Globals, v: Value) -> Result<String> {
     let v = force_value(g, v)?;
     Ok(match v {
-        Value::Integer(s) => parse_i64(&s)?.to_string(),
+        Value::Integer(n) => n.to_string(),
+        Value::Float64(x) => x.to_string(),
         Value::Bool(b) => if b { "True" } else { "False" }.to_string(),
         Value::String(s) => quote_string(&s),
         Value::Char(c) => quote_char(c),
@@ -1447,8 +1450,8 @@ fn match_pat(
         (P::Literal(l), v) => {
             let ok = match (l, v) {
                 (IrLiteral::Unit, Value::Unit) => true,
-                (IrLiteral::Integer(a), Value::Integer(b)) => a == b,
-                (IrLiteral::Float64(a), Value::Float64(b)) => a == b,
+                (IrLiteral::Integer(a), Value::Integer(b)) => parse_i64(a)? == *b,
+                (IrLiteral::Float64(a), Value::Float64(b)) => parse_f64(a)? == *b,
                 (IrLiteral::Bool(a), Value::Bool(b)) => a == b,
                 (IrLiteral::String(a), Value::String(b)) => a == b,
                 (IrLiteral::Char(a), Value::Char(b)) => a == b,
@@ -1602,17 +1605,17 @@ mod show_roundtrip_tests {
         let g0 = Globals::from_module(&IrModule { items: vec![] });
 
         let cases = vec![
-            Value::Integer("123".to_string()),
+            Value::Integer(123),
             Value::Bool(true),
             Value::Unit,
             Value::Char('\n'),
             Value::Char('\\'),
             Value::String("hello".to_string()),
             Value::String("a\n\"b\\c".to_string()),
-            Value::Tuple(vec![Value::Integer("1".to_string()), Value::String("x".to_string())]),
-            list_of(vec![Value::Integer("1".to_string()), Value::Integer("2".to_string())]),
+            Value::Tuple(vec![Value::Integer(1), Value::String("x".to_string())]),
+            list_of(vec![Value::Integer(1), Value::Integer(2)]),
             Value::Record(vec![
-                ("a".to_string(), Value::Integer("1".to_string())),
+                ("a".to_string(), Value::Integer(1)),
                 ("b".to_string(), Value::String("x".to_string())),
             ]),
         ];
