@@ -1280,6 +1280,67 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // throw :: forall a. String -> IO a
+    let Ty::Var(a) = cx.fresh() else { unreachable!() };
+    env.insert(
+        "throw".to_string(),
+        Scheme {
+            vars: vec![a],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("String".to_string())),
+                Box::new(Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![Ty::Var(a)],
+                }),
+            ),
+        },
+    );
+
+    // catch :: forall a. IO a -> (String -> IO a) -> IO a
+    let Ty::Var(a) = cx.fresh() else { unreachable!() };
+    let io_a = Ty::App {
+        head: Box::new(Ty::Con("IO".to_string())),
+        args: vec![Ty::Var(a)],
+    };
+    let handler = Ty::Func(
+        Box::new(Ty::Con("String".to_string())),
+        Box::new(io_a.clone()),
+    );
+    env.insert(
+        "catch".to_string(),
+        Scheme {
+            vars: vec![a],
+            constraints: vec![],
+            ty: Ty::Func(Box::new(io_a.clone()), Box::new(Ty::Func(Box::new(handler), Box::new(io_a)))),
+        },
+    );
+
+    // try :: forall a. IO a -> IO (Prelude.Either String a)
+    let Ty::Var(a) = cx.fresh() else { unreachable!() };
+    let io_a = Ty::App {
+        head: Box::new(Ty::Con("IO".to_string())),
+        args: vec![Ty::Var(a)],
+    };
+    let either = Ty::App {
+        head: Box::new(Ty::Con("Prelude.Either".to_string())),
+        args: vec![Ty::Con("String".to_string()), Ty::Var(a)],
+    };
+    env.insert(
+        "try".to_string(),
+        Scheme {
+            vars: vec![a],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(io_a),
+                Box::new(Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![either],
+                }),
+            ),
+        },
+    );
+
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
             continue;

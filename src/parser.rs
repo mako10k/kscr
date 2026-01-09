@@ -361,9 +361,10 @@ enum Stop {
     LineEnd,
     Then,
     Else,
-    In,
     Of,
     Pattern,
+    LetBind,
+    SemiOrRBrace,
 }
 
 fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
@@ -440,7 +441,13 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         ts.consume_line_end();
         bs
     } else {
-        vec![parse_let_binding_inline(ts)?]
+        let mut bs = Vec::new();
+        bs.push(parse_let_binding_inline(ts)?);
+        while matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
+            ts.bump();
+            bs.push(parse_let_binding_inline(ts)?);
+        }
+        bs
     };
 
     ts.expect(TokenKind::KwIn)?;
@@ -458,13 +465,54 @@ fn parse_let_binding_line(ts: &mut TokenStream) -> Result<ast::Binding> {
 fn parse_let_binding_inline(ts: &mut TokenStream) -> Result<ast::Binding> {
     let pat = parse_pattern(ts)?;
     ts.expect(TokenKind::Eq)?;
-    let expr = parse_expr(ts, Stop::In)?;
+    let expr = parse_expr(ts, Stop::LetBind)?;
     Ok(ast::Binding { pat, expr })
 }
 
 fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
     ts.expect(TokenKind::KwDo)?;
 
+    // do { stmt; stmt; ... }
+    if matches!(ts.peek_kind(), Some(TokenKind::LBrace)) {
+        ts.bump();
+        let mut stmts = Vec::new();
+        loop {
+            if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
+                break;
+            }
+            if ts.is_eof() {
+                return Err(Error::msg("unexpected EOF in do"));
+            }
+
+            // Bind statement is `pat <- expr`.
+            let save = ts.i;
+            if let Ok(pat) = parse_pattern(ts) {
+                if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
+                    ts.bump();
+                    let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
+                    stmts.push(ast::DoStmt::Bind { pat, expr });
+                } else {
+                    ts.i = save;
+                    let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
+                    stmts.push(ast::DoStmt::Expr(expr));
+                }
+            } else {
+                ts.i = save;
+                let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
+                stmts.push(ast::DoStmt::Expr(expr));
+            }
+
+            if matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
+                ts.bump();
+            } else {
+                break;
+            }
+        }
+        ts.expect(TokenKind::RBrace)?;
+        return Ok(ast::Expr::Do(stmts));
+    }
+
+    // do\n  ... (indent block)
     if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
         return Err(Error::msg("expected newline after 'do'"));
     }
@@ -681,7 +729,6 @@ fn is_type_end(kind: Option<&TokenKind>, stop: Stop) -> bool {
         | Some(TokenKind::KwWhere) => true,
         Some(TokenKind::KwThen) if matches!(stop, Stop::Then) => true,
         Some(TokenKind::KwElse) if matches!(stop, Stop::Else) => true,
-        Some(TokenKind::KwIn) if matches!(stop, Stop::In) => true,
         Some(TokenKind::KwOf) if matches!(stop, Stop::Of) => true,
         _ => false,
     }
@@ -858,6 +905,27 @@ fn is_record_field_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
 
 fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
     ts.expect(TokenKind::KwWhere)?;
+
+    // where { x = 1; y = 2 }
+    if matches!(ts.peek_kind(), Some(TokenKind::LBrace)) {
+        ts.bump();
+        let mut bindings = Vec::new();
+        if !matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
+            bindings.push(parse_let_binding_inline(ts)?);
+            while matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
+                ts.bump();
+                if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
+                    break;
+                }
+                bindings.push(parse_let_binding_inline(ts)?);
+            }
+        }
+        ts.expect(TokenKind::RBrace)?;
+        return Ok(ast::Expr::Where {
+            expr: Box::new(expr),
+            bindings,
+        });
+    }
 
     if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
         return Err(Error::msg("expected newline after 'where'"));
@@ -1630,8 +1698,9 @@ impl TokenStream {
             (_, Some(TokenKind::Newline)) => false,
             (Stop::Then, Some(TokenKind::KwThen)) => false,
             (Stop::Else, Some(TokenKind::KwElse)) => false,
-            (Stop::In, Some(TokenKind::KwIn)) => false,
             (Stop::Of, Some(TokenKind::KwOf)) => false,
+            (Stop::LetBind, Some(TokenKind::Semicolon | TokenKind::KwIn)) => false,
+            (Stop::SemiOrRBrace, Some(TokenKind::Semicolon | TokenKind::RBrace)) => false,
             (Stop::Pattern, Some(TokenKind::Arrow | TokenKind::Eq | TokenKind::Comma)) => false,
             (Stop::Pattern, Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace)) => false,
             (Stop::Pattern, Some(TokenKind::Dedent)) => false,

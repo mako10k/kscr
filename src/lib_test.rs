@@ -1304,6 +1304,64 @@ fn parser_do_blocks() {
 }
 
 #[test]
+fn parser_do_braces_semicolons() {
+    let module = crate::parser::parse_module("x = do { y <- IO 1; IO y }\n").unwrap();
+
+    use crate::ast::{DoStmt, Expr, Item, Pattern};
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let Expr::Do(stmts) = &b.expr else {
+        panic!("expected do");
+    };
+
+    assert_eq!(stmts.len(), 2);
+    assert!(matches!(stmts[0], DoStmt::Bind { pat: Pattern::Var(ref s), .. } if s == "y"));
+    assert!(matches!(stmts[1], DoStmt::Expr(_)));
+}
+
+#[test]
+fn parser_let_inline_semicolons() {
+    let module = crate::parser::parse_module("x = let a = 1; b = 2 in a\n").unwrap();
+
+    use crate::ast::{Expr, Item, Pattern};
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let Expr::Let { bindings, body } = &b.expr else {
+        panic!("expected let");
+    };
+
+    assert_eq!(bindings.len(), 2);
+    assert!(matches!(bindings[0].pat, Pattern::Var(ref s) if s == "a"));
+    assert!(matches!(bindings[1].pat, Pattern::Var(ref s) if s == "b"));
+    assert!(matches!(**body, Expr::Var(ref s) if s == "a"));
+}
+
+#[test]
+fn parser_where_braces_semicolons() {
+    let module = crate::parser::parse_module("x = a where { a = 1; b = 2 }\n").unwrap();
+
+    use crate::ast::{Expr, Item, Pattern};
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let Expr::Where { bindings, .. } = &b.expr else {
+        panic!("expected where");
+    };
+
+    assert_eq!(bindings.len(), 2);
+    assert!(matches!(bindings[0].pat, Pattern::Var(ref s) if s == "a"));
+    assert!(matches!(bindings[1].pat, Pattern::Var(ref s) if s == "b"));
+}
+
+#[test]
 fn parser_ctor_exprs() {
     let src = std::fs::read_to_string("tests/parser_ctor_expr.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

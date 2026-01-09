@@ -502,6 +502,17 @@ pub enum IoAction {
     Pure(Value),
     StdoutWrite(String),
     StdinReadLine,
+
+    // Exceptions via IO (MVP: String exceptions)
+    Throw(String),
+    Catch {
+        action: Box<IoAction>,
+        handler: Value,
+    },
+    Try {
+        action: Box<IoAction>,
+    },
+
     Bind {
         action: Box<IoAction>,
         param: String,
@@ -563,6 +574,10 @@ pub enum Value {
     BuiltinStrAppend,
     BuiltinStrAppend1(Box<Value>),
     BuiltinShow,
+    BuiltinThrow,
+    BuiltinCatch,
+    BuiltinCatch1(Box<Value>),
+    BuiltinTry,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -592,13 +607,22 @@ struct Globals {
     memo: std::cell::RefCell<std::collections::HashMap<String, MemoValue>>,
 }
 
+#[derive(Debug)]
+enum IoOutcome {
+    Value(Value),
+    Thrown(String),
+}
+
 pub fn run_main(module: &IrModule) -> Result<Value> {
     let g = Globals::from_module(module);
     let v = eval_var(&g, &std::collections::HashMap::new(), "main")?;
     let Value::IoAction(action) = v else {
         return Err(Error::msg("main did not evaluate to an IO action"));
     };
-    run_io(&g, *action)
+    match run_io(&g, *action)? {
+        IoOutcome::Value(v) => Ok(v),
+        IoOutcome::Thrown(e) => Err(Error::msg(format!("uncaught exception: {e}"))),
+    }
 }
 
 impl Globals {
@@ -739,6 +763,18 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "show" || name == "toString" {
         return Ok(Value::BuiltinShow);
+    }
+
+    if name == "throw" {
+        return Ok(Value::BuiltinThrow);
+    }
+
+    if name == "catch" {
+        return Ok(Value::BuiltinCatch);
+    }
+
+    if name == "try" {
+        return Ok(Value::BuiltinTry);
     }
 
     if name == "stdinReadLine" {
@@ -933,14 +969,14 @@ fn eval_expr(
     })
 }
 
-fn run_io(g: &Globals, action: IoAction) -> Result<Value> {
+fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
     match action {
-        IoAction::Pure(v) => force_value(g, v),
+        IoAction::Pure(v) => Ok(IoOutcome::Value(force_value(g, v)?)),
         IoAction::StdoutWrite(s) => {
             use std::io::Write;
             print!("{s}");
             std::io::stdout().flush().ok();
-            Ok(Value::Unit)
+            Ok(IoOutcome::Value(Value::Unit))
         }
         IoAction::StdinReadLine => {
             use std::io::BufRead;
@@ -949,15 +985,42 @@ fn run_io(g: &Globals, action: IoAction) -> Result<Value> {
             while s.ends_with(['\n', '\r']) {
                 s.pop();
             }
-            Ok(Value::String(s))
+            Ok(IoOutcome::Value(Value::String(s)))
         }
+
+        IoAction::Throw(e) => Ok(IoOutcome::Thrown(e)),
+        IoAction::Catch { action, handler } => match run_io(g, *action)? {
+            IoOutcome::Value(v) => Ok(IoOutcome::Value(v)),
+            IoOutcome::Thrown(e) => {
+                let h = force_value(g, handler)?;
+                let act = apply_one(g, h, Value::String(e))?;
+                let Value::IoAction(act) = act else {
+                    return Err(Error::msg("catch handler did not evaluate to an IO action"));
+                };
+                run_io(g, *act)
+            }
+        },
+        IoAction::Try { action } => match run_io(g, *action)? {
+            IoOutcome::Value(v) => {
+                let ctor = eval_var(g, &std::collections::HashMap::new(), "Right")?;
+                Ok(IoOutcome::Value(apply_one(g, ctor, v)?))
+            }
+            IoOutcome::Thrown(e) => {
+                let ctor = eval_var(g, &std::collections::HashMap::new(), "Left")?;
+                Ok(IoOutcome::Value(apply_one(g, ctor, Value::String(e))?))
+            }
+        },
+
         IoAction::Bind {
             action,
             param,
             body,
             mut env,
         } => {
-            let v = run_io(g, *action)?;
+            let v = match run_io(g, *action)? {
+                IoOutcome::Value(v) => v,
+                IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
+            };
             env.insert(param, v);
             let act = eval_expr(g, &env, &body)?;
             let Value::IoAction(act) = act else {
@@ -970,7 +1033,10 @@ fn run_io(g: &Globals, action: IoAction) -> Result<Value> {
             then_expr,
             env,
         } => {
-            let _ = run_io(g, *first)?;
+            match run_io(g, *first)? {
+                IoOutcome::Value(_) => {}
+                IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
+            }
             let act = eval_expr(g, &env, &then_expr)?;
             let Value::IoAction(act) = act else {
                 return Err(Error::msg("IoThen body did not evaluate to an IO action"));
@@ -1022,6 +1088,29 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinStrAppend => Ok(Value::BuiltinStrAppend1(Box::new(arg))),
         Value::BuiltinStrAppend1(a) => str_append(g, *a, arg),
         Value::BuiltinShow => show_to_string(g, arg),
+        Value::BuiltinThrow => {
+            let arg = force_value(g, arg)?;
+            let Value::String(s) = arg else {
+                return Err(Error::msg("throw expects String"));
+            };
+            Ok(Value::IoAction(Box::new(IoAction::Throw(s))))
+        }
+        Value::BuiltinCatch => Ok(Value::BuiltinCatch1(Box::new(arg))),
+        Value::BuiltinCatch1(act) => {
+            let act = force_value(g, *act)?;
+            let Value::IoAction(act) = act else {
+                return Err(Error::msg("catch expects IO action"));
+            };
+            let handler = force_value(g, arg)?;
+            Ok(Value::IoAction(Box::new(IoAction::Catch { action: act, handler })))
+        }
+        Value::BuiltinTry => {
+            let act = force_value(g, arg)?;
+            let Value::IoAction(act) = act else {
+                return Err(Error::msg("try expects IO action"));
+            };
+            Ok(Value::IoAction(Box::new(IoAction::Try { action: act })))
+        }
         Value::Closure {
             mut params,
             body,

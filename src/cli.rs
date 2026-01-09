@@ -266,6 +266,46 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_exceptions_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_exceptions_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  import Prelude\n  main = do\n    r <- try (throw \"boom\")\n    case r of\n      Left e -> print e\n      Right _ -> print \"no\"\n    x <- catch (throw \"boom2\") (\\e -> IO e)\n    print x\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_do_braces_and_let_semicolons_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_p2_braces_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  import Prelude\n  main = do { print \"a\"; y <- IO (let x = 1; z = 2 in x + z); print (intToString y) }\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn cli_run_fixity_infixr_smoke() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_fixity_infixr_smoke_{}.ks",

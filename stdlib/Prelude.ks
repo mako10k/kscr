@@ -1,5 +1,5 @@
 module Prelude where
-  export print, readLine, getLine, putStr, putStrLn, id, const, map, filter, concat, append, Maybe, maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export print, readLine, getLine, putStr, putStrLn, id, const, map, filter, concat, append, Maybe, Either, maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   print = stdoutWrite
 
@@ -24,6 +24,8 @@ module Prelude where
   append = \a -> \b -> a ++ b
 
   data Maybe a = Nothing | Just a
+
+  data Either a b = Left a | Right b
 
   maybe = \d -> \f -> \m -> case m of
     Nothing -> d
