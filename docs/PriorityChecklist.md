@@ -62,11 +62,12 @@ Status: Done
 
 範囲(MVP):
 - Readline: ヒストリ付きの行編集（rustyline）
+  - NOTE: `rustyline` は依存に unsafe を含むため、`--features readline` のときのみ有効（デフォルトは stdio REPL）
 - `:load <path>`: 指定ファイルのディレクトリを基準に import 解決して評価（Main overlayを生成）
 - `:modules`: ロード中モジュール表示
 
-Status: Next
-- [ ] 実装 + テスト + ゲート通過
+Status: Done
+- [x] 実装 + テスト + ゲート通過（commit: `29cb45f`）
 
 ## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
 目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
