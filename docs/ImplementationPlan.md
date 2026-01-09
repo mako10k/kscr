@@ -55,15 +55,19 @@ Scope notes:
 
 ---
 
-## Milestone 3 — Type Classes (Future)
+## Milestone 3 — Type Classes (✅ Implemented)
 
 ### Mid-goal 3.1 — Constraints + dictionaries
-- **Small-goal 3.1.1**: Represent constraints in types (e.g. `Show a => a -> String`).
-- **Small-goal 3.1.2**: Lower constraints via dictionary passing in IR.
+- **Small-goal 3.1.1**: ✅ Represent constraints in types (e.g. `Show a => a -> String`).
+- **Small-goal 3.1.2**: ✅ Lower constraints via dictionary passing in IR.
+- **Small-goal 3.1.3**: ✅ Support `Show` and `Eq` typeclasses.
 
-### Mid-goal 3.2 — Minimal `Show`
-- **Small-goal 3.2.1**: Implement `Show` for primitive types.
-- **Small-goal 3.2.2**: Expand only after tests prove stability.
+### Mid-goal 3.2 — Show and Eq typeclasses
+- **Small-goal 3.2.1**: ✅ Implement `Show` and `Eq` for primitive types.
+- **Small-goal 3.2.2**: ✅ Implement structural instances (lists, tuples, records).
+- **Small-goal 3.2.3**: ✅ Support `deriving Show`, `deriving Eq`, and `deriving (Eq, Show)` for data types.
+
+**Status**: Type classes are fully implemented with dictionary passing. See `TypeClassesPlan.md` for implementation details.
 
 ---
 
