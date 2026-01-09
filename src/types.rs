@@ -2308,7 +2308,7 @@ fn load_module_with_imports(entry: &Path) -> Result<ast::Module> {
     let entry_mod = loader.load_ast(&entry)?;
 
     let mut items = Vec::new();
-    let mut defined = HashSet::new();
+    let mut defined: HashMap<String, String> = HashMap::new();
 
     let mut deps = Vec::new();
     loader.collect_imports(&entry_mod, entry_dir, &mut deps)?;
@@ -2353,7 +2353,12 @@ fn desugar_qualified_ref(name: &str, allowed: &HashSet<String>) -> Result<String
         return Ok(name.to_string());
     };
     if !allowed.contains(qual) {
-        return Err(Error::msg(format!("unknown qualifier {qual} in {name}")));
+        let mut allowed: Vec<_> = allowed.iter().cloned().collect();
+        allowed.sort();
+        return Err(Error::msg(format!(
+            "unknown qualifier {qual} in {name} (allowed: {})",
+            allowed.join(", ")
+        )));
     }
     Ok(name.to_string())
 }
@@ -3167,13 +3172,72 @@ fn qualify_qual_type(qt: ast::QualType, type_map: &HashMap<String, String>) -> R
     })
 }
 
-fn push_item_checked(items: &mut Vec<ast::Item>, defined: &mut HashSet<String>, it: ast::Item) -> Result<()> {
+fn name_origin_hint(it: &ast::Item, name: &str) -> String {
+    fn qual_of(s: &str) -> Option<String> {
+        s.split_once('.').map(|(q, _)| q.to_string())
+    }
+    fn qual_of_type(ty: &ast::Type) -> Option<String> {
+        match ty {
+            ast::Type::Var(n) => qual_of(n),
+            ast::Type::App { head, .. } => qual_of_type(head),
+            _ => None,
+        }
+    }
+
+    match it {
+        ast::Item::Binding(b) => {
+            if let ast::Pattern::Var(n) = &b.pat {
+                if n == name {
+                    if let ast::Expr::Var(v) = &b.expr {
+                        if v.ends_with(&format!(".{name}")) {
+                            if let Some(q) = qual_of(v) {
+                                return format!("import {q}");
+                            }
+                        }
+                    }
+                }
+            }
+            "local".to_string()
+        }
+        ast::Item::TypeAlias(ta) => {
+            if let Some(q) = qual_of(&ta.name) {
+                return format!("import {q}");
+            }
+            if let Some(q) = qual_of_type(&ta.ty) {
+                return format!("import {q}");
+            }
+            "local".to_string()
+        }
+        ast::Item::DataDecl(d) => {
+            if let Some(q) = qual_of(&d.name) {
+                return format!("import {q}");
+            }
+            for c in &d.ctors {
+                if let Some(q) = qual_of(&c.name) {
+                    return format!("import {q}");
+                }
+            }
+            "local".to_string()
+        }
+        ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => "<meta>".to_string(),
+    }
+}
+
+fn push_item_checked(
+    items: &mut Vec<ast::Item>,
+    defined: &mut HashMap<String, String>,
+    it: ast::Item,
+) -> Result<()> {
     let mut names = HashSet::new();
     item_defined_names(&it, &mut names);
     for n in names {
-        if !defined.insert(n.clone()) {
-            return Err(Error::msg(format!("name conflict: {n}")));
+        let origin = name_origin_hint(&it, &n);
+        if let Some(prev) = defined.get(&n) {
+            return Err(Error::msg(format!(
+                "name conflict: {n} (previously from {prev}, now from {origin}); try `import ... as ...` or qualify",
+            )));
         }
+        defined.insert(n, origin);
     }
     items.push(it);
     Ok(())
@@ -3789,6 +3853,37 @@ mod inference_tests {
         .unwrap();
 
         let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_reports_name_conflict_with_sources() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_name_conflict_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  export x\n  x = 1\n").unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(&b, "module B where\n  export x\n  x = 2\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  import B\n  y = x\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let e = typecheck_file(&main).unwrap_err();
+        let msg = format!("{e}");
+        assert!(msg.contains("name conflict: x"));
+        assert!(msg.contains("import A"));
+        assert!(msg.contains("import B"));
+
         let _ = std::fs::remove_dir_all(dir);
     }
 

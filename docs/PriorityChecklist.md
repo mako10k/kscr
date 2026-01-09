@@ -52,7 +52,8 @@ Status: 完了（MVP）
 Recommended order:
 1) P13C（診断強化） → 2) P13D（探索/仕様固定） → 3) P13A（表面構文） → 4) P13B（export粒度）
 
-- [ ] **P13C: import名前解決の診断強化**（同名衝突の説明、候補提示、unknown qualifier で許容qualifier表示 など）
+- [x] **P13C: import名前解決の診断強化**（同名衝突の説明、候補提示、unknown qualifier で許容qualifier表示 など）
+  - done: better conflict/qualifier errors + tests (commit: TBD)
 - [ ] **P13D: import探索の仕様固定**（探索順/モジュール名↔パスのルール化 + スモーク）
 - [ ] **P13A: import文の表面構文をHaskell寄せ**（`import qualified A as OM` 等）
 - [ ] **P13B: exportの粒度強化**（例: `export Maybe(..)` 等）
