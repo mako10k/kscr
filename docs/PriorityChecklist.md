@@ -46,6 +46,17 @@ Status: 完了（MVP）
 - [x] let/where内でも同様に clause を集約して desugar（commit: `5bf35e1`）
 - [x] `|` の曖昧性回避: 関数引数の or-pattern は括弧必須（例: `f (0 | 1) = ...`）（commit: `5bf35e1`）
 
+## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
+目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
+
+Recommended order:
+1) P13C（診断強化） → 2) P13D（探索/仕様固定） → 3) P13A（表面構文） → 4) P13B（export粒度）
+
+- [ ] **P13C: import名前解決の診断強化**（同名衝突の説明、候補提示、unknown qualifier で許容qualifier表示 など）
+- [ ] **P13D: import探索の仕様固定**（探索順/モジュール名↔パスのルール化 + スモーク）
+- [ ] **P13A: import文の表面構文をHaskell寄せ**（`import qualified A as OM` 等）
+- [ ] **P13B: exportの粒度強化**（例: `export Maybe(..)` 等）
+
 ## P3 — Haskellと違う可能性がある仕様 (スキップ可)
 目的: 仕様書に書いてあっても、Haskellと差が出そう/設計が曖昧なら勝手に実装しない。
 候補(例):
