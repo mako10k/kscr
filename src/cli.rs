@@ -1197,6 +1197,65 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_import_as_disambiguates_same_name_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_import_as_disambiguates_same_name_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  export x\n  x = 1\n").unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(&b, "module B where\n  export x\n  x = 2\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A as A1\n  import B as B1\n  y = A1.x + B1.x\n  main = case (y == 3) of\n    True -> IO ()\n    False -> case (1 / 0) of\n      _ -> IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cli_typecheck_reports_cyclic_imports_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_typecheck_cyclic_imports_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  import B\n  x = 1\n").unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(&b, "module B where\n  import A\n  y = 2\n").unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "typecheck".to_string(),
+            a.to_string_lossy().to_string(),
+        ];
+        let e = run(args.into_iter()).unwrap_err();
+        assert!(format!("{e}").contains("cyclic imports"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+
+    #[test]
     fn cli_run_import_fun_clauses_and_guards_smoke() {
         let dir = std::env::temp_dir().join(format!(
             "kscr_cli_run_import_fun_clauses_guards_smoke_{}",
