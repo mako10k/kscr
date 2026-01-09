@@ -1236,26 +1236,6 @@ fn parser_type_holes() {
 }
 
 #[test]
-fn parser_type_vars_percent() {
-    let m = crate::parser::parse_module("x = 1 :: %a\n").unwrap();
-    let crate::ast::Item::Binding(b) = &m.items[0] else {
-        panic!("expected binding");
-    };
-    let crate::ast::Expr::Annot { ty, .. } = &b.expr else {
-        panic!("expected annotation");
-    };
-    assert!(matches!(ty.ty, crate::ast::Type::Var(ref s) if s == "%a"));
-}
-
-#[test]
-fn typecheck_type_vars_percent_generalize() {
-    let src = "id = (\\x -> x) :: %a -> %a\nmain = IO ()\n";
-    let m = crate::parser::parse_module(src).unwrap();
-    let tm = crate::types::typecheck(m).unwrap();
-    assert_eq!(tm.inferred["id"].to_string(), "forall a. a -> a");
-}
-
-#[test]
 fn typecheck_expands_type_aliases() {
     let src = std::fs::read_to_string("tests/type_alias_expand.ks").unwrap();
     let module = crate::parser::parse_module(&src).unwrap();

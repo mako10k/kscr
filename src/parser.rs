@@ -809,11 +809,6 @@ fn parse_type_atom(
             };
             Ok(ast::Type::Hole(name))
         }
-        Some(TokenKind::Percent) => {
-            ts.bump();
-            let name = ts.expect_ident()?;
-            Ok(ast::Type::Var(format!("%{name}")))
-        }
         Some(TokenKind::Ident(_)) => {
             let s = parse_maybe_qualified_ident(ts)?;
             let last = last_qualified_segment(&s);
