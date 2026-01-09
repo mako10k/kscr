@@ -80,6 +80,44 @@ fn ir_run_main_fun_clauses_multi_clause_and_multi_args() {
 }
 
 #[test]
+fn ir_run_main_guarded_fun_clause_top_level() {
+    let src = concat!(
+        "f x | x == 0 = 1\n",
+        "f _ = 2\n",
+        "main = case (f 0) of\n",
+        "  1 -> case (f 3) of\n",
+        "    2 -> IO ()\n",
+    );
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_fun_clauses_in_let_and_where() {
+    let src = concat!(
+        "main = let\n",
+        "  f 0 = 1\n",
+        "  f _ = 2\n",
+        "in case (f 0) of\n",
+        "  1 -> case (f 9) of\n",
+        "    2 -> case (g 0) of\n",
+        "      1 -> case (g 9) of\n",
+        "        2 -> IO ()\n",
+        "where\n",
+        "  g 0 = 1\n",
+        "  g _ = 2\n",
+    );
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn parser_qualified_names_desugar() {
     let m = crate::parser::parse_module("y = A.B.OM.x\n").unwrap();
     let crate::ast::Item::Binding(b) = &m.items[0] else {

@@ -383,6 +383,7 @@ fn parse_fixity_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 struct FunClause {
     name: String,
     args: Vec<ast::Pattern>,
+    guard: Option<ast::Expr>,
     body: ast::Expr,
 }
 
@@ -394,7 +395,7 @@ enum ParsedBind {
 struct PendingFun {
     name: String,
     arity: usize,
-    clauses: Vec<(Vec<ast::Pattern>, ast::Expr)>,
+    clauses: Vec<(Vec<ast::Pattern>, Option<ast::Expr>, ast::Expr)>,
 }
 
 fn flush_pending_fun_item(
@@ -409,6 +410,48 @@ fn flush_pending_fun_item(
     Ok(())
 }
 
+fn flush_pending_fun_binding(
+    ts: &mut TokenStream,
+    out: &mut Vec<ast::Binding>,
+    pending: Option<PendingFun>,
+) {
+    let Some(p) = pending else {
+        return;
+    };
+    out.push(desugar_fun(ts, p.name, p.arity, p.clauses));
+}
+
+fn push_fun_clause_binding(
+    ts: &mut TokenStream,
+    out: &mut Vec<ast::Binding>,
+    pending: &mut Option<PendingFun>,
+    c: FunClause,
+) {
+    let arity = c.args.len();
+    let clause = (c.args, c.guard, c.body);
+
+    match pending {
+        Some(p) if p.name == c.name && p.arity == arity => {
+            p.clauses.push(clause);
+        }
+        Some(_) => {
+            flush_pending_fun_binding(ts, out, pending.take());
+            *pending = Some(PendingFun {
+                name: c.name,
+                arity,
+                clauses: vec![clause],
+            });
+        }
+        None => {
+            *pending = Some(PendingFun {
+                name: c.name,
+                arity,
+                clauses: vec![clause],
+            });
+        }
+    }
+}
+
 fn push_fun_clause_item(
     ts: &mut TokenStream,
     out: &mut Vec<ast::Item>,
@@ -416,7 +459,7 @@ fn push_fun_clause_item(
     c: FunClause,
 ) -> Result<()> {
     let arity = c.args.len();
-    let clause = (c.args, c.body);
+    let clause = (c.args, c.guard, c.body);
 
     match pending {
         Some(p) if p.name == c.name && p.arity == arity => {
@@ -446,7 +489,7 @@ fn desugar_fun(
     ts: &mut TokenStream,
     name: String,
     arity: usize,
-    clauses: Vec<(Vec<ast::Pattern>, ast::Expr)>,
+    clauses: Vec<(Vec<ast::Pattern>, Option<ast::Expr>, ast::Expr)>,
 ) -> ast::Binding {
     let params: Vec<String> = (0..arity).map(|_| ts.fresh_name("_arg")).collect();
     let scrut = if arity == 1 {
@@ -457,13 +500,13 @@ fn desugar_fun(
 
     let arms = clauses
         .into_iter()
-        .map(|(pats, body)| ast::CaseArm {
+        .map(|(pats, guard, body)| ast::CaseArm {
             pat: if arity == 1 {
                 pats.into_iter().next().expect("arity=1 clause")
             } else {
                 ast::Pattern::Tuple(pats)
             },
-            guard: None,
+            guard,
             body,
         })
         .collect();
@@ -490,7 +533,7 @@ fn parse_binding_simple(ts: &mut TokenStream, stop: Stop) -> Result<ast::Binding
 }
 
 fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<ParsedBind> {
-    // `fname pat1 pat2 = body` or `fname patA = bodyA; fname patB = bodyB`
+    // `fname pat1 pat2 = body` / guarded: `fname pat1 | guard = body`
     // Disambiguation: reject pattern-bind continuations like `x:xs = ...` and `xs@_ = ...`.
     if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
         let save = ts.i;
@@ -500,13 +543,26 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
             && !matches!(ts.peek_kind(), Some(TokenKind::Colon) | Some(TokenKind::At))
         {
             let mut args = Vec::new();
-            while !matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
-                args.push(parse_pattern(ts)?);
+            while !matches!(ts.peek_kind(), Some(TokenKind::Eq) | Some(TokenKind::Pipe)) {
+                // Do not treat `|` as an or-pattern here; `|` starts a guard.
+                // Or-patterns in fun args must be parenthesized.
+                args.push(parse_cons_pattern(ts)?);
             }
             if !args.is_empty() {
+                let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+                    ts.bump();
+                    Some(parse_expr(ts, Stop::Pattern)?)
+                } else {
+                    None
+                };
                 ts.expect(TokenKind::Eq)?;
                 let body = parse_expr(ts, stop)?;
-                return Ok(ParsedBind::FunClause(FunClause { name, args, body }));
+                return Ok(ParsedBind::FunClause(FunClause {
+                    name,
+                    args,
+                    guard,
+                    body,
+                }));
             }
         }
 
@@ -585,6 +641,7 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         ts.expect(TokenKind::Indent)?;
 
         let mut bs = Vec::new();
+        let mut pending: Option<PendingFun> = None;
         loop {
             ts.skip_newlines();
             if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
@@ -593,40 +650,45 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
             if ts.is_eof() {
                 return Err(Error::msg("unexpected EOF in let"));
             }
-            bs.push(parse_let_binding_line(ts)?);
+            match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
+                ParsedBind::Binding(b) => {
+                    flush_pending_fun_binding(ts, &mut bs, pending.take());
+                    bs.push(b);
+                }
+                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, c),
+            }
             ts.consume_line_end();
         }
+        flush_pending_fun_binding(ts, &mut bs, pending.take());
 
         ts.expect(TokenKind::Dedent)?;
         ts.consume_line_end();
         bs
     } else {
         let mut bs = Vec::new();
-        bs.push(parse_let_binding_inline(ts)?);
+        let mut pending: Option<PendingFun> = None;
+
+        match parse_binding_or_fun_clause(ts, Stop::LetBind)? {
+            ParsedBind::Binding(b) => bs.push(b),
+            ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, c),
+        }
         while matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
             ts.bump();
-            bs.push(parse_let_binding_inline(ts)?);
+            match parse_binding_or_fun_clause(ts, Stop::LetBind)? {
+                ParsedBind::Binding(b) => {
+                    flush_pending_fun_binding(ts, &mut bs, pending.take());
+                    bs.push(b);
+                }
+                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, c),
+            }
         }
+        flush_pending_fun_binding(ts, &mut bs, pending.take());
         bs
     };
 
     ts.expect(TokenKind::KwIn)?;
     let body = Box::new(parse_expr(ts, stop)?);
     Ok(ast::Expr::Let { bindings, body })
-}
-
-fn parse_let_binding_line(ts: &mut TokenStream) -> Result<ast::Binding> {
-    let pat = parse_pattern(ts)?;
-    ts.expect(TokenKind::Eq)?;
-    let expr = parse_expr(ts, Stop::LineEnd)?;
-    Ok(ast::Binding { pat, expr })
-}
-
-fn parse_let_binding_inline(ts: &mut TokenStream) -> Result<ast::Binding> {
-    let pat = parse_pattern(ts)?;
-    ts.expect(TokenKind::Eq)?;
-    let expr = parse_expr(ts, Stop::LetBind)?;
-    Ok(ast::Binding { pat, expr })
 }
 
 fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
@@ -1070,16 +1132,29 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
     if matches!(ts.peek_kind(), Some(TokenKind::LBrace)) {
         ts.bump();
         let mut bindings = Vec::new();
+        let mut pending: Option<PendingFun> = None;
+
         if !matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
-            bindings.push(parse_let_binding_inline(ts)?);
+            match parse_binding_or_fun_clause(ts, Stop::SemiOrRBrace)? {
+                ParsedBind::Binding(b) => bindings.push(b),
+                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bindings, &mut pending, c),
+            }
             while matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
                 ts.bump();
                 if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
                     break;
                 }
-                bindings.push(parse_let_binding_inline(ts)?);
+                match parse_binding_or_fun_clause(ts, Stop::SemiOrRBrace)? {
+                    ParsedBind::Binding(b) => {
+                        flush_pending_fun_binding(ts, &mut bindings, pending.take());
+                        bindings.push(b);
+                    }
+                    ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bindings, &mut pending, c),
+                }
             }
         }
+        flush_pending_fun_binding(ts, &mut bindings, pending.take());
+
         ts.expect(TokenKind::RBrace)?;
         return Ok(ast::Expr::Where {
             expr: Box::new(expr),
@@ -1096,6 +1171,7 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
     ts.expect(TokenKind::Indent)?;
 
     let mut bindings = Vec::new();
+    let mut pending: Option<PendingFun> = None;
     loop {
         ts.skip_newlines();
         if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
@@ -1104,9 +1180,16 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
         if ts.is_eof() {
             return Err(Error::msg("unexpected EOF in where"));
         }
-        bindings.push(parse_let_binding_line(ts)?);
+        match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
+            ParsedBind::Binding(b) => {
+                flush_pending_fun_binding(ts, &mut bindings, pending.take());
+                bindings.push(b);
+            }
+            ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bindings, &mut pending, c),
+        }
         ts.consume_line_end();
     }
+    flush_pending_fun_binding(ts, &mut bindings, pending.take());
 
     ts.expect(TokenKind::Dedent)?;
     ts.consume_line_end();
