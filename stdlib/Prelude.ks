@@ -1,5 +1,5 @@
 module Prelude where
-  export print, readLine, getLine, putStr, putStrLn, id, const, map, filter, concat, append, Maybe, Either, maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export print, readLine, getLine, putStr, putStrLn, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   print = stdoutWrite
 

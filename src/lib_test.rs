@@ -142,7 +142,7 @@ fn parser_module_import_export() {
     assert_eq!(m.name.as_deref(), Some("Main"));
     assert_eq!(m.items.len(), 5);
 
-    use crate::ast::Item;
+    use crate::ast::{ExportSpec, Item};
 
     match &m.items[0] {
         Item::Import(i) => {
@@ -161,7 +161,13 @@ fn parser_module_import_export() {
     }
 
     match &m.items[2] {
-        Item::Export(e) => assert_eq!(e.names, vec!["x", "y"]),
+        Item::Export(e) => assert_eq!(
+            e.specs,
+            vec![
+                ExportSpec::Name("x".to_string()),
+                ExportSpec::Name("y".to_string())
+            ]
+        ),
         _ => panic!("expected export"),
     }
 }

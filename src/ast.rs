@@ -22,8 +22,23 @@ pub struct ImportDecl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportSpec {
+    Name(String),
+    Type {
+        name: String,
+        ctors: ExportCtors,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportCtors {
+    All,
+    Some(Vec<String>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportDecl {
-    pub names: Vec<String>,
+    pub specs: Vec<ExportSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2720,15 +2720,56 @@ fn import_items(module: &ast::Module) -> Vec<ast::Item> {
         .collect()
 }
 
-fn module_exported_names(module: &ast::Module) -> HashSet<String> {
+fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
     let mut exports = HashSet::new();
+    let mut has_export_decl = false;
+
     for it in &module.items {
-        if let ast::Item::Export(ed) = it {
-            exports.extend(ed.names.iter().cloned());
+        let ast::Item::Export(ed) = it else {
+            continue;
+        };
+        has_export_decl = true;
+        for spec in &ed.specs {
+            match spec {
+                ast::ExportSpec::Name(n) => {
+                    exports.insert(n.clone());
+                }
+                ast::ExportSpec::Type { name, ctors } => {
+                    exports.insert(name.clone());
+
+                    let dd = module.items.iter().find_map(|it| match it {
+                        ast::Item::DataDecl(d) if d.name == *name => Some(d),
+                        _ => None,
+                    });
+                    let Some(dd) = dd else {
+                        return Err(Error::msg(format!(
+                            "export list references unknown data type: {name}"
+                        )));
+                    };
+
+                    match ctors {
+                        ast::ExportCtors::All => {
+                            exports.extend(dd.ctors.iter().map(|c| c.name.clone()));
+                        }
+                        ast::ExportCtors::Some(cs) => {
+                            let known: HashSet<&str> =
+                                dd.ctors.iter().map(|c| c.name.as_str()).collect();
+                            for c in cs {
+                                if !known.contains(c.as_str()) {
+                                    return Err(Error::msg(format!(
+                                        "export list references unknown constructor: {name}({c})"
+                                    )));
+                                }
+                                exports.insert(c.clone());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
-    if exports.is_empty() {
+    if !has_export_decl {
         let mut all = HashSet::new();
         for it in &module.items {
             match it {
@@ -2743,20 +2784,10 @@ fn module_exported_names(module: &ast::Module) -> HashSet<String> {
                 ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
             }
         }
-        return all;
+        return Ok(all);
     }
 
-    // If a data type name is exported, also export its constructors.
-    for it in &module.items {
-        let ast::Item::DataDecl(d) = it else {
-            continue;
-        };
-        if exports.contains(&d.name) {
-            exports.extend(d.ctors.iter().map(|c| c.name.clone()));
-        }
-    }
-
-    exports
+    Ok(exports)
 }
 
 fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result<Vec<ast::Item>> {
@@ -2768,8 +2799,10 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
 
     let qual = decl.as_name.as_deref().unwrap_or(&decl.module);
 
-    // Always provide qualifier names.
-    let mut out = qualify_items(module, qual)?;
+    let exports = module_exported_names(module)?;
+
+    // Always provide qualifier names (but only for exported items).
+    let mut out = qualify_items(module, qual, &exports)?;
 
     // Qualified-only imports do not bring unqualified names.
     if decl.qualified {
@@ -2777,7 +2810,6 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
     }
 
     // Bring unqualified exports as simple forwarders: `x = QUAL.x`.
-    let exports = module_exported_names(module);
 
     let mut values = HashSet::new();
     let mut type_aliases = HashMap::new();
@@ -2823,7 +2855,7 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
     Ok(out)
 }
 
-fn qualify_items(module: &ast::Module, qual: &str) -> Result<Vec<ast::Item>> {
+fn qualify_items(module: &ast::Module, qual: &str, exports: &HashSet<String>) -> Result<Vec<ast::Item>> {
     let mut values = HashSet::new();
     let mut types = HashSet::new();
     let mut ctors = HashSet::new();
@@ -2842,17 +2874,28 @@ fn qualify_items(module: &ast::Module, qual: &str) -> Result<Vec<ast::Item>> {
         }
     }
 
+    let priv_qual = format!("{qual}$p");
+
     let val_map: HashMap<String, String> = values
         .iter()
-        .map(|n| (n.clone(), format!("{qual}.{n}")))
+        .map(|n| {
+            let q = if exports.contains(n) { qual } else { &priv_qual };
+            (n.clone(), format!("{q}.{n}"))
+        })
         .collect();
     let type_map: HashMap<String, String> = types
         .iter()
-        .map(|n| (n.clone(), format!("{qual}.{n}")))
+        .map(|n| {
+            let q = if exports.contains(n) { qual } else { &priv_qual };
+            (n.clone(), format!("{q}.{n}"))
+        })
         .collect();
     let ctor_map: HashMap<String, String> = ctors
         .iter()
-        .map(|n| (n.clone(), format!("{qual}.{n}")))
+        .map(|n| {
+            let q = if exports.contains(n) { qual } else { &priv_qual };
+            (n.clone(), format!("{q}.{n}"))
+        })
         .collect();
 
     import_items(module)
@@ -3748,7 +3791,7 @@ mod inference_tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe\n  data Maybe a = Nothing | Just a\n",
+            "module A where\n  export Maybe(..)\n  data Maybe a = Nothing | Just a\n",
         )
         .unwrap();
 
@@ -3760,6 +3803,71 @@ mod inference_tests {
         .unwrap();
 
         let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_imports_ctor_subset() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_imports_ctor_subset_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Maybe(Just)\n  data Maybe a = Nothing | Just a\n",
+        )
+        .unwrap();
+
+        let ok = dir.join("Ok.ks");
+        std::fs::write(
+            &ok,
+            "module Ok where\n  import A\n  x = Just 1\n  main = IO ()\n",
+        )
+        .unwrap();
+        let _tm = typecheck_file(&ok).unwrap();
+
+        let bad = dir.join("Bad.ks");
+        std::fs::write(
+            &bad,
+            "module Bad where\n  import A\n  x = case Just 1 of\n    Nothing -> 0\n    Just n -> n\n  main = IO ()\n",
+        )
+        .unwrap();
+        let e = typecheck_file(&bad).unwrap_err();
+        assert!(format!("{e}").contains("unknown constructor"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_imports_ctor_subset_qualified_cannot_bypass() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_imports_ctor_subset_qual_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Maybe(Just)\n  data Maybe a = Nothing | Just a\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import qualified A\n  x = A.Nothing\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let e = typecheck_file(&main).unwrap_err();
+        assert!(format!("{e}").contains("unknown constructor"));
+
         let _ = std::fs::remove_dir_all(dir);
     }
 

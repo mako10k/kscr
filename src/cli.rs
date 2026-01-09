@@ -87,25 +87,62 @@ where
     }
 }
 
-fn exported_names(module: &ast::Module) -> Option<HashSet<String>> {
-    let mut out = HashSet::new();
+fn exported_specs(module: &ast::Module) -> Option<Vec<ast::ExportSpec>> {
+    let mut out = Vec::new();
     for it in &module.items {
         if let ast::Item::Export(ed) = it {
-            out.extend(ed.names.iter().cloned());
+            out.extend(ed.specs.iter().cloned());
         }
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
+    if out.is_empty() { None } else { Some(out) }
+}
+
+fn export_spec_to_string(s: &ast::ExportSpec) -> String {
+    match s {
+        ast::ExportSpec::Name(n) => n.clone(),
+        ast::ExportSpec::Type { name, ctors } => match ctors {
+            ast::ExportCtors::All => format!("{name}(..)"),
+            ast::ExportCtors::Some(cs) => format!("{name}({})", cs.join(", ")),
+        },
     }
+}
+
+fn exported_name_set(module: &ast::Module) -> Option<HashSet<String>> {
+    let specs = exported_specs(module)?;
+
+    let mut out = HashSet::new();
+    for s in specs {
+        match s {
+            ast::ExportSpec::Name(n) => {
+                out.insert(n);
+            }
+            ast::ExportSpec::Type { name, ctors } => {
+                out.insert(name.clone());
+                match ctors {
+                    ast::ExportCtors::All => {
+                        for it in &module.items {
+                            if let ast::Item::DataDecl(d) = it {
+                                if d.name == name {
+                                    out.extend(d.ctors.iter().map(|c| c.name.clone()));
+                                }
+                            }
+                        }
+                    }
+                    ast::ExportCtors::Some(cs) => {
+                        out.extend(cs);
+                    }
+                }
+            }
+        }
+    }
+    Some(out)
 }
 
 fn filter_inferred_by_exports(
     module: &ast::Module,
     inferred: std::collections::HashMap<String, types::Scheme>,
 ) -> Vec<(String, types::Scheme)> {
-    match exported_names(module) {
+    match exported_name_set(module) {
         None => inferred.into_iter().collect(),
         Some(exports) => inferred
             .into_iter()
@@ -125,11 +162,11 @@ fn render_typecheck_report(
         out.push_str(&format!("module {name}\n"));
     }
 
-    if let Some(exports) = exported_names(module) {
-        let mut names: Vec<_> = exports.into_iter().collect();
-        names.sort();
+    if let Some(specs) = exported_specs(module) {
+        let mut specs: Vec<_> = specs.into_iter().map(|s| export_spec_to_string(&s)).collect();
+        specs.sort();
         out.push_str("export ");
-        out.push_str(&names.join(", "));
+        out.push_str(&specs.join(", "));
         out.push('\n');
     }
 
@@ -357,7 +394,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe\n  data Maybe a = Nothing | Just a\n",
+            "module A where\n  export Maybe(..)\n  data Maybe a = Nothing | Just a\n",
         )
         .unwrap();
 
@@ -455,7 +492,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe, values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing, Just 3]\n",
+            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing, Just 3]\n",
         )
         .unwrap();
 
@@ -488,7 +525,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe, values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing, Just 3]\n",
+            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing, Just 3]\n",
         )
         .unwrap();
 
@@ -934,7 +971,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe, values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing]\n",
+            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing]\n",
         )
         .unwrap();
 
@@ -968,7 +1005,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe, values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing]\n",
+            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing]\n",
         )
         .unwrap();
 

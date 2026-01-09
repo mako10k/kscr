@@ -335,14 +335,48 @@ fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwExport)?;
 
-    let mut names = Vec::new();
-    names.push(ts.expect_ident()?);
-    while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+    fn parse_export_spec(ts: &mut TokenStream) -> Result<ast::ExportSpec> {
+        let name = ts.expect_ident()?;
+
+        if !matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+            return Ok(ast::ExportSpec::Name(name));
+        }
+
         ts.bump();
-        names.push(ts.expect_ident()?);
+
+        let spec = if matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
+            ts.expect(TokenKind::Dot)?;
+            ts.expect(TokenKind::Dot)?;
+            ts.expect(TokenKind::RParen)?;
+            ast::ExportSpec::Type {
+                name,
+                ctors: ast::ExportCtors::All,
+            }
+        } else {
+            let mut ctors = Vec::new();
+            ctors.push(ts.expect_ident()?);
+            while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+                ts.bump();
+                ctors.push(ts.expect_ident()?);
+            }
+            ts.expect(TokenKind::RParen)?;
+            ast::ExportSpec::Type {
+                name,
+                ctors: ast::ExportCtors::Some(ctors),
+            }
+        };
+
+        Ok(spec)
     }
 
-    Ok(ast::Item::Export(ast::ExportDecl { names }))
+    let mut specs = Vec::new();
+    specs.push(parse_export_spec(ts)?);
+    while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        ts.bump();
+        specs.push(parse_export_spec(ts)?);
+    }
+
+    Ok(ast::Item::Export(ast::ExportDecl { specs }))
 }
 
 fn parse_fixity_op(ts: &mut TokenStream) -> Result<String> {
