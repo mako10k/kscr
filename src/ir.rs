@@ -614,6 +614,10 @@ pub enum Value {
     BuiltinCatch,
     BuiltinCatch1(Box<Value>),
     BuiltinTry,
+    BuiltinFfiAddI32,
+    BuiltinFfiAddI32_1(Box<Value>),
+    BuiltinFfiAddF32,
+    BuiltinFfiAddF32_1(Box<Value>),
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -811,6 +815,14 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "try" {
         return Ok(Value::BuiltinTry);
+    }
+
+    if name == "ffiAddI32" {
+        return Ok(Value::BuiltinFfiAddI32);
+    }
+
+    if name == "ffiAddF32" {
+        return Ok(Value::BuiltinFfiAddF32);
     }
 
     if name == "stdinReadLine" {
@@ -1151,6 +1163,10 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
             };
             Ok(Value::IoAction(Box::new(IoAction::Try { action: act })))
         }
+        Value::BuiltinFfiAddI32 => Ok(Value::BuiltinFfiAddI32_1(Box::new(arg))),
+        Value::BuiltinFfiAddI32_1(a) => ffi_add_i32(g, *a, arg),
+        Value::BuiltinFfiAddF32 => Ok(Value::BuiltinFfiAddF32_1(Box::new(arg))),
+        Value::BuiltinFfiAddF32_1(a) => ffi_add_f32(g, *a, arg),
         Value::Closure {
             mut params,
             body,
@@ -1263,6 +1279,48 @@ fn checked_cast(g: &Globals, v: Value, target: CastTarget) -> Result<Value> {
             Ok(Value::Float64(x))
         }
     }
+}
+
+fn to_i32_checked(n: i64, ctx: &str) -> Result<i32> {
+    if n < i32::MIN as i64 || n > i32::MAX as i64 {
+        return Err(Error::msg(format!("{ctx}: integer out of range for i32")));
+    }
+    Ok(n as i32)
+}
+
+fn to_f32_checked(x: f64, ctx: &str) -> Result<f32> {
+    let y = x as f32;
+    if y.is_infinite() && x.is_finite() {
+        return Err(Error::msg(format!("{ctx}: float overflow for f32")));
+    }
+    Ok(y)
+}
+
+fn ffi_add_i32(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else { return Err(Error::msg("ffiAddI32 expects Integer")) };
+    let Value::Integer(b) = b else { return Err(Error::msg("ffiAddI32 expects Integer")) };
+    let a = to_i32_checked(a, "ffiAddI32")?;
+    let b = to_i32_checked(b, "ffiAddI32")?;
+    let out = a
+        .checked_add(b)
+        .ok_or_else(|| Error::msg("ffiAddI32: i32 overflow"))?;
+    Ok(Value::Integer(out as i64))
+}
+
+fn ffi_add_f32(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Float64(a) = a else { return Err(Error::msg("ffiAddF32 expects Float64")) };
+    let Value::Float64(b) = b else { return Err(Error::msg("ffiAddF32 expects Float64")) };
+    let a = to_f32_checked(a, "ffiAddF32")?;
+    let b = to_f32_checked(b, "ffiAddF32")?;
+    let out = a + b;
+    if out.is_infinite() {
+        return Err(Error::msg("ffiAddF32: float overflow for f32"));
+    }
+    Ok(Value::Float64(out as f64))
 }
 
 fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {

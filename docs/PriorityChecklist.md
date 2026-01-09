@@ -51,6 +51,18 @@ Status: 完了（MVP）
 - [x] 注釈境界: `(:: i32/i64/f32/f64)` を checked cast としてIRに残し、失敗は実行時エラー
 - [ ] 追加の境界(FFIなど)は後続
 
+## P6 — Minimal FFI boundary (unsafe-free scaffold)
+目的: 本物のC ABI呼び出しは `unsafe` を要求しゲートに反するため、まずは **FFI境界の振る舞い（引数/戻りのchecked cast）** を builtin でスモークできる形にする。
+範囲:
+- `ffiAddI32 :: i32 -> i32 -> i32` など、backend numeric types を要求する builtin を追加
+- 呼び出し境界で range/overflow を検査し、失敗時は runtime error
+- テスト: 正常系・引数out-of-range・演算overflow
+
+Status: 完了（MVP）
+- [x] `ffiAddI32`/`ffiAddF32` builtin を追加
+- [x] 呼び出し境界で checked range/overflow
+- [x] スモークテスト追加
+
 ---
 
 ## Notes

@@ -1381,6 +1381,39 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // P6: unsafe-free "FFI" boundary scaffolding.
+    // ffiAddI32 :: i32 -> i32 -> i32
+    env.insert(
+        "ffiAddI32".to_string(),
+        Scheme {
+            vars: vec![],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("i32".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("i32".to_string())),
+                    Box::new(Ty::Con("i32".to_string())),
+                )),
+            ),
+        },
+    );
+
+    // ffiAddF32 :: f32 -> f32 -> f32
+    env.insert(
+        "ffiAddF32".to_string(),
+        Scheme {
+            vars: vec![],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("f32".to_string())),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Con("f32".to_string())),
+                    Box::new(Ty::Con("f32".to_string())),
+                )),
+            ),
+        },
+    );
+
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
             continue;
