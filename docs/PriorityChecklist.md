@@ -96,8 +96,16 @@ Status: Done
 - IR/ランタイム: 辞書表現（レコード）と呼び出し変換
 - 互換: Phase 1/2 の deriving は、最終的には `instance Show (T a)` などへ desugar できる形にする
 
-Status: Done (Phase 1)
+Status:
 - [x] Phase 1: deriving Show の実装 + テスト + ゲート通過（commit: `e72ce94`）
+- [x] Phase 2: deriving Eq の実装 + テスト（commit: `86066b8`）
+  - ✅ `deriving Eq` および `deriving (Eq, Show)` 構文サポート
+  - ✅ Eq 制約の解決と辞書渡し
+  - ✅ `(==)` および `(/=)` の実装
+  - ✅ 構造的 Eq（primitive, lists, tuples, records, data types）
+- [ ] Phase 3+: `class` / `instance` 構文（将来）
+
+**現状**: Phase 2 完了。Show と Eq の両方が辞書渡しで実装済み。
 
 ## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
 目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
