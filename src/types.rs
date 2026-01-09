@@ -2659,12 +2659,19 @@ impl ModuleLoader {
             };
 
             let local = dir.join(format!("{}.ks", id.module));
+            let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+            let stdlib = stdlib.join(format!("{}.ks", id.module));
+
             let p = std::fs::canonicalize(&local)
-                .or_else(|_| {
-                    let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-                    std::fs::canonicalize(stdlib.join(format!("{}.ks", id.module)))
-                })
-                .map_err(|_| Error::msg(format!("cannot find module file for import {}", id.module)))?;
+                .or_else(|_| std::fs::canonicalize(&stdlib))
+                .map_err(|_| {
+                    Error::msg(format!(
+                        "cannot find module file for import {} (tried: {}, {})",
+                        id.module,
+                        local.display(),
+                        stdlib.display()
+                    ))
+                })?;
 
             if let Some(pos) = self.stack.iter().position(|x| x == &p) {
                 let mut chain: Vec<String> = self.stack[pos..]
@@ -3952,6 +3959,84 @@ mod inference_tests {
 
         let e = typecheck_file(&a).unwrap_err();
         assert!(format!("{e}").contains("cyclic imports"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_import_search_prefers_local_over_stdlib() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_import_search_local_over_stdlib_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Shadow stdlib Prelude with a local Prelude.
+        let prelude = dir.join("Prelude.ks");
+        std::fs::write(
+            &prelude,
+            "module Prelude where\n  export localOnly\n  localOnly = 1\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import Prelude\n  y = localOnly\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_import_errors_show_tried_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_import_tried_paths_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import Missing\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let e = typecheck_file(&main).unwrap_err();
+        let msg = format!("{e}");
+        assert!(msg.contains("cannot find module file for import Missing"));
+        assert!(msg.contains("tried:"));
+        assert!(msg.contains("stdlib"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_rejects_module_name_mismatch() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_module_name_mismatch_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module Wrong where\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  y = A.x\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let e = typecheck_file(&main).unwrap_err();
+        assert!(format!("{e}").contains("module name mismatch: import A"));
 
         let _ = std::fs::remove_dir_all(dir);
     }

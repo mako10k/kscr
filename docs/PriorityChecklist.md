@@ -54,7 +54,10 @@ Recommended order:
 
 - [x] **P13C: import名前解決の診断強化**（同名衝突の説明、候補提示、unknown qualifier で許容qualifier表示 など）
   - done: better conflict/qualifier errors + tests (commit: `bac0b11`)
-- [ ] **P13D: import探索の仕様固定**（探索順/モジュール名↔パスのルール化 + スモーク）
+- [x] **P13D: import探索の仕様固定**（探索順/モジュール名↔パスのルール化 + スモーク）
+  - rule: try `<importer_dir>/<Module>.ks` then `<repo>/stdlib/<Module>.ks`; on miss, error shows tried paths
+  - rule: imported module must declare `module <Module> where` (mismatch is error)
+  - tests: local-over-stdlib shadowing, tried-paths in error, module name mismatch (commit: TBD)
 - [ ] **P13A: import文の表面構文をHaskell寄せ**（`import qualified A as OM` 等）
 - [ ] **P13B: exportの粒度強化**（例: `export Maybe(..)` 等）
 
