@@ -502,19 +502,7 @@ fn ir_run_main_int_bool_to_string() {
 }
 
 #[test]
-#[cfg(not(feature = "unsafe_bigint"))]
-fn ir_run_main_integer_literal_overflow_is_error() {
-    let src = "main = case 999999999999999999999999999999 of\n  0 -> IO ()\n";
-    let m = crate::parser::parse_module(src).unwrap();
-    let tm = crate::types::typecheck(m).unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let err = crate::ir::run_main(&ir).unwrap_err();
-    assert!(err.to_string().contains("invalid integer"));
-}
-
-#[test]
-#[cfg(feature = "unsafe_bigint")]
-fn ir_run_main_bigint_large_integer_ok() {
+fn ir_run_main_large_integer_ok() {
     let src = "main = case (999999999999999999999999999999 + 1) of\n  1000000000000000000000000000000 -> IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
@@ -541,6 +529,36 @@ fn ir_run_main_checked_cast_i32_overflow_is_error() {
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
     let err = crate::ir::run_main(&ir).unwrap_err();
     assert!(err.to_string().contains("integer out of range for i32"));
+}
+
+#[test]
+fn ir_run_main_checked_cast_i32_negative_overflow_is_error() {
+    let src = "main = case ((0 - 2147483649) :: i32) of\n  0 -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let err = crate::ir::run_main(&ir).unwrap_err();
+    assert!(err.to_string().contains("integer out of range for i32"));
+}
+
+#[test]
+fn ir_run_main_integer_div_trunc_toward_zero() {
+    let src = "main = case (((0 - 7) / 2) == (0 - 3)) of\n  True -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_integer_div_round_trip_big() {
+    let src = "a = 100000000000000000000\nmain = case (((a * a) / a) == a) of\n  True -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]
@@ -581,6 +599,17 @@ fn ir_run_main_ffi_add_f32_overflow_is_error() {
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
     let err = crate::ir::run_main(&ir).unwrap_err();
     assert!(err.to_string().contains("ffiAddF32"));
+}
+
+#[cfg(feature = "unsafe_ffi")]
+#[test]
+fn ir_run_main_ffi_puts_ok() {
+    let src = "main = do\n  ffiPuts \"hello from kscr\\n\"\n  IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]

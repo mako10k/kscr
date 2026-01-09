@@ -1414,6 +1414,24 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         },
     );
 
+    // P9: real C ABI FFI (unsafe isolated; feature-gated).
+    // ffiPuts :: String -> IO i32
+    #[cfg(feature = "unsafe_ffi")]
+    env.insert(
+        "ffiPuts".to_string(),
+        Scheme {
+            vars: vec![],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Con("String".to_string())),
+                Box::new(Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![Ty::Con("i32".to_string())],
+                }),
+            ),
+        },
+    );
+
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
             continue;

@@ -75,13 +75,65 @@ Status: 完了（MVP）
 - [x] `KSCR_DEBUG_UNSAFE=1` で 1回だけタグ出力
 
 ## P8 — Optional BigInt Integer backend
-目的: `Integer` を任意精度に戻したい/検証したい場合に、unsafe依存を **feature flag配下** に隔離した上で利用できるようにする。
+目的: `Integer` のセマンティクスは常に任意精度（自作safe backend）で揃えつつ、必要なら `num-bigint` を **feature flag配下** で使えるようにする（性能/検証用途）。
 範囲:
-- `--features unsafe_bigint` のとき `Integer` を `BigInt` として解釈
+- デフォルト: 自作の可変長Integer backend（unsafe無し）
+- `--features unsafe_bigint`: `num-bigint` backend（optional dep / 別crate隔離）
 - 既存の境界（`:: i32/i64` や ffiAddI32 等）で range check が効くこと
-- テスト: 巨大整数の加算が通ること（通常ビルドではエラーになること）
 
 Status: 完了（MVP）
+
+## P9 — Real C ABI FFI (unsafe isolated)
+目的: 本物のC ABI呼び出しを **feature flag配下でunsafe隔離** しつつ、境界の振る舞い（String→C string、戻り値の型/範囲）をMVPとして確認できるようにする。
+
+範囲(MVP):
+- `--features unsafe_ffi` のときのみ有効な builtin を追加
+  - 例: `ffiPuts :: String -> IO i32`（C標準ライブラリの `puts` を呼ぶ）
+- 文字列境界: interior NUL はエラー
+- `KSCR_DEBUG_UNSAFE=1` で `unsafe used: ffiPuts` を観測可能に
+- テスト: feature付きで `ffiPuts` が実行できるスモーク
+
+注意:
+- `cfg(feature = "unsafe_ffi")` だけだと `cargo geiger` が unsafe 構文を検出してしまうため、**unsafeは別crate（optional dep）に隔離する** 方針で進める。
+- これにより、デフォルトビルドの必須ゲート（`cargo geiger`）は維持しつつ、`--features unsafe_ffi` 時だけ unsafe を含む依存を有効化できる。
+
+Status: 完了（MVP）
+- [x] `ffiPuts` を `--features unsafe_ffi` のときのみ有効な builtin として追加
+- [x] unsafe は別crate（optional dep） `kscr_unsafe_ffi` に隔離
+- [x] feature付きスモークテスト追加
+
+運用（ゲート）:
+- デフォルト必須: `cargo test && cargo clippy -- -D warnings && cargo geiger && cargo +nightly udeps`
+- 任意（unsafe_ffi有効時）: `cargo test --features unsafe_ffi` / `cargo geiger --features unsafe_ffi`
+
+## P10 — Unsafe features gate policy
+目的: `unsafe_ffi` / `unsafe_bigint` など **unsafeを含みうるfeature** を、CI/運用でどう検証するかを固定し、破綻しないルールにする。
+
+方針(MVP):
+- デフォルトビルド（feature無し）:
+  - `kscr` 本体は `#![forbid(unsafe_code)]` を付与し、unsafeはそもそも書けない
+  - 必須ゲート: `cargo test && cargo clippy -- -D warnings && cargo geiger && cargo +nightly udeps`
+- unsafe feature（例: `unsafe_ffi` / `unsafe_bigint`）:
+  - unsafeは別crate（optional dep）に隔離
+  - 別ジョブで `cargo test --features ...` を回す
+  - `cargo geiger --features ...` は「許容（ただし対象crateが増えない/件数が増えない）」を監視
+
+Status: 完了（MVP）
+- [x] 方針決定（上記）
+- [ ] CI反映（このリポジトリのCI導入/更新が必要なら別タスク）
+
+## P11 — Isolate BigInt backend into subcrate
+目的: `unsafe_bigint`（任意精度Integer）を別crate（optional dep）に隔離し、`kscr` 本体から `num-bigint` 依存を排除してデフォルトゲートを安定させる。
+
+範囲(MVP):
+- `crates/kscr_unsafe_bigint` を追加（`num-bigint` 依存をここに閉じ込める）
+- `--features unsafe_bigint` は `dep:kscr_unsafe_bigint` を有効化する
+- `src/ir.rs` から `num_bigint::...` 参照を削除し、subcrate API 経由にする
+
+Status: 完了（MVP）
+- [x] subcrate 追加
+- [x] feature配線
+- [x] 既存テストが `--features unsafe_bigint` で通る
 
 ## Notes
 - 以後「P5を実装」と言われたら **このファイルのP5** を実装する。

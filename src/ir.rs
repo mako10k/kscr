@@ -3,9 +3,9 @@
 use crate::{ast, error::Error, Result};
 
 #[cfg(feature = "unsafe_bigint")]
-type Integer = num_bigint::BigInt;
+type Integer = kscr_unsafe_bigint::Integer;
 #[cfg(not(feature = "unsafe_bigint"))]
-type Integer = i64;
+type Integer = crate::safe_bigint::Integer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrModule {
@@ -544,6 +544,9 @@ pub enum IoAction {
     StdoutWrite(String),
     StdinReadLine,
 
+    #[cfg(feature = "unsafe_ffi")]
+    FfiPuts(String),
+
     // Exceptions via IO (MVP: String exceptions)
     Throw(String),
     Catch {
@@ -623,6 +626,8 @@ pub enum Value {
     BuiltinFfiAddI32_1(Box<Value>),
     BuiltinFfiAddF32,
     BuiltinFfiAddF32_1(Box<Value>),
+    #[cfg(feature = "unsafe_ffi")]
+    BuiltinFfiPuts,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -828,6 +833,11 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
 
     if name == "ffiAddF32" {
         return Ok(Value::BuiltinFfiAddF32);
+    }
+
+    if name == "ffiPuts" {
+        #[cfg(feature = "unsafe_ffi")]
+        return Ok(Value::BuiltinFfiPuts);
     }
 
     if name == "stdinReadLine" {
@@ -1045,6 +1055,14 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
             Ok(IoOutcome::Value(Value::String(s)))
         }
 
+        #[cfg(feature = "unsafe_ffi")]
+        IoAction::FfiPuts(s) => {
+            crate::debug::unsafe_used("ffiPuts");
+            let rc = kscr_unsafe_ffi::puts_checked(&s)
+                .map_err(|_| Error::msg("ffiPuts: string contains NUL"))?;
+            Ok(IoOutcome::Value(Value::Integer(int_from_i64(rc as i64))))
+        }
+
         IoAction::Throw(e) => Ok(IoOutcome::Thrown(e)),
         IoAction::Catch { action, handler } => match run_io(g, *action)? {
             IoOutcome::Value(v) => Ok(IoOutcome::Value(v)),
@@ -1172,6 +1190,14 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinFfiAddI32_1(a) => ffi_add_i32(g, *a, arg),
         Value::BuiltinFfiAddF32 => Ok(Value::BuiltinFfiAddF32_1(Box::new(arg))),
         Value::BuiltinFfiAddF32_1(a) => ffi_add_f32(g, *a, arg),
+        #[cfg(feature = "unsafe_ffi")]
+        Value::BuiltinFfiPuts => {
+            let arg = force_value(g, arg)?;
+            let Value::String(s) = arg else {
+                return Err(Error::msg("ffiPuts expects String"));
+            };
+            Ok(Value::IoAction(Box::new(IoAction::FfiPuts(s))))
+        }
         Value::Closure {
             mut params,
             body,
@@ -1239,21 +1265,15 @@ fn concat_map(g: &Globals, f: Value, xs: Value) -> Result<Value> {
     Ok(vec_to_list(out))
 }
 
-#[cfg(not(feature = "unsafe_bigint"))]
-fn parse_i64(s: &str) -> Result<i64> {
-    s.parse::<i64>()
-        .map_err(|_| Error::msg(format!("invalid integer: {s}")))
-}
-
 fn int_from_i64(n: i64) -> Integer {
     #[cfg(feature = "unsafe_bigint")]
     {
-        num_bigint::BigInt::from(n)
+        kscr_unsafe_bigint::int_from_i64(n)
     }
 
     #[cfg(not(feature = "unsafe_bigint"))]
     {
-        n
+        crate::safe_bigint::int_from_i64(n)
     }
 }
 
@@ -1261,25 +1281,26 @@ fn parse_integer(s: &str) -> Result<Integer> {
     #[cfg(feature = "unsafe_bigint")]
     {
         crate::debug::unsafe_used("bigint");
-        num_bigint::BigInt::parse_bytes(s.as_bytes(), 10)
-            .ok_or_else(|| Error::msg(format!("invalid integer: {s}")))
+        kscr_unsafe_bigint::parse_integer(s)
+            .map_err(|_| Error::msg(format!("invalid integer: {s}")))
     }
 
     #[cfg(not(feature = "unsafe_bigint"))]
     {
-        parse_i64(s)
+        crate::safe_bigint::parse_integer(s)
+            .map_err(|_| Error::msg(format!("invalid integer: {s}")))
     }
 }
 
 fn int_is_zero(n: &Integer) -> bool {
     #[cfg(feature = "unsafe_bigint")]
     {
-        n == &num_bigint::BigInt::from(0)
+        kscr_unsafe_bigint::is_zero(n)
     }
 
     #[cfg(not(feature = "unsafe_bigint"))]
     {
-        *n == 0
+        crate::safe_bigint::is_zero(n)
     }
 }
 
@@ -1296,18 +1317,16 @@ fn checked_cast(g: &Globals, v: Value, target: CastTarget) -> Result<Value> {
                 return Err(Error::msg("checked cast to i32 expects Integer"));
             };
 
-            #[cfg(not(feature = "unsafe_bigint"))]
+            #[cfg(feature = "unsafe_bigint")]
             {
-                if n < i32::MIN as i64 || n > i32::MAX as i64 {
+                if !kscr_unsafe_bigint::in_i32_range(&n) {
                     return Err(Error::msg("integer out of range for i32"));
                 }
             }
 
-            #[cfg(feature = "unsafe_bigint")]
+            #[cfg(not(feature = "unsafe_bigint"))]
             {
-                let min = num_bigint::BigInt::from(i32::MIN);
-                let max = num_bigint::BigInt::from(i32::MAX);
-                if n < min || n > max {
+                if !crate::safe_bigint::in_i32_range(&n) {
                     return Err(Error::msg("integer out of range for i32"));
                 }
             }
@@ -1321,9 +1340,14 @@ fn checked_cast(g: &Globals, v: Value, target: CastTarget) -> Result<Value> {
 
             #[cfg(feature = "unsafe_bigint")]
             {
-                let min = num_bigint::BigInt::from(i64::MIN);
-                let max = num_bigint::BigInt::from(i64::MAX);
-                if n < min || n > max {
+                if !kscr_unsafe_bigint::in_i64_range(&n) {
+                    return Err(Error::msg("integer out of range for i64"));
+                }
+            }
+
+            #[cfg(not(feature = "unsafe_bigint"))]
+            {
+                if !crate::safe_bigint::in_i64_range(&n) {
                     return Err(Error::msg("integer out of range for i64"));
                 }
             }
@@ -1350,25 +1374,20 @@ fn checked_cast(g: &Globals, v: Value, target: CastTarget) -> Result<Value> {
 }
 
 fn to_i32_checked(n: Integer, ctx: &str) -> Result<i32> {
-    #[cfg(not(feature = "unsafe_bigint"))]
-    {
-        if n < i32::MIN as i64 || n > i32::MAX as i64 {
-            return Err(Error::msg(format!("{ctx}: integer out of range for i32")));
-        }
-        Ok(n as i32)
-    }
-
     #[cfg(feature = "unsafe_bigint")]
     {
-        let min = num_bigint::BigInt::from(i32::MIN);
-        let max = num_bigint::BigInt::from(i32::MAX);
-        if n < min || n > max {
+        if !kscr_unsafe_bigint::in_i32_range(&n) {
             return Err(Error::msg(format!("{ctx}: integer out of range for i32")));
         }
-        Ok(n
-            .to_string()
-            .parse::<i32>()
-            .expect("range-checked BigInt should parse to i32"))
+        Ok(kscr_unsafe_bigint::to_i32_range_checked(n))
+    }
+
+    #[cfg(not(feature = "unsafe_bigint"))]
+    {
+        if !crate::safe_bigint::in_i32_range(&n) {
+            return Err(Error::msg(format!("{ctx}: integer out of range for i32")));
+        }
+        Ok(crate::safe_bigint::to_i32_range_checked(n))
     }
 }
 
@@ -1419,12 +1438,6 @@ fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("+ expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("+ expects Integer")) };
 
-    #[cfg(not(feature = "unsafe_bigint"))]
-    let out = a
-        .checked_add(b)
-        .ok_or_else(|| Error::msg("integer overflow"))?;
-
-    #[cfg(feature = "unsafe_bigint")]
     let out = a + b;
 
     Ok(Value::Integer(out))
@@ -1436,12 +1449,6 @@ fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("- expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("- expects Integer")) };
 
-    #[cfg(not(feature = "unsafe_bigint"))]
-    let out = a
-        .checked_sub(b)
-        .ok_or_else(|| Error::msg("integer overflow"))?;
-
-    #[cfg(feature = "unsafe_bigint")]
     let out = a - b;
 
     Ok(Value::Integer(out))
@@ -1453,12 +1460,6 @@ fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let Value::Integer(a) = a else { return Err(Error::msg("* expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("* expects Integer")) };
 
-    #[cfg(not(feature = "unsafe_bigint"))]
-    let out = a
-        .checked_mul(b)
-        .ok_or_else(|| Error::msg("integer overflow"))?;
-
-    #[cfg(feature = "unsafe_bigint")]
     let out = a * b;
 
     Ok(Value::Integer(out))
@@ -1474,10 +1475,6 @@ fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
         return Err(Error::msg("division by zero"));
     }
 
-    #[cfg(not(feature = "unsafe_bigint"))]
-    let out = a.checked_div(b).ok_or_else(|| Error::msg("integer overflow"))?;
-
-    #[cfg(feature = "unsafe_bigint")]
     let out = a / b;
 
     Ok(Value::Integer(out))
