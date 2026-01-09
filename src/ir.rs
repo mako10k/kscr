@@ -1188,7 +1188,9 @@ fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("+ expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("+ expects Integer")) };
-    let out = parse_i64(&a)? + parse_i64(&b)?;
+    let out = parse_i64(&a)?
+        .checked_add(parse_i64(&b)?)
+        .ok_or_else(|| Error::msg("integer overflow"))?;
     Ok(Value::Integer(out.to_string()))
 }
 
@@ -1197,7 +1199,9 @@ fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("- expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("- expects Integer")) };
-    let out = parse_i64(&a)? - parse_i64(&b)?;
+    let out = parse_i64(&a)?
+        .checked_sub(parse_i64(&b)?)
+        .ok_or_else(|| Error::msg("integer overflow"))?;
     Ok(Value::Integer(out.to_string()))
 }
 
@@ -1206,7 +1210,9 @@ fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("* expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("* expects Integer")) };
-    let out = parse_i64(&a)? * parse_i64(&b)?;
+    let out = parse_i64(&a)?
+        .checked_mul(parse_i64(&b)?)
+        .ok_or_else(|| Error::msg("integer overflow"))?;
     Ok(Value::Integer(out.to_string()))
 }
 
@@ -1215,11 +1221,16 @@ fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let b = force_value(g, b)?;
     let Value::Integer(a) = a else { return Err(Error::msg("/ expects Integer")) };
     let Value::Integer(b) = b else { return Err(Error::msg("/ expects Integer")) };
+
     let b = parse_i64(&b)?;
     if b == 0 {
         return Err(Error::msg("division by zero"));
     }
-    let out = parse_i64(&a)? / b;
+
+    let out = parse_i64(&a)?
+        .checked_div(b)
+        .ok_or_else(|| Error::msg("integer overflow"))?;
+
     Ok(Value::Integer(out.to_string()))
 }
 

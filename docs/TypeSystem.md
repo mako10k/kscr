@@ -14,11 +14,11 @@ This document describes the type system and related structural features of the l
 
 ### Primitive Types
 - **Unit**: Only one value, representing the absence of information. Syntax: `()`
-- **Integer**: Arbitrary precision, platform-optimized. Syntax: `Integer`
+- **Integer (MVP)**: Signed 64-bit integer (`i64`). Syntax: `Integer` (overflow is a runtime error)
 - **Char**: Unicode character values. Syntax: `Char`
 - **Bool**: Two values, `True` and `False`. Syntax: `Bool`
 - **Float64**: IEEE-754 binary64 floating-point. Syntax: `Float64`
-- **String**: A list of characters, defined as `[Char]`. Syntax: `String` (alias for `[Char]`)
+- **String (MVP)**: Primitive string values. Syntax: `String`
 
 ### Composite Types
 - **Tuple**: Fixed-size, ordered collections. Syntax: `(TyA, TyB, ...)`

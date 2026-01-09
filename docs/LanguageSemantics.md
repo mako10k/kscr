@@ -4,9 +4,9 @@ The language is designed for functional programming with default lazy (thunk-bas
 
 ### String Type
 
-- **String**: Strings are represented as lists of characters (`[Char]`). The type `String` is an alias for `[Char]`.
-- All list operations (map, filter, fold, etc.) and pattern matching are available for strings.
+- **String (MVP)**: Strings are currently a primitive runtime value.
 - String literals are written in double quotes, e.g., "hello".
+- Future direction: represent strings as `[Char]` / or a dedicated internal structure (e.g. ropes) once list/substring performance and stdlib needs justify it.
 
 ### Type Aliases
 
@@ -15,7 +15,7 @@ The language is designed for functional programming with default lazy (thunk-bas
 
 ### Numeric Types, Internal Lowering, and Checked Casts
 
-- **Surface numeric types**: `Integer` (arbitrary precision) and `Float64` (IEEE-754 binary64).
+- **Surface numeric types (MVP)**: `Integer` (signed 64-bit, `i64`) and `Float64` (IEEE-754 binary64).
 - For literals and FFI boundaries, the compiler may lower to LLVM-aligned backend numeric types (e.g., `i32`, `i64`, `f32`, `f64`).
 - In pure IR, only integer widening is implicit (`i32 <: i64`); float widening (`f32 <: f64`) is not.
 - Any boundary conversion that could lose information is performed as a checked cast; on overflow/invalid conversion, evaluation raises a runtime error.
