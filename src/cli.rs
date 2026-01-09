@@ -1,7 +1,8 @@
 use crate::{ast, ir, parser, types, Result};
+#[cfg(feature = "readline")]
+use rustyline::{error::ReadlineError, DefaultEditor};
 use std::collections::HashSet;
-use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn run<I, S>(mut args: I) -> Result<()>
 where
@@ -191,103 +192,271 @@ fn print_help() {
     );
 }
 
-fn repl() -> Result<()> {
-    let mut defs: Vec<String> = Vec::new();
+struct ReplState {
+    defs: Vec<String>,
+    loaded_modules: Vec<String>,
+    base_dir: PathBuf,
+    repl_path: PathBuf,
+}
 
+impl ReplState {
+    fn new_default() -> Result<Self> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| crate::error::Error::msg(format!("time error: {e}")))?
+            .as_nanos();
+        let base_dir = std::env::temp_dir().join(format!("kscr_repl_{}_{}", std::process::id(), nanos));
+        std::fs::create_dir_all(&base_dir)?;
+        let repl_path = base_dir.join(format!(".kscr_repl_{}.ks", std::process::id()));
+        Ok(Self {
+            defs: Vec::new(),
+            loaded_modules: Vec::new(),
+            base_dir,
+            repl_path,
+        })
+    }
+
+    #[cfg(feature = "readline")]
+    fn history_path(&self) -> PathBuf {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".kscr_history");
+        }
+        self.base_dir.join(".kscr_history")
+    }
+
+    fn load_module_file(&mut self, path: &Path) -> Result<()> {
+        let src = std::fs::read_to_string(path)?;
+        let m = parser::parse_module(&src)?;
+        let Some(name) = m.name else {
+            return Err(crate::error::Error::msg(
+                "loaded module must have a module header",
+            ));
+        };
+
+        let dir = path
+            .parent()
+            .ok_or_else(|| crate::error::Error::msg("invalid module path"))?;
+
+        self.base_dir = dir.to_path_buf();
+        self.repl_path = self
+            .base_dir
+            .join(format!(".kscr_repl_{}.ks", std::process::id()));
+        self.loaded_modules = vec![name];
+        self.defs.clear();
+        Ok(())
+    }
+
+    fn modules_string(&self) -> String {
+        if self.loaded_modules.is_empty() {
+            return "(none)".to_string();
+        }
+        self.loaded_modules.join(", ")
+    }
+
+    fn write_src(&self, expr: Option<&str>, include_main: bool) -> Result<()> {
+        let src = build_repl_module_src(&self.defs, &self.loaded_modules, expr, include_main);
+        std::fs::write(&self.repl_path, src)?;
+        Ok(())
+    }
+
+    fn type_of(&self, expr: &str) -> Result<String> {
+        self.write_src(Some(expr), false)?;
+        let tm = types::typecheck_file(&self.repl_path)?;
+        let Some(s) = tm.inferred.get("it") else {
+            return Err(crate::error::Error::msg("internal: missing it"));
+        };
+        Ok(format!("it : {s}"))
+    }
+
+    fn eval_expr(&self, expr: &str) -> Result<()> {
+        self.write_src(Some(expr), true)?;
+        let tm = types::typecheck_file(&self.repl_path)?;
+        let irm = ir::lower_to_ir(&tm.module)?;
+        let _ = ir::run_main(&irm)?;
+        Ok(())
+    }
+
+    fn maybe_add_def_line(&mut self, line: &str) -> bool {
+        let candidate = format!("{}\n", line);
+        parser::parse_module(&candidate)
+            .ok()
+            .and_then(|m| m.items.into_iter().next())
+            .is_some_and(|it| matches!(it, ast::Item::Binding(_)))
+            .then(|| {
+                self.defs.push(line.to_string());
+            })
+            .is_some()
+    }
+}
+
+fn repl() -> Result<()> {
+    repl_impl(ReplState::new_default()?)
+}
+
+#[cfg(feature = "readline")]
+fn repl_impl(mut st: ReplState) -> Result<()> {
+    let mut rl = DefaultEditor::new()
+        .map_err(|e| crate::error::Error::msg(format!("readline init failed: {e}")))?;
+    let hist = st.history_path();
+    let _ = rl.load_history(&hist);
+
+    loop {
+        match rl.readline("> ") {
+            Ok(line) => {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+
+                let _ = rl.add_history_entry(line);
+
+                if handle_repl_line(&mut st, line)? {
+                    break;
+                }
+            }
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
+            Err(e) => return Err(crate::error::Error::msg(format!("readline error: {e}"))),
+        }
+    }
+
+    let _ = rl.save_history(&hist);
+    let _ = std::fs::remove_file(&st.repl_path);
+    Ok(())
+}
+
+#[cfg(not(feature = "readline"))]
+fn repl_impl(mut st: ReplState) -> Result<()> {
+    use std::io::{self, Write};
+
+    let mut line = String::new();
     loop {
         print!("> ");
         io::stdout().flush()?;
 
-        let mut line = String::new();
-        if io::stdin().read_line(&mut line)? == 0 {
+        line.clear();
+        let n = io::stdin().read_line(&mut line)?;
+        if n == 0 {
             break;
         }
-        let line = line.trim();
-        if line.is_empty() {
+        let s = line.trim();
+        if s.is_empty() {
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix(":quit") {
-            if rest.trim().is_empty() {
-                break;
-            }
-        }
-
-        if let Some(expr) = line.strip_prefix(":type") {
-            let expr = expr.trim();
-            if expr.is_empty() {
-                eprintln!("error: missing <expr>");
-                continue;
-            }
-            match repl_type_of(&defs, expr) {
-                Ok(s) => println!("{s}"),
-                Err(e) => eprintln!("error: {e}"),
-            }
-            continue;
-        }
-
-        // If it parses as a binding, add it to the session.
-        let candidate = format!("{}\n", line);
-        if parser::parse_module(&candidate)
-            .ok()
-            .and_then(|m| m.items.into_iter().next())
-            .is_some_and(|it| matches!(it, ast::Item::Binding(_)))
-        {
-            defs.push(line.to_string());
-            continue;
-        }
-
-        match repl_eval_expr(&defs, line) {
-            Ok(()) => {}
-            Err(e) => eprintln!("error: {e}"),
+        if handle_repl_line(&mut st, s)? {
+            break;
         }
     }
 
+    let _ = std::fs::remove_file(&st.repl_path);
     Ok(())
 }
 
-fn repl_type_of(defs: &[String], expr: &str) -> Result<String> {
-    let src = build_repl_module_src(defs, Some(expr), false);
-    let m = parser::parse_module(&src)?;
-    let tm = types::typecheck(m)?;
-    let Some(s) = tm.inferred.get("it") else {
-        return Err(crate::error::Error::msg("internal: missing it"));
-    };
-    Ok(format!("it : {s}"))
+fn handle_repl_line(st: &mut ReplState, line: &str) -> Result<bool> {
+    if let Some(rest) = line.strip_prefix(":quit") {
+        if rest.trim().is_empty() {
+            return Ok(true);
+        }
+    }
+
+    if let Some(rest) = line.strip_prefix(":modules") {
+        if rest.trim().is_empty() {
+            println!("{}", st.modules_string());
+            return Ok(false);
+        }
+    }
+
+    if let Some(rest) = line.strip_prefix(":load") {
+        let p = rest.trim();
+        if p.is_empty() {
+            eprintln!("error: missing <path>");
+            return Ok(false);
+        }
+        match st.load_module_file(Path::new(p)) {
+            Ok(()) => println!("loaded: {}", st.modules_string()),
+            Err(e) => eprintln!("error: {e}"),
+        }
+        return Ok(false);
+    }
+
+    if let Some(expr) = line.strip_prefix(":type") {
+        let expr = expr.trim();
+        if expr.is_empty() {
+            eprintln!("error: missing <expr>");
+            return Ok(false);
+        }
+        match st.type_of(expr) {
+            Ok(s) => println!("{s}"),
+            Err(e) => eprintln!("error: {e}"),
+        }
+        return Ok(false);
+    }
+
+    if st.maybe_add_def_line(line) {
+        return Ok(false);
+    }
+
+    match st.eval_expr(line) {
+        Ok(()) => {}
+        Err(e) => eprintln!("error: {e}"),
+    }
+
+    Ok(false)
 }
 
-fn repl_eval_expr(defs: &[String], expr: &str) -> Result<()> {
-    let src = build_repl_module_src(defs, Some(expr), true);
-    let m = parser::parse_module(&src)?;
-    let tm = types::typecheck(m)?;
-    let irm = ir::lower_to_ir(&tm.module)?;
-    let _ = ir::run_main(&irm)?;
-    Ok(())
-}
-
-fn build_repl_module_src(defs: &[String], expr: Option<&str>, include_main: bool) -> String {
+fn build_repl_module_src(
+    defs: &[String],
+    loaded_modules: &[String],
+    expr: Option<&str>,
+    include_main: bool,
+) -> String {
     let mut out = String::new();
+
+    // Always bring Prelude in for a pleasant interactive experience.
+    out.push_str("import Prelude\n");
+    for m in loaded_modules {
+        out.push_str("import ");
+        out.push_str(m);
+        out.push('\n');
+    }
+
     for d in defs {
         out.push_str(d);
         out.push('\n');
     }
+
     if let Some(expr) = expr {
         out.push_str("it = ");
         out.push_str(expr);
         out.push('\n');
     }
+
     if include_main {
         out.push_str("main = stdoutWrite (toString it ++ \"\\n\")\n");
     }
+
     out
 }
 
 #[cfg(test)]
 fn repl_eval_for_test(defs: &[&str], expr: &str) -> Result<String> {
-    let defs: Vec<String> = defs.iter().map(|s| s.to_string()).collect();
-    let ty = repl_type_of(&defs, expr)?;
-    repl_eval_expr(&defs, expr)?;
+    let mut st = ReplState::new_default()?;
+    for d in defs {
+        st.defs.push(d.to_string());
+    }
+    let ty = st.type_of(expr)?;
+    st.eval_expr(expr)?;
     Ok(ty)
+}
+
+#[cfg(test)]
+fn repl_type_of(defs: &[&str], expr: &str) -> Result<String> {
+    let mut st = ReplState::new_default()?;
+    for d in defs {
+        st.defs.push(d.to_string());
+    }
+    st.type_of(expr)
 }
 
 #[cfg(test)]

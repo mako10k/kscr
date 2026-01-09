@@ -21,8 +21,10 @@ opt-level = 3
 # Keep these disabled in normal builds; enable explicitly when experimenting.
 unsafe_ffi = ["dep:kscr_unsafe_ffi"]
 unsafe_bigint = ["dep:kscr_unsafe_bigint"]
+readline = ["dep:rustyline"]
 
 [dependencies]
 kscr_unsafe_ffi = { path = "crates/kscr_unsafe_ffi", optional = true }
 kscr_unsafe_bigint = { path = "crates/kscr_unsafe_bigint", optional = true }
+rustyline = { version = "14", optional = true }
 
