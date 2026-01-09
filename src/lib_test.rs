@@ -512,6 +512,26 @@ fn ir_run_main_integer_literal_overflow_is_error() {
 }
 
 #[test]
+fn ir_run_main_checked_cast_i32_ok() {
+    let src = "main = case (1 :: i32) of\n  1 -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_checked_cast_i32_overflow_is_error() {
+    let src = "main = case (2147483648 :: i32) of\n  0 -> IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let err = crate::ir::run_main(&ir).unwrap_err();
+    assert!(err.to_string().contains("integer out of range for i32"));
+}
+
+#[test]
 fn ir_run_main_show_to_string() {
     let src = "main = do\n  stdoutWrite (show (1 + 2))\n  stdoutWrite (toString (1 == 1))\n  IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();

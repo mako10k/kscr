@@ -46,7 +46,10 @@ Last updated: 2026-01-09
 - リテラル/FFI境界（※FFI自体は後続でも可）での checked cast をIR/ランタイムで表現し、失敗時は実行時エラー
 - テスト: cast成功/失敗(overflow/invalid)のスモーク
 
-Status: 未着手
+Status: 進行中
+- [x] ランタイム値: `Integer`/`Float64` を `i64`/`f64` として保持（リテラル境界でparse、失敗は実行時エラー）
+- [x] 注釈境界: `(:: i32/i64/f32/f64)` を checked cast としてIRに残し、失敗は実行時エラー
+- [ ] 追加の境界(FFIなど)は後続
 
 ---
 

@@ -45,6 +45,14 @@ pub struct IrCaseArm {
     pub body: IrExpr,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastTarget {
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IrExpr {
     Unit,
@@ -85,6 +93,24 @@ pub enum IrExpr {
     List(Vec<IrExpr>),
     Tuple(Vec<IrExpr>),
     Record(Vec<(String, IrExpr)>),
+    CheckedCast { expr: Box<IrExpr>, target: CastTarget },
+}
+
+fn last_ty_seg(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+fn cast_target_from_type(ty: &ast::Type) -> Option<CastTarget> {
+    match ty {
+        ast::Type::Var(name) => match last_ty_seg(name) {
+            "i32" => Some(CastTarget::I32),
+            "i64" => Some(CastTarget::I64),
+            "f32" => Some(CastTarget::F32),
+            "f64" => Some(CastTarget::F64),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn collect_ctor_aliases(module: &ast::Module) -> std::collections::HashMap<String, String> {
@@ -468,7 +494,17 @@ fn lower_expr(
                 .collect::<Result<Vec<_>>>()?,
         },
         Expr::Do(stmts) => lower_do(stmts, fresh, ctor_aliases)?,
-        Expr::Annot { expr, .. } => lower_expr(expr, fresh, ctor_aliases)?,
+        Expr::Annot { expr, ty } => {
+            let inner = lower_expr(expr, fresh, ctor_aliases)?;
+            if let Some(target) = cast_target_from_type(&ty.ty) {
+                IrExpr::CheckedCast {
+                    expr: Box::new(inner),
+                    target,
+                }
+            } else {
+                inner
+            }
+        },
         Expr::Where { expr, bindings } => {
             // Lower sequential where-bindings.
             let mut acc = lower_expr(expr, fresh, ctor_aliases)?;
@@ -924,6 +960,10 @@ fn eval_expr(
                 })
                 .collect(),
         ),
+        IrExpr::CheckedCast { expr, target } => {
+            let v = eval_expr(g, env, expr)?;
+            checked_cast(g, v, *target)?
+        },
         IrExpr::Case { expr, arms } => {
             let scrut = eval_expr(g, env, expr)?;
             for arm in arms {
@@ -1186,6 +1226,43 @@ fn parse_i64(s: &str) -> Result<i64> {
 fn parse_f64(s: &str) -> Result<f64> {
     s.parse::<f64>()
         .map_err(|_| Error::msg(format!("invalid float64: {s}")))
+}
+
+fn checked_cast(g: &Globals, v: Value, target: CastTarget) -> Result<Value> {
+    let v = force_value(g, v)?;
+    match target {
+        CastTarget::I32 => {
+            let Value::Integer(n) = v else {
+                return Err(Error::msg("checked cast to i32 expects Integer"));
+            };
+            if n < i32::MIN as i64 || n > i32::MAX as i64 {
+                return Err(Error::msg("integer out of range for i32"));
+            }
+            Ok(Value::Integer(n))
+        }
+        CastTarget::I64 => {
+            let Value::Integer(n) = v else {
+                return Err(Error::msg("checked cast to i64 expects Integer"));
+            };
+            Ok(Value::Integer(n))
+        }
+        CastTarget::F32 => {
+            let Value::Float64(x) = v else {
+                return Err(Error::msg("checked cast to f32 expects Float64"));
+            };
+            let y = x as f32;
+            if y.is_infinite() && x.is_finite() {
+                return Err(Error::msg("float overflow for f32"));
+            }
+            Ok(Value::Float64(y as f64))
+        }
+        CastTarget::F64 => {
+            let Value::Float64(x) = v else {
+                return Err(Error::msg("checked cast to f64 expects Float64"));
+            };
+            Ok(Value::Float64(x))
+        }
+    }
 }
 
 fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {

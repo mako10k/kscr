@@ -148,6 +148,45 @@ pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
     Ok(subst)
 }
 
+fn last_ty_seg(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+fn backend_int_bits(name: &str) -> Option<u16> {
+    let name = last_ty_seg(name);
+    let rest = name.strip_prefix('i')?;
+    rest.parse::<u16>().ok()
+}
+
+fn backend_float_bits(name: &str) -> Option<u16> {
+    let name = last_ty_seg(name);
+    let rest = name.strip_prefix('f')?;
+    rest.parse::<u16>().ok()
+}
+
+fn numeric_compatible(a: &str, b: &str) -> bool {
+    let a0 = last_ty_seg(a);
+    let b0 = last_ty_seg(b);
+
+    // Surface `Integer` is compatible with backend `iN`.
+    if (a0 == "Integer" && backend_int_bits(b0).is_some())
+        || (b0 == "Integer" && backend_int_bits(a0).is_some())
+        || (backend_int_bits(a0).is_some() && backend_int_bits(b0).is_some())
+    {
+        return true;
+    }
+
+    // Surface `Float64` is compatible with backend `fN`.
+    if (a0 == "Float64" && backend_float_bits(b0).is_some())
+        || (b0 == "Float64" && backend_float_bits(a0).is_some())
+        || (backend_float_bits(a0).is_some() && backend_float_bits(b0).is_some())
+    {
+        return true;
+    }
+
+    false
+}
+
 fn unify_in(subst: &mut Subst, a: Ty, b: Ty) -> Result<()> {
     let a = apply(subst, a);
     let b = apply(subst, b);
@@ -155,6 +194,7 @@ fn unify_in(subst: &mut Subst, a: Ty, b: Ty) -> Result<()> {
     match (a, b) {
         (Ty::Var(v), t) | (t, Ty::Var(v)) => bind_var(subst, v, t),
         (Ty::Con(a), Ty::Con(b)) if a == b => Ok(()),
+        (Ty::Con(a), Ty::Con(b)) if numeric_compatible(&a, &b) => Ok(()),
         (Ty::List(a), Ty::List(b)) => unify_in(subst, *a, *b),
         (Ty::Tuple(a), Ty::Tuple(b)) => {
             if a.len() != b.len() {
