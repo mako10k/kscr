@@ -1,5 +1,6 @@
 use crate::{ast, ir, parser, types, Result};
 use std::collections::HashSet;
+use std::io::{self, Write};
 use std::path::Path;
 
 pub fn run<I, S>(mut args: I) -> Result<()>
@@ -83,6 +84,7 @@ where
             }
             Ok(())
         }
+        "repl" => repl(),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
 }
@@ -185,8 +187,131 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL (MVP)\n                   Commands: :type <expr>, :quit\n  help              Show this help\n"
     );
+}
+
+fn repl() -> Result<()> {
+    let mut defs: Vec<String> = Vec::new();
+
+    loop {
+        print!("> ");
+        io::stdout().flush()?;
+
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line)? == 0 {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix(":quit") {
+            if rest.trim().is_empty() {
+                break;
+            }
+        }
+
+        if let Some(expr) = line.strip_prefix(":type") {
+            let expr = expr.trim();
+            if expr.is_empty() {
+                eprintln!("error: missing <expr>");
+                continue;
+            }
+            match repl_type_of(&defs, expr) {
+                Ok(s) => println!("{s}"),
+                Err(e) => eprintln!("error: {e}"),
+            }
+            continue;
+        }
+
+        // If it parses as a binding, add it to the session.
+        let candidate = format!("{}\n", line);
+        if parser::parse_module(&candidate)
+            .ok()
+            .and_then(|m| m.items.into_iter().next())
+            .is_some_and(|it| matches!(it, ast::Item::Binding(_)))
+        {
+            defs.push(line.to_string());
+            continue;
+        }
+
+        match repl_eval_expr(&defs, line) {
+            Ok(()) => {}
+            Err(e) => eprintln!("error: {e}"),
+        }
+    }
+
+    Ok(())
+}
+
+fn repl_type_of(defs: &[String], expr: &str) -> Result<String> {
+    let src = build_repl_module_src(defs, Some(expr), false);
+    let m = parser::parse_module(&src)?;
+    let tm = types::typecheck(m)?;
+    let Some(s) = tm.inferred.get("it") else {
+        return Err(crate::error::Error::msg("internal: missing it"));
+    };
+    Ok(format!("it : {s}"))
+}
+
+fn repl_eval_expr(defs: &[String], expr: &str) -> Result<()> {
+    let src = build_repl_module_src(defs, Some(expr), true);
+    let m = parser::parse_module(&src)?;
+    let tm = types::typecheck(m)?;
+    let irm = ir::lower_to_ir(&tm.module)?;
+    let _ = ir::run_main(&irm)?;
+    Ok(())
+}
+
+fn build_repl_module_src(defs: &[String], expr: Option<&str>, include_main: bool) -> String {
+    let mut out = String::new();
+    for d in defs {
+        out.push_str(d);
+        out.push('\n');
+    }
+    if let Some(expr) = expr {
+        out.push_str("it = ");
+        out.push_str(expr);
+        out.push('\n');
+    }
+    if include_main {
+        out.push_str("main = stdoutWrite (toString it ++ \"\\n\")\n");
+    }
+    out
+}
+
+#[cfg(test)]
+fn repl_eval_for_test(defs: &[&str], expr: &str) -> Result<String> {
+    let defs: Vec<String> = defs.iter().map(|s| s.to_string()).collect();
+    let ty = repl_type_of(&defs, expr)?;
+    repl_eval_expr(&defs, expr)?;
+    Ok(ty)
+}
+
+#[cfg(test)]
+mod repl_tests {
+    use super::*;
+
+    #[test]
+    fn repl_type_and_eval_simple() {
+        let ty = repl_eval_for_test(&[], "1 + 2").unwrap();
+        assert!(ty.contains("Integer"));
+    }
+
+    #[test]
+    fn repl_persists_defs_across_eval() {
+        let defs = ["x = 41"]; 
+        let ty = repl_eval_for_test(&defs, "x + 1").unwrap();
+        assert!(ty.contains("Integer"));
+    }
+
+    #[test]
+    fn repl_type_errors_are_reported() {
+        let e = repl_type_of(&[], "1 True").unwrap_err();
+        assert!(format!("{e}").contains("cannot unify"));
+    }
 }
 
 #[cfg(test)]
