@@ -98,14 +98,14 @@ Status: Done
 
 Status:
 - [x] Phase 1: deriving Show の実装 + テスト + ゲート通過（commit: `e72ce94`）
-- [x] Phase 2: deriving Eq の実装 + テスト（commit: `86066b8`）
-  - ✅ `deriving Eq` および `deriving (Eq, Show)` 構文サポート
-  - ✅ Eq 制約の解決と辞書渡し
-  - ✅ `(==)` および `(/=)` の実装
-  - ✅ 構造的 Eq（primitive, lists, tuples, records, data types）
-- [ ] Phase 3+: `class` / `instance` 構文（将来）
+- [x] Phase 2: deriving Eq implementation + tests (commit: `86066b8`)
+  - ✅ `deriving Eq` and `deriving (Eq, Show)` syntax support
+  - ✅ Eq constraint resolution and dictionary passing
+  - ✅ `(==)` and `(/=)` implementation
+  - ✅ Structural Eq (primitive, lists, tuples, records, data types)
+- [ ] Phase 3+: `class` / `instance` syntax (future)
 
-**現状**: Phase 2 完了。Show と Eq の両方が辞書渡しで実装済み。
+**Current status**: Phase 2 complete. Both Show and Eq implemented with dictionary passing.
 
 ## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
 目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
