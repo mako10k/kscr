@@ -1398,6 +1398,10 @@ fn lower_surface_type_with_params(
     use ast::Type;
 
     match ty {
+        Type::Var(name) if name.starts_with('%') => holes
+            .entry(name.clone())
+            .or_insert_with(|| cx.fresh())
+            .clone(),
         Type::Var(name) => params
             .get(name)
             .map(|v| Ty::Var(*v))
@@ -2187,7 +2191,7 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
         Type::Hole(None) => cx.fresh(),
 
         Type::Var(name) => {
-            if name.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
+            if name.starts_with('%') || name.chars().next().is_some_and(|c| c.is_ascii_lowercase()) {
                 holes
                     .entry(name.clone())
                     .or_insert_with(|| cx.fresh())
