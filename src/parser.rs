@@ -262,10 +262,10 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         let mut args = Vec::new();
         while matches!(
             ts.peek_kind(),
-            Some(TokenKind::Ident(_))
-                | Some(TokenKind::LParen)
-                | Some(TokenKind::LBracket)
-                | Some(TokenKind::LBrace)
+            Some(TokenKind::Ident(s)) if s != "deriving"
+        ) || matches!(
+            ts.peek_kind(),
+            Some(TokenKind::LParen) | Some(TokenKind::LBracket) | Some(TokenKind::LBrace)
         ) {
             // Atom-level type parsing for ctor args.
             args.push(parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?);
@@ -284,10 +284,29 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         }
     }
 
+    let mut deriving = Vec::new();
+    if matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s == "deriving") {
+        ts.bump();
+        if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+            ts.bump();
+            if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
+                deriving.push(ts.expect_ident()?);
+                while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+                    ts.bump();
+                    deriving.push(ts.expect_ident()?);
+                }
+            }
+            ts.expect(TokenKind::RParen)?;
+        } else {
+            deriving.push(ts.expect_ident()?);
+        }
+    }
+
     Ok(ast::Item::DataDecl(ast::DataDecl {
         name,
         params,
         ctors,
+        deriving,
     }))
 }
 

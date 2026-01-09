@@ -23,9 +23,9 @@ module Prelude where
 
   append = \a -> \b -> a ++ b
 
-  data Maybe a = Nothing | Just a
+  data Maybe a = Nothing | Just a deriving Show
 
-  data Either a b = Left a | Right b
+  data Either a b = Left a | Right b deriving Show
 
   maybe = \d -> \f -> \m -> case m of
     Nothing -> d

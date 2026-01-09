@@ -1570,6 +1570,10 @@ fn show_primitives(name: &str) -> bool {
     matches!(name, "Integer" | "Bool" | "String" | "Char" | "Unit")
 }
 
+fn data_derives_show(d: &ast::DataDecl) -> bool {
+    d.deriving.iter().any(|c| c == "Show")
+}
+
 fn entails_show(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
     Ok(match ty {
         Ty::Var(_) => vec![Constraint::Show(ty.clone())],
@@ -1577,10 +1581,11 @@ fn entails_show(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Resul
             if show_primitives(name) {
                 vec![]
             } else if let Some(d) = data_env.get(name) {
+                if !data_derives_show(d) {
+                    return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
+                }
                 if !d.params.is_empty() {
-                    return Err(Error::msg(format!(
-                        "cannot satisfy constraint: Show {ty}"
-                    )));
+                    return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
                 }
                 entails_show_data_decl(data_env, d, &[], in_progress)?
             } else {
@@ -1617,6 +1622,9 @@ fn entails_show(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Resul
             let Some(d) = data_env.get(name) else {
                 return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
             };
+            if !data_derives_show(d) {
+                return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
+            }
             if d.params.len() != args.len() {
                 return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
             }
@@ -3419,6 +3427,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+            deriving: d.deriving,
         })),
         it @ (ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_)) => Ok(it),
     }
@@ -4717,7 +4726,7 @@ x = do
 
     #[test]
     fn infer_show_data_is_ok() {
-        let src = r#"data Maybe a = Nothing | Just a
+        let src = r#"data Maybe a = Nothing | Just a deriving Show
 x = show (Just 1)
 y = show Nothing
 "#;

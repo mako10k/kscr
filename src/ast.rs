@@ -73,6 +73,7 @@ pub struct DataDecl {
     pub name: String,
     pub params: Vec<String>,
     pub ctors: Vec<DataCtor>,
+    pub deriving: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

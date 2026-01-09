@@ -726,7 +726,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe(..)\n  data Maybe a = Nothing | Just a\n",
+            "module A where\n  export Maybe(..)\n  data Maybe a = Nothing | Just a deriving Show\n",
         )
         .unwrap();
 
@@ -824,7 +824,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing, Just 3]\n",
+            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a deriving Show\n  values = [Just 1, Nothing, Just 3]\n",
         )
         .unwrap();
 
@@ -857,7 +857,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing, Just 3]\n",
+            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a deriving Show\n  values = [Just 1, Nothing, Just 3]\n",
         )
         .unwrap();
 
@@ -886,7 +886,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  data Maybe a = Nothing | Just a\n  xs = [a | Just a <- [Just 1, Nothing, Just 3]]\n  main = do\n    print (show xs)\n",
+            "module Main where\n  data Maybe a = Nothing | Just a deriving Show\n  xs = [a | Just a <- [Just 1, Nothing, Just 3]]\n  main = do\n    print (show xs)\n",
         )
         .unwrap();
 
@@ -907,7 +907,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  data Maybe a = Nothing | Just a\n  id = \\x -> x\n  xs = [a | (Just a <- id) <- [Just 1, Nothing, Just 3]]\n  main = do\n    print (show xs)\n",
+            "module Main where\n  data Maybe a = Nothing | Just a deriving Show\n  id = \\x -> x\n  xs = [a | (Just a <- id) <- [Just 1, Nothing, Just 3]]\n  main = do\n    print (show xs)\n",
         )
         .unwrap();
 
@@ -1249,7 +1249,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  data Maybe a = Nothing | Just a\n  main = do\n    Just n <- IO (Just 1)\n    print (intToString n)\n",
+            "module Main where\n  data Maybe a = Nothing | Just a deriving Show\n  main = do\n    Just n <- IO (Just 1)\n    print (intToString n)\n",
         )
         .unwrap();
         let args = vec![
@@ -1303,7 +1303,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing]\n",
+            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a deriving Show\n  values = [Just 1, Nothing]\n",
         )
         .unwrap();
 
@@ -1337,7 +1337,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing]\n",
+            "module A where\n  export Maybe(..), values\n  data Maybe a = Nothing | Just a deriving Show\n  values = [Just 1, Nothing]\n",
         )
         .unwrap();
 
@@ -1429,7 +1429,7 @@ mod tests {
         let a = dir.join("A.ks");
         std::fs::write(
             &a,
-            "module A where\n  export values\n  data Maybe a = Nothing | Just a\n  values = [Just 1, Nothing]\n",
+            "module A where\n  export values\n  data Maybe a = Nothing | Just a deriving Show\n  values = [Just 1, Nothing]\n",
         )
         .unwrap();
 
@@ -1519,7 +1519,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  data Maybe a = Nothing | Just a\n  id = \\x -> x\n  x = case Just 1 of\n    (Just n <- id) -> n\n    _ -> 0\n  main = do\n    print (intToString x)\n",
+            "module Main where\n  data Maybe a = Nothing | Just a deriving Show\n  id = \\x -> x\n  x = case Just 1 of\n    (Just n <- id) -> n\n    _ -> 0\n  main = do\n    print (intToString x)\n",
         )
         .unwrap();
         let args = vec![
