@@ -1134,6 +1134,46 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_import_fun_clauses_and_guards_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_import_fun_clauses_guards_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export f, k\n  f x | x == 0 = 1\n  f _ = 2\n  k = let\n    g 0 = 1\n    g _ = 2\n  in g 3\n",
+        )
+        .unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(
+            &b,
+            "module B where\n  export h\n  import A as OM\n  h x = OM.f x + OM.k\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import B\n  main = case (h 0) of\n    3 -> case (h 3) of\n      4 -> IO ()\n      _ -> case (1 / 0) of\n        _ -> IO ()\n    _ -> case (1 / 0) of\n      _ -> IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cli_run_rejects_recursive_value_definition() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_rejects_recursive_value_definition_{}.ks",
