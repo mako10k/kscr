@@ -149,7 +149,7 @@ fn collect_fixities(tokens: &[lexer::Token]) -> HashMap<String, Fixity> {
 
 fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
     ts.expect(TokenKind::KwModule)?;
-    let name = ts.expect_ident()?;
+    let name = parse_maybe_qualified_ident(ts)?;
     ts.expect(TokenKind::KwWhere)?;
     ts.consume_line_end();
     ts.skip_newlines();
@@ -315,7 +315,7 @@ fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         ts.bump();
     }
 
-    let module = ts.expect_ident()?;
+    let module = parse_maybe_qualified_ident(ts)?;
 
     let as_name = match ts.peek_kind() {
         Some(TokenKind::Ident(s)) if s == "as" => {

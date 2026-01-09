@@ -13,6 +13,21 @@ fn parser_module_basic() {
 }
 
 #[test]
+fn parser_module_hierarchical_name() {
+    let m = crate::parser::parse_module("module A.B where\n  x = 1\n").unwrap();
+    assert_eq!(m.name.as_deref(), Some("A.B"));
+}
+
+#[test]
+fn parser_import_hierarchical_name() {
+    let m = crate::parser::parse_module("import A.B\nx = 1\n").unwrap();
+    match &m.items[0] {
+        crate::ast::Item::Import(id) => assert_eq!(id.module, "A.B"),
+        _ => panic!("expected import"),
+    }
+}
+
+#[test]
 fn parser_binding_patterns() {
     let src = std::fs::read_to_string("tests/parser_binding_patterns.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();

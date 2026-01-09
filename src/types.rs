@@ -2658,9 +2658,10 @@ impl ModuleLoader {
                 continue;
             };
 
-            let local = dir.join(format!("{}.ks", id.module));
+            let rel = id.module.replace('.', "/");
+            let local = dir.join(format!("{}.ks", rel));
             let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-            let stdlib = stdlib.join(format!("{}.ks", id.module));
+            let stdlib = stdlib.join(format!("{}.ks", rel));
 
             let p = std::fs::canonicalize(&local)
                 .or_else(|_| std::fs::canonicalize(&stdlib))

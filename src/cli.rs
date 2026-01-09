@@ -353,44 +353,82 @@ fn repl_impl(mut st: ReplState) -> Result<()> {
     Ok(())
 }
 
+fn try_resolve_repl_command(cmd: &str) -> Result<Option<&'static str>> {
+    const CMDS: [&str; 4] = ["quit", "type", "load", "modules"];
+
+    if let Some(&found) = CMDS.iter().find(|&&c| c == cmd) {
+        return Ok(Some(found));
+    }
+
+    let matches: Vec<&'static str> = CMDS
+        .into_iter()
+        .filter(|c| c.starts_with(cmd))
+        .collect();
+
+    match matches.len() {
+        0 => Ok(None),
+        1 => Ok(Some(matches[0])),
+        _ => Err(crate::error::Error::msg(format!(
+            "ambiguous command: :{cmd} (candidates: {})",
+            matches.join(", ")
+        ))),
+    }
+}
+
 fn handle_repl_line(st: &mut ReplState, line: &str) -> Result<bool> {
-    if let Some(rest) = line.strip_prefix(":quit") {
-        if rest.trim().is_empty() {
-            return Ok(true);
-        }
-    }
+    if let Some(rest0) = line.strip_prefix(':') {
+        let split_at = rest0
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map(|(i, _)| i);
+        let (cmd, rest) = match split_at {
+            Some(i) => (&rest0[..i], rest0[i..].trim_start()),
+            None => (rest0, ""),
+        };
 
-    if let Some(rest) = line.strip_prefix(":modules") {
-        if rest.trim().is_empty() {
-            println!("{}", st.modules_string());
-            return Ok(false);
+        if !cmd.is_empty() {
+            match try_resolve_repl_command(cmd) {
+                Ok(Some("quit")) => {
+                    if rest.is_empty() {
+                        return Ok(true);
+                    }
+                }
+                Ok(Some("modules")) => {
+                    if rest.is_empty() {
+                        println!("{}", st.modules_string());
+                        return Ok(false);
+                    }
+                }
+                Ok(Some("load")) => {
+                    if rest.is_empty() {
+                        eprintln!("error: missing <path>");
+                        return Ok(false);
+                    }
+                    match st.load_module_file(Path::new(rest)) {
+                        Ok(()) => println!("loaded: {}", st.modules_string()),
+                        Err(e) => eprintln!("error: {e}"),
+                    }
+                    return Ok(false);
+                }
+                Ok(Some("type")) => {
+                    if rest.is_empty() {
+                        eprintln!("error: missing <expr>");
+                        return Ok(false);
+                    }
+                    match st.type_of(rest) {
+                        Ok(s) => println!("{s}"),
+                        Err(e) => eprintln!("error: {e}"),
+                    }
+                    return Ok(false);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return Ok(false);
+                }
+                Ok(Some(_)) => {}
+            }
         }
-    }
-
-    if let Some(rest) = line.strip_prefix(":load") {
-        let p = rest.trim();
-        if p.is_empty() {
-            eprintln!("error: missing <path>");
-            return Ok(false);
-        }
-        match st.load_module_file(Path::new(p)) {
-            Ok(()) => println!("loaded: {}", st.modules_string()),
-            Err(e) => eprintln!("error: {e}"),
-        }
-        return Ok(false);
-    }
-
-    if let Some(expr) = line.strip_prefix(":type") {
-        let expr = expr.trim();
-        if expr.is_empty() {
-            eprintln!("error: missing <expr>");
-            return Ok(false);
-        }
-        match st.type_of(expr) {
-            Ok(s) => println!("{s}"),
-            Err(e) => eprintln!("error: {e}"),
-        }
-        return Ok(false);
     }
 
     if st.maybe_add_def_line(line) {
