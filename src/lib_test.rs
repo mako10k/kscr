@@ -77,6 +77,90 @@ fn parser_fun_clause_desugar_single_clause_multi_args() {
 }
 
 #[test]
+fn parser_binding_operator_name_parens() {
+    let m = crate::parser::parse_module("(++) = concat\n").unwrap();
+    assert_eq!(m.items.len(), 1);
+
+    use crate::ast::{Expr, Item, Pattern};
+
+    let Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(&b.pat, Pattern::Var(name) if name == "++"));
+    assert!(matches!(&b.expr, Expr::Var(s) if s == "concat"));
+}
+
+#[test]
+fn parser_fun_clause_operator_name_parens() {
+    let m = crate::parser::parse_module("(++) a b = concat a b\n").unwrap();
+    assert_eq!(m.items.len(), 1);
+
+    use crate::ast::{Expr, Item, Pattern};
+
+    let Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(&b.pat, Pattern::Var(name) if name == "++"));
+
+    let Expr::Lambda { params, body } = &b.expr else {
+        panic!("expected lambda");
+    };
+    assert_eq!(params.len(), 2);
+
+    let Expr::Case { arms, .. } = &**body else {
+        panic!("expected case");
+    };
+    assert_eq!(arms.len(), 1);
+
+    assert!(matches!(
+        &arms[0].pat,
+        Pattern::Tuple(ps)
+            if matches!(&ps[..], [Pattern::Var(a), Pattern::Var(b)] if a == "a" && b == "b")
+    ));
+
+    let Expr::Apply { func, args } = &arms[0].body else {
+        panic!("expected apply");
+    };
+    assert!(matches!(&**func, Expr::Var(s) if s == "concat"));
+    assert!(matches!(&args[..], [Expr::Var(a), Expr::Var(b)] if a == "a" && b == "b"));
+}
+
+#[test]
+fn parser_fun_clause_operator_name_infix() {
+    let m = crate::parser::parse_module("a ++ b = concat a b\n").unwrap();
+    assert_eq!(m.items.len(), 1);
+
+    use crate::ast::{Expr, Item, Pattern};
+
+    let Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(&b.pat, Pattern::Var(name) if name == "++"));
+
+    let Expr::Lambda { params, body } = &b.expr else {
+        panic!("expected lambda");
+    };
+    assert_eq!(params.len(), 2);
+
+    let Expr::Case { arms, .. } = &**body else {
+        panic!("expected case");
+    };
+    assert_eq!(arms.len(), 1);
+
+    assert!(matches!(
+        &arms[0].pat,
+        Pattern::Tuple(ps)
+            if matches!(&ps[..], [Pattern::Var(a), Pattern::Var(b)] if a == "a" && b == "b")
+    ));
+
+    let Expr::Apply { func, args } = &arms[0].body else {
+        panic!("expected apply");
+    };
+    assert!(matches!(&**func, Expr::Var(s) if s == "concat"));
+    assert!(matches!(&args[..], [Expr::Var(a), Expr::Var(b)] if a == "a" && b == "b"));
+}
+
+#[test]
 fn ir_run_main_fun_clauses_multi_clause_and_multi_args() {
     let src = concat!(
         "f 0 y = y\n",

@@ -111,10 +111,17 @@ infix_application ::= expr infix_op expr
 infix_op ::= '`' <identifier> '`' | '+' | '-' | '*' | '/' | '==' | '/=' | '<' | '>' | '<=' | '>=' | '&&' | '||' | ':' | '++' | ...
 data_ctor_expr ::= <identifier> {expr}
 type_annotation ::= expr '::' type
-let_expr ::= 'let' binding_list 'in' expr
-where_expr ::= expr 'where' binding_list
-binding_list ::= binding {';' binding}
+let_expr ::= 'let' let_bindings 'in' expr
+where_expr ::= expr 'where' where_bindings
+let_bindings ::= indent_bindings | semi_bindings
+where_bindings ::= indent_bindings | braced_bindings
+indent_bindings ::= INDENT {binding} DEDENT
+semi_bindings ::= binding {';' binding}
+braced_bindings ::= '{' [binding {';' binding}] '}'
 binding ::= pattern '=' expr
+	| pattern infix_op pattern '=' expr   # infix operator definition sugar (e.g. `a ++ b = ...`)
+
+# Note: operator-named bindings can also be written as `(op) = expr` or `(op) a b = ...` (e.g. `(++) = concat`).
 if_expr ::= 'if' expr 'then' expr 'else' expr
 case_expr ::= 'case' expr 'of' case_alt_list
 case_alt_list ::= case_alt {';' case_alt}
@@ -123,7 +130,8 @@ guard ::= '|' expr
 list_comprehension ::= '[' expr '|' generator_list ']'
 generator_list ::= generator {',' generator}
 generator ::= pattern '<-' expr | expr
-do_block ::= 'do' indent_block
+do_block ::= 'do' indent_block | 'do' braced_do
+braced_do ::= '{' [statement {';' statement}] '}'
 indent_block ::= INDENT {statement} DEDENT
 statement ::= pattern '<-' expr | expr
 
@@ -165,7 +173,8 @@ view_pattern ::= pattern '<-' expr
 
 ## Data Type Declaration
 
-data_decl ::= 'data' type_name type_vars '=' ctor_list
+data_decl ::= 'data' type_name type_vars '=' ctor_list [deriving_clause]
+deriving_clause ::= 'deriving' <identifier> | 'deriving' '(' <identifier> {',' <identifier>} ')'
 type_name ::= <identifier>
 type_vars ::= <identifier> {<identifier>}
 ctor_list ::= ctor {'|' ctor}
@@ -197,9 +206,11 @@ module_decl ::= 'module' <identifier> 'where' module_block
 module_block ::= INDENT {module_stmt} DEDENT
 module_stmt ::= import_decl | export_decl | data_decl | type_alias_decl | binding
 
-import_decl ::= 'import' <identifier> [ 'as' <identifier> ]
-export_decl ::= 'export' export_list
-export_list ::= <identifier> {',' <identifier>}
+import_decl ::= 'import' ['qualified'] <identifier> [ 'as' <identifier> ]
+export_decl ::= 'export' export_spec {',' export_spec}
+export_spec ::= <identifier>
+	| <identifier> '(' '..' ')'
+	| <identifier> '(' <identifier> {',' <identifier>} ')'
 
 ### INDENT/DEDENT Tokens
 - **INDENT**: Marks the beginning of an indented block. Generated when indentation level increases.
@@ -213,7 +224,7 @@ export_list ::= <identifier> {',' <identifier>}
 
 ### Operator Precedence and Associativity
 Infix operators follow standard precedence and associativity rules:
-- Multiplicative operators (`*`, `/`, `mod`) bind tighter than additive (`+`, `-`)
+- Multiplicative operators (`*`, `/`) bind tighter than additive (`+`, `-`)
 - Comparison operators (`==`, `<`, etc.) have lower precedence
 - Logical operators (`&&`, `||`) have the lowest precedence
 - Function application has the highest precedence

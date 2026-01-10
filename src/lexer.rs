@@ -114,21 +114,25 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 bol = false;
             } else {
                 let current = *indent_stack.last().unwrap_or(&0);
-                if col > current {
-                    indent_stack.push(col);
-                    tokens.push(Token {
-                        kind: TokenKind::Indent,
-                    });
-                } else if col < current {
-                    while indent_stack.len() > 1 && col < *indent_stack.last().unwrap() {
-                        indent_stack.pop();
+                match col.cmp(&current) {
+                    std::cmp::Ordering::Greater => {
+                        indent_stack.push(col);
                         tokens.push(Token {
-                            kind: TokenKind::Dedent,
+                            kind: TokenKind::Indent,
                         });
                     }
-                    if col != *indent_stack.last().unwrap() {
-                        return Err(crate::error::Error::msg("inconsistent indentation"));
+                    std::cmp::Ordering::Less => {
+                        while indent_stack.len() > 1 && col < *indent_stack.last().unwrap() {
+                            indent_stack.pop();
+                            tokens.push(Token {
+                                kind: TokenKind::Dedent,
+                            });
+                        }
+                        if col != *indent_stack.last().unwrap() {
+                            return Err(crate::error::Error::msg("inconsistent indentation"));
+                        }
                     }
+                    std::cmp::Ordering::Equal => {}
                 }
                 bol = false;
             }

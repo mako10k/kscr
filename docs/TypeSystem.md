@@ -61,7 +61,7 @@ The compiler may lower surface types to LLVM-aligned backend types for literals 
 
 ## 2. Polymorphism and Type Holes
 
-- **Type Variables**: Used for generic programming and type inference. Syntax: `%VarName`
+- **Type Variables**: Used for generic programming and type inference. Syntax: `<identifier>` (lowercase names are treated as type variables; uppercase names as type constructors).
 - **Type Holes**: Represent unknown types to be solved during type checking. Syntax: `?` or `?VarName`
 - **Parametric Polymorphism**: Functions and data types may be generic over type variables.
 

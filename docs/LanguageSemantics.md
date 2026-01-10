@@ -27,7 +27,7 @@ The language is designed for functional programming with default lazy (thunk-bas
 - **Lazy Evaluation**: All values are represented as thunks. Evaluation is deferred until the value is demanded. Memoization ensures each thunk is evaluated at most once.
 - **Purity Principle**: All user-defined functions and expressions are pure by default. Side effects (such as IO, mutation) are not permitted in pure code.
 - **Explicit Effects via IO Type**: Side effects are modeled explicitly using the `IO` type constructor. A value of type `IO ()` represents an effectful computation with no meaningful return value (unit), analogous to Haskell's `IO ()`.
-- **Program Entrypoint**: The entire program is a pure value of type `IO ()`, which, when evaluated, yields an executable internal bytecode representation. This bytecode is interpreted by the runtime to perform actual effects.
+- **Program Entrypoint**: The entire program is a pure value of type `IO ()`, which is evaluated by the runtime (IR interpreter) to perform actual effects.
 - **Monadic Composition**: Effectful computations are composed using monadic operations. The language provides syntactic sugar (do-notation) for sequencing `IO` actions, similar to Haskell's `do` notation.
 - **Effect Isolation**: Pure and effectful code are strictly separated by the type system. Only code within the `IO` monad (or other effect monads) may perform side effects.
 - **Order of Effects**: The order of side effects is determined by the structure of the monadic composition, not by the order of evaluation of expressions.
@@ -50,9 +50,9 @@ This block represents a sequence of `IO` actions: reading a line, then printing 
 - **Semantics**: The form `[ expr | pat <- list, guard, ... ]` is interpreted as a combination of map, filter, flatMap, etc.
 - **Example**:
 ```
-[ x * x | x <- [1..10], x `mod` 2 == 0 ]
+[ x * x | x <- [1,2,3,4,5], x == 2 || x == 4 ]
 ```
-This example lazily generates a list of squares of even numbers from 1 to 10.
+This example lazily generates a list of squares of `2` and `4`.
 
 ---
 
@@ -79,15 +79,4 @@ This example lazily generates a list of squares of even numbers from 1 to 10.
 - For type system details, see `TypeSystem.md`.
 - For grammar and syntax, see `LanguageBNF.md`.
 - For internal representation, see `IntermediateRepresentation.md`.
-# Language Semantics
-
-This document provides a high-level overview and semantics of the lazy evaluation scripting language.
-
-## Purpose
-- Describes language philosophy, evaluation strategy, purity, effects, pattern matching, list comprehensions, and do-notation.
-- For type system details, see `TypeSystem.md`.
-- For grammar and syntax, see `LanguageBNF.md`.
-- For internal representation, see `IntermediateRepresentation.md`.
-
----
 

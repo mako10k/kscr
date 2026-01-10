@@ -595,9 +595,122 @@ fn parse_binding_simple(ts: &mut TokenStream, stop: Stop) -> Result<ast::Binding
     Ok(ast::Binding { pat, expr })
 }
 
+fn is_sym_op_token(kind: Option<&TokenKind>) -> bool {
+    matches!(
+        kind,
+        Some(
+            TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::PlusPlus
+                | TokenKind::EqEq
+                | TokenKind::SlashEq
+                | TokenKind::Lt
+                | TokenKind::Le
+                | TokenKind::Gt
+                | TokenKind::Ge
+                | TokenKind::AndAnd
+                | TokenKind::OrOr
+        )
+    )
+}
+
+fn parse_operator_name(ts: &mut TokenStream) -> Result<String> {
+    if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
+        ts.expect(TokenKind::Backtick)?;
+        let op = ts.expect_ident()?;
+        ts.expect(TokenKind::Backtick)?;
+        return Ok(op);
+    }
+    parse_fixity_op(ts)
+}
+
+fn parse_paren_operator_name(ts: &mut TokenStream) -> Result<String> {
+    ts.expect(TokenKind::LParen)?;
+    let op = parse_operator_name(ts)?;
+    ts.expect(TokenKind::RParen)?;
+    Ok(op)
+}
+
 fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<ParsedBind> {
     // `fname pat1 pat2 = body` / guarded: `fname pat1 | guard = body`
+    // Operator forms supported:
+    // - `(++) a b = ...`
+    // - `a ++ b = ...`
     // Disambiguation: reject pattern-bind continuations like `x:xs = ...` and `xs@_ = ...`.
+
+    // Infix operator clause: `a ++ b = body`.
+    {
+        let save = ts.i;
+        if let Ok(lhs) = parse_cons_pattern(ts) {
+            if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
+                || (is_sym_op_token(ts.peek_kind()) && !matches!(ts.peek_kind(), Some(TokenKind::Colon)))
+            {
+                let op = parse_operator_name(ts)?;
+                let rhs = parse_cons_pattern(ts)?;
+
+                if matches!(ts.peek_kind(), Some(TokenKind::Eq) | Some(TokenKind::Pipe)) {
+                    let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+                        ts.bump();
+                        Some(parse_expr(ts, Stop::Pattern)?)
+                    } else {
+                        None
+                    };
+                    ts.expect(TokenKind::Eq)?;
+                    let body = parse_expr(ts, stop)?;
+                    return Ok(ParsedBind::FunClause(FunClause {
+                        name: op,
+                        args: vec![lhs, rhs],
+                        guard,
+                        body,
+                    }));
+                }
+            }
+        }
+        ts.i = save;
+    }
+
+    // Parenthesized operator name clause: `(++) a b = body`.
+    if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+        let save = ts.i;
+        ts.bump();
+        let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind());
+        ts.i = save;
+
+        if op_ok {
+            let save = ts.i;
+            if let Ok(name) = parse_paren_operator_name(ts) {
+                if !matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
+                    let mut args = Vec::new();
+                    while !matches!(ts.peek_kind(), Some(TokenKind::Eq) | Some(TokenKind::Pipe)) {
+                        // Do not treat `|` as an or-pattern here; `|` starts a guard.
+                        // Or-patterns in fun args must be parenthesized.
+                        args.push(parse_cons_pattern(ts)?);
+                    }
+                    if !args.is_empty() {
+                        let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+                            ts.bump();
+                            Some(parse_expr(ts, Stop::Pattern)?)
+                        } else {
+                            None
+                        };
+                        ts.expect(TokenKind::Eq)?;
+                        let body = parse_expr(ts, stop)?;
+                        return Ok(ParsedBind::FunClause(FunClause {
+                            name,
+                            args,
+                            guard,
+                            body,
+                        }));
+                    }
+                }
+            }
+            ts.i = save;
+        }
+    }
+
+    // Regular identifier clause: `f x y = body`.
     if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
         let save = ts.i;
         let name = ts.expect_ident()?;
@@ -1381,6 +1494,13 @@ fn parse_paren_or_tuple_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
         ts.bump();
         return Ok(ast::Pattern::Literal(ast::Expr::Unit));
+    }
+
+    // Operator binder pattern: `(++)`.
+    if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind()) {
+        let op = parse_operator_name(ts)?;
+        ts.expect(TokenKind::RParen)?;
+        return Ok(ast::Pattern::Var(op));
     }
 
     let first = parse_pattern(ts)?;
