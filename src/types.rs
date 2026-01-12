@@ -1025,6 +1025,63 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
+    // __ioBind :: forall a b. IO a -> (a -> IO b) -> IO b
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
+    let Ty::Var(b) = cx.fresh() else {
+        unreachable!()
+    };
+    let io_a = Ty::App {
+        head: Box::new(Ty::Con("IO".to_string())),
+        args: vec![Ty::Var(a)],
+    };
+    let io_b = Ty::App {
+        head: Box::new(Ty::Con("IO".to_string())),
+        args: vec![Ty::Var(b)],
+    };
+    env.insert(
+        "__ioBind".to_string(),
+        Scheme {
+            vars: vec![a, b],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(io_a.clone()),
+                Box::new(Ty::Func(
+                    Box::new(Ty::Func(Box::new(Ty::Var(a)), Box::new(io_b.clone()))),
+                    Box::new(io_b),
+                )),
+            ),
+        },
+    );
+
+    // __ioThen :: forall a b. IO a -> IO b -> IO b
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
+    let Ty::Var(b) = cx.fresh() else {
+        unreachable!()
+    };
+    let io_a = Ty::App {
+        head: Box::new(Ty::Con("IO".to_string())),
+        args: vec![Ty::Var(a)],
+    };
+    let io_b = Ty::App {
+        head: Box::new(Ty::Con("IO".to_string())),
+        args: vec![Ty::Var(b)],
+    };
+    env.insert(
+        "__ioThen".to_string(),
+        Scheme {
+            vars: vec![a, b],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(io_a),
+                Box::new(Ty::Func(Box::new(io_b.clone()), Box::new(io_b))),
+            ),
+        },
+    );
+
     // concatMap :: forall a b. (a -> [b]) -> [a] -> [b]
     let Ty::Var(a) = cx.fresh() else {
         unreachable!()

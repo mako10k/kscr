@@ -605,6 +605,16 @@ pub enum IoAction {
         action: Box<IoAction>,
     },
 
+    // IO sequencing primitives expressed as values (used by the Prelude Monad IO instance).
+    BindValue {
+        action: Box<IoAction>,
+        func: Value,
+    },
+    ThenValue {
+        first: Box<IoAction>,
+        then_action: Box<IoAction>,
+    },
+
     Bind {
         action: Box<IoAction>,
         param: String,
@@ -681,6 +691,10 @@ pub enum Value {
     BuiltinCatch,
     BuiltinCatch1(Box<Value>),
     BuiltinTry,
+    BuiltinIoBind,
+    BuiltinIoBind1(Box<Value>),
+    BuiltinIoThen,
+    BuiltinIoThen1(Box<Value>),
     BuiltinFfiAddI32,
     BuiltinFfiAddI32_1(Box<Value>),
     BuiltinFfiAddF32,
@@ -911,6 +925,14 @@ fn eval_var(
 
     if name == "try" {
         return Ok(Value::BuiltinTry);
+    }
+
+    if name == "__ioBind" {
+        return Ok(Value::BuiltinIoBind);
+    }
+
+    if name == "__ioThen" {
+        return Ok(Value::BuiltinIoThen);
     }
 
     if name == "ffiAddI32" {
@@ -1182,6 +1204,25 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
             }
         },
 
+        IoAction::BindValue { action, func } => {
+            let v = match run_io(g, *action)? {
+                IoOutcome::Value(v) => v,
+                IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
+            };
+            let act = apply_one(g, func, v)?;
+            let Value::IoAction(act) = act else {
+                return Err(Error::msg("__ioBind: body did not evaluate to an IO action"));
+            };
+            run_io(g, *act)
+        }
+        IoAction::ThenValue { first, then_action } => {
+            match run_io(g, *first)? {
+                IoOutcome::Value(_) => {}
+                IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
+            }
+            run_io(g, *then_action)
+        }
+
         IoAction::Bind {
             action,
             param,
@@ -1295,6 +1336,34 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
                 return Err(Error::msg("try expects IO action"));
             };
             Ok(Value::IoAction(Box::new(IoAction::Try { action: act })))
+        }
+
+        Value::BuiltinIoBind => Ok(Value::BuiltinIoBind1(Box::new(arg))),
+        Value::BuiltinIoBind1(act) => {
+            let act = force_value(g, *act)?;
+            let Value::IoAction(act) = act else {
+                return Err(Error::msg("__ioBind expects IO action"));
+            };
+            Ok(Value::IoAction(Box::new(IoAction::BindValue {
+                action: act,
+                func: arg,
+            })))
+        }
+
+        Value::BuiltinIoThen => Ok(Value::BuiltinIoThen1(Box::new(arg))),
+        Value::BuiltinIoThen1(first) => {
+            let first = force_value(g, *first)?;
+            let Value::IoAction(first) = first else {
+                return Err(Error::msg("__ioThen expects IO action"));
+            };
+            let then_action = force_value(g, arg)?;
+            let Value::IoAction(then_action) = then_action else {
+                return Err(Error::msg("__ioThen expects IO action"));
+            };
+            Ok(Value::IoAction(Box::new(IoAction::ThenValue {
+                first,
+                then_action,
+            })))
         }
         Value::BuiltinFfiAddI32 => Ok(Value::BuiltinFfiAddI32_1(Box::new(arg))),
         Value::BuiltinFfiAddI32_1(a) => ffi_add_i32(g, *a, arg),
