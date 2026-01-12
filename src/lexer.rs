@@ -45,6 +45,8 @@ pub enum TokenKind {
     Le,
     Gt,
     Ge,
+    GtGt,
+    GtGtEq,
     AndAnd,
     OrOr,
     FatArrow,
@@ -232,6 +234,18 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             let start = i;
             i += 2;
             push(TokenKind::Ge, start, i);
+            continue;
+        }
+        if bytes[i..].starts_with(b">>=") {
+            let start = i;
+            i += 3;
+            push(TokenKind::GtGtEq, start, i);
+            continue;
+        }
+        if bytes[i..].starts_with(b">>") {
+            let start = i;
+            i += 2;
+            push(TokenKind::GtGt, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"&&") {

@@ -1209,6 +1209,7 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
                 IoOutcome::Value(v) => v,
                 IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
             };
+            let func = force_value(g, func)?;
             let act = apply_one(g, func, v)?;
             let Value::IoAction(act) = act else {
                 return Err(Error::msg("__ioBind: body did not evaluate to an IO action"));

@@ -27,6 +27,10 @@ pub struct ClassDecl {
     pub name: String,
     pub param: String,
     pub methods: Vec<ClassMethodSig>,
+    /// Default method implementations inside the class.
+    ///
+    /// These are optional; instances may omit methods that have defaults.
+    pub default_methods: Vec<Binding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

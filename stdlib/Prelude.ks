@@ -1,15 +1,12 @@
 module Prelude where
-  export print, readLine, getLine, putStr, putStrLn, bind, thenM, ret, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export print, readLine, getLine, putStr, putStrLn, (>>=), (>>), return, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
-  class Monad m where
-      bind :: m a -> (a -> m b) -> m b
-      thenM :: m a -> m b -> m b
-      ret :: a -> m a
+  import Prelude.Monad
 
   instance Monad IO where
-      bind ma f = __ioBind ma f
-      thenM ma mb = __ioThen ma mb
-      ret = IO
+    ma >>= f = __ioBind ma f
+    ma >> mb = __ioThen ma mb
+    return = IO
 
   print = stdoutWrite
 

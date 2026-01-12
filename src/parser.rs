@@ -102,6 +102,11 @@ fn default_fixity(op: &str) -> Fixity {
             prec: 30,
             assoc: Assoc::Left,
         },
+        ">>=" | ">>" => Fixity {
+            // Haskell-like: sequencing is very low precedence.
+            prec: 10,
+            assoc: Assoc::Left,
+        },
         _ => Fixity {
             // Default used for backtick infix, and for any other operator-like names.
             prec: 60,
@@ -125,6 +130,8 @@ fn token_op_name(kind: &TokenKind) -> Option<String> {
         TokenKind::Le => "<=".to_string(),
         TokenKind::Gt => ">".to_string(),
         TokenKind::Ge => ">=".to_string(),
+        TokenKind::GtGt => ">>".to_string(),
+        TokenKind::GtGtEq => ">>=".to_string(),
         TokenKind::AndAnd => "&&".to_string(),
         TokenKind::OrOr => "||".to_string(),
         _ => return None,
@@ -370,9 +377,23 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwWhere)?;
     ts.consume_line_end();
     ts.skip_newlines();
+    if !matches!(ts.peek_kind(), Some(TokenKind::Indent)) {
+        // Allow empty class bodies.
+        return Ok(ast::Item::ClassDecl(ast::ClassDecl {
+            name,
+            param,
+            methods: Vec::new(),
+            default_methods: Vec::new(),
+        }));
+    }
+
     ts.expect(TokenKind::Indent)?;
 
-    let mut methods = Vec::new();
+    let mut methods: Vec<ast::ClassMethodSig> = Vec::new();
+
+    let mut default_items: Vec<ast::Item> = Vec::new();
+    let mut pending: Option<PendingFun> = None;
+
     loop {
         ts.skip_newlines();
         if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
@@ -382,20 +403,92 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
             return Err(ts.err_here("unexpected EOF in class"));
         }
 
-        let mname = ts.expect_ident()?;
-        ts.expect(TokenKind::ColonColon)?;
-        let ty = parse_qual_type(ts, Stop::LineEnd)?;
-        methods.push(ast::ClassMethodSig { name: mname, ty });
+        // Try parsing a signature line first:
+        //   f :: ...
+        //   (++) :: ...
+        {
+            let save = (ts.i, ts.last_span_end);
+
+            // Parse a method name token that can be either an identifier or a parenthesized operator.
+            let maybe_name = match ts.peek_kind() {
+                Some(TokenKind::Ident(_)) => ts.expect_ident().ok(),
+                Some(TokenKind::LParen) => {
+                    // Only treat it as an operator-name if it looks like one.
+                    let save2 = (ts.i, ts.last_span_end);
+                    ts.bump();
+                    let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick))
+                        || is_sym_op_token(ts.peek_kind());
+                    (ts.i, ts.last_span_end) = save2;
+                    if op_ok {
+                        parse_paren_operator_name(ts).ok()
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+
+            if let Some(mname) = maybe_name {
+                if matches!(ts.peek_kind(), Some(TokenKind::ColonColon)) {
+                    ts.expect(TokenKind::ColonColon)?;
+                    let ty = parse_qual_type(ts, Stop::LineEnd)?;
+                    methods.push(ast::ClassMethodSig { name: mname, ty });
+                    ts.consume_line_end();
+                    continue;
+                }
+            }
+
+            (ts.i, ts.last_span_end) = save;
+        }
+
+        // Otherwise parse a default method binding / clause.
+        match ts.peek_kind() {
+            Some(
+                TokenKind::Ident(_)
+                    | TokenKind::LParen
+                    | TokenKind::LBracket
+                    | TokenKind::LBrace
+                    | TokenKind::Integer(_)
+                    | TokenKind::Float(_)
+                    | TokenKind::String(_)
+                    | TokenKind::Char(_)
+                    | TokenKind::True
+                    | TokenKind::False
+                    | TokenKind::Question,
+            ) => match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
+                ParsedBind::Binding(b) => {
+                    flush_pending_fun_item(ts, &mut default_items, pending.take())?;
+                    default_items.push(ast::Item::Binding(b));
+                }
+                ParsedBind::FunClause(c) => {
+                    push_fun_clause_item(ts, &mut default_items, &mut pending, c)?;
+                }
+            },
+            Some(_) => return Err(ts.err_here("unexpected token in class")),
+            None => break,
+        }
+
         ts.consume_line_end();
     }
 
+    flush_pending_fun_item(ts, &mut default_items, pending.take())?;
+
     ts.expect(TokenKind::Dedent)?;
     ts.consume_line_end();
+
+    let mut default_methods: Vec<ast::Binding> = Vec::new();
+    for it in default_items {
+        let ast::Item::Binding(b) = it else {
+            return Err(ts.err_here("unexpected item in class"));
+        };
+        default_methods.push(b);
+    }
 
     Ok(ast::Item::ClassDecl(ast::ClassDecl {
         name,
         param,
         methods,
+        default_methods,
     }))
 }
 
@@ -406,6 +499,15 @@ fn parse_instance_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwWhere)?;
     ts.consume_line_end();
     ts.skip_newlines();
+    if !matches!(ts.peek_kind(), Some(TokenKind::Indent)) {
+        // Allow empty instance bodies (useful when all methods have class defaults).
+        return Ok(ast::Item::InstanceDecl(ast::InstanceDecl {
+            class,
+            ty,
+            methods: Vec::new(),
+        }));
+    }
+
     ts.expect(TokenKind::Indent)?;
 
     let mut method_items: Vec<ast::Item> = Vec::new();
@@ -496,7 +598,11 @@ fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwExport)?;
 
     fn parse_export_spec(ts: &mut TokenStream) -> Result<ast::ExportSpec> {
-        let name = ts.expect_ident()?;
+        let name = match ts.peek_kind() {
+            Some(TokenKind::Ident(_)) => ts.expect_ident()?,
+            Some(TokenKind::LParen) => parse_paren_operator_name(ts)?,
+            _ => return Err(ts.err_here("expected export name")),
+        };
 
         if !matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
             return Ok(ast::ExportSpec::Name(name));
@@ -555,6 +661,8 @@ fn parse_fixity_op(ts: &mut TokenStream) -> Result<String> {
         Some(TokenKind::Le) => Ok("<=".to_string()),
         Some(TokenKind::Gt) => Ok(">".to_string()),
         Some(TokenKind::Ge) => Ok(">=".to_string()),
+        Some(TokenKind::GtGt) => Ok(">>".to_string()),
+        Some(TokenKind::GtGtEq) => Ok(">>=".to_string()),
         Some(TokenKind::AndAnd) => Ok("&&".to_string()),
         Some(TokenKind::OrOr) => Ok("||".to_string()),
         _ => Err(Error::msg(format!("expected operator name at {pos}"))),
@@ -767,6 +875,8 @@ fn is_sym_op_token(kind: Option<&TokenKind>) -> bool {
                 | TokenKind::Le
                 | TokenKind::Gt
                 | TokenKind::Ge
+                | TokenKind::GtGt
+                | TokenKind::GtGtEq
                 | TokenKind::AndAnd
                 | TokenKind::OrOr
         )
@@ -1913,6 +2023,14 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
                 ts.bump();
                 (">=".to_string(), ts.fixity(">="))
             }
+            Some(TokenKind::GtGt) => {
+                ts.bump();
+                (">>".to_string(), ts.fixity(">>"))
+            }
+            Some(TokenKind::GtGtEq) => {
+                ts.bump();
+                (">>=".to_string(), ts.fixity(">>="))
+            }
             Some(TokenKind::AndAnd) => {
                 ts.bump();
                 ("&&".to_string(), ts.fixity("&&"))
@@ -2080,6 +2198,8 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
                         | TokenKind::Le
                         | TokenKind::Gt
                         | TokenKind::Ge
+                        | TokenKind::GtGt
+                        | TokenKind::GtGtEq
                         | TokenKind::AndAnd
                         | TokenKind::OrOr
                 )
@@ -2136,6 +2256,8 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
                             | TokenKind::Le
                             | TokenKind::Gt
                             | TokenKind::Ge
+                            | TokenKind::GtGt
+                            | TokenKind::GtGtEq
                             | TokenKind::AndAnd
                             | TokenKind::OrOr
                     )

@@ -1387,8 +1387,37 @@ fn ir_run_main_user_defined_typeclass_imports_instance() {
 }
 
 #[test]
+fn typecheck_file_do_generalizes_to_monad() {
+    let _tm = crate::types::typecheck_file(std::path::Path::new("tests/do_monad.ks")).unwrap();
+}
+
+#[test]
 fn ir_run_main_show_composites() {
     let src = "main = do\n  stdoutWrite (show [1, 2])\n  stdoutWrite (show (1, True))\n  stdoutWrite (show {a: 1, b: True})\n  IO ()\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn typeclass_operator_method_and_class_default_impl() {
+    // - class defines an operator method via `(+) :: ...`
+    // - class provides a default implementation using infix operator syntax
+    // - instance omits the method, so the default is used
+    let src = r#"
+class Add1 a where
+    (+) :: a -> a -> a
+    x + y = x
+
+instance Add1 Integer where
+
+main = do
+    stdoutWrite (intToString (1 + 2))
+    IO ()
+"#;
+
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();

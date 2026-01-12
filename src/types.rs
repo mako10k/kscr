@@ -1811,7 +1811,12 @@ fn mangle_ident(s: &str) -> String {
 fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
     let mut env = ClassEnv::default();
 
-    // Collect class method signatures.
+    // class name -> method names (declaration order)
+    let mut class_method_names: HashMap<String, Vec<String>> = HashMap::new();
+    // (class, method) -> default implementation expression
+    let mut class_default_methods: HashMap<(String, String), ast::Expr> = HashMap::new();
+
+    // Collect class method signatures + defaults.
     for it in &module.items {
         let ast::Item::ClassDecl(c) = it else {
             continue;
@@ -1823,12 +1828,29 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         env.class_params.insert(c.name.clone(), c.param.clone());
 
         for m in &c.methods {
+            class_method_names
+                .entry(c.name.clone())
+                .or_default()
+                .push(m.name.clone());
             env.method_classes
                 .entry(m.name.clone())
                 .or_default()
                 .push(c.name.clone());
             env.methods
                 .insert((c.name.clone(), m.name.clone()), m.ty.clone());
+        }
+
+        for b in &c.default_methods {
+            let ast::PatternKind::Var(mname) = &b.pat.kind else {
+                return Err(Error::msg(
+                    "MVP: class default methods must be simple variable bindings",
+                ));
+            };
+            let key = (c.name.clone(), mname.clone());
+            if class_default_methods.contains_key(&key) {
+                return Err(Error::msg("duplicate class default method"));
+            }
+            class_default_methods.insert(key, b.expr.clone());
         }
     }
     for classes in env.method_classes.values_mut() {
@@ -1857,20 +1879,43 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         let ty_mangled = mangle_ident(&ty_key);
         let dict_name = format!("__dict_{}_{}", inst.class, ty_mangled);
 
-        let key = (inst.class.clone(), ty_key);
+        let key = (inst.class.clone(), ty_key.clone());
         if env.instances.contains_key(&key) {
             return Err(Error::msg("duplicate instance"));
         }
         env.instances.insert(key, dict_name.clone());
 
-        // Method impl bindings.
-        let mut dict_fields: Vec<(String, ast::Expr)> = Vec::new();
+        let Some(method_names) = class_method_names.get(&inst.class) else {
+            return Err(Error::msg("unknown class in instance"));
+        };
+
+        let mut inst_methods: HashMap<String, ast::Expr> = HashMap::new();
         for b in &inst.methods {
             let ast::PatternKind::Var(mname) = &b.pat.kind else {
                 return Err(Error::msg(
                     "MVP: instance methods must be simple variable bindings",
                 ));
             };
+            if inst_methods.contains_key(mname) {
+                return Err(Error::msg("duplicate instance method"));
+            }
+            inst_methods.insert(mname.clone(), b.expr.clone());
+        }
+
+        // Method impl bindings (instance overrides or class defaults).
+        let mut dict_fields: Vec<(String, ast::Expr)> = Vec::new();
+        for mname in method_names {
+            let expr = if let Some(e) = inst_methods.get(mname) {
+                e.clone()
+            } else if let Some(e) = class_default_methods.get(&(inst.class.clone(), mname.clone())) {
+                e.clone()
+            } else {
+                return Err(Error::msg(format!(
+                        "missing method implementation for `{}` in instance {} {}",
+                    mname, inst.class, ty_key
+                )));
+            };
+
             let impl_name = format!(
                 "__inst_{}_{}_{}",
                 inst.class,
@@ -1880,7 +1925,7 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
 
             extra_items.push(ast::Item::Binding(ast::Binding {
                 pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
-                expr: b.expr.clone(),
+                expr,
             }));
 
             dict_fields.push((
@@ -3393,9 +3438,10 @@ fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
                         _ => None,
                     });
                     let Some(dd) = dd else {
-                        return Err(Error::msg(format!(
-                            "export list references unknown data type: {name}"
-                        )));
+                        // Type exports can refer to classes too (e.g. `Monad(..)`), which are not
+                        // `DataDecl`s. For MVP export checking, allow these through.
+                        exports.insert(name.clone());
+                        continue;
                     };
 
                     match ctors {
@@ -4407,11 +4453,19 @@ fn rewrite_show_calls_in_module(module: &mut ast::Module) {
 fn infer_in_module_with_class_env(
     module: &ast::Module,
     class_env: &ClassEnv,
+    inferred: &HashMap<String, Scheme>,
     expr: ast::Expr,
 ) -> Result<Ty> {
     let mut cx = InferCtx::default();
     let data_env = collect_data_env(module);
-    let env = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
+    let mut env = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
+    // Add inferred binding types (module + imported forwarders). This is important for
+    // inferring argument types during later desugaring passes.
+    for (name, scheme) in inferred {
+        if !env.contains_key(name) {
+            env.insert(name.clone(), scheme.clone());
+        }
+    }
     let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &env, expr)?;
     let _ = simplify_constraints(&data_env, class_env, apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
@@ -4648,8 +4702,12 @@ fn rewrite_class_dict_passing_in_module(
 
                 expected.push(apply(&subst, (*dom).clone()));
 
-                if let Ok(arg_ty) =
-                    infer_in_module_with_class_env(module_snapshot, class_env, arg.clone())
+                if let Ok(arg_ty) = infer_in_module_with_class_env(
+                    module_snapshot,
+                    class_env,
+                    inferred,
+                    arg.clone(),
+                )
                 {
                     if let Ok(s) = unify(apply(&subst, (*dom).clone()), apply(&subst, arg_ty)) {
                         subst = compose(&s, &subst);
@@ -4823,6 +4881,7 @@ fn rewrite_class_dict_passing_in_module(
                                     let Ok(a_ty) = infer_in_module_with_class_env(
                                         module_snapshot,
                                         class_env,
+                                        inferred,
                                         a.clone(),
                                     ) else {
                                         continue;
@@ -5312,14 +5371,40 @@ fn rewrite_class_dict_passing_in_module(
 fn rewrite_class_method_calls_in_module(
     module: &mut ast::Module,
     class_env: &ClassEnv,
+    inferred: &HashMap<String, Scheme>,
 ) -> Result<()> {
+    fn instance_head_key_ty_for_class(class: &str, ty: &Ty) -> Result<String> {
+        if class == "Monad" {
+            return Ok(match ty {
+                Ty::Con(name) => name.clone(),
+                Ty::App { head, .. } => match head.as_ref() {
+                    Ty::Con(name) => name.clone(),
+                    _ => {
+                        return Err(Error::msg(
+                            "MVP: class constraints support only constructor/app instance heads",
+                        ))
+                    }
+                },
+                _ => {
+                    return Err(Error::msg(
+                        "MVP: class constraints support only constructor/app instance heads",
+                    ))
+                }
+            });
+        }
+        instance_head_key_ty(ty)
+    }
+
     fn rewrite_expr(
         module_snapshot: &ast::Module,
         class_env: &ClassEnv,
+        inferred: &HashMap<String, Scheme>,
         dicts_in_scope: &HashSet<String>,
+        known_dicts_in_scope: &HashMap<String, String>,
         expr: ast::Expr,
     ) -> Result<ast::Expr> {
         use ast::{Expr, ExprKind};
+
         let span = expr.span;
         Ok(match expr.kind {
             ExprKind::Lambda { params, body } => {
@@ -5333,110 +5418,124 @@ fn rewrite_class_method_calls_in_module(
                     span,
                     ExprKind::Lambda {
                         params,
-                        body: Box::new(rewrite_expr(module_snapshot, class_env, &scope, *body)?),
+                        body: Box::new(rewrite_expr(
+                            module_snapshot,
+                            class_env,
+                            inferred,
+                            &scope,
+                            known_dicts_in_scope,
+                            *body,
+                        )?),
                     },
                 )
             }
             ExprKind::Apply { func, args } => {
-                let func = rewrite_expr(module_snapshot, class_env, dicts_in_scope, *func)?;
-                let args: Vec<_> = args
-                    .into_iter()
-                    .map(|a| rewrite_expr(module_snapshot, class_env, dicts_in_scope, a))
-                    .collect::<Result<Vec<_>>>()?;
-
-                // Method call: `m x ...` where `m` is a class method.
-                if let (ExprKind::Var(mname), Some(arg0)) = (&func.kind, args.first()) {
+                // Fast path for class method calls so we can propagate chosen dictionaries into
+                // nested expressions (notably useful for `Monad.return` inside `do`).
+                if let ExprKind::Var(mname) = &func.kind {
                     if let Some(classes) = class_env.method_classes.get(mname) {
                         let Some(class) = classes.first() else {
                             return Err(Error::msg("internal: empty method class list"));
                         };
 
-                        // If we're already under a dictionary parameter (e.g. inside a constrained
-                        // binding), use it directly and avoid trying to infer the local argument
-                        // type in a top-level env.
                         let dict_var = format!("__dict_{class}");
-                        if dicts_in_scope.contains(&dict_var) {
-                            let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
-                            let method_fn = Expr::new(
-                                span,
-                                ExprKind::Apply {
-                                    func: Box::new(get),
-                                    args: vec![
-                                        Expr::new(span, ExprKind::Var(dict_var)),
-                                        Expr::new(span, ExprKind::String(mname.clone())),
-                                    ],
-                                },
-                            );
+                        let dict_name: String = if dicts_in_scope.contains(&dict_var) {
+                            dict_var
+                        } else if let Some(d) = known_dicts_in_scope.get(class) {
+                            d.clone()
+                        } else {
+                            // Resolve dictionary by any usable ground argument type.
+                            // This helps cases like `eq x 1` where `x` isn't ground but `1` is.
+                            let mut first_non_ground: Option<Ty> = None;
+                            let mut first_missing_instance: Option<Ty> = None;
+                            let mut dict_name: Option<String> = None;
 
-                            return Ok(Expr::new(
-                                span,
-                                ExprKind::Apply {
-                                    func: Box::new(method_fn),
-                                    args,
-                                },
-                            ));
-                        }
-
-                        // Resolve dictionary by any usable ground argument type.
-                        // This helps cases like `eq x 1` where `x` isn't ground but `1` is.
-                        let mut first_non_ground: Option<Ty> = None;
-                        let mut first_missing_instance: Option<Ty> = None;
-                        let mut dict_name: Option<String> = None;
-
-                        for a in &args {
-                            let Ok(a_ty) = infer_in_module_with_class_env(
-                                module_snapshot,
-                                class_env,
-                                a.clone(),
-                            ) else {
-                                continue;
-                            };
-
-                            if !ftv_ty(&a_ty).is_empty() {
-                                if first_non_ground.is_none() {
-                                    first_non_ground = Some(a_ty);
-                                }
-                                continue;
-                            }
-
-                            let Ok(head) = instance_head_key_ty(&a_ty) else {
-                                // Ground but not a supported instance head.
-                                return Err(Error::msg(format!(
-                                    "cannot resolve method call `{mname}`: unsupported instance head type ({a_ty})"
-                                )));
-                            };
-
-                            let key = (class.clone(), head);
-                            if let Some(d) = class_env.instances.get(&key) {
-                                dict_name = Some(d.clone());
-                                break;
-                            }
-
-                            if first_missing_instance.is_none() {
-                                first_missing_instance = Some(a_ty);
-                            }
-                        }
-
-                        let Some(dict_name) = dict_name else {
-                            if let Some(ty) = first_missing_instance {
-                                return Err(Error::msg(format!(
-                                    "no instance found for method call `{mname}`: {class} {ty}"
-                                )));
-                            }
-
-                            let ty_hint = first_non_ground.unwrap_or_else(|| {
-                                infer_in_module_with_class_env(
+                            for a in &args {
+                                let Ok(a_ty) = infer_in_module_with_class_env(
                                     module_snapshot,
                                     class_env,
-                                    arg0.clone(),
-                                )
-                                .unwrap_or(Ty::Con("<unknown>".to_string()))
-                            });
+                                    inferred,
+                                    a.clone(),
+                                ) else {
+                                    continue;
+                                };
 
-                            return Err(Error::msg(format!(
-                                "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
-                            )));
+                                if !ftv_ty(&a_ty).is_empty() {
+                                    if first_non_ground.is_none() {
+                                        first_non_ground = Some(a_ty.clone());
+                                    }
+                                    // For most classes we require a ground type to pick an
+                                    // instance. `Monad` is special: we can pick the instance by
+                                    // the type constructor head (e.g. `IO` from `IO a`) even when
+                                    // `a` is unknown.
+                                    if class != "Monad" {
+                                        continue;
+                                    }
+                                }
+
+                                let Ok(head) = instance_head_key_ty_for_class(class, &a_ty) else {
+                                    // This argument is ground but isn't a supported instance head.
+                                    // Keep searching other arguments that might yield an instance.
+                                    continue;
+                                };
+
+                                let key = (class.clone(), head);
+                                if let Some(d) = class_env.instances.get(&key) {
+                                    dict_name = Some(d.clone());
+                                    break;
+                                }
+
+                                if first_missing_instance.is_none() {
+                                    first_missing_instance = Some(a_ty);
+                                }
+                            }
+
+                            let Some(dict_name) = dict_name else {
+                                if let Some(ty) = first_missing_instance {
+                                    return Err(Error::msg(format!(
+                                        "no instance found for method call `{mname}`: {class} {ty}"
+                                    )));
+                                }
+
+                                let ty_hint = first_non_ground.unwrap_or_else(|| {
+                                    args.first()
+                                        .and_then(|a0| {
+                                            infer_in_module_with_class_env(
+                                                module_snapshot,
+                                                class_env,
+                                                inferred,
+                                                a0.clone(),
+                                            )
+                                            .ok()
+                                        })
+                                        .unwrap_or(Ty::Con("<unknown>".to_string()))
+                                });
+
+                                return Err(Error::msg(format!(
+                                    "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
+                                )));
+                            };
+                            dict_name
                         };
+
+                        // Propagate the chosen dictionary name to nested expressions, so that
+                        // subsequent method calls (e.g. `return`) can reuse it.
+                        let mut known = known_dicts_in_scope.clone();
+                        known.insert(class.clone(), dict_name.clone());
+
+                        let new_args: Vec<_> = args
+                            .into_iter()
+                            .map(|a| {
+                                rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    inferred,
+                                    dicts_in_scope,
+                                    &known,
+                                    a,
+                                )
+                            })
+                            .collect::<Result<Vec<_>>>()?;
 
                         let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
                         let method_fn = Expr::new(
@@ -5454,12 +5553,33 @@ fn rewrite_class_method_calls_in_module(
                             span,
                             ExprKind::Apply {
                                 func: Box::new(method_fn),
-                                args,
+                                args: new_args,
                             },
                         ));
                     }
                 }
 
+                let func = rewrite_expr(
+                    module_snapshot,
+                    class_env,
+                    inferred,
+                    dicts_in_scope,
+                    known_dicts_in_scope,
+                    *func,
+                )?;
+                let args: Vec<_> = args
+                    .into_iter()
+                    .map(|a| {
+                        rewrite_expr(
+                            module_snapshot,
+                            class_env,
+                            inferred,
+                            dicts_in_scope,
+                            known_dicts_in_scope,
+                            a,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?;
                 Expr::new(
                     span,
                     ExprKind::Apply {
@@ -5478,19 +5598,25 @@ fn rewrite_class_method_calls_in_module(
                     cond: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *cond,
                     )?),
                     then_branch: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *then_branch,
                     )?),
                     else_branch: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *else_branch,
                     )?),
                 },
@@ -5506,7 +5632,9 @@ fn rewrite_class_method_calls_in_module(
                                 expr: rewrite_expr(
                                     module_snapshot,
                                     class_env,
+                                    inferred,
                                     dicts_in_scope,
+                                    known_dicts_in_scope,
                                     b.expr,
                                 )?,
                             })
@@ -5515,7 +5643,9 @@ fn rewrite_class_method_calls_in_module(
                     body: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *body,
                     )?),
                 },
@@ -5526,7 +5656,9 @@ fn rewrite_class_method_calls_in_module(
                     expr: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *expr,
                     )?),
                     bindings: bindings
@@ -5537,7 +5669,9 @@ fn rewrite_class_method_calls_in_module(
                                 expr: rewrite_expr(
                                     module_snapshot,
                                     class_env,
+                                    inferred,
                                     dicts_in_scope,
+                                    known_dicts_in_scope,
                                     b.expr,
                                 )?,
                             })
@@ -5551,7 +5685,9 @@ fn rewrite_class_method_calls_in_module(
                     expr: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *expr,
                     )?),
                     ty,
@@ -5569,14 +5705,18 @@ fn rewrite_class_method_calls_in_module(
                                     expr: rewrite_expr(
                                         module_snapshot,
                                         class_env,
+                                        inferred,
                                         dicts_in_scope,
+                                        known_dicts_in_scope,
                                         expr,
                                     )?,
                                 },
                                 ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_expr(
                                     module_snapshot,
                                     class_env,
+                                    inferred,
                                     dicts_in_scope,
+                                    known_dicts_in_scope,
                                     e,
                                 )?),
                             })
@@ -5590,7 +5730,9 @@ fn rewrite_class_method_calls_in_module(
                     expr: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *expr,
                     )?),
                     arms: arms
@@ -5601,13 +5743,22 @@ fn rewrite_class_method_calls_in_module(
                                 guard: a
                                     .guard
                                     .map(|g| {
-                                        rewrite_expr(module_snapshot, class_env, dicts_in_scope, g)
+                                        rewrite_expr(
+                                            module_snapshot,
+                                            class_env,
+                                            inferred,
+                                            dicts_in_scope,
+                                            known_dicts_in_scope,
+                                            g,
+                                        )
                                     })
                                     .transpose()?,
                                 body: rewrite_expr(
                                     module_snapshot,
                                     class_env,
+                                    inferred,
                                     dicts_in_scope,
+                                    known_dicts_in_scope,
                                     a.body,
                                 )?,
                             })
@@ -5621,13 +5772,17 @@ fn rewrite_class_method_calls_in_module(
                     head: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *head,
                     )?),
                     tail: Box::new(rewrite_expr(
                         module_snapshot,
                         class_env,
+                        inferred,
                         dicts_in_scope,
+                        known_dicts_in_scope,
                         *tail,
                     )?),
                 },
@@ -5636,7 +5791,16 @@ fn rewrite_class_method_calls_in_module(
                 span,
                 ExprKind::List(
                     es.into_iter()
-                        .map(|e| rewrite_expr(module_snapshot, class_env, dicts_in_scope, e))
+                        .map(|e| {
+                            rewrite_expr(
+                                module_snapshot,
+                                class_env,
+                                inferred,
+                                dicts_in_scope,
+                                known_dicts_in_scope,
+                                e,
+                            )
+                        })
                         .collect::<Result<Vec<_>>>()?,
                 ),
             ),
@@ -5644,7 +5808,16 @@ fn rewrite_class_method_calls_in_module(
                 span,
                 ExprKind::Tuple(
                     es.into_iter()
-                        .map(|e| rewrite_expr(module_snapshot, class_env, dicts_in_scope, e))
+                        .map(|e| {
+                            rewrite_expr(
+                                module_snapshot,
+                                class_env,
+                                inferred,
+                                dicts_in_scope,
+                                known_dicts_in_scope,
+                                e,
+                            )
+                        })
                         .collect::<Result<Vec<_>>>()?,
                 ),
             ),
@@ -5656,19 +5829,26 @@ fn rewrite_class_method_calls_in_module(
                         .map(|(k, v)| {
                             Ok((
                                 k,
-                                rewrite_expr(module_snapshot, class_env, dicts_in_scope, v)?,
+                                rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    inferred,
+                                    dicts_in_scope,
+                                    known_dicts_in_scope,
+                                    v,
+                                )?,
                             ))
                         })
                         .collect::<Result<Vec<_>>>()?,
                 ),
             ),
-
             other => Expr::new(span, other),
         })
     }
 
     let snapshot = module.clone();
     let empty_scope: HashSet<String> = HashSet::new();
+    let empty_known: HashMap<String, String> = HashMap::new();
     module.items = module
         .items
         .drain(..)
@@ -5676,7 +5856,14 @@ fn rewrite_class_method_calls_in_module(
             Ok(match it {
                 ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
                     pat: b.pat,
-                    expr: rewrite_expr(&snapshot, class_env, &empty_scope, b.expr)?,
+                    expr: rewrite_expr(
+                        &snapshot,
+                        class_env,
+                        inferred,
+                        &empty_scope,
+                        &empty_known,
+                        b.expr,
+                    )?,
                 }),
                 other => other,
             })
@@ -5761,6 +5948,12 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
 
     let class_env = desugar_typeclasses(&mut module)?;
 
+    // If `Monad` is available, desugar `do`-notation into `(>>=)` / `(>>)`. This allows `do` to
+    // work for non-IO monads (via type classes).
+    if class_env.class_params.contains_key("Monad") {
+        desugar_do_to_monad_ops_in_module(&mut module)?;
+    }
+
     let inferred = infer_module_with_class_env(&module, &class_env)?;
 
     if let Some(main) = inferred.get("main") {
@@ -5775,12 +5968,248 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
 
     rewrite_class_dict_passing_in_module(&mut module, &class_env, &inferred)?;
 
-    rewrite_class_method_calls_in_module(&mut module, &class_env)?;
+    rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred)?;
 
     // MVP: start routing `show`/`toString` calls through an explicit Show dictionary.
     rewrite_show_calls_in_module(&mut module);
 
     Ok(TypedModule { module, inferred })
+}
+
+fn desugar_do_to_monad_ops_in_module(module: &mut ast::Module) -> Result<()> {
+    fn apply2(span: ast::Span, op: &str, a: ast::Expr, b: ast::Expr) -> ast::Expr {
+        ast::Expr::new(
+            span,
+            ast::ExprKind::Apply {
+                func: Box::new(ast::Expr::new(span, ast::ExprKind::Var(op.to_string()))),
+                args: vec![a, b],
+            },
+        )
+    }
+
+    fn lambda1(span: ast::Span, param: String, body: ast::Expr) -> ast::Expr {
+        ast::Expr::new(
+            span,
+            ast::ExprKind::Lambda {
+                params: vec![param],
+                body: Box::new(body),
+            },
+        )
+    }
+
+    fn desugar_expr(expr: ast::Expr, fresh: &mut usize) -> Result<ast::Expr> {
+        use ast::{DoStmt, Expr, ExprKind, PatternKind};
+
+        let span = expr.span;
+        Ok(match expr.kind {
+            ExprKind::Do(stmts) => {
+                if stmts.is_empty() {
+                    return Err(Error::msg("empty do-block"));
+                }
+
+                let mut it = stmts.into_iter();
+                let last = it.next_back().unwrap();
+
+                let mut acc = match last {
+                    DoStmt::Expr(e) => desugar_expr(e, fresh)?,
+                    DoStmt::Bind { .. } => {
+                        return Err(Error::msg(
+                            "do-block must end with an expression statement",
+                        ))
+                    }
+                };
+
+                while let Some(stmt) = it.next_back() {
+                    match stmt {
+                        DoStmt::Expr(e) => {
+                            let e = desugar_expr(e, fresh)?;
+                            acc = apply2(span, ">>", e, acc);
+                        }
+                        DoStmt::Bind { pat, expr } => {
+                            let rhs = desugar_expr(expr, fresh)?;
+                            match pat.kind {
+                                PatternKind::Var(name) => {
+                                    let k = lambda1(span, name, acc);
+                                    acc = apply2(span, ">>=", rhs, k);
+                                }
+                                PatternKind::Wildcard => {
+                                    let name = format!("__do_ignored{}", *fresh);
+                                    *fresh += 1;
+                                    let k = lambda1(span, name, acc);
+                                    acc = apply2(span, ">>=", rhs, k);
+                                }
+                                _ => {
+                                    let tmp = format!("__do_tmp{}", *fresh);
+                                    *fresh += 1;
+                                    let case_expr = Expr::new(
+                                        span,
+                                        ExprKind::Case {
+                                            expr: Box::new(Expr::new(
+                                                span,
+                                                ExprKind::Var(tmp.clone()),
+                                            )),
+                                            arms: vec![ast::CaseArm {
+                                                pat,
+                                                guard: None,
+                                                body: acc,
+                                            }],
+                                        },
+                                    );
+                                    let k = lambda1(span, tmp, case_expr);
+                                    acc = apply2(span, ">>=", rhs, k);
+                                }
+                            }
+                        }
+                    }
+                }
+                acc
+            }
+            ExprKind::Lambda { params, body } => Expr::new(
+                span,
+                ExprKind::Lambda {
+                    params,
+                    body: Box::new(desugar_expr(*body, fresh)?),
+                },
+            ),
+            ExprKind::Apply { func, args } => Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(desugar_expr(*func, fresh)?),
+                    args: args
+                        .into_iter()
+                        .map(|a| desugar_expr(a, fresh))
+                        .collect::<Result<Vec<_>>>()?,
+                },
+            ),
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => Expr::new(
+                span,
+                ExprKind::If {
+                    cond: Box::new(desugar_expr(*cond, fresh)?),
+                    then_branch: Box::new(desugar_expr(*then_branch, fresh)?),
+                    else_branch: Box::new(desugar_expr(*else_branch, fresh)?),
+                },
+            ),
+            ExprKind::Let { bindings, body } => Expr::new(
+                span,
+                ExprKind::Let {
+                    bindings: bindings
+                        .into_iter()
+                        .map(|b| {
+                            Ok(ast::Binding {
+                                pat: b.pat,
+                                expr: desugar_expr(b.expr, fresh)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                    body: Box::new(desugar_expr(*body, fresh)?),
+                },
+            ),
+            ExprKind::Where { expr, bindings } => Expr::new(
+                span,
+                ExprKind::Where {
+                    expr: Box::new(desugar_expr(*expr, fresh)?),
+                    bindings: bindings
+                        .into_iter()
+                        .map(|b| {
+                            Ok(ast::Binding {
+                                pat: b.pat,
+                                expr: desugar_expr(b.expr, fresh)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                },
+            ),
+            ExprKind::Annot { expr, ty } => Expr::new(
+                span,
+                ExprKind::Annot {
+                    expr: Box::new(desugar_expr(*expr, fresh)?),
+                    ty,
+                },
+            ),
+            ExprKind::Case { expr, arms } => Expr::new(
+                span,
+                ExprKind::Case {
+                    expr: Box::new(desugar_expr(*expr, fresh)?),
+                    arms: arms
+                        .into_iter()
+                        .map(|a| {
+                            Ok(ast::CaseArm {
+                                pat: a.pat,
+                                guard: a.guard.map(|g| desugar_expr(g, fresh)).transpose()?,
+                                body: desugar_expr(a.body, fresh)?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                },
+            ),
+            ExprKind::Cons { head, tail } => Expr::new(
+                span,
+                ExprKind::Cons {
+                    head: Box::new(desugar_expr(*head, fresh)?),
+                    tail: Box::new(desugar_expr(*tail, fresh)?),
+                },
+            ),
+            ExprKind::List(es) => Expr::new(
+                span,
+                ExprKind::List(
+                    es.into_iter()
+                        .map(|e| desugar_expr(e, fresh))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            ExprKind::Tuple(es) => Expr::new(
+                span,
+                ExprKind::Tuple(
+                    es.into_iter()
+                        .map(|e| desugar_expr(e, fresh))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            ExprKind::Record(fields) => Expr::new(
+                span,
+                ExprKind::Record(
+                    fields
+                        .into_iter()
+                        .map(|(k, v)| Ok((k, desugar_expr(v, fresh)?)))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            other => Expr::new(span, other),
+        })
+    }
+
+    fn desugar_binding(binding: &mut ast::Binding, fresh: &mut usize) -> Result<()> {
+        let expr = std::mem::replace(
+            &mut binding.expr,
+            ast::Expr::dummy(ast::ExprKind::Unit),
+        );
+        binding.expr = desugar_expr(expr, fresh)?;
+        Ok(())
+    }
+
+    let mut fresh = 0usize;
+    for item in &mut module.items {
+        match item {
+            ast::Item::Binding(b) => desugar_binding(b, &mut fresh)?,
+            ast::Item::ClassDecl(c) => {
+                for b in &mut c.default_methods {
+                    desugar_binding(b, &mut fresh)?;
+                }
+            }
+            ast::Item::InstanceDecl(i) => {
+                for b in &mut i.methods {
+                    desugar_binding(b, &mut fresh)?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
 
 fn collect_type_aliases(module: &ast::Module) -> HashMap<String, ast::TypeAlias> {
@@ -5865,6 +6294,16 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                                 .collect::<Result<Vec<_>>>()?,
                             ty: expand_type(m.ty.ty, aliases, &mut Vec::new())?,
                         },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            default_methods: c
+                .default_methods
+                .into_iter()
+                .map(|b| {
+                    Ok(ast::Binding {
+                        pat: expand_pat(b.pat, aliases)?,
+                        expr: expand_expr(b.expr, aliases)?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
