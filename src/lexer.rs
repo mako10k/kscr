@@ -68,12 +68,26 @@ pub enum TokenKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub kind: TokenKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
 }
 
 pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
     let mut tokens = Vec::new();
     let bytes = src.as_bytes();
     let mut i = 0usize;
+
+    let mut push = |kind: TokenKind, start: usize, end: usize| {
+        tokens.push(Token {
+            kind,
+            span: Span { start, end },
+        });
+    };
 
     let mut indent_stack: Vec<usize> = vec![0];
     let mut bol = true;
@@ -117,16 +131,12 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 match col.cmp(&current) {
                     std::cmp::Ordering::Greater => {
                         indent_stack.push(col);
-                        tokens.push(Token {
-                            kind: TokenKind::Indent,
-                        });
+                        push(TokenKind::Indent, i, i);
                     }
                     std::cmp::Ordering::Less => {
                         while indent_stack.len() > 1 && col < *indent_stack.last().unwrap() {
                             indent_stack.pop();
-                            tokens.push(Token {
-                                kind: TokenKind::Dedent,
-                            });
+                            push(TokenKind::Dedent, i, i);
                         }
                         if col != *indent_stack.last().unwrap() {
                             return Err(crate::error::Error::msg("inconsistent indentation"));
@@ -140,10 +150,9 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
 
         // Newline (statement separator)
         if bytes[i] == b'\n' {
-            tokens.push(Token {
-                kind: TokenKind::Newline,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Newline, start, i);
             bol = true;
             continue;
         }
@@ -182,247 +191,214 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
 
         // Punctuation (multi-char first)
         if bytes[i..].starts_with(b"->") {
-            tokens.push(Token {
-                kind: TokenKind::Arrow,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::Arrow, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"<-") {
-            tokens.push(Token {
-                kind: TokenKind::LeftArrow,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::LeftArrow, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"=>") {
-            tokens.push(Token {
-                kind: TokenKind::FatArrow,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::FatArrow, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"==") {
-            tokens.push(Token {
-                kind: TokenKind::EqEq,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::EqEq, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"/=") {
-            tokens.push(Token {
-                kind: TokenKind::SlashEq,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::SlashEq, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"<=") {
-            tokens.push(Token {
-                kind: TokenKind::Le,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::Le, start, i);
             continue;
         }
         if bytes[i..].starts_with(b">=") {
-            tokens.push(Token {
-                kind: TokenKind::Ge,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::Ge, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"&&") {
-            tokens.push(Token {
-                kind: TokenKind::AndAnd,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::AndAnd, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"||") {
-            tokens.push(Token {
-                kind: TokenKind::OrOr,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::OrOr, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"++") {
-            tokens.push(Token {
-                kind: TokenKind::PlusPlus,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::PlusPlus, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"...") {
-            tokens.push(Token {
-                kind: TokenKind::Ellipsis,
-            });
+            let start = i;
             i += 3;
+            push(TokenKind::Ellipsis, start, i);
             continue;
         }
         if bytes[i] == b';' {
-            tokens.push(Token {
-                kind: TokenKind::Semicolon,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Semicolon, start, i);
             continue;
         }
         if bytes[i] == b'.' {
-            tokens.push(Token {
-                kind: TokenKind::Dot,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Dot, start, i);
             continue;
         }
 
         if bytes[i] == b'=' {
-            tokens.push(Token {
-                kind: TokenKind::Eq,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Eq, start, i);
             continue;
         }
         if bytes[i] == b'|' {
-            tokens.push(Token {
-                kind: TokenKind::Pipe,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Pipe, start, i);
             continue;
         }
         if bytes[i] == b'<' {
-            tokens.push(Token {
-                kind: TokenKind::Lt,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Lt, start, i);
             continue;
         }
         if bytes[i] == b'>' {
-            tokens.push(Token {
-                kind: TokenKind::Gt,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Gt, start, i);
             continue;
         }
         if bytes[i] == b',' {
-            tokens.push(Token {
-                kind: TokenKind::Comma,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Comma, start, i);
             continue;
         }
         if bytes[i] == b'`' {
-            tokens.push(Token {
-                kind: TokenKind::Backtick,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Backtick, start, i);
             continue;
         }
         if bytes[i] == b'\\' {
-            tokens.push(Token {
-                kind: TokenKind::Backslash,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Backslash, start, i);
             continue;
         }
         if bytes[i] == b'+' {
-            tokens.push(Token {
-                kind: TokenKind::Plus,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Plus, start, i);
             continue;
         }
         if bytes[i] == b'-' {
-            tokens.push(Token {
-                kind: TokenKind::Minus,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Minus, start, i);
             continue;
         }
         if bytes[i] == b'*' {
-            tokens.push(Token {
-                kind: TokenKind::Star,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Star, start, i);
             continue;
         }
         if bytes[i] == b'/' {
-            tokens.push(Token {
-                kind: TokenKind::Slash,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Slash, start, i);
             continue;
         }
         if bytes[i] == b'(' {
-            tokens.push(Token {
-                kind: TokenKind::LParen,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::LParen, start, i);
             continue;
         }
         if bytes[i] == b')' {
-            tokens.push(Token {
-                kind: TokenKind::RParen,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::RParen, start, i);
             continue;
         }
         if bytes[i] == b'[' {
-            tokens.push(Token {
-                kind: TokenKind::LBracket,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::LBracket, start, i);
             continue;
         }
         if bytes[i] == b']' {
-            tokens.push(Token {
-                kind: TokenKind::RBracket,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::RBracket, start, i);
             continue;
         }
         if bytes[i] == b'{' {
-            tokens.push(Token {
-                kind: TokenKind::LBrace,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::LBrace, start, i);
             continue;
         }
         if bytes[i] == b'}' {
-            tokens.push(Token {
-                kind: TokenKind::RBrace,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::RBrace, start, i);
             continue;
         }
         if bytes[i..].starts_with(b"::") {
-            tokens.push(Token {
-                kind: TokenKind::ColonColon,
-            });
+            let start = i;
             i += 2;
+            push(TokenKind::ColonColon, start, i);
             continue;
         }
         if bytes[i] == b':' {
-            tokens.push(Token {
-                kind: TokenKind::Colon,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Colon, start, i);
             continue;
         }
         if bytes[i] == b'@' {
-            tokens.push(Token {
-                kind: TokenKind::At,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::At, start, i);
             continue;
         }
         if bytes[i] == b'?' {
-            tokens.push(Token {
-                kind: TokenKind::Question,
-            });
+            let start = i;
             i += 1;
+            push(TokenKind::Question, start, i);
             continue;
         }
 
         // Char literal
         if bytes[i] == b'\'' {
+            let start = i;
             i += 1;
             if i >= bytes.len() {
                 return Err(crate::error::Error::msg("unterminated char literal"));
@@ -458,16 +434,14 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             }
             i += 1;
 
-            tokens.push(Token {
-                kind: TokenKind::Char(ch),
-            });
+            push(TokenKind::Char(ch), start, i);
             continue;
         }
 
         // String literal
         if bytes[i] == b'"' {
-            i += 1;
             let start = i;
+            i += 1;
             let mut s = String::new();
             while i < bytes.len() {
                 match bytes[i] {
@@ -500,9 +474,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             if i < bytes.len() && bytes[i] == b'"' {
                 i += 1;
             }
-            tokens.push(Token {
-                kind: TokenKind::String(s),
-            });
+            push(TokenKind::String(s), start, i);
             continue;
         }
 
@@ -543,13 +515,12 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             }
 
             let text = &src[start..i];
-            tokens.push(Token {
-                kind: if is_float {
-                    TokenKind::Float(text.to_string())
-                } else {
-                    TokenKind::Integer(text.to_string())
-                },
-            });
+            let kind = if is_float {
+                TokenKind::Float(text.to_string())
+            } else {
+                TokenKind::Integer(text.to_string())
+            };
+            push(kind, start, i);
             continue;
         }
 
@@ -589,7 +560,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 "infixr" => TokenKind::KwInfixr,
                 _ => TokenKind::Ident(word.to_string()),
             };
-            tokens.push(Token { kind });
+            push(kind, start, i);
             continue;
         }
 
@@ -600,9 +571,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
     // Close any remaining indentation at EOF.
     while indent_stack.len() > 1 {
         indent_stack.pop();
-        tokens.push(Token {
-            kind: TokenKind::Dedent,
-        });
+        push(TokenKind::Dedent, i, i);
     }
 
     Ok(tokens)

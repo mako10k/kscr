@@ -788,6 +788,46 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_transitive_import_data_case_do_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_transitive_import_data_case_do_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Maybe(..)\n  data Maybe a = Nothing | Just a deriving (Eq, Show)\n",
+        )
+        .unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(
+            &b,
+            "module B where\n  export fromMaybe, mk\n  import A as OM\n  fromMaybe d m = case m of\n    OM.Nothing -> d\n    OM.Just x -> x\n  mk = OM.Just 1\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import B\n  main = do\n    print (intToString (fromMaybe 0 mk))\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cli_run_import_as_qualified_in_list_comprehension_smoke() {
         let dir = std::env::temp_dir().join(format!(
             "kscr_cli_run_import_as_qualified_in_list_comprehension_smoke_{}",

@@ -1,6 +1,27 @@
 use crate::{ast, error::Error, lexer, lexer::TokenKind, Result};
 use std::collections::HashMap;
 
+fn compute_line_starts(src: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (i, b) in src.as_bytes().iter().enumerate() {
+        if *b == b'\n' {
+            starts.push(i + 1);
+        }
+    }
+    starts
+}
+
+fn line_col(line_starts: &[usize], offset: usize) -> (usize, usize) {
+    // line_starts contains the byte offset of the first byte of each line.
+    // Line numbers are 1-based.
+    let line_idx = match line_starts.binary_search(&offset) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    };
+    let line_start = *line_starts.get(line_idx).unwrap_or(&0);
+    (line_idx + 1, offset.saturating_sub(line_start) + 1)
+}
+
 fn parse_maybe_qualified_ident(ts: &mut TokenStream) -> Result<String> {
     let mut s = ts.expect_ident()?;
     while matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
@@ -25,7 +46,8 @@ fn is_upper_by_last_segment(s: &str) -> bool {
 pub fn parse_module(src: &str) -> Result<ast::Module> {
     let tokens = lexer::lex(src)?;
     let fixities = collect_fixities(&tokens);
-    let mut ts = TokenStream::new(tokens, fixities);
+    let line_starts = compute_line_starts(src);
+    let mut ts = TokenStream::new(tokens, fixities, line_starts);
 
     ts.skip_newlines();
 
@@ -119,6 +141,7 @@ fn collect_fixities(tokens: &[lexer::Token]) -> HashMap<String, Fixity> {
 
         let Some(lexer::Token {
             kind: TokenKind::Integer(p),
+            ..
         }) = tokens.get(i)
         else {
             continue;
@@ -2084,16 +2107,36 @@ struct TokenStream {
     i: usize,
     gensym: u32,
     fixities: HashMap<String, Fixity>,
+    line_starts: Vec<usize>,
 }
 
 impl TokenStream {
-    fn new(tokens: Vec<lexer::Token>, fixities: HashMap<String, Fixity>) -> Self {
+    fn new(
+        tokens: Vec<lexer::Token>,
+        fixities: HashMap<String, Fixity>,
+        line_starts: Vec<usize>,
+    ) -> Self {
         Self {
             tokens,
             i: 0,
             gensym: 0,
             fixities,
+            line_starts,
         }
+    }
+
+    fn pos_str_at(&self, offset: usize) -> String {
+        let (line, col) = line_col(&self.line_starts, offset);
+        format!("{line}:{col}")
+    }
+
+    fn pos_str_here(&self) -> String {
+        let offset = self
+            .tokens
+            .get(self.i)
+            .map(|t| t.span.start)
+            .unwrap_or_else(|| self.tokens.last().map(|t| t.span.end).unwrap_or(0));
+        self.pos_str_at(offset)
     }
 
     fn fixity(&self, op: &str) -> Fixity {
@@ -2124,18 +2167,26 @@ impl TokenStream {
     }
 
     fn expect(&mut self, kind: TokenKind) -> Result<()> {
-        let got = self.bump().ok_or_else(|| Error::msg("unexpected EOF"))?;
+        let got = self
+            .bump()
+            .ok_or_else(|| Error::msg(format!("unexpected EOF at {}", self.pos_str_here())))?;
         if got == kind {
             Ok(())
         } else {
-            Err(Error::msg("unexpected token"))
+            Err(Error::msg(format!(
+                "unexpected token at {}",
+                self.pos_str_here()
+            )))
         }
     }
 
     fn expect_ident(&mut self) -> Result<String> {
         match self.bump() {
             Some(TokenKind::Ident(s)) => Ok(s),
-            _ => Err(Error::msg("expected identifier")),
+            _ => Err(Error::msg(format!(
+                "expected identifier at {}",
+                self.pos_str_here()
+            ))),
         }
     }
 
