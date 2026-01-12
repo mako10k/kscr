@@ -24,10 +24,7 @@ pub struct ImportDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportSpec {
     Name(String),
-    Type {
-        name: String,
-        ctors: ExportCtors,
-    },
+    Type { name: String, ctors: ExportCtors },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,7 +158,10 @@ pub enum Pattern {
     Or(Box<Pattern>, Box<Pattern>),
     As(String, Box<Pattern>),
     View(Box<Pattern>, Box<Expr>),
-    Constructor { name: String, args: Vec<Pattern> },
+    Constructor {
+        name: String,
+        args: Vec<Pattern>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,7 +184,10 @@ pub enum Type {
     Hole(Option<String>),
     /// Type identifier (lowercase names are treated as type variables; uppercase as constructors).
     Var(String),
-    App { head: Box<Type>, args: Vec<Type> },
+    App {
+        head: Box<Type>,
+        args: Vec<Type>,
+    },
     Func(Box<Type>, Box<Type>),
 }
 

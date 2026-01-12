@@ -67,8 +67,14 @@ pub enum IrExpr {
     String(String),
     Char(char),
     Var(String),
-    Lambda { params: Vec<String>, body: Box<IrExpr> },
-    Apply { func: Box<IrExpr>, args: Vec<IrExpr> },
+    Lambda {
+        params: Vec<String>,
+        body: Box<IrExpr>,
+    },
+    Apply {
+        func: Box<IrExpr>,
+        args: Vec<IrExpr>,
+    },
     If {
         cond: Box<IrExpr>,
         then_branch: Box<IrExpr>,
@@ -98,7 +104,10 @@ pub enum IrExpr {
     List(Vec<IrExpr>),
     Tuple(Vec<IrExpr>),
     Record(Vec<(String, IrExpr)>),
-    CheckedCast { expr: Box<IrExpr>, target: CastTarget },
+    CheckedCast {
+        expr: Box<IrExpr>,
+        target: CastTarget,
+    },
 }
 
 fn last_ty_seg(name: &str) -> &str {
@@ -380,7 +389,10 @@ fn lower_pat(
             Box::new(lower_pat(a, fresh, ctor_aliases)?),
             Box::new(lower_pat(b, fresh, ctor_aliases)?),
         ),
-        Pattern::Or(a, b) => IrPattern::Or(Box::new(lower_pat(a, fresh, ctor_aliases)?), Box::new(lower_pat(b, fresh, ctor_aliases)?)),
+        Pattern::Or(a, b) => IrPattern::Or(
+            Box::new(lower_pat(a, fresh, ctor_aliases)?),
+            Box::new(lower_pat(b, fresh, ctor_aliases)?),
+        ),
         Pattern::As(n, p) => IrPattern::As(n.clone(), Box::new(lower_pat(p, fresh, ctor_aliases)?)),
         Pattern::View(p, e) => IrPattern::View(
             Box::new(lower_pat(p, fresh, ctor_aliases)?),
@@ -390,7 +402,10 @@ fn lower_pat(
             let name = if name.contains('.') {
                 name.clone()
             } else {
-                ctor_aliases.get(name).cloned().unwrap_or_else(|| name.clone())
+                ctor_aliases
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| name.clone())
             };
             IrPattern::Constructor {
                 name,
@@ -409,9 +424,8 @@ fn lower_expr(
     ctor_aliases: &std::collections::HashMap<String, String>,
 ) -> Result<IrExpr> {
     use ast::Expr;
-    Ok(match expr { 
+    Ok(match expr {
         // literals
-
         Expr::Unit => IrExpr::Unit,
         Expr::Integer(s) => IrExpr::Integer(s.clone()),
         Expr::Float64(s) => IrExpr::Float64(s.clone()),
@@ -447,7 +461,10 @@ fn lower_expr(
                 match &b.pat {
                     ast::Pattern::Var(name) => {
                         acc = IrExpr::Let {
-                            bindings: vec![(name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?)],
+                            bindings: vec![(
+                                name.clone(),
+                                lower_expr(&b.expr, fresh, ctor_aliases)?,
+                            )],
                             body: Box::new(acc),
                         };
                     }
@@ -492,7 +509,11 @@ fn lower_expr(
                 .map(|a| {
                     Ok(IrCaseArm {
                         pat: lower_pat(&a.pat, fresh, ctor_aliases)?,
-                        guard: a.guard.as_ref().map(|e| lower_expr(e, fresh, ctor_aliases)).transpose()?,
+                        guard: a
+                            .guard
+                            .as_ref()
+                            .map(|e| lower_expr(e, fresh, ctor_aliases))
+                            .transpose()?,
                         body: lower_expr(&a.body, fresh, ctor_aliases)?,
                     })
                 })
@@ -509,7 +530,7 @@ fn lower_expr(
             } else {
                 inner
             }
-        },
+        }
         Expr::Where { expr, bindings } => {
             // Lower sequential where-bindings.
             let mut acc = lower_expr(expr, fresh, ctor_aliases)?;
@@ -517,7 +538,10 @@ fn lower_expr(
                 match &b.pat {
                     ast::Pattern::Var(name) => {
                         acc = IrExpr::Let {
-                            bindings: vec![(name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?)],
+                            bindings: vec![(
+                                name.clone(),
+                                lower_expr(&b.expr, fresh, ctor_aliases)?,
+                            )],
                             body: Box::new(acc),
                         };
                     }
@@ -738,7 +762,11 @@ fn force_thunk(g: &Globals, t: &std::rc::Rc<std::cell::RefCell<ThunkState>>) -> 
     Ok(v)
 }
 
-fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &str) -> Result<Value> {
+fn eval_var(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    name: &str,
+) -> Result<Value> {
     if let Some(v) = env.get(name) {
         return force_value(g, v.clone());
     }
@@ -829,7 +857,10 @@ fn eval_var(g: &Globals, env: &std::collections::HashMap<String, Value>, name: &
     }
 
     if name == "__builtinShowDict" {
-        return Ok(Value::Record(vec![("show".to_string(), Value::BuiltinShow)]));
+        return Ok(Value::Record(vec![(
+            "show".to_string(),
+            Value::BuiltinShow,
+        )]));
     }
 
     if name == "__eq" {
@@ -963,27 +994,33 @@ fn eval_expr(
             eval_expr(g, &env2, body)?
         }
         IrExpr::Cons { head, tail } => {
-            let hd = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
-                expr: (**head).clone(),
-                env: env.clone(),
-            })));
-            let tl = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
-                expr: (**tail).clone(),
-                env: env.clone(),
-            })));
+            let hd = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
+                ThunkState::Unevaluated {
+                    expr: (**head).clone(),
+                    env: env.clone(),
+                },
+            )));
+            let tl = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
+                ThunkState::Unevaluated {
+                    expr: (**tail).clone(),
+                    env: env.clone(),
+                },
+            )));
             Value::ListCons(Box::new(hd), Box::new(tl))
         }
         IrExpr::List(es) => {
             let mut out = Value::ListNil;
             for e in es.iter().rev() {
-                let hd = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
-                    expr: e.clone(),
-                    env: env.clone(),
-                })));
+                let hd = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
+                    ThunkState::Unevaluated {
+                        expr: e.clone(),
+                        env: env.clone(),
+                    },
+                )));
                 out = Value::ListCons(Box::new(hd), Box::new(out));
             }
             out
-        },
+        }
         IrExpr::Tuple(es) => Value::Tuple(
             es.iter()
                 .map(|e| {
@@ -1015,7 +1052,7 @@ fn eval_expr(
         IrExpr::CheckedCast { expr, target } => {
             let v = eval_expr(g, env, expr)?;
             checked_cast(g, v, *target)?
-        },
+        }
         IrExpr::Case { expr, arms } => {
             let scrut = eval_expr(g, env, expr)?;
             for arm in arms {
@@ -1035,7 +1072,11 @@ fn eval_expr(
             }
             return Err(Error::msg("non-exhaustive case"));
         }
-        IrExpr::IoBind { action, param, body } => {
+        IrExpr::IoBind {
+            action,
+            param,
+            body,
+        } => {
             let act = eval_expr(g, env, action)?;
             let Value::IoAction(act) = act else {
                 return Err(Error::msg("IoBind action did not evaluate to an IO action"));
@@ -1211,7 +1252,10 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
                 return Err(Error::msg("catch expects IO action"));
             };
             let handler = force_value(g, arg)?;
-            Ok(Value::IoAction(Box::new(IoAction::Catch { action: act, handler })))
+            Ok(Value::IoAction(Box::new(IoAction::Catch {
+                action: act,
+                handler,
+            })))
         }
         Value::BuiltinTry => {
             let act = force_value(g, arg)?;
@@ -1439,8 +1483,12 @@ fn ffi_add_i32(g: &Globals, a: Value, b: Value) -> Result<Value> {
 
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("ffiAddI32 expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("ffiAddI32 expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("ffiAddI32 expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("ffiAddI32 expects Integer"));
+    };
     let a = to_i32_checked(a, "ffiAddI32")?;
     let b = to_i32_checked(b, "ffiAddI32")?;
     let out = a
@@ -1455,8 +1503,12 @@ fn ffi_add_f32(g: &Globals, a: Value, b: Value) -> Result<Value> {
 
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Float64(a) = a else { return Err(Error::msg("ffiAddF32 expects Float64")) };
-    let Value::Float64(b) = b else { return Err(Error::msg("ffiAddF32 expects Float64")) };
+    let Value::Float64(a) = a else {
+        return Err(Error::msg("ffiAddF32 expects Float64"));
+    };
+    let Value::Float64(b) = b else {
+        return Err(Error::msg("ffiAddF32 expects Float64"));
+    };
     let a = to_f32_checked(a, "ffiAddF32")?;
     let b = to_f32_checked(b, "ffiAddF32")?;
     let out = a + b;
@@ -1469,8 +1521,12 @@ fn ffi_add_f32(g: &Globals, a: Value, b: Value) -> Result<Value> {
 fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("+ expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("+ expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("+ expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("+ expects Integer"));
+    };
 
     let out = a + b;
 
@@ -1480,8 +1536,12 @@ fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("- expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("- expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("- expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("- expects Integer"));
+    };
 
     let out = a - b;
 
@@ -1491,8 +1551,12 @@ fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("* expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("* expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("* expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("* expects Integer"));
+    };
 
     let out = a * b;
 
@@ -1502,8 +1566,12 @@ fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("/ expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("/ expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("/ expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("/ expects Integer"));
+    };
 
     if int_is_zero(&b) {
         return Err(Error::msg("division by zero"));
@@ -1517,96 +1585,138 @@ fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 fn eq_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("== expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("== expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("== expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("== expects Integer"));
+    };
     Ok(Value::Bool(a == b))
 }
 
 fn lt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("< expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("< expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("< expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("< expects Integer"));
+    };
     Ok(Value::Bool(a < b))
 }
 
 fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("<= expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("<= expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("<= expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("<= expects Integer"));
+    };
     Ok(Value::Bool(a <= b))
 }
 
 fn gt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("> expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("> expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("> expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("> expects Integer"));
+    };
     Ok(Value::Bool(a > b))
 }
 
 fn ge_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg(">= expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg(">= expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg(">= expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg(">= expects Integer"));
+    };
     Ok(Value::Bool(a >= b))
 }
 
 fn ne_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("/= expects Integer")) };
-    let Value::Integer(b) = b else { return Err(Error::msg("/= expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("/= expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("/= expects Integer"));
+    };
     Ok(Value::Bool(a != b))
 }
 
 fn and_bool(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
-    let Value::Bool(a) = a else { return Err(Error::msg("&& expects Bool")) };
+    let Value::Bool(a) = a else {
+        return Err(Error::msg("&& expects Bool"));
+    };
     if !a {
         return Ok(Value::Bool(false));
     }
     let b = force_value(g, b)?;
-    let Value::Bool(b) = b else { return Err(Error::msg("&& expects Bool")) };
+    let Value::Bool(b) = b else {
+        return Err(Error::msg("&& expects Bool"));
+    };
     Ok(Value::Bool(b))
 }
 
 fn or_bool(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
-    let Value::Bool(a) = a else { return Err(Error::msg("|| expects Bool")) };
+    let Value::Bool(a) = a else {
+        return Err(Error::msg("|| expects Bool"));
+    };
     if a {
         return Ok(Value::Bool(true));
     }
     let b = force_value(g, b)?;
-    let Value::Bool(b) = b else { return Err(Error::msg("|| expects Bool")) };
+    let Value::Bool(b) = b else {
+        return Err(Error::msg("|| expects Bool"));
+    };
     Ok(Value::Bool(b))
 }
 
 fn not_bool(g: &Globals, a: Value) -> Result<Value> {
     let a = force_value(g, a)?;
-    let Value::Bool(a) = a else { return Err(Error::msg("not expects Bool")) };
+    let Value::Bool(a) = a else {
+        return Err(Error::msg("not expects Bool"));
+    };
     Ok(Value::Bool(!a))
 }
 
 fn int_to_string(g: &Globals, a: Value) -> Result<Value> {
     let a = force_value(g, a)?;
-    let Value::Integer(a) = a else { return Err(Error::msg("intToString expects Integer")) };
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("intToString expects Integer"));
+    };
     Ok(Value::String(a.to_string()))
 }
 
 fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
     let a = force_value(g, a)?;
-    let Value::Bool(a) = a else { return Err(Error::msg("boolToString expects Bool")) };
+    let Value::Bool(a) = a else {
+        return Err(Error::msg("boolToString expects Bool"));
+    };
     Ok(Value::String(if a { "True" } else { "False" }.to_string()))
 }
 
 fn str_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
     let b = force_value(g, b)?;
-    let Value::String(a) = a else { return Err(Error::msg("++ expects String")) };
-    let Value::String(b) = b else { return Err(Error::msg("++ expects String")) };
+    let Value::String(a) = a else {
+        return Err(Error::msg("++ expects String"));
+    };
+    let Value::String(b) = b else {
+        return Err(Error::msg("++ expects String"));
+    };
     Ok(Value::String(format!("{a}{b}")))
 }
 
@@ -1708,7 +1818,9 @@ fn show_to_string(g: &Globals, a: Value) -> Result<Value> {
 fn show_with_dict(g: &Globals, dict: Value, a: Value) -> Result<Value> {
     let dict = force_value(g, dict)?;
     let Value::Record(fields) = dict else {
-        return Err(Error::msg("__show/__toString expects a Show dictionary record"));
+        return Err(Error::msg(
+            "__show/__toString expects a Show dictionary record",
+        ));
     };
 
     let Some((_, show_fn)) = fields.into_iter().find(|(k, _)| k == "show") else {
@@ -1749,18 +1861,22 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
         }
 
         (Value::Record(mut a_fields), Value::Record(mut b_fields)) => {
-            let a_ctor = a_fields
-                .iter()
-                .find_map(|(k, v)| if k == "__ctor" { Some(v.clone()) } else { None });
-            let a_args = a_fields
-                .iter()
-                .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
-            let b_ctor = b_fields
-                .iter()
-                .find_map(|(k, v)| if k == "__ctor" { Some(v.clone()) } else { None });
-            let b_args = b_fields
-                .iter()
-                .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
+            let a_ctor =
+                a_fields
+                    .iter()
+                    .find_map(|(k, v)| if k == "__ctor" { Some(v.clone()) } else { None });
+            let a_args =
+                a_fields
+                    .iter()
+                    .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
+            let b_ctor =
+                b_fields
+                    .iter()
+                    .find_map(|(k, v)| if k == "__ctor" { Some(v.clone()) } else { None });
+            let b_args =
+                b_fields
+                    .iter()
+                    .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
 
             if let (Some(a_ctor), Some(a_args), Some(b_ctor), Some(b_args)) =
                 (a_ctor, a_args, b_ctor, b_args)
@@ -1861,19 +1977,25 @@ fn match_pat(
                     {
                         aa == *b
                     }
-                },
+                }
                 (IrLiteral::Float64(a), Value::Float64(b)) => parse_f64(a)? == *b,
                 (IrLiteral::Bool(a), Value::Bool(b)) => a == b,
                 (IrLiteral::String(a), Value::String(b)) => a == b,
                 (IrLiteral::Char(a), Value::Char(b)) => a == b,
                 _ => false,
             };
-            if ok { Some(std::collections::HashMap::new()) } else { None }
+            if ok {
+                Some(std::collections::HashMap::new())
+            } else {
+                None
+            }
         }
         (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => {
             let mut out = std::collections::HashMap::new();
             for (p, v) in ps.iter().zip(vs.iter()) {
-                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                let Some(b) = match_pat(g, env, p, v)? else {
+                    return Ok(None);
+                };
                 out.extend(b);
             }
             Some(out)
@@ -1883,22 +2005,36 @@ fn match_pat(
             let mut cur = v.clone();
             for p in ps.iter() {
                 let cur_forced = force_value(g, cur)?;
-                let Value::ListCons(h, t) = cur_forced else { return Ok(None) };
-                let Some(b) = match_pat(g, env, p, &h)? else { return Ok(None) };
+                let Value::ListCons(h, t) = cur_forced else {
+                    return Ok(None);
+                };
+                let Some(b) = match_pat(g, env, p, &h)? else {
+                    return Ok(None);
+                };
                 out.extend(b);
                 cur = *t;
             }
             let cur = force_value(g, cur)?;
-            if matches!(cur, Value::ListNil) { Some(out) } else { None }
+            if matches!(cur, Value::ListNil) {
+                Some(out)
+            } else {
+                None
+            }
         }
         (P::Cons(hd, tl), v) => {
             let v = v.clone();
             let v = force_value(g, v)?;
-            let Value::ListCons(h, t) = v else { return Ok(None) };
+            let Value::ListCons(h, t) = v else {
+                return Ok(None);
+            };
             let mut out = std::collections::HashMap::new();
-            let Some(b_hd) = match_pat(g, env, hd, &h)? else { return Ok(None) };
+            let Some(b_hd) = match_pat(g, env, hd, &h)? else {
+                return Ok(None);
+            };
             out.extend(b_hd);
-            let Some(b_tl) = match_pat(g, env, tl, &t)? else { return Ok(None) };
+            let Some(b_tl) = match_pat(g, env, tl, &t)? else {
+                return Ok(None);
+            };
             out.extend(b_tl);
             Some(out)
         }
@@ -1911,7 +2047,9 @@ fn match_pat(
                 let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
                     return Ok(None);
                 };
-                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                let Some(b) = match_pat(g, env, p, v)? else {
+                    return Ok(None);
+                };
                 out.extend(b);
             }
             Some(out)
@@ -1925,7 +2063,9 @@ fn match_pat(
                 let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
                     return Ok(None);
                 };
-                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                let Some(b) = match_pat(g, env, p, v)? else {
+                    return Ok(None);
+                };
                 out.extend(b);
             }
 
@@ -1941,7 +2081,9 @@ fn match_pat(
             Some(out)
         }
         (P::As(n, p), v) => {
-            let Some(mut b) = match_pat(g, env, p, v)? else { return Ok(None) };
+            let Some(mut b) = match_pat(g, env, p, v)? else {
+                return Ok(None);
+            };
             b.insert(n.clone(), v.clone());
             Some(b)
         }
@@ -1975,7 +2117,9 @@ fn match_pat(
 
             let mut out = std::collections::HashMap::new();
             for (p, v) in args.iter().zip(vs.iter()) {
-                let Some(b) = match_pat(g, env, p, v)? else { return Ok(None) };
+                let Some(b) = match_pat(g, env, p, v)? else {
+                    return Ok(None);
+                };
                 out.extend(b);
             }
             Some(out)
@@ -2037,7 +2181,8 @@ mod show_roundtrip_tests {
 
         for v in cases {
             let s1 = show_value_str(&g0, v).unwrap();
-            let s2 = eval_show_str(&s1).unwrap_or_else(|e| panic!("failed to roundtrip: {s1}: {e}"));
+            let s2 =
+                eval_show_str(&s1).unwrap_or_else(|e| panic!("failed to roundtrip: {s1}: {e}"));
             assert_eq!(s1, s2);
         }
     }

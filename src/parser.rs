@@ -219,17 +219,15 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::Question,
-            ) => {
-                match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
-                    ParsedBind::Binding(b) => {
-                        flush_pending_fun_item(ts, &mut items, pending.take())?;
-                        items.push(ast::Item::Binding(b));
-                    }
-                    ParsedBind::FunClause(c) => {
-                        push_fun_clause_item(ts, &mut items, &mut pending, c)?;
-                    }
+            ) => match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
+                ParsedBind::Binding(b) => {
+                    flush_pending_fun_item(ts, &mut items, pending.take())?;
+                    items.push(ast::Item::Binding(b));
                 }
-            }
+                ParsedBind::FunClause(c) => {
+                    push_fun_clause_item(ts, &mut items, &mut pending, c)?;
+                }
+            },
             Some(_) => return Err(Error::msg("unexpected token at top-level")),
             None => break,
         }
@@ -428,7 +426,9 @@ fn parse_fixity_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     };
 
     let prec = match ts.bump() {
-        Some(TokenKind::Integer(s)) => s.parse::<u8>().map_err(|_| Error::msg("invalid fixity precedence"))?,
+        Some(TokenKind::Integer(s)) => s
+            .parse::<u8>()
+            .map_err(|_| Error::msg("invalid fixity precedence"))?,
         _ => return Err(Error::msg("expected fixity precedence")),
     };
 
@@ -469,7 +469,9 @@ fn flush_pending_fun_item(
     let Some(p) = pending else {
         return Ok(());
     };
-    out.push(ast::Item::Binding(desugar_fun(ts, p.name, p.arity, p.clauses)));
+    out.push(ast::Item::Binding(desugar_fun(
+        ts, p.name, p.arity, p.clauses,
+    )));
     Ok(())
 }
 
@@ -645,7 +647,8 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
         let save = ts.i;
         if let Ok(lhs) = parse_cons_pattern(ts) {
             if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
-                || (is_sym_op_token(ts.peek_kind()) && !matches!(ts.peek_kind(), Some(TokenKind::Colon)))
+                || (is_sym_op_token(ts.peek_kind())
+                    && !matches!(ts.peek_kind(), Some(TokenKind::Colon)))
             {
                 let op = parse_operator_name(ts)?;
                 let rhs = parse_cons_pattern(ts)?;
@@ -675,7 +678,8 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
     if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
         let save = ts.i;
         ts.bump();
-        let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind());
+        let op_ok =
+            matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind());
         ts.i = save;
 
         if op_ok {
@@ -1026,8 +1030,7 @@ fn parse_annot(ts: &mut TokenStream, expr: ast::Expr, stop: Stop) -> Result<ast:
 fn is_pred_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
     matches!(
         kind,
-        None
-            | Some(TokenKind::Newline)
+        None | Some(TokenKind::Newline)
             | Some(TokenKind::Comma)
             | Some(TokenKind::RParen)
             | Some(TokenKind::FatArrow)
@@ -1038,10 +1041,22 @@ fn is_pred_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
 fn parse_predicate(ts: &mut TokenStream, stop: Stop) -> Result<ast::Predicate> {
     let name = ts.expect_ident()?;
     match name.as_str() {
-        "Show" => Ok(ast::Predicate::Show(parse_type_expr(ts, stop, is_pred_end)?)),
-        "ShowRow" => Ok(ast::Predicate::ShowRow(parse_type_expr(ts, stop, is_pred_end)?)),
+        "Show" => Ok(ast::Predicate::Show(parse_type_expr(
+            ts,
+            stop,
+            is_pred_end,
+        )?)),
+        "ShowRow" => Ok(ast::Predicate::ShowRow(parse_type_expr(
+            ts,
+            stop,
+            is_pred_end,
+        )?)),
         "Eq" => Ok(ast::Predicate::Eq(parse_type_expr(ts, stop, is_pred_end)?)),
-        "EqRow" => Ok(ast::Predicate::EqRow(parse_type_expr(ts, stop, is_pred_end)?)),
+        "EqRow" => Ok(ast::Predicate::EqRow(parse_type_expr(
+            ts,
+            stop,
+            is_pred_end,
+        )?)),
         "Lacks" => {
             let label = match ts.bump() {
                 Some(TokenKind::String(s)) => s,
@@ -1067,7 +1082,10 @@ fn parse_qual_type(ts: &mut TokenStream, stop: Stop) -> Result<ast::QualType> {
                 TokenKind::RParen => {
                     depth -= 1;
                     if depth == 0 {
-                        ok = matches!(ts.tokens.get(j + 1).map(|t| &t.kind), Some(TokenKind::FatArrow));
+                        ok = matches!(
+                            ts.tokens.get(j + 1).map(|t| &t.kind),
+                            Some(TokenKind::FatArrow)
+                        );
                         break;
                     }
                 }
@@ -1315,7 +1333,9 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
         if !matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
             match parse_binding_or_fun_clause(ts, Stop::SemiOrRBrace)? {
                 ParsedBind::Binding(b) => bindings.push(b),
-                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bindings, &mut pending, c),
+                ParsedBind::FunClause(c) => {
+                    push_fun_clause_binding(ts, &mut bindings, &mut pending, c)
+                }
             }
             while matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
                 ts.bump();
@@ -1327,7 +1347,9 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
                         flush_pending_fun_binding(ts, &mut bindings, pending.take());
                         bindings.push(b);
                     }
-                    ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bindings, &mut pending, c),
+                    ParsedBind::FunClause(c) => {
+                        push_fun_clause_binding(ts, &mut bindings, &mut pending, c)
+                    }
                 }
             }
         }
@@ -1631,7 +1653,13 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
             }
             Some(TokenKind::Colon) => {
                 ts.bump();
-                (":".to_string(), Fixity { prec: 55, assoc: Assoc::Right })
+                (
+                    ":".to_string(),
+                    Fixity {
+                        prec: 55,
+                        assoc: Assoc::Right,
+                    },
+                )
             }
             Some(TokenKind::EqEq) => {
                 ts.bump();
@@ -2069,7 +2097,10 @@ impl TokenStream {
     }
 
     fn fixity(&self, op: &str) -> Fixity {
-        self.fixities.get(op).copied().unwrap_or_else(|| default_fixity(op))
+        self.fixities
+            .get(op)
+            .copied()
+            .unwrap_or_else(|| default_fixity(op))
     }
 
     fn fresh_name(&mut self, prefix: &str) -> String {
@@ -2130,7 +2161,9 @@ impl TokenStream {
             (Stop::LetBind, Some(TokenKind::Semicolon | TokenKind::KwIn)) => false,
             (Stop::SemiOrRBrace, Some(TokenKind::Semicolon | TokenKind::RBrace)) => false,
             (Stop::Pattern, Some(TokenKind::Arrow | TokenKind::Eq | TokenKind::Comma)) => false,
-            (Stop::Pattern, Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace)) => false,
+            (Stop::Pattern, Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace)) => {
+                false
+            }
             (Stop::Pattern, Some(TokenKind::Dedent)) => false,
             (Stop::LineEnd, _) => true,
             _ => true,

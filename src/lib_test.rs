@@ -376,7 +376,10 @@ fn lexer_char_literal() {
         .collect();
 
     assert!(matches!(tokens[2].kind, crate::lexer::TokenKind::Char('a')));
-    assert!(matches!(tokens[5].kind, crate::lexer::TokenKind::Char('\n')));
+    assert!(matches!(
+        tokens[5].kind,
+        crate::lexer::TokenKind::Char('\n')
+    ));
 }
 
 #[test]
@@ -495,7 +498,9 @@ fn parser_record_loose_pattern_with_rest() {
     let m = crate::parser::parse_module("{x: a, ...r} = r0\n").unwrap();
     use crate::ast::{Item, Pattern};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::RecordLoose(_, Some(rest)) if rest == "r")),
+        Item::Binding(b) => {
+            assert!(matches!(&b.pat, Pattern::RecordLoose(_, Some(rest)) if rest == "r"))
+        }
         _ => panic!("expected binding"),
     }
 }
@@ -769,7 +774,9 @@ fn ir_run_main_ffi_add_i32_arg_out_of_range_is_error() {
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
     let err = crate::ir::run_main(&ir).unwrap_err();
-    assert!(err.to_string().contains("ffiAddI32: integer out of range for i32"));
+    assert!(err
+        .to_string()
+        .contains("ffiAddI32: integer out of range for i32"));
 }
 
 #[test]
@@ -805,7 +812,8 @@ fn ir_run_main_ffi_puts_ok() {
 
 #[test]
 fn ir_run_main_show_to_string() {
-    let src = "main = do\n  stdoutWrite (show (1 + 2))\n  stdoutWrite (toString (1 == 1))\n  IO ()\n";
+    let src =
+        "main = do\n  stdoutWrite (show (1 + 2))\n  stdoutWrite (toString (1 == 1))\n  IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -898,7 +906,10 @@ fn ir_lowering_loose_record_pattern() {
     let crate::ir::IrExpr::Case { arms, .. } = expr else {
         panic!("expected case");
     };
-    assert!(matches!(arms[0].pat, crate::ir::IrPattern::RecordLoose(_, _)));
+    assert!(matches!(
+        arms[0].pat,
+        crate::ir::IrPattern::RecordLoose(_, _)
+    ));
 }
 
 #[test]
@@ -985,8 +996,14 @@ fn ir_lowering_top_level_pattern_binding() {
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    assert!(ir.items.iter().any(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == "a")));
-    assert!(ir.items.iter().any(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == "b")));
+    assert!(ir
+        .items
+        .iter()
+        .any(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == "a")));
+    assert!(ir
+        .items
+        .iter()
+        .any(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == "b")));
 }
 
 #[test]
@@ -1021,7 +1038,8 @@ fn ir_run_main_cons_expr_and_pattern() {
 
 #[test]
 fn ir_cons_expr_head_is_lazy() {
-    let src = "main = let\n  bad = case True of\n    False -> 0\nin case (bad:[]) of\n  _:xs -> IO ()\n";
+    let src =
+        "main = let\n  bad = case True of\n    False -> 0\nin case (bad:[]) of\n  _:xs -> IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1031,7 +1049,8 @@ fn ir_cons_expr_head_is_lazy() {
 
 #[test]
 fn ir_cons_expr_tail_is_lazy() {
-    let src = "main = let\n  bad = case True of\n    False -> []\nin case (1:bad) of\n  x:xs -> IO ()\n";
+    let src =
+        "main = let\n  bad = case True of\n    False -> []\nin case (1:bad) of\n  x:xs -> IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1398,7 +1417,10 @@ fn parser_type_annotations() {
     assert!(matches!(
         b0.expr,
         Expr::Annot {
-            ty: QualType { ty: Type::Integer, .. },
+            ty: QualType {
+                ty: Type::Integer,
+                ..
+            },
             ..
         }
     ));
@@ -1409,7 +1431,10 @@ fn parser_type_annotations() {
     assert!(matches!(
         b1.expr,
         Expr::Annot {
-            ty: QualType { ty: Type::Float64, .. },
+            ty: QualType {
+                ty: Type::Float64,
+                ..
+            },
             ..
         }
     ));
@@ -1423,7 +1448,10 @@ fn parser_type_annotations() {
     assert!(matches!(
         v[0],
         Expr::Annot {
-            ty: QualType { ty: Type::Integer, .. },
+            ty: QualType {
+                ty: Type::Integer,
+                ..
+            },
             ..
         }
     ));
@@ -1443,7 +1471,10 @@ fn parser_type_exprs() {
     assert!(matches!(
         b0.expr,
         Expr::Annot {
-            ty: QualType { ty: Type::List(_), .. },
+            ty: QualType {
+                ty: Type::List(_),
+                ..
+            },
             ..
         }
     ));
@@ -1454,7 +1485,10 @@ fn parser_type_exprs() {
     assert!(matches!(
         b1.expr,
         Expr::Annot {
-            ty: QualType { ty: Type::Tuple(_), .. },
+            ty: QualType {
+                ty: Type::Tuple(_),
+                ..
+            },
             ..
         }
     ));
@@ -1465,7 +1499,10 @@ fn parser_type_exprs() {
     assert!(matches!(
         b2.expr,
         Expr::Annot {
-            ty: QualType { ty: Type::Record(_), .. },
+            ty: QualType {
+                ty: Type::Record(_),
+                ..
+            },
             ..
         }
     ));
@@ -1476,7 +1513,10 @@ fn parser_type_exprs() {
     assert!(matches!(
         b3.expr,
         Expr::Annot {
-            ty: QualType { ty: Type::App { .. }, .. },
+            ty: QualType {
+                ty: Type::App { .. },
+                ..
+            },
             ..
         }
     ));
@@ -1487,7 +1527,10 @@ fn parser_type_exprs() {
     assert!(matches!(
         b4.expr,
         Expr::Annot {
-            ty: QualType { ty: Type::Func(_, _), .. },
+            ty: QualType {
+                ty: Type::Func(_, _),
+                ..
+            },
             ..
         }
     ));

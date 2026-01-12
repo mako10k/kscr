@@ -30,7 +30,10 @@ pub enum Ty {
     ///
     /// Produced by `{x, ...}` pattern matching; the `rest` captures the remaining fields.
     RecordOpen(Vec<(String, Ty)>, Box<Ty>),
-    App { head: Box<Ty>, args: Vec<Ty> },
+    App {
+        head: Box<Ty>,
+        args: Vec<Ty>,
+    },
     Func(Box<Ty>, Box<Ty>),
 }
 
@@ -314,7 +317,8 @@ fn occurs_in(subst: &Subst, seen: &mut HashSet<u32>, v: u32, t: &Ty) -> bool {
         Ty::Tuple(ts) => ts.iter().any(|t| occurs_in(subst, seen, v, t)),
         Ty::Record(fields) => fields.iter().any(|(_, t)| occurs_in(subst, seen, v, t)),
         Ty::RecordOpen(fields, rest) => {
-            fields.iter().any(|(_, t)| occurs_in(subst, seen, v, t)) || occurs_in(subst, seen, v, rest)
+            fields.iter().any(|(_, t)| occurs_in(subst, seen, v, t))
+                || occurs_in(subst, seen, v, rest)
         }
         Ty::App { head, args } => {
             occurs_in(subst, seen, v, head) || args.iter().any(|t| occurs_in(subst, seen, v, t))
@@ -363,7 +367,10 @@ pub enum Constraint {
     Eq(Ty),
     EqRow(Ty),
     /// Field absence constraint for row types (records/open records/row variables).
-    Lacks { label: String, row: Ty },
+    Lacks {
+        label: String,
+        row: Ty,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -508,7 +515,9 @@ pub fn ftv_ty(ty: &Ty) -> HashSet<u32> {
 
 fn ftv_constraint(c: &Constraint) -> HashSet<u32> {
     match c {
-        Constraint::Show(t) | Constraint::ShowRow(t) | Constraint::Eq(t) | Constraint::EqRow(t) => ftv_ty(t),
+        Constraint::Show(t) | Constraint::ShowRow(t) | Constraint::Eq(t) | Constraint::EqRow(t) => {
+            ftv_ty(t)
+        }
         Constraint::Lacks { row, .. } => ftv_ty(row),
     }
 }
@@ -774,12 +783,30 @@ fn infer_pat_in(
             let mut binds_a = base_binds.clone();
             let mut seen_a = base_seen.clone();
             let mut cs_a = Vec::new();
-            let t_a = infer_pat_in(cx, data_env, subst, env, a, &mut binds_a, &mut seen_a, &mut cs_a)?;
+            let t_a = infer_pat_in(
+                cx,
+                data_env,
+                subst,
+                env,
+                a,
+                &mut binds_a,
+                &mut seen_a,
+                &mut cs_a,
+            )?;
 
             let mut binds_b = base_binds;
             let mut seen_b = base_seen;
             let mut cs_b = Vec::new();
-            let t_b = infer_pat_in(cx, data_env, subst, env, b, &mut binds_b, &mut seen_b, &mut cs_b)?;
+            let t_b = infer_pat_in(
+                cx,
+                data_env,
+                subst,
+                env,
+                b,
+                &mut binds_b,
+                &mut seen_b,
+                &mut cs_b,
+            )?;
 
             let su_t = unify(apply(subst, t_a.clone()), apply(subst, t_b.clone()))?;
             *subst = compose(&su_t, subst);
@@ -1058,7 +1085,9 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
     );
 
     // == :: Eq a => a -> a -> Bool
-    let Ty::Var(v) = cx.fresh() else { unreachable!() };
+    let Ty::Var(v) = cx.fresh() else {
+        unreachable!()
+    };
     env.insert(
         "==".to_string(),
         Scheme {
@@ -1139,7 +1168,9 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
     );
 
     // /= :: Eq a => a -> a -> Bool
-    let Ty::Var(v) = cx.fresh() else { unreachable!() };
+    let Ty::Var(v) = cx.fresh() else {
+        unreachable!()
+    };
     env.insert(
         "/=".to_string(),
         Scheme {
@@ -1243,7 +1274,9 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
     );
 
     // show :: Show a => a -> String
-    let Ty::Var(v) = cx.fresh() else { unreachable!() };
+    let Ty::Var(v) = cx.fresh() else {
+        unreachable!()
+    };
     env.insert(
         "show".to_string(),
         Scheme {
@@ -1257,7 +1290,9 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
     );
 
     // toString :: Show a => a -> String
-    let Ty::Var(v) = cx.fresh() else { unreachable!() };
+    let Ty::Var(v) = cx.fresh() else {
+        unreachable!()
+    };
     env.insert(
         "toString".to_string(),
         Scheme {
@@ -1337,7 +1372,9 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
     );
 
     // throw :: forall a. String -> IO a
-    let Ty::Var(a) = cx.fresh() else { unreachable!() };
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
     env.insert(
         "throw".to_string(),
         Scheme {
@@ -1354,7 +1391,9 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
     );
 
     // catch :: forall a. IO a -> (String -> IO a) -> IO a
-    let Ty::Var(a) = cx.fresh() else { unreachable!() };
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
     let io_a = Ty::App {
         head: Box::new(Ty::Con("IO".to_string())),
         args: vec![Ty::Var(a)],
@@ -1368,12 +1407,17 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         Scheme {
             vars: vec![a],
             constraints: vec![],
-            ty: Ty::Func(Box::new(io_a.clone()), Box::new(Ty::Func(Box::new(handler), Box::new(io_a)))),
+            ty: Ty::Func(
+                Box::new(io_a.clone()),
+                Box::new(Ty::Func(Box::new(handler), Box::new(io_a))),
+            ),
         },
     );
 
     // try :: forall a. IO a -> IO (Prelude.Either String a)
-    let Ty::Var(a) = cx.fresh() else { unreachable!() };
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
     let io_a = Ty::App {
         head: Box::new(Ty::Con("IO".to_string())),
         args: vec![Ty::Var(a)],
@@ -1489,7 +1533,14 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
 
             let mut vars: Vec<u32> = ftv_ty(&ty).into_iter().collect();
             vars.sort_unstable();
-            env.insert(ctor.name.clone(), Scheme { vars, constraints: vec![], ty });
+            env.insert(
+                ctor.name.clone(),
+                Scheme {
+                    vars,
+                    constraints: vec![],
+                    ty,
+                },
+            );
         }
     }
 
@@ -1514,7 +1565,9 @@ fn lower_surface_type_with_params(
 }
 
 fn apply_constraints(subst: &Subst, cs: Vec<Constraint>) -> Vec<Constraint> {
-    cs.into_iter().map(|c| apply_constraint(subst, &c)).collect()
+    cs.into_iter()
+        .map(|c| apply_constraint(subst, &c))
+        .collect()
 }
 
 type DataEnv = HashMap<String, ast::DataDecl>;
@@ -1537,7 +1590,10 @@ fn lower_surface_type_with_tys(
 ) -> Result<Ty> {
     use ast::Type;
     Ok(match ty {
-        Type::Var(name) => params.get(name).cloned().unwrap_or_else(|| Ty::Con(name.clone())),
+        Type::Var(name) => params
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Ty::Con(name.clone())),
         Type::Unit => Ty::Con("Unit".to_string()),
         Type::Integer => Ty::Con("Integer".to_string()),
         Type::Bool => Ty::Con("Bool".to_string()),
@@ -1578,7 +1634,11 @@ fn lower_surface_type_with_tys(
             .get(name)
             .cloned()
             .ok_or_else(|| Error::msg("type holes in data declarations are not supported"))?,
-        Type::Hole(None) => return Err(Error::msg("type holes in data declarations are not supported")),
+        Type::Hole(None) => {
+            return Err(Error::msg(
+                "type holes in data declarations are not supported",
+            ))
+        }
     })
 }
 
@@ -1587,7 +1647,10 @@ fn show_primitives(name: &str) -> bool {
 }
 
 fn eq_primitives(name: &str) -> bool {
-    matches!(name, "Integer" | "Bool" | "String" | "Char" | "Unit" | "Float64")
+    matches!(
+        name,
+        "Integer" | "Bool" | "String" | "Char" | "Unit" | "Float64"
+    )
 }
 
 fn data_derives_show(d: &ast::DataDecl) -> bool {
@@ -1658,7 +1721,11 @@ fn entails_show(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Resul
     })
 }
 
-fn entails_show_row(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
+fn entails_show_row(
+    data_env: &DataEnv,
+    ty: &Ty,
+    in_progress: &mut Vec<Ty>,
+) -> Result<Vec<Constraint>> {
     Ok(match ty {
         Ty::Var(_) => vec![Constraint::ShowRow(ty.clone())],
         Ty::Record(fields) => {
@@ -1676,7 +1743,11 @@ fn entails_show_row(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> R
             out.extend(entails_show_row(data_env, rest, in_progress)?);
             out
         }
-        _ => return Err(Error::msg(format!("cannot satisfy constraint: ShowRow {ty}"))),
+        _ => {
+            return Err(Error::msg(format!(
+                "cannot satisfy constraint: ShowRow {ty}"
+            )))
+        }
     })
 }
 
@@ -1740,7 +1811,11 @@ fn entails_eq(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<
     })
 }
 
-fn entails_eq_row(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
+fn entails_eq_row(
+    data_env: &DataEnv,
+    ty: &Ty,
+    in_progress: &mut Vec<Ty>,
+) -> Result<Vec<Constraint>> {
     Ok(match ty {
         Ty::Var(_) => vec![Constraint::EqRow(ty.clone())],
         Ty::Record(fields) => {
@@ -1902,7 +1977,9 @@ fn infer_expr_in(
         Expr::Unit => Ok((Subst::new(), vec![], Ty::Con("Unit".to_string()))),
         Expr::Integer(_) => Ok((Subst::new(), vec![], Ty::Con("Integer".to_string()))),
         Expr::Float64(_) => Ok((Subst::new(), vec![], Ty::Con("Float64".to_string()))),
-        Expr::Bool(true) | Expr::Bool(false) => Ok((Subst::new(), vec![], Ty::Con("Bool".to_string()))),
+        Expr::Bool(true) | Expr::Bool(false) => {
+            Ok((Subst::new(), vec![], Ty::Con("Bool".to_string())))
+        }
         Expr::String(_) => Ok((Subst::new(), vec![], Ty::Con("String".to_string()))),
         Expr::Char(_) => Ok((Subst::new(), vec![], Ty::Con("Char".to_string()))),
 
@@ -2247,8 +2324,17 @@ fn infer_expr_in(
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
                 let mut cs_pat = Vec::new();
-                let pat_ty = infer_pat_in(cx, data_env, &mut s, env, &pat, &mut binds, &mut seen, &mut cs_pat)
-                    .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
+                let pat_ty = infer_pat_in(
+                    cx,
+                    data_env,
+                    &mut s,
+                    env,
+                    &pat,
+                    &mut binds,
+                    &mut seen,
+                    &mut cs_pat,
+                )
+                .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
 
                 let su_pat = unify(apply(&s, pat_ty), apply(&s, scrut_ty.clone()))
                     .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
@@ -2312,8 +2398,17 @@ fn infer_expr_in(
                         let mut binds = Vec::new();
                         let mut seen = HashSet::new();
                         let mut cs_pat = Vec::new();
-                        let pat_ty = infer_pat_in(cx, data_env, &mut s, &env2, &pat, &mut binds, &mut seen, &mut cs_pat)
-                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
+                        let pat_ty = infer_pat_in(
+                            cx,
+                            data_env,
+                            &mut s,
+                            &env2,
+                            &pat,
+                            &mut binds,
+                            &mut seen,
+                            &mut cs_pat,
+                        )
+                        .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
 
                         let env_in = apply_env(&s, &env2);
                         let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, expr)
@@ -2605,7 +2700,10 @@ fn desugar_qualified_expr(expr: ast::Expr, allowed: &HashSet<String>) -> Result<
     })
 }
 
-fn desugar_qualified_case_arm(arm: ast::CaseArm, allowed: &HashSet<String>) -> Result<ast::CaseArm> {
+fn desugar_qualified_case_arm(
+    arm: ast::CaseArm,
+    allowed: &HashSet<String>,
+) -> Result<ast::CaseArm> {
     Ok(ast::CaseArm {
         pat: desugar_qualified_pattern(arm.pat, allowed)?,
         guard: arm
@@ -2741,7 +2839,10 @@ fn desugar_qualified_type(ty: ast::Type, allowed: &HashSet<String>) -> Result<as
     })
 }
 
-fn desugar_qualified_predicate(p: ast::Predicate, allowed: &HashSet<String>) -> Result<ast::Predicate> {
+fn desugar_qualified_predicate(
+    p: ast::Predicate,
+    allowed: &HashSet<String>,
+) -> Result<ast::Predicate> {
     Ok(match p {
         ast::Predicate::Show(t) => ast::Predicate::Show(desugar_qualified_type(t, allowed)?),
         ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(desugar_qualified_type(t, allowed)?),
@@ -2754,7 +2855,10 @@ fn desugar_qualified_predicate(p: ast::Predicate, allowed: &HashSet<String>) -> 
     })
 }
 
-fn desugar_qualified_qual_type(qt: ast::QualType, allowed: &HashSet<String>) -> Result<ast::QualType> {
+fn desugar_qualified_qual_type(
+    qt: ast::QualType,
+    allowed: &HashSet<String>,
+) -> Result<ast::QualType> {
     Ok(ast::QualType {
         preds: qt
             .preds
@@ -2774,7 +2878,9 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
         .into_iter()
         .map(|it| {
             Ok(match it {
-                ast::Item::Binding(b) => ast::Item::Binding(desugar_qualified_binding(b, &allowed)?),
+                ast::Item::Binding(b) => {
+                    ast::Item::Binding(desugar_qualified_binding(b, &allowed)?)
+                }
                 ast::Item::TypeAlias(mut ta) => {
                     ta.ty = desugar_qualified_type(ta.ty, &allowed)?;
                     ast::Item::TypeAlias(ta)
@@ -2845,7 +2951,10 @@ impl ModuleLoader {
                     .map(|p| p.display().to_string())
                     .collect();
                 chain.push(p.display().to_string());
-                return Err(Error::msg(format!("cyclic imports: {}", chain.join(" -> "))));
+                return Err(Error::msg(format!(
+                    "cyclic imports: {}",
+                    chain.join(" -> ")
+                )));
             }
 
             let imported = self.load_ast(&p)?;
@@ -3021,7 +3130,11 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
     Ok(out)
 }
 
-fn qualify_items(module: &ast::Module, qual: &str, exports: &HashSet<String>) -> Result<Vec<ast::Item>> {
+fn qualify_items(
+    module: &ast::Module,
+    qual: &str,
+    exports: &HashSet<String>,
+) -> Result<Vec<ast::Item>> {
     let mut values = HashSet::new();
     let mut types = HashSet::new();
     let mut ctors = HashSet::new();
@@ -3045,21 +3158,33 @@ fn qualify_items(module: &ast::Module, qual: &str, exports: &HashSet<String>) ->
     let val_map: HashMap<String, String> = values
         .iter()
         .map(|n| {
-            let q = if exports.contains(n) { qual } else { &priv_qual };
+            let q = if exports.contains(n) {
+                qual
+            } else {
+                &priv_qual
+            };
             (n.clone(), format!("{q}.{n}"))
         })
         .collect();
     let type_map: HashMap<String, String> = types
         .iter()
         .map(|n| {
-            let q = if exports.contains(n) { qual } else { &priv_qual };
+            let q = if exports.contains(n) {
+                qual
+            } else {
+                &priv_qual
+            };
             (n.clone(), format!("{q}.{n}"))
         })
         .collect();
     let ctor_map: HashMap<String, String> = ctors
         .iter()
         .map(|n| {
-            let q = if exports.contains(n) { qual } else { &priv_qual };
+            let q = if exports.contains(n) {
+                qual
+            } else {
+                &priv_qual
+            };
             (n.clone(), format!("{q}.{n}"))
         })
         .collect();
@@ -3089,7 +3214,10 @@ fn qualify_item(
         ast::Item::DataDecl(mut d) => {
             d.name = type_map.get(&d.name).cloned().unwrap_or(d.name);
             for ctor in &mut d.ctors {
-                ctor.name = ctor_map.get(&ctor.name).cloned().unwrap_or(ctor.name.clone());
+                ctor.name = ctor_map
+                    .get(&ctor.name)
+                    .cloned()
+                    .unwrap_or(ctor.name.clone());
                 ctor.args = ctor
                     .args
                     .clone()
@@ -3267,10 +3395,7 @@ fn qualify_pat_binders(p: ast::Pattern, val_map: &HashMap<String, String>) -> Re
             Box::new(qualify_pat_binders(*a, val_map)?),
             Box::new(qualify_pat_binders(*b, val_map)?),
         ),
-        Pattern::View(p, e) => Pattern::View(
-            Box::new(qualify_pat_binders(*p, val_map)?),
-            e,
-        ),
+        Pattern::View(p, e) => Pattern::View(Box::new(qualify_pat_binders(*p, val_map)?), e),
         Pattern::Constructor { name, args } => Pattern::Constructor { name, args },
         x => x,
     })
@@ -3370,7 +3495,10 @@ fn qualify_type(ty: ast::Type, type_map: &HashMap<String, String>) -> Result<ast
     })
 }
 
-fn qualify_predicate(p: ast::Predicate, type_map: &HashMap<String, String>) -> Result<ast::Predicate> {
+fn qualify_predicate(
+    p: ast::Predicate,
+    type_map: &HashMap<String, String>,
+) -> Result<ast::Predicate> {
     Ok(match p {
         ast::Predicate::Show(t) => ast::Predicate::Show(qualify_type(t, type_map)?),
         ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(qualify_type(t, type_map)?),
@@ -3383,7 +3511,10 @@ fn qualify_predicate(p: ast::Predicate, type_map: &HashMap<String, String>) -> R
     })
 }
 
-fn qualify_qual_type(qt: ast::QualType, type_map: &HashMap<String, String>) -> Result<ast::QualType> {
+fn qualify_qual_type(
+    qt: ast::QualType,
+    type_map: &HashMap<String, String>,
+) -> Result<ast::QualType> {
     Ok(ast::QualType {
         preds: qt
             .preds
@@ -3744,7 +3875,10 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
     }
 }
 
-fn expand_pat(pat: ast::Pattern, aliases: &HashMap<String, ast::TypeAlias>) -> Result<ast::Pattern> {
+fn expand_pat(
+    pat: ast::Pattern,
+    aliases: &HashMap<String, ast::TypeAlias>,
+) -> Result<ast::Pattern> {
     use ast::Pattern;
     Ok(match pat {
         Pattern::Var(_) | Pattern::Wildcard | Pattern::Hole(_) | Pattern::Literal(_) => pat,
@@ -3779,7 +3913,7 @@ fn expand_pat(pat: ast::Pattern, aliases: &HashMap<String, ast::TypeAlias>) -> R
             Box::new(expand_pat(*a, aliases)?),
             Box::new(expand_pat(*b, aliases)?),
         ),
-        Pattern::As(name, p) => Pattern::As(name, Box::new(expand_pat(*p, aliases)?)), 
+        Pattern::As(name, p) => Pattern::As(name, Box::new(expand_pat(*p, aliases)?)),
         Pattern::View(p, e) => Pattern::View(
             Box::new(expand_pat(*p, aliases)?),
             Box::new(expand_expr(*e, aliases)?),
@@ -3896,14 +4030,19 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
     })
 }
 
-fn expand_qual_type(ty: ast::QualType, aliases: &HashMap<String, ast::TypeAlias>) -> Result<ast::QualType> {
+fn expand_qual_type(
+    ty: ast::QualType,
+    aliases: &HashMap<String, ast::TypeAlias>,
+) -> Result<ast::QualType> {
     let mut stack = Vec::new();
     let preds = ty
         .preds
         .into_iter()
         .map(|p| {
             Ok(match p {
-                ast::Predicate::Show(t) => ast::Predicate::Show(expand_type(t, aliases, &mut stack)?),
+                ast::Predicate::Show(t) => {
+                    ast::Predicate::Show(expand_type(t, aliases, &mut stack)?)
+                }
                 ast::Predicate::ShowRow(t) => {
                     ast::Predicate::ShowRow(expand_type(t, aliases, &mut stack)?)
                 }
@@ -4109,7 +4248,10 @@ mod inference_tests {
 
     #[test]
     fn typecheck_file_imports_data_type_exported_by_type_name() {
-        let dir = std::env::temp_dir().join(format!("kscr_typecheck_file_imports_ok_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_imports_ok_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -4494,7 +4636,10 @@ mod inference_tests {
         let s = Scheme {
             vars: vec![2],
             constraints: vec![Constraint::Show(Ty::Var(2))],
-            ty: Ty::Func(Box::new(Ty::Var(2)), Box::new(Ty::Con("String".to_string()))),
+            ty: Ty::Func(
+                Box::new(Ty::Var(2)),
+                Box::new(Ty::Con("String".to_string())),
+            ),
         };
         assert_eq!(format!("{s}"), "forall a. Show a => a -> String");
     }
@@ -4512,14 +4657,20 @@ mod inference_tests {
             ],
             ty: Ty::Func(Box::new(Ty::Var(3)), Box::new(Ty::Var(3))),
         };
-        assert_eq!(format!("{s}"), "forall a b. (Show a, Lacks \"x\" b) => b -> b");
+        assert_eq!(
+            format!("{s}"),
+            "forall a b. (Show a, Lacks \"x\" b) => b -> b"
+        );
     }
 
     #[test]
     fn infer_annotated_show_constraint_roundtrips_via_display() {
         let m = crate::parser::parse_module("x = (\\y -> y) :: Show a => a -> a\n").unwrap();
         let env = infer_module(&m).unwrap();
-        assert_eq!(format!("{}", env.get("x").unwrap()), "forall a. Show a => a -> a");
+        assert_eq!(
+            format!("{}", env.get("x").unwrap()),
+            "forall a. Show a => a -> a"
+        );
     }
 
     #[test]
@@ -4558,14 +4709,18 @@ mod inference_tests {
         let mut cs = Vec::new();
         for p in &qt.preds {
             match p {
-                ast::Predicate::Show(t) => cs.push(Constraint::Show(lower_surface_type(&mut cx, t, &mut holes))),
-                ast::Predicate::ShowRow(t) => {
-                    cs.push(Constraint::ShowRow(lower_surface_type(&mut cx, t, &mut holes)))
+                ast::Predicate::Show(t) => {
+                    cs.push(Constraint::Show(lower_surface_type(&mut cx, t, &mut holes)))
                 }
-                ast::Predicate::Eq(t) => cs.push(Constraint::Eq(lower_surface_type(&mut cx, t, &mut holes))),
-                ast::Predicate::EqRow(t) => {
-                    cs.push(Constraint::EqRow(lower_surface_type(&mut cx, t, &mut holes)))
+                ast::Predicate::ShowRow(t) => cs.push(Constraint::ShowRow(lower_surface_type(
+                    &mut cx, t, &mut holes,
+                ))),
+                ast::Predicate::Eq(t) => {
+                    cs.push(Constraint::Eq(lower_surface_type(&mut cx, t, &mut holes)))
                 }
+                ast::Predicate::EqRow(t) => cs.push(Constraint::EqRow(lower_surface_type(
+                    &mut cx, t, &mut holes,
+                ))),
                 ast::Predicate::Lacks { label, row } => cs.push(Constraint::Lacks {
                     label: label.clone(),
                     row: lower_surface_type(&mut cx, row, &mut holes),
@@ -4614,7 +4769,11 @@ mod inference_tests {
         }
     }
 
-    fn canon_constraint_in(c: &Constraint, m: &mut HashMap<u32, u32>, next: &mut u32) -> Constraint {
+    fn canon_constraint_in(
+        c: &Constraint,
+        m: &mut HashMap<u32, u32>,
+        next: &mut u32,
+    ) -> Constraint {
         match c {
             Constraint::Show(t) => Constraint::Show(canon_ty_in(t, m, next)),
             Constraint::ShowRow(t) => Constraint::ShowRow(canon_ty_in(t, m, next)),
@@ -5040,9 +5199,18 @@ x = do
         let m = crate::parser::parse_module(src).unwrap();
         let env = infer_module(&m).unwrap();
 
-        assert_eq!(env.get("a").unwrap(), &Scheme::mono(Ty::Con("String".to_string())));
-        assert_eq!(env.get("b").unwrap(), &Scheme::mono(Ty::Con("String".to_string())));
-        assert_eq!(env.get("c").unwrap(), &Scheme::mono(Ty::Con("String".to_string())));
+        assert_eq!(
+            env.get("a").unwrap(),
+            &Scheme::mono(Ty::Con("String".to_string()))
+        );
+        assert_eq!(
+            env.get("b").unwrap(),
+            &Scheme::mono(Ty::Con("String".to_string()))
+        );
+        assert_eq!(
+            env.get("c").unwrap(),
+            &Scheme::mono(Ty::Con("String".to_string()))
+        );
     }
 
     #[test]
@@ -5054,11 +5222,17 @@ y = show Nothing
         let m = crate::parser::parse_module(src).unwrap();
         let env = infer_module(&m).unwrap();
 
-        assert_eq!(env.get("x").unwrap(), &Scheme::mono(Ty::Con("String".to_string())));
+        assert_eq!(
+            env.get("x").unwrap(),
+            &Scheme::mono(Ty::Con("String".to_string()))
+        );
 
         let y = env.get("y").unwrap();
         assert_eq!(y.ty, Ty::Con("String".to_string()));
-        assert!(y.constraints.iter().any(|c| matches!(c, Constraint::Show(_))));
+        assert!(y
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::Show(_))));
     }
 
     #[test]
@@ -5077,8 +5251,14 @@ x = show (Bad (\y -> y))
         let env = infer_module(&m).unwrap();
         let s = env.get("f").unwrap();
 
-        assert!(s.constraints.iter().any(|c| matches!(c, Constraint::Show(_))));
-        assert!(s.constraints.iter().any(|c| matches!(c, Constraint::ShowRow(_))));
+        assert!(s
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::Show(_))));
+        assert!(s
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::ShowRow(_))));
     }
 
     #[test]

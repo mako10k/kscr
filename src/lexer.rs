@@ -407,7 +407,9 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             continue;
         }
         if bytes[i] == b'@' {
-            tokens.push(Token { kind: TokenKind::At });
+            tokens.push(Token {
+                kind: TokenKind::At,
+            });
             i += 1;
             continue;
         }

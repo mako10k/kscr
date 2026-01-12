@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test_clippy_geiger:
+    name: test / clippy / geiger
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo fmt (check)
+        run: cargo fmt -- --check
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy -- -D warnings
+
+      - name: Install cargo-geiger
+        run: cargo install cargo-geiger --locked --version 0.13.0
+
+      - name: cargo geiger
+        run: cargo geiger
+
+  nightly_udeps:
+    name: nightly udeps (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-udeps
+        run: cargo install cargo-udeps --locked
+
+      - name: cargo +nightly udeps
+        run: cargo +nightly udeps

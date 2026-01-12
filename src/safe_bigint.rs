@@ -4,7 +4,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Integer {
-    sign: i8, // -1, 0, +1
+    sign: i8,        // -1, 0, +1
     limbs: Vec<u64>, // little-endian base 2^64
 }
 
@@ -188,7 +188,11 @@ impl Integer {
             while q.last() == Some(&0) {
                 q.pop();
             }
-            let r = if rem == 0 { Vec::new() } else { vec![rem as u64] };
+            let r = if rem == 0 {
+                Vec::new()
+            } else {
+                vec![rem as u64]
+            };
             return (q, r);
         }
 
@@ -426,7 +430,11 @@ impl Ord for Integer {
             return Ordering::Equal;
         }
         let c = self.abs_cmp(other);
-        if self.sign > 0 { c } else { c.reverse() }
+        if self.sign > 0 {
+            c
+        } else {
+            c.reverse()
+        }
     }
 }
 

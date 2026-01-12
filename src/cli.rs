@@ -97,7 +97,11 @@ fn exported_specs(module: &ast::Module) -> Option<Vec<ast::ExportSpec>> {
             out.extend(ed.specs.iter().cloned());
         }
     }
-    if out.is_empty() { None } else { Some(out) }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn export_spec_to_string(s: &ast::ExportSpec) -> String {
@@ -166,7 +170,10 @@ fn render_typecheck_report(
     }
 
     if let Some(specs) = exported_specs(module) {
-        let mut specs: Vec<_> = specs.into_iter().map(|s| export_spec_to_string(&s)).collect();
+        let mut specs: Vec<_> = specs
+            .into_iter()
+            .map(|s| export_spec_to_string(&s))
+            .collect();
         specs.sort();
         out.push_str("export ");
         out.push_str(&specs.join(", "));
@@ -205,7 +212,8 @@ impl ReplState {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| crate::error::Error::msg(format!("time error: {e}")))?
             .as_nanos();
-        let base_dir = std::env::temp_dir().join(format!("kscr_repl_{}_{}", std::process::id(), nanos));
+        let base_dir =
+            std::env::temp_dir().join(format!("kscr_repl_{}_{}", std::process::id(), nanos));
         std::fs::create_dir_all(&base_dir)?;
         let repl_path = base_dir.join(format!(".kscr_repl_{}.ks", std::process::id()));
         Ok(Self {
@@ -360,10 +368,7 @@ fn try_resolve_repl_command(cmd: &str) -> Result<Option<&'static str>> {
         return Ok(Some(found));
     }
 
-    let matches: Vec<&'static str> = CMDS
-        .into_iter()
-        .filter(|c| c.starts_with(cmd))
-        .collect();
+    let matches: Vec<&'static str> = CMDS.into_iter().filter(|c| c.starts_with(cmd)).collect();
 
     match matches.len() {
         0 => Ok(None),
@@ -509,7 +514,7 @@ mod repl_tests {
 
     #[test]
     fn repl_persists_defs_across_eval() {
-        let defs = ["x = 41"]; 
+        let defs = ["x = 41"];
         let ty = repl_eval_for_test(&defs, "x + 1").unwrap();
         assert!(ty.contains("Integer"));
     }
@@ -570,7 +575,8 @@ mod tests {
 
     #[test]
     fn cli_typecheck_imports_smoke() {
-        let dir = std::env::temp_dir().join(format!("kscr_cli_import_smoke_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("kscr_cli_import_smoke_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -596,10 +602,8 @@ mod tests {
 
     #[test]
     fn cli_run_do_smoke() {
-        let path = std::env::temp_dir().join(format!(
-            "kscr_cli_run_do_smoke_{}.ks",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("kscr_cli_run_do_smoke_{}.ks", std::process::id()));
         std::fs::write(
             &path,
             "module Main where\n  main = do\n    print \"hello\"\n    print \"world\"\n",
@@ -1570,11 +1574,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let a = dir.join("A.ks");
-        std::fs::write(
-            &a,
-            "module A where\n  export f\n  f x = x\n  g x = x + 1\n",
-        )
-        .unwrap();
+        std::fs::write(&a, "module A where\n  export f\n  f x = x\n  g x = x + 1\n").unwrap();
 
         let main = dir.join("Main.ks");
         std::fs::write(
@@ -1652,7 +1652,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-
     #[test]
     fn cli_run_import_fun_clauses_and_guards_smoke() {
         let dir = std::env::temp_dir().join(format!(
@@ -1699,11 +1698,7 @@ mod tests {
             "kscr_cli_run_rejects_recursive_value_definition_{}.ks",
             std::process::id()
         ));
-        std::fs::write(
-            &path,
-            "module Main where\n  x = x\n  main = IO ()\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "module Main where\n  x = x\n  main = IO ()\n").unwrap();
         let args = vec![
             "kscr".to_string(),
             "run".to_string(),
