@@ -18,6 +18,29 @@ pub enum Item {
     Binding(Binding),
     TypeAlias(TypeAlias),
     DataDecl(DataDecl),
+    ClassDecl(ClassDecl),
+    InstanceDecl(InstanceDecl),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassDecl {
+    pub name: String,
+    pub param: String,
+    pub methods: Vec<ClassMethodSig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassMethodSig {
+    pub name: String,
+    pub ty: QualType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceDecl {
+    pub class: String,
+    pub ty: Type,
+    /// Method bindings inside the instance.
+    pub methods: Vec<Binding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -366,6 +366,11 @@ pub enum Constraint {
     ShowRow(Ty),
     Eq(Ty),
     EqRow(Ty),
+    /// User-defined typeclass constraint: `C t`.
+    Class {
+        class: String,
+        ty: Ty,
+    },
     /// Field absence constraint for row types (records/open records/row variables).
     Lacks {
         label: String,
@@ -411,6 +416,10 @@ fn fmt_constraint(
         Constraint::EqRow(t) => {
             write!(f, "EqRow ")?;
             fmt_ty_prec(f, t, 0, vars)
+        }
+        Constraint::Class { class, ty } => {
+            write!(f, "{class} ")?;
+            fmt_ty_prec(f, ty, 0, vars)
         }
         Constraint::Lacks { label, row } => {
             write!(f, "Lacks \"{label}\" ")?;
@@ -515,9 +524,11 @@ pub fn ftv_ty(ty: &Ty) -> HashSet<u32> {
 
 fn ftv_constraint(c: &Constraint) -> HashSet<u32> {
     match c {
-        Constraint::Show(t) | Constraint::ShowRow(t) | Constraint::Eq(t) | Constraint::EqRow(t) => {
-            ftv_ty(t)
-        }
+        Constraint::Show(t)
+        | Constraint::ShowRow(t)
+        | Constraint::Eq(t)
+        | Constraint::EqRow(t)
+        | Constraint::Class { ty: t, .. } => ftv_ty(t),
         Constraint::Lacks { row, .. } => ftv_ty(row),
     }
 }
@@ -567,6 +578,10 @@ fn replace_vars_constraint(c: &Constraint, m: &HashMap<u32, Ty>) -> Constraint {
         Constraint::ShowRow(t) => Constraint::ShowRow(replace_vars(t, m)),
         Constraint::Eq(t) => Constraint::Eq(replace_vars(t, m)),
         Constraint::EqRow(t) => Constraint::EqRow(replace_vars(t, m)),
+        Constraint::Class { class, ty } => Constraint::Class {
+            class: class.clone(),
+            ty: replace_vars(ty, m),
+        },
         Constraint::Lacks { label, row } => Constraint::Lacks {
             label: label.clone(),
             row: replace_vars(row, m),
@@ -621,6 +636,10 @@ fn apply_constraint(subst: &Subst, c: &Constraint) -> Constraint {
         Constraint::ShowRow(t) => Constraint::ShowRow(apply(subst, t.clone())),
         Constraint::Eq(t) => Constraint::Eq(apply(subst, t.clone())),
         Constraint::EqRow(t) => Constraint::EqRow(apply(subst, t.clone())),
+        Constraint::Class { class, ty } => Constraint::Class {
+            class: class.clone(),
+            ty: apply(subst, ty.clone()),
+        },
         Constraint::Lacks { label, row } => Constraint::Lacks {
             label: label.clone(),
             row: apply(subst, row.clone()),
@@ -901,24 +920,27 @@ fn infer_pat_in(
 pub fn infer_expr(expr: ast::Expr) -> Result<Ty> {
     let mut cx = InferCtx::default();
     let data_env = DataEnv::new();
+    let class_env = ClassEnv::default();
     let env = TypeEnv::new();
     let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &env, expr)?;
-    let _ = simplify_constraints(&data_env, apply_constraints(&s, cs))?;
+    let _ = simplify_constraints(&data_env, &class_env, apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
 }
 
 pub fn infer_in_module(module: &ast::Module, expr: ast::Expr) -> Result<Ty> {
     let mut cx = InferCtx::default();
     let data_env = collect_data_env(module);
+    let class_env = ClassEnv::default();
     let env = collect_ctor_env(&mut cx, module)?;
     let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &env, expr)?;
-    let _ = simplify_constraints(&data_env, apply_constraints(&s, cs))?;
+    let _ = simplify_constraints(&data_env, &class_env, apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
 }
 
 pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
     let mut cx = InferCtx::default();
     let data_env = collect_data_env(module);
+    let class_env = ClassEnv::default();
     let mut env = collect_ctor_env(&mut cx, module)?;
     let mut subst = Subst::new();
     let mut out = HashMap::new();
@@ -961,7 +983,7 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
             let env_gen = apply_env(&subst, &env);
             let mut cs = cs_rhs.clone();
             cs.extend(cs_pat.clone());
-            let cs = simplify_constraints(&data_env, apply_constraints(&subst, cs))?;
+            let cs = simplify_constraints(&data_env, &class_env, apply_constraints(&subst, cs))?;
             let scheme = generalize_qual(&env_gen, cs, apply(&subst, t));
             env.insert(name.clone(), scheme.clone());
             out.insert(name, scheme);
@@ -972,6 +994,14 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
 }
 
 fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> {
+    collect_ctor_env_with_class_env(cx, module, &ClassEnv::default())
+}
+
+fn collect_ctor_env_with_class_env(
+    cx: &mut InferCtx,
+    module: &ast::Module,
+    class_env: &ClassEnv,
+) -> Result<TypeEnv> {
     let mut env = TypeEnv::new();
 
     // Minimal prelude:
@@ -1544,6 +1574,74 @@ fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> 
         }
     }
 
+    // Add class methods as overloaded functions.
+    for ((class, method), qt) in &class_env.methods {
+        // If the module defines a value with the same name, let it win.
+        if env.contains_key(method) {
+            continue;
+        }
+
+        let param = class_env
+            .class_params
+            .get(class)
+            .ok_or_else(|| Error::msg("internal: missing class param"))?
+            .clone();
+
+        let mut holes: HashMap<String, Ty> = HashMap::new();
+        let class_param_ty = holes.entry(param).or_insert_with(|| cx.fresh()).clone();
+
+        let mut cs: Vec<Constraint> = Vec::new();
+        cs.push(Constraint::Class {
+            class: class.clone(),
+            ty: class_param_ty,
+        });
+
+        for p in &qt.preds {
+            match p {
+                ast::Predicate::Show(t) => {
+                    let t = lower_surface_type(cx, t, &mut holes);
+                    cs.push(Constraint::Show(t));
+                }
+                ast::Predicate::ShowRow(t) => {
+                    let t = lower_surface_type(cx, t, &mut holes);
+                    cs.push(Constraint::ShowRow(t));
+                }
+                ast::Predicate::Eq(t) => {
+                    let t = lower_surface_type(cx, t, &mut holes);
+                    cs.push(Constraint::Eq(t));
+                }
+                ast::Predicate::EqRow(t) => {
+                    let t = lower_surface_type(cx, t, &mut holes);
+                    cs.push(Constraint::EqRow(t));
+                }
+                ast::Predicate::Lacks { label, row } => {
+                    let row = lower_surface_type(cx, row, &mut holes);
+                    cs.push(Constraint::Lacks {
+                        label: label.clone(),
+                        row,
+                    });
+                }
+            }
+        }
+
+        let ty = lower_surface_type(cx, &qt.ty, &mut holes);
+        let mut vars: Vec<u32> = ftv_ty(&ty).into_iter().collect();
+        for c in &cs {
+            vars.extend(ftv_constraint(c));
+        }
+        vars.sort_unstable();
+        vars.dedup();
+
+        env.insert(
+            method.clone(),
+            Scheme {
+                vars,
+                constraints: cs,
+                ty,
+            },
+        );
+    }
+
     Ok(env)
 }
 
@@ -1571,6 +1669,185 @@ fn apply_constraints(subst: &Subst, cs: Vec<Constraint>) -> Vec<Constraint> {
 }
 
 type DataEnv = HashMap<String, ast::DataDecl>;
+
+#[derive(Debug, Default, Clone)]
+struct ClassEnv {
+    /// class name -> parameter name (e.g. `class C a where` => (C, a))
+    class_params: HashMap<String, String>,
+    /// method name -> list of classes that define it
+    method_classes: HashMap<String, Vec<String>>,
+    /// (class, method) -> declared method type
+    methods: HashMap<(String, String), ast::QualType>,
+    /// (class, instance-head-type-key) -> dictionary binding name
+    instances: HashMap<(String, String), String>,
+}
+
+fn instance_head_key_ast(ty: &ast::Type) -> Result<String> {
+    use ast::Type;
+
+    fn is_lowercase_ident(s: &str) -> bool {
+        s.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+    }
+
+    Ok(match ty {
+        Type::Unit => "Unit".to_string(),
+        Type::Integer => "Integer".to_string(),
+        Type::Bool => "Bool".to_string(),
+        Type::Float64 => "Float64".to_string(),
+        Type::Char => "Char".to_string(),
+        Type::String => "String".to_string(),
+        Type::Var(name) => {
+            if is_lowercase_ident(name) {
+                return Err(Error::msg(
+                    "MVP: instance head must be a ground (non-variable) type",
+                ));
+            }
+            name.clone()
+        }
+        Type::App { head, args } => {
+            let mut out = instance_head_key_ast(head)?;
+            for a in args {
+                out.push('_');
+                out.push_str(&instance_head_key_ast(a)?);
+            }
+            out
+        }
+        _ => {
+            return Err(Error::msg(
+                "MVP: instance head supports only constructor/app types",
+            ))
+        }
+    })
+}
+
+fn instance_head_key_ty(ty: &Ty) -> Result<String> {
+    Ok(match ty {
+        Ty::Con(name) => name.clone(),
+        Ty::App { head, args } => {
+            let mut out = instance_head_key_ty(head)?;
+            for a in args {
+                out.push('_');
+                out.push_str(&instance_head_key_ty(a)?);
+            }
+            out
+        }
+        _ => {
+            return Err(Error::msg(
+                "MVP: class constraints support only constructor/app instance heads",
+            ))
+        }
+    })
+}
+
+fn mangle_ident(s: &str) -> String {
+    let mut out = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
+fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
+    let mut env = ClassEnv::default();
+
+    // Collect class method signatures.
+    for it in &module.items {
+        let ast::Item::ClassDecl(c) = it else {
+            continue;
+        };
+
+        if env.class_params.contains_key(&c.name) {
+            return Err(Error::msg("duplicate class"));
+        }
+        env.class_params.insert(c.name.clone(), c.param.clone());
+
+        for m in &c.methods {
+            env.method_classes
+                .entry(m.name.clone())
+                .or_default()
+                .push(c.name.clone());
+            env.methods
+                .insert((c.name.clone(), m.name.clone()), m.ty.clone());
+        }
+    }
+    for classes in env.method_classes.values_mut() {
+        classes.sort();
+        classes.dedup();
+    }
+
+    // MVP: avoid ambiguous unqualified method names.
+    for (m, classes) in &env.method_classes {
+        if classes.len() > 1 {
+            return Err(Error::msg(format!(
+                "ambiguous method name: {m} (defined in classes: {})",
+                classes.join(", ")
+            )));
+        }
+    }
+
+    // Desugar instances into bindings for dictionaries + method implementations.
+    let mut extra_items: Vec<ast::Item> = Vec::new();
+    for it in &module.items {
+        let ast::Item::InstanceDecl(inst) = it else {
+            continue;
+        };
+
+        let ty_key = instance_head_key_ast(&inst.ty)?;
+        let ty_mangled = mangle_ident(&ty_key);
+        let dict_name = format!("__dict_{}_{}", inst.class, ty_mangled);
+
+        let key = (inst.class.clone(), ty_key);
+        if env.instances.contains_key(&key) {
+            return Err(Error::msg("duplicate instance"));
+        }
+        env.instances.insert(key, dict_name.clone());
+
+        // Method impl bindings.
+        let mut dict_fields: Vec<(String, ast::Expr)> = Vec::new();
+        for b in &inst.methods {
+            let ast::PatternKind::Var(mname) = &b.pat.kind else {
+                return Err(Error::msg(
+                    "MVP: instance methods must be simple variable bindings",
+                ));
+            };
+            let impl_name = format!(
+                "__inst_{}_{}_{}",
+                inst.class,
+                ty_mangled,
+                mangle_ident(mname)
+            );
+
+            extra_items.push(ast::Item::Binding(ast::Binding {
+                pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
+                expr: b.expr.clone(),
+            }));
+
+            dict_fields.push((
+                mname.clone(),
+                ast::Expr::new(ast::dummy_span(), ast::ExprKind::Var(impl_name)),
+            ));
+        }
+
+        // Dictionary binding.
+        extra_items.push(ast::Item::Binding(ast::Binding {
+            pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(dict_name)),
+            expr: ast::Expr::new(ast::dummy_span(), ast::ExprKind::Record(dict_fields)),
+        }));
+    }
+
+    module.items = module
+        .items
+        .drain(..)
+        .filter(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
+        .chain(extra_items)
+        .collect();
+
+    Ok(env)
+}
 
 fn collect_data_env(module: &ast::Module) -> DataEnv {
     module
@@ -1945,7 +2222,11 @@ fn entails_lacks(label: &str, row: &Ty) -> Result<Vec<Constraint>> {
     })
 }
 
-fn simplify_constraints(data_env: &DataEnv, cs: Vec<Constraint>) -> Result<Vec<Constraint>> {
+fn simplify_constraints(
+    data_env: &DataEnv,
+    class_env: &ClassEnv,
+    cs: Vec<Constraint>,
+) -> Result<Vec<Constraint>> {
     let mut out = Vec::new();
     let mut in_progress = Vec::new();
 
@@ -1955,6 +2236,20 @@ fn simplify_constraints(data_env: &DataEnv, cs: Vec<Constraint>) -> Result<Vec<C
             Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, &mut in_progress)?),
             Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, &mut in_progress)?),
             Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, &mut in_progress)?),
+            Constraint::Class { class, ty } => {
+                // If the constraint is polymorphic, keep it for dictionary passing.
+                // If it is ground, resolve it by requiring a known instance.
+                if !ftv_ty(&ty).is_empty() {
+                    out.push(Constraint::Class { class, ty });
+                } else {
+                    let key = (class.clone(), instance_head_key_ty(&ty)?);
+                    if !class_env.instances.contains_key(&key) {
+                        return Err(Error::msg(format!(
+                            "cannot satisfy constraint: {class} {ty}"
+                        )));
+                    }
+                }
+            }
             Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
         }
     }
@@ -2196,7 +2491,8 @@ fn infer_expr_in(
 
         ExprKind::Let { bindings, body } => {
             let mut s = Subst::new();
-            let mut cs: Vec<Constraint> = vec![];
+            // Constraints produced while typechecking local bindings are captured in their
+            // generalized schemes. They should not leak to the surrounding expression.
             let mut env2 = env.clone();
 
             for b in bindings {
@@ -2224,19 +2520,20 @@ fn infer_expr_in(
                 let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cx, data_env, &env_in, b.expr)
                     .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
                 s = compose(&s_rhs, &s);
-                cs = apply_constraints(&s, cs);
-                cs.extend(apply_constraints(&s, cs_rhs.clone()));
 
                 let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
                     .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
                 s = compose(&s_pat, &s);
-                cs = apply_constraints(&s, cs);
 
                 for (name, t) in binds {
                     let env_gen = apply_env(&s, &env2);
                     let mut cs = cs_rhs.clone();
                     cs.extend(cs_pat.clone());
-                    let cs = simplify_constraints(data_env, apply_constraints(&s, cs))?;
+                    let cs = simplify_constraints(
+                        data_env,
+                        &ClassEnv::default(),
+                        apply_constraints(&s, cs),
+                    )?;
                     let scheme = generalize_qual(&env_gen, cs, apply(&s, t));
                     env2.insert(name, scheme);
                 }
@@ -2246,14 +2543,13 @@ fn infer_expr_in(
             let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *body)
                 .map_err(|e| Error::msg(format!("in let body: {e}")))?;
             let s = compose(&s_body, &s);
-            let mut cs = apply_constraints(&s, cs);
-            cs.extend(apply_constraints(&s, cs_body));
-            Ok((s.clone(), cs, apply(&s, t_body)))
+            Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
 
         ExprKind::Where { expr, bindings } => {
             let mut s = Subst::new();
-            let mut cs: Vec<Constraint> = vec![];
+            // Constraints produced while typechecking local bindings are captured in their
+            // generalized schemes. They should not leak to the surrounding expression.
             let mut env2 = env.clone();
 
             for b in bindings {
@@ -2281,19 +2577,20 @@ fn infer_expr_in(
                 let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cx, data_env, &env_in, b.expr)
                     .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
                 s = compose(&s_rhs, &s);
-                cs = apply_constraints(&s, cs);
-                cs.extend(apply_constraints(&s, cs_rhs.clone()));
 
                 let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
                     .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
                 s = compose(&s_pat, &s);
-                cs = apply_constraints(&s, cs);
 
                 for (name, t) in binds {
                     let env_gen = apply_env(&s, &env2);
                     let mut cs = cs_rhs.clone();
                     cs.extend(cs_pat.clone());
-                    let cs = simplify_constraints(data_env, apply_constraints(&s, cs))?;
+                    let cs = simplify_constraints(
+                        data_env,
+                        &ClassEnv::default(),
+                        apply_constraints(&s, cs),
+                    )?;
                     let scheme = generalize_qual(&env_gen, cs, apply(&s, t));
                     env2.insert(name, scheme);
                 }
@@ -2303,9 +2600,7 @@ fn infer_expr_in(
             let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *expr)
                 .map_err(|e| Error::msg(format!("in where body: {e}")))?;
             let s = compose(&s_body, &s);
-            let mut cs = apply_constraints(&s, cs);
-            cs.extend(apply_constraints(&s, cs_body));
-            Ok((s.clone(), cs, apply(&s, t_body)))
+            Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
 
         ExprKind::Case { expr, arms } => {
@@ -2901,6 +3196,21 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
                     }
                     ast::Item::DataDecl(dd)
                 }
+                ast::Item::ClassDecl(mut c) => {
+                    for m in &mut c.methods {
+                        m.ty = desugar_qualified_qual_type(m.ty.clone(), &allowed)?;
+                    }
+                    ast::Item::ClassDecl(c)
+                }
+                ast::Item::InstanceDecl(mut inst) => {
+                    inst.ty = desugar_qualified_type(inst.ty, &allowed)?;
+                    inst.methods = inst
+                        .methods
+                        .into_iter()
+                        .map(|b| desugar_qualified_binding(b, &allowed))
+                        .collect::<Result<Vec<_>>>()?;
+                    ast::Item::InstanceDecl(inst)
+                }
                 x @ (ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_)) => x,
             })
         })
@@ -2994,7 +3304,11 @@ fn import_items(module: &ast::Module) -> Vec<ast::Item> {
         .items
         .iter()
         .filter_map(|it| match it {
-            ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => None,
+            ast::Item::Import(_)
+            | ast::Item::Export(_)
+            | ast::Item::Fixity(_)
+            | ast::Item::ClassDecl(_)
+            | ast::Item::InstanceDecl(_) => None,
             it => Some(it.clone()),
         })
         .collect()
@@ -3061,7 +3375,11 @@ fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
                     all.insert(d.name.clone());
                     all.extend(d.ctors.iter().map(|c| c.name.clone()));
                 }
-                ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
+                ast::Item::Import(_)
+                | ast::Item::Export(_)
+                | ast::Item::Fixity(_)
+                | ast::Item::ClassDecl(_)
+                | ast::Item::InstanceDecl(_) => {}
             }
         }
         return Ok(all);
@@ -3102,7 +3420,11 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
             ast::Item::DataDecl(d) => {
                 values.extend(d.ctors.iter().map(|c| c.name.clone()));
             }
-            ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
+            ast::Item::Import(_)
+            | ast::Item::Export(_)
+            | ast::Item::Fixity(_)
+            | ast::Item::ClassDecl(_)
+            | ast::Item::InstanceDecl(_) => {}
         }
     }
 
@@ -3154,7 +3476,11 @@ fn qualify_items(
                 types.insert(d.name.clone());
                 ctors.extend(d.ctors.iter().map(|c| c.name.clone()));
             }
-            ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
+            ast::Item::Import(_)
+            | ast::Item::Export(_)
+            | ast::Item::Fixity(_)
+            | ast::Item::ClassDecl(_)
+            | ast::Item::InstanceDecl(_) => {}
         }
     }
 
@@ -3232,7 +3558,11 @@ fn qualify_item(
             }
             ast::Item::DataDecl(d)
         }
-        x @ (ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_)) => x,
+        x @ (ast::Item::Import(_)
+        | ast::Item::Export(_)
+        | ast::Item::Fixity(_)
+        | ast::Item::ClassDecl(_)
+        | ast::Item::InstanceDecl(_)) => x,
     })
 }
 
@@ -3677,7 +4007,11 @@ fn name_origin_hint(it: &ast::Item, name: &str) -> String {
             }
             "local".to_string()
         }
-        ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => "<meta>".to_string(),
+        ast::Item::Import(_)
+        | ast::Item::Export(_)
+        | ast::Item::Fixity(_)
+        | ast::Item::ClassDecl(_)
+        | ast::Item::InstanceDecl(_) => "<meta>".to_string(),
     }
 }
 
@@ -3711,7 +4045,11 @@ fn item_defined_names(it: &ast::Item, out: &mut HashSet<String>) {
             out.insert(d.name.clone());
             out.extend(d.ctors.iter().map(|c| c.name.clone()));
         }
-        ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_) => {}
+        ast::Item::Import(_)
+        | ast::Item::Export(_)
+        | ast::Item::Fixity(_)
+        | ast::Item::ClassDecl(_)
+        | ast::Item::InstanceDecl(_) => {}
     }
 }
 
@@ -3997,6 +4335,1247 @@ fn rewrite_show_calls_in_module(module: &mut ast::Module) {
         .collect();
 }
 
+fn infer_in_module_with_class_env(
+    module: &ast::Module,
+    class_env: &ClassEnv,
+    expr: ast::Expr,
+) -> Result<Ty> {
+    let mut cx = InferCtx::default();
+    let data_env = collect_data_env(module);
+    let env = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
+    let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &env, expr)?;
+    let _ = simplify_constraints(&data_env, class_env, apply_constraints(&s, cs))?;
+    Ok(apply(&s, t))
+}
+
+fn rewrite_class_dict_passing_in_module(
+    module: &mut ast::Module,
+    class_env: &ClassEnv,
+    inferred: &HashMap<String, Scheme>,
+) -> Result<()> {
+    use ast::{Expr, ExprKind, PatternKind};
+
+    // name -> classes (stable order) that require an explicit dictionary arg.
+    let mut needs_dicts: HashMap<String, Vec<String>> = HashMap::new();
+    for (name, scheme) in inferred {
+        let mut classes: Vec<String> = scheme
+            .constraints
+            .iter()
+            .filter_map(|c| match c {
+                Constraint::Class { class, .. } => Some(class.clone()),
+                _ => None,
+            })
+            .collect();
+        classes.sort();
+        classes.dedup();
+        if !classes.is_empty() {
+            needs_dicts.insert(name.clone(), classes);
+        }
+    }
+
+    fn dict_param_name(class: &str) -> String {
+        format!("__dict_{class}")
+    }
+
+    fn is_syntactically_ground_value(e: &ast::Expr) -> bool {
+        use ast::ExprKind;
+        match &e.kind {
+            ExprKind::Unit
+            | ExprKind::Integer(_)
+            | ExprKind::Float64(_)
+            | ExprKind::Bool(_)
+            | ExprKind::String(_)
+            | ExprKind::Char(_) => true,
+            ExprKind::List(es) => es.iter().all(is_syntactically_ground_value),
+            ExprKind::Tuple(es) => es.iter().all(is_syntactically_ground_value),
+            ExprKind::Record(fields) => {
+                fields.iter().all(|(_, v)| is_syntactically_ground_value(v))
+            }
+            _ => false,
+        }
+    }
+
+    fn required_classes_in_expr(
+        expr: &ast::Expr,
+        class_env: &ClassEnv,
+        needs_dicts: &HashMap<String, Vec<String>>,
+        out: &mut HashSet<String>,
+    ) {
+        use ast::ExprKind;
+        match &expr.kind {
+            ExprKind::Var(name) => {
+                if let Some(classes) = needs_dicts.get(name) {
+                    for c in classes {
+                        out.insert(c.clone());
+                    }
+                }
+            }
+            ExprKind::Apply { func, args } => {
+                if let ExprKind::Var(name) = &func.kind {
+                    // Method call `m x ...`: if the receiver isn't obviously ground, assume the
+                    // binding will need a dictionary param.
+                    if let Some(classes) = class_env.method_classes.get(name) {
+                        if let Some(arg0) = args.first() {
+                            if !is_syntactically_ground_value(arg0) {
+                                if let Some(c) = classes.first() {
+                                    out.insert(c.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // Constrained function call `f x ...`:
+                    // if the first argument isn't syntactically ground (or we're partially
+                    // applying), the local binding will need a dictionary param.
+                    if let Some(classes) = needs_dicts.get(name) {
+                        match args.first() {
+                            None => {
+                                for c in classes {
+                                    out.insert(c.clone());
+                                }
+                            }
+                            Some(arg0) => {
+                                if !is_syntactically_ground_value(arg0) {
+                                    for c in classes {
+                                        out.insert(c.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                required_classes_in_expr(func, class_env, needs_dicts, out);
+                for a in args {
+                    required_classes_in_expr(a, class_env, needs_dicts, out);
+                }
+            }
+            ExprKind::Lambda { body, .. } => {
+                required_classes_in_expr(body, class_env, needs_dicts, out);
+            }
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                required_classes_in_expr(cond, class_env, needs_dicts, out);
+                required_classes_in_expr(then_branch, class_env, needs_dicts, out);
+                required_classes_in_expr(else_branch, class_env, needs_dicts, out);
+            }
+            ExprKind::Let { bindings, body } => {
+                for b in bindings {
+                    required_classes_in_expr(&b.expr, class_env, needs_dicts, out);
+                }
+                required_classes_in_expr(body, class_env, needs_dicts, out);
+            }
+            ExprKind::Where { expr, bindings } => {
+                required_classes_in_expr(expr, class_env, needs_dicts, out);
+                for b in bindings {
+                    required_classes_in_expr(&b.expr, class_env, needs_dicts, out);
+                }
+            }
+            ExprKind::Annot { expr, .. } => {
+                required_classes_in_expr(expr, class_env, needs_dicts, out);
+            }
+            ExprKind::Do(stmts) => {
+                for s in stmts {
+                    match s {
+                        ast::DoStmt::Bind { expr, .. } => {
+                            required_classes_in_expr(expr, class_env, needs_dicts, out)
+                        }
+                        ast::DoStmt::Expr(e) => {
+                            required_classes_in_expr(e, class_env, needs_dicts, out)
+                        }
+                    }
+                }
+            }
+            ExprKind::Case { expr, arms } => {
+                required_classes_in_expr(expr, class_env, needs_dicts, out);
+                for a in arms {
+                    if let Some(g) = &a.guard {
+                        required_classes_in_expr(g, class_env, needs_dicts, out);
+                    }
+                    required_classes_in_expr(&a.body, class_env, needs_dicts, out);
+                }
+            }
+            ExprKind::Cons { head, tail } => {
+                required_classes_in_expr(head, class_env, needs_dicts, out);
+                required_classes_in_expr(tail, class_env, needs_dicts, out);
+            }
+            ExprKind::List(es) | ExprKind::Tuple(es) => {
+                for e in es {
+                    required_classes_in_expr(e, class_env, needs_dicts, out);
+                }
+            }
+            ExprKind::Record(fields) => {
+                for (_, v) in fields {
+                    required_classes_in_expr(v, class_env, needs_dicts, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn add_dict_params_to_expr(span: ast::Span, expr: ast::Expr, classes: &[String]) -> ast::Expr {
+        let mut dict_params: Vec<String> = classes.iter().map(|c| dict_param_name(c)).collect();
+        if dict_params.is_empty() {
+            return expr;
+        }
+
+        match expr.kind {
+            ExprKind::Lambda { mut params, body } => {
+                dict_params.append(&mut params);
+                Expr::new(
+                    span,
+                    ExprKind::Lambda {
+                        params: dict_params,
+                        body,
+                    },
+                )
+            }
+            other => Expr::new(
+                span,
+                ExprKind::Lambda {
+                    params: dict_params,
+                    body: Box::new(Expr::new(span, other)),
+                },
+            ),
+        }
+    }
+
+    fn rewrite_expr(
+        module_snapshot: &ast::Module,
+        class_env: &ClassEnv,
+        inferred: &HashMap<String, Scheme>,
+        needs_dicts: &HashMap<String, Vec<String>>,
+        dicts_in_scope: &HashSet<String>,
+        expr: ast::Expr,
+    ) -> Result<ast::Expr> {
+        let span = expr.span;
+
+        fn expected_arg_types_for_call(
+            module_snapshot: &ast::Module,
+            class_env: &ClassEnv,
+            inferred: &HashMap<String, Scheme>,
+            callee: &str,
+            args: &[ast::Expr],
+        ) -> Option<Vec<Ty>> {
+            let scheme = inferred.get(callee)?;
+
+            let mut cx = InferCtx::default();
+            let (_, mut callee_ty) = instantiate_qual(&mut cx, scheme);
+            let mut subst = Subst::new();
+            let mut expected: Vec<Ty> = Vec::new();
+
+            for arg in args {
+                let Ty::Func(dom, cod) = callee_ty else {
+                    return None;
+                };
+
+                expected.push(apply(&subst, (*dom).clone()));
+
+                if let Ok(arg_ty) =
+                    infer_in_module_with_class_env(module_snapshot, class_env, arg.clone())
+                {
+                    if let Ok(s) = unify(apply(&subst, (*dom).clone()), apply(&subst, arg_ty)) {
+                        subst = compose(&s, &subst);
+                    }
+                }
+
+                callee_ty = apply(&subst, *cod);
+            }
+
+            Some(expected.into_iter().map(|t| apply(&subst, t)).collect())
+        }
+
+        fn pick_instance_dict(class_env: &ClassEnv, class: &str, ty: &Ty) -> Option<String> {
+            if !ftv_ty(ty).is_empty() {
+                return None;
+            }
+            let key = (class.to_string(), instance_head_key_ty(ty).ok()?);
+            class_env.instances.get(&key).cloned()
+        }
+
+        Ok(match expr.kind {
+            ExprKind::Lambda { params, body } => {
+                let mut scope = dicts_in_scope.clone();
+                for p in &params {
+                    if p.starts_with("__dict_") {
+                        scope.insert(p.clone());
+                    }
+                }
+                Expr::new(
+                    span,
+                    ExprKind::Lambda {
+                        params,
+                        body: Box::new(rewrite_expr(
+                            module_snapshot,
+                            class_env,
+                            inferred,
+                            needs_dicts,
+                            &scope,
+                            *body,
+                        )?),
+                    },
+                )
+            }
+            ExprKind::Apply { func, args } => {
+                let func = rewrite_expr(
+                    module_snapshot,
+                    class_env,
+                    inferred,
+                    needs_dicts,
+                    dicts_in_scope,
+                    *func,
+                )?;
+                let mut args: Vec<_> = args
+                    .into_iter()
+                    .map(|a| {
+                        rewrite_expr(
+                            module_snapshot,
+                            class_env,
+                            inferred,
+                            needs_dicts,
+                            dicts_in_scope,
+                            a,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                let expected_arg_tys: Option<Vec<Ty>> = if let ExprKind::Var(callee) = &func.kind {
+                    expected_arg_types_for_call(module_snapshot, class_env, inferred, callee, &args)
+                } else {
+                    None
+                };
+
+                // Higher-order (deferred) dictionary passing:
+                // If we pass a constrained top-level function as a value, and the dictionary is
+                // already in scope (from an enclosing constrained binding), partially apply it.
+                // This avoids arity mismatch without requiring ground-type resolution.
+                for (i, a) in args.iter_mut().enumerate() {
+                    let ast::ExprKind::Var(name) = &a.kind else {
+                        continue;
+                    };
+                    let Some(classes) = needs_dicts.get(name) else {
+                        continue;
+                    };
+
+                    let mut dict_args: Vec<ast::Expr> = Vec::new();
+                    for class in classes {
+                        let dict_var = dict_param_name(class);
+                        if dicts_in_scope.contains(&dict_var) {
+                            dict_args.push(Expr::new(span, ExprKind::Var(dict_var)));
+                        }
+                    }
+
+                    // If no dictionary is in scope, try resolving from the expected argument type
+                    // (e.g. `use k 1` can pick `Inc Integer` for `k` from `1`).
+                    if dict_args.is_empty() {
+                        let Some(expected) = expected_arg_tys.as_ref().and_then(|v| v.get(i))
+                        else {
+                            continue;
+                        };
+
+                        // MVP heuristic: choose the instance head from the first value argument
+                        // type when passing a constrained function as a value.
+                        let target_ty = match expected {
+                            Ty::Func(dom, _) => dom.as_ref().clone(),
+                            other => other.clone(),
+                        };
+
+                        for class in classes {
+                            if let Some(dict_name) =
+                                pick_instance_dict(class_env, class, &target_ty)
+                            {
+                                dict_args.push(Expr::new(span, ExprKind::Var(dict_name)));
+                            }
+                        }
+                    }
+                    if dict_args.is_empty() {
+                        continue;
+                    }
+
+                    *a = Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(Expr::new(span, ExprKind::Var(name.clone()))),
+                            args: dict_args,
+                        },
+                    );
+                }
+
+                if let ExprKind::Var(name) = &func.kind {
+                    if let Some(classes) = needs_dicts.get(name) {
+                        // Insert dict args in front of value args.
+                        let mut dict_args: Vec<ast::Expr> = Vec::new();
+                        for class in classes {
+                            let param = dict_param_name(class);
+                            if dicts_in_scope.contains(&param) {
+                                dict_args.push(Expr::new(span, ExprKind::Var(param)));
+                                continue;
+                            }
+
+                            // Try resolving at call site via the first value argument.
+                            let Some(arg0) = args.first() else {
+                                // Partial application: leave dictionaries unapplied.
+                                continue;
+                            };
+                            let arg0_ty = infer_in_module_with_class_env(
+                                module_snapshot,
+                                class_env,
+                                arg0.clone(),
+                            )?;
+                            if !ftv_ty(&arg0_ty).is_empty() {
+                                return Err(Error::msg(format!(
+                                    "cannot resolve dictionary for call to `{name}`: first argument type is not ground ({arg0_ty})"
+                                )));
+                            }
+                            let key = (class.clone(), instance_head_key_ty(&arg0_ty)?);
+                            let Some(dict_name) = class_env.instances.get(&key) else {
+                                return Err(Error::msg(format!(
+                                    "no instance found for dictionary argument: {class} {arg0_ty}"
+                                )));
+                            };
+                            dict_args.push(Expr::new(span, ExprKind::Var(dict_name.clone())));
+                        }
+
+                        if !dict_args.is_empty() {
+                            dict_args.extend(args);
+                            args = dict_args;
+                        }
+                    }
+                }
+
+                Expr::new(
+                    span,
+                    ExprKind::Apply {
+                        func: Box::new(func),
+                        args,
+                    },
+                )
+            }
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => Expr::new(
+                span,
+                ExprKind::If {
+                    cond: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        inferred,
+                        needs_dicts,
+                        dicts_in_scope,
+                        *cond,
+                    )?),
+                    then_branch: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        inferred,
+                        needs_dicts,
+                        dicts_in_scope,
+                        *then_branch,
+                    )?),
+                    else_branch: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        inferred,
+                        needs_dicts,
+                        dicts_in_scope,
+                        *else_branch,
+                    )?),
+                },
+            ),
+            ExprKind::Let { bindings, body } => {
+                let mut scope = dicts_in_scope.clone();
+                for b in &bindings {
+                    let mut names = HashSet::new();
+                    pat_defined_names(&b.pat, &mut names);
+                    for n in names {
+                        if n.starts_with("__dict_") {
+                            scope.insert(n);
+                        }
+                    }
+                }
+
+                // Local dictionary passing: add dict params to constrained local bindings and
+                // extend the needs-dicts environment for uses inside the body.
+                let mut local_needs: HashMap<String, Vec<String>> = HashMap::new();
+                // Fixed point: local bindings can require dictionaries transitively via other
+                // local constrained bindings.
+                loop {
+                    let mut changed = false;
+                    let mut lookup = needs_dicts.clone();
+                    for (k, v) in &local_needs {
+                        lookup.insert(k.clone(), v.clone());
+                    }
+
+                    for b in &bindings {
+                        let PatternKind::Var(name) = &b.pat.kind else {
+                            continue;
+                        };
+                        let mut req: HashSet<String> = HashSet::new();
+                        required_classes_in_expr(&b.expr, class_env, &lookup, &mut req);
+                        let mut classes: Vec<String> = req.into_iter().collect();
+                        classes.sort();
+                        if classes.is_empty() {
+                            continue;
+                        }
+                        match local_needs.get(name) {
+                            Some(existing) if *existing == classes => {}
+                            _ => {
+                                local_needs.insert(name.clone(), classes);
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    if !changed {
+                        break;
+                    }
+                }
+
+                let mut needs2 = needs_dicts.clone();
+                for (k, v) in &local_needs {
+                    needs2.insert(k.clone(), v.clone());
+                }
+
+                Expr::new(
+                    span,
+                    ExprKind::Let {
+                        bindings: bindings
+                            .into_iter()
+                            .map(|b| {
+                                let mut expr = b.expr;
+                                if let PatternKind::Var(name) = &b.pat.kind {
+                                    if let Some(classes) = local_needs.get(name) {
+                                        expr = add_dict_params_to_expr(expr.span, expr, classes);
+                                    }
+                                }
+                                Ok(ast::Binding {
+                                    pat: b.pat,
+                                    expr: rewrite_expr(
+                                        module_snapshot,
+                                        class_env,
+                                        inferred,
+                                        &needs2,
+                                        &scope,
+                                        expr,
+                                    )?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                        body: Box::new(rewrite_expr(
+                            module_snapshot,
+                            class_env,
+                            inferred,
+                            &needs2,
+                            &scope,
+                            *body,
+                        )?),
+                    },
+                )
+            }
+            ExprKind::Where { expr, bindings } => {
+                let mut scope = dicts_in_scope.clone();
+                for b in &bindings {
+                    let mut names = HashSet::new();
+                    pat_defined_names(&b.pat, &mut names);
+                    for n in names {
+                        if n.starts_with("__dict_") {
+                            scope.insert(n);
+                        }
+                    }
+                }
+
+                let mut local_needs: HashMap<String, Vec<String>> = HashMap::new();
+                loop {
+                    let mut changed = false;
+                    let mut lookup = needs_dicts.clone();
+                    for (k, v) in &local_needs {
+                        lookup.insert(k.clone(), v.clone());
+                    }
+
+                    for b in &bindings {
+                        let PatternKind::Var(name) = &b.pat.kind else {
+                            continue;
+                        };
+                        let mut req: HashSet<String> = HashSet::new();
+                        required_classes_in_expr(&b.expr, class_env, &lookup, &mut req);
+                        let mut classes: Vec<String> = req.into_iter().collect();
+                        classes.sort();
+                        if classes.is_empty() {
+                            continue;
+                        }
+                        match local_needs.get(name) {
+                            Some(existing) if *existing == classes => {}
+                            _ => {
+                                local_needs.insert(name.clone(), classes);
+                                changed = true;
+                            }
+                        }
+                    }
+
+                    if !changed {
+                        break;
+                    }
+                }
+
+                let mut needs2 = needs_dicts.clone();
+                for (k, v) in &local_needs {
+                    needs2.insert(k.clone(), v.clone());
+                }
+
+                Expr::new(
+                    span,
+                    ExprKind::Where {
+                        expr: Box::new(rewrite_expr(
+                            module_snapshot,
+                            class_env,
+                            inferred,
+                            &needs2,
+                            &scope,
+                            *expr,
+                        )?),
+                        bindings: bindings
+                            .into_iter()
+                            .map(|b| {
+                                let mut expr = b.expr;
+                                if let PatternKind::Var(name) = &b.pat.kind {
+                                    if let Some(classes) = local_needs.get(name) {
+                                        expr = add_dict_params_to_expr(expr.span, expr, classes);
+                                    }
+                                }
+                                Ok(ast::Binding {
+                                    pat: b.pat,
+                                    expr: rewrite_expr(
+                                        module_snapshot,
+                                        class_env,
+                                        inferred,
+                                        &needs2,
+                                        &scope,
+                                        expr,
+                                    )?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    },
+                )
+            }
+            ExprKind::Annot { expr, ty } => Expr::new(
+                span,
+                ExprKind::Annot {
+                    expr: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        inferred,
+                        needs_dicts,
+                        dicts_in_scope,
+                        *expr,
+                    )?),
+                    ty,
+                },
+            ),
+            ExprKind::Do(stmts) => Expr::new(
+                span,
+                ExprKind::Do(
+                    stmts
+                        .into_iter()
+                        .map(|s| {
+                            Ok(match s {
+                                ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                                    pat,
+                                    expr: rewrite_expr(
+                                        module_snapshot,
+                                        class_env,
+                                        inferred,
+                                        needs_dicts,
+                                        dicts_in_scope,
+                                        expr,
+                                    )?,
+                                },
+                                ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    inferred,
+                                    needs_dicts,
+                                    dicts_in_scope,
+                                    e,
+                                )?),
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            ExprKind::Case { expr, arms } => Expr::new(
+                span,
+                ExprKind::Case {
+                    expr: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        inferred,
+                        needs_dicts,
+                        dicts_in_scope,
+                        *expr,
+                    )?),
+                    arms: arms
+                        .into_iter()
+                        .map(|a| {
+                            Ok(ast::CaseArm {
+                                pat: a.pat,
+                                guard: a
+                                    .guard
+                                    .map(|g| {
+                                        rewrite_expr(
+                                            module_snapshot,
+                                            class_env,
+                                            inferred,
+                                            needs_dicts,
+                                            dicts_in_scope,
+                                            g,
+                                        )
+                                    })
+                                    .transpose()?,
+                                body: rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    inferred,
+                                    needs_dicts,
+                                    dicts_in_scope,
+                                    a.body,
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                },
+            ),
+            ExprKind::Cons { head, tail } => Expr::new(
+                span,
+                ExprKind::Cons {
+                    head: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        inferred,
+                        needs_dicts,
+                        dicts_in_scope,
+                        *head,
+                    )?),
+                    tail: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        inferred,
+                        needs_dicts,
+                        dicts_in_scope,
+                        *tail,
+                    )?),
+                },
+            ),
+            ExprKind::List(es) => Expr::new(
+                span,
+                ExprKind::List(
+                    es.into_iter()
+                        .map(|e| {
+                            rewrite_expr(
+                                module_snapshot,
+                                class_env,
+                                inferred,
+                                needs_dicts,
+                                dicts_in_scope,
+                                e,
+                            )
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            ExprKind::Tuple(es) => Expr::new(
+                span,
+                ExprKind::Tuple(
+                    es.into_iter()
+                        .map(|e| {
+                            rewrite_expr(
+                                module_snapshot,
+                                class_env,
+                                inferred,
+                                needs_dicts,
+                                dicts_in_scope,
+                                e,
+                            )
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            ExprKind::Record(fields) => Expr::new(
+                span,
+                ExprKind::Record(
+                    fields
+                        .into_iter()
+                        .map(|(k, v)| {
+                            Ok((
+                                k,
+                                rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    inferred,
+                                    needs_dicts,
+                                    dicts_in_scope,
+                                    v,
+                                )?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            other => Expr::new(span, other),
+        })
+    }
+
+    let snapshot = module.clone();
+
+    // 1) Add dictionary params to constrained top-level bindings.
+    module.items = module
+        .items
+        .drain(..)
+        .map(|it| {
+            let it = match it {
+                ast::Item::Binding(b) => {
+                    if let PatternKind::Var(name) = &b.pat.kind {
+                        if let Some(classes) = needs_dicts.get(name) {
+                            ast::Item::Binding(ast::Binding {
+                                pat: b.pat,
+                                expr: add_dict_params_to_expr(b.expr.span, b.expr, classes),
+                            })
+                        } else {
+                            ast::Item::Binding(b)
+                        }
+                    } else {
+                        ast::Item::Binding(b)
+                    }
+                }
+                other => other,
+            };
+            Ok(it)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // 2) Rewrite call sites to supply dictionaries.
+    let empty_scope: HashSet<String> = HashSet::new();
+    module.items = module
+        .items
+        .drain(..)
+        .map(|it| {
+            Ok(match it {
+                ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
+                    pat: b.pat,
+                    expr: rewrite_expr(
+                        &snapshot,
+                        class_env,
+                        inferred,
+                        &needs_dicts,
+                        &empty_scope,
+                        b.expr,
+                    )?,
+                }),
+                other => other,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(())
+}
+
+fn rewrite_class_method_calls_in_module(
+    module: &mut ast::Module,
+    class_env: &ClassEnv,
+) -> Result<()> {
+    fn rewrite_expr(
+        module_snapshot: &ast::Module,
+        class_env: &ClassEnv,
+        dicts_in_scope: &HashSet<String>,
+        expr: ast::Expr,
+    ) -> Result<ast::Expr> {
+        use ast::{Expr, ExprKind};
+        let span = expr.span;
+        Ok(match expr.kind {
+            ExprKind::Lambda { params, body } => {
+                let mut scope = dicts_in_scope.clone();
+                for p in &params {
+                    if p.starts_with("__dict_") {
+                        scope.insert(p.clone());
+                    }
+                }
+                Expr::new(
+                    span,
+                    ExprKind::Lambda {
+                        params,
+                        body: Box::new(rewrite_expr(module_snapshot, class_env, &scope, *body)?),
+                    },
+                )
+            }
+            ExprKind::Apply { func, args } => {
+                let func = rewrite_expr(module_snapshot, class_env, dicts_in_scope, *func)?;
+                let args: Vec<_> = args
+                    .into_iter()
+                    .map(|a| rewrite_expr(module_snapshot, class_env, dicts_in_scope, a))
+                    .collect::<Result<Vec<_>>>()?;
+
+                // Method call: `m x ...` where `m` is a class method.
+                if let (ExprKind::Var(mname), Some(arg0)) = (&func.kind, args.first()) {
+                    if let Some(classes) = class_env.method_classes.get(mname) {
+                        let Some(class) = classes.first() else {
+                            return Err(Error::msg("internal: empty method class list"));
+                        };
+
+                        // If we're already under a dictionary parameter (e.g. inside a constrained
+                        // binding), use it directly and avoid trying to infer the local argument
+                        // type in a top-level env.
+                        let dict_var = format!("__dict_{class}");
+                        if dicts_in_scope.contains(&dict_var) {
+                            let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
+                            let method_fn = Expr::new(
+                                span,
+                                ExprKind::Apply {
+                                    func: Box::new(get),
+                                    args: vec![
+                                        Expr::new(span, ExprKind::Var(dict_var)),
+                                        Expr::new(span, ExprKind::String(mname.clone())),
+                                    ],
+                                },
+                            );
+
+                            return Ok(Expr::new(
+                                span,
+                                ExprKind::Apply {
+                                    func: Box::new(method_fn),
+                                    args,
+                                },
+                            ));
+                        }
+
+                        // Resolve dictionary by the (ground) type of the first argument.
+                        let arg0_ty = infer_in_module_with_class_env(
+                            module_snapshot,
+                            class_env,
+                            arg0.clone(),
+                        )?;
+                        if !ftv_ty(&arg0_ty).is_empty() {
+                            return Err(Error::msg(format!(
+                                "cannot resolve method call `{mname}`: first argument type is not ground ({arg0_ty})"
+                            )));
+                        }
+
+                        let key = (class.clone(), instance_head_key_ty(&arg0_ty)?);
+                        let Some(dict_name) = class_env.instances.get(&key) else {
+                            return Err(Error::msg(format!(
+                                "no instance found for method call `{mname}`: {class} {arg0_ty}"
+                            )));
+                        };
+
+                        let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
+                        let method_fn = Expr::new(
+                            span,
+                            ExprKind::Apply {
+                                func: Box::new(get),
+                                args: vec![
+                                    Expr::new(span, ExprKind::Var(dict_name.clone())),
+                                    Expr::new(span, ExprKind::String(mname.clone())),
+                                ],
+                            },
+                        );
+
+                        return Ok(Expr::new(
+                            span,
+                            ExprKind::Apply {
+                                func: Box::new(method_fn),
+                                args,
+                            },
+                        ));
+                    }
+                }
+
+                Expr::new(
+                    span,
+                    ExprKind::Apply {
+                        func: Box::new(func),
+                        args,
+                    },
+                )
+            }
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => Expr::new(
+                span,
+                ExprKind::If {
+                    cond: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *cond,
+                    )?),
+                    then_branch: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *then_branch,
+                    )?),
+                    else_branch: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *else_branch,
+                    )?),
+                },
+            ),
+            ExprKind::Let { bindings, body } => Expr::new(
+                span,
+                ExprKind::Let {
+                    bindings: bindings
+                        .into_iter()
+                        .map(|b| {
+                            Ok(ast::Binding {
+                                pat: b.pat,
+                                expr: rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    dicts_in_scope,
+                                    b.expr,
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                    body: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *body,
+                    )?),
+                },
+            ),
+            ExprKind::Where { expr, bindings } => Expr::new(
+                span,
+                ExprKind::Where {
+                    expr: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *expr,
+                    )?),
+                    bindings: bindings
+                        .into_iter()
+                        .map(|b| {
+                            Ok(ast::Binding {
+                                pat: b.pat,
+                                expr: rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    dicts_in_scope,
+                                    b.expr,
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                },
+            ),
+            ExprKind::Annot { expr, ty } => Expr::new(
+                span,
+                ExprKind::Annot {
+                    expr: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *expr,
+                    )?),
+                    ty,
+                },
+            ),
+            ExprKind::Do(stmts) => Expr::new(
+                span,
+                ExprKind::Do(
+                    stmts
+                        .into_iter()
+                        .map(|s| {
+                            Ok(match s {
+                                ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                                    pat,
+                                    expr: rewrite_expr(
+                                        module_snapshot,
+                                        class_env,
+                                        dicts_in_scope,
+                                        expr,
+                                    )?,
+                                },
+                                ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    dicts_in_scope,
+                                    e,
+                                )?),
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            ExprKind::Case { expr, arms } => Expr::new(
+                span,
+                ExprKind::Case {
+                    expr: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *expr,
+                    )?),
+                    arms: arms
+                        .into_iter()
+                        .map(|a| {
+                            Ok(ast::CaseArm {
+                                pat: a.pat,
+                                guard: a
+                                    .guard
+                                    .map(|g| {
+                                        rewrite_expr(module_snapshot, class_env, dicts_in_scope, g)
+                                    })
+                                    .transpose()?,
+                                body: rewrite_expr(
+                                    module_snapshot,
+                                    class_env,
+                                    dicts_in_scope,
+                                    a.body,
+                                )?,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                },
+            ),
+            ExprKind::Cons { head, tail } => Expr::new(
+                span,
+                ExprKind::Cons {
+                    head: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *head,
+                    )?),
+                    tail: Box::new(rewrite_expr(
+                        module_snapshot,
+                        class_env,
+                        dicts_in_scope,
+                        *tail,
+                    )?),
+                },
+            ),
+            ExprKind::List(es) => Expr::new(
+                span,
+                ExprKind::List(
+                    es.into_iter()
+                        .map(|e| rewrite_expr(module_snapshot, class_env, dicts_in_scope, e))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            ExprKind::Tuple(es) => Expr::new(
+                span,
+                ExprKind::Tuple(
+                    es.into_iter()
+                        .map(|e| rewrite_expr(module_snapshot, class_env, dicts_in_scope, e))
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+            ExprKind::Record(fields) => Expr::new(
+                span,
+                ExprKind::Record(
+                    fields
+                        .into_iter()
+                        .map(|(k, v)| {
+                            Ok((
+                                k,
+                                rewrite_expr(module_snapshot, class_env, dicts_in_scope, v)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                ),
+            ),
+
+            other => Expr::new(span, other),
+        })
+    }
+
+    let snapshot = module.clone();
+    let empty_scope: HashSet<String> = HashSet::new();
+    module.items = module
+        .items
+        .drain(..)
+        .map(|it| {
+            Ok(match it {
+                ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
+                    pat: b.pat,
+                    expr: rewrite_expr(&snapshot, class_env, &empty_scope, b.expr)?,
+                }),
+                other => other,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(())
+}
+
+fn infer_module_with_class_env(
+    module: &ast::Module,
+    class_env: &ClassEnv,
+) -> Result<HashMap<String, Scheme>> {
+    let mut cx = InferCtx::default();
+    let data_env = collect_data_env(module);
+    let mut env = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
+    let mut subst = Subst::new();
+    let mut out = HashMap::new();
+
+    for it in &module.items {
+        let ast::Item::Binding(b) = it else {
+            continue;
+        };
+
+        let ctx_name = match &b.pat.kind {
+            ast::PatternKind::Var(n) => n.as_str(),
+            _ => "<pattern>",
+        };
+
+        let mut binds = Vec::new();
+        let mut seen = HashSet::new();
+        let mut cs_pat = Vec::new();
+        let pat_ty = infer_pat_in(
+            &mut cx,
+            &data_env,
+            &mut subst,
+            &env,
+            &b.pat,
+            &mut binds,
+            &mut seen,
+            &mut cs_pat,
+        )
+        .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+
+        let env_in = apply_env(&subst, &env);
+        let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &data_env, &env_in, b.expr.clone())
+            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+        subst = compose(&s_rhs, &subst);
+
+        let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))
+            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+        subst = compose(&s_pat, &subst);
+
+        for (name, t) in binds {
+            let env_gen = apply_env(&subst, &env);
+            let mut cs = cs_rhs.clone();
+            cs.extend(cs_pat.clone());
+            let cs = simplify_constraints(&data_env, class_env, apply_constraints(&subst, cs))?;
+            let scheme = generalize_qual(&env_gen, cs, apply(&subst, t));
+            env.insert(name.clone(), scheme.clone());
+            out.insert(name, scheme);
+        }
+    }
+
+    Ok(out)
+}
+
 pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
     if module
         .items
@@ -4013,7 +5592,9 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
         .map(|it| expand_item(it, &aliases))
         .collect::<Result<Vec<_>>>()?;
 
-    let inferred = infer_module(&module)?;
+    let class_env = desugar_typeclasses(&mut module)?;
+
+    let inferred = infer_module_with_class_env(&module, &class_env)?;
 
     if let Some(main) = inferred.get("main") {
         let expected = Ty::App {
@@ -4024,6 +5605,10 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
             return Err(Error::msg("main must have type IO Unit"));
         }
     }
+
+    rewrite_class_dict_passing_in_module(&mut module, &class_env, &inferred)?;
+
+    rewrite_class_method_calls_in_module(&mut module, &class_env)?;
 
     // MVP: start routing `show`/`toString` calls through an explicit Show dictionary.
     rewrite_show_calls_in_module(&mut module);
@@ -4071,6 +5656,65 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 })
                 .collect::<Result<Vec<_>>>()?,
             deriving: d.deriving,
+        })),
+        ast::Item::ClassDecl(c) => Ok(ast::Item::ClassDecl(ast::ClassDecl {
+            name: c.name,
+            param: c.param,
+            methods: c
+                .methods
+                .into_iter()
+                .map(|m| {
+                    Ok(ast::ClassMethodSig {
+                        name: m.name,
+                        ty: ast::QualType {
+                            preds: m
+                                .ty
+                                .preds
+                                .into_iter()
+                                .map(|p| {
+                                    Ok(match p {
+                                        ast::Predicate::Show(t) => ast::Predicate::Show(
+                                            expand_type(t, aliases, &mut Vec::new())?,
+                                        ),
+                                        ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(
+                                            expand_type(t, aliases, &mut Vec::new())?,
+                                        ),
+                                        ast::Predicate::Eq(t) => ast::Predicate::Eq(expand_type(
+                                            t,
+                                            aliases,
+                                            &mut Vec::new(),
+                                        )?),
+                                        ast::Predicate::EqRow(t) => ast::Predicate::EqRow(
+                                            expand_type(t, aliases, &mut Vec::new())?,
+                                        ),
+                                        ast::Predicate::Lacks { label, row } => {
+                                            ast::Predicate::Lacks {
+                                                label,
+                                                row: expand_type(row, aliases, &mut Vec::new())?,
+                                            }
+                                        }
+                                    })
+                                })
+                                .collect::<Result<Vec<_>>>()?,
+                            ty: expand_type(m.ty.ty, aliases, &mut Vec::new())?,
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        })),
+        ast::Item::InstanceDecl(inst) => Ok(ast::Item::InstanceDecl(ast::InstanceDecl {
+            class: inst.class,
+            ty: expand_type(inst.ty, aliases, &mut Vec::new())?,
+            methods: inst
+                .methods
+                .into_iter()
+                .map(|b| {
+                    Ok(ast::Binding {
+                        pat: expand_pat(b.pat, aliases)?,
+                        expr: expand_expr(b.expr, aliases)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
         })),
         it @ (ast::Item::Import(_) | ast::Item::Export(_) | ast::Item::Fixity(_)) => Ok(it),
     }
@@ -5052,6 +6696,10 @@ mod inference_tests {
             Constraint::ShowRow(t) => Constraint::ShowRow(canon_ty_in(t, m, next)),
             Constraint::Eq(t) => Constraint::Eq(canon_ty_in(t, m, next)),
             Constraint::EqRow(t) => Constraint::EqRow(canon_ty_in(t, m, next)),
+            Constraint::Class { class, ty } => Constraint::Class {
+                class: class.clone(),
+                ty: canon_ty_in(ty, m, next),
+            },
             Constraint::Lacks { label, row } => Constraint::Lacks {
                 label: label.clone(),
                 row: canon_ty_in(row, m, next),
@@ -5569,7 +7217,7 @@ x = show (Bad (\y -> y))
             label: "a".to_string(),
             row: Ty::Record(vec![("a".to_string(), Ty::Con("Integer".to_string()))]),
         }];
-        assert!(simplify_constraints(&data_env, cs).is_err());
+        assert!(simplify_constraints(&data_env, &ClassEnv::default(), cs).is_err());
     }
 
     #[test]

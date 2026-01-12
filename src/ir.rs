@@ -675,6 +675,8 @@ pub enum Value {
     BuiltinEqDictApply,
     BuiltinEqDictApply1(Box<Value>),
     BuiltinEqDictApply2(Box<Value>, Box<Value>),
+    BuiltinRecordGet,
+    BuiltinRecordGet1(Box<Value>),
     BuiltinThrow,
     BuiltinCatch,
     BuiltinCatch1(Box<Value>),
@@ -893,6 +895,10 @@ fn eval_var(
 
     if name == "__builtinEqDict" {
         return Ok(Value::Record(vec![("eq".to_string(), Value::BuiltinEq)]));
+    }
+
+    if name == "__recordGet" {
+        return Ok(Value::BuiltinRecordGet);
     }
 
     if name == "throw" {
@@ -1261,6 +1267,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinEqDictApply => Ok(Value::BuiltinEqDictApply1(Box::new(arg))),
         Value::BuiltinEqDictApply1(d) => Ok(Value::BuiltinEqDictApply2(d, Box::new(arg))),
         Value::BuiltinEqDictApply2(d, a) => eq_with_dict(g, *d, *a, arg),
+        Value::BuiltinRecordGet => Ok(Value::BuiltinRecordGet1(Box::new(arg))),
+        Value::BuiltinRecordGet1(d) => record_get(g, *d, arg),
         Value::BuiltinShow => show_to_string(g, arg),
         Value::BuiltinThrow => {
             let arg = force_value(g, arg)?;
@@ -1329,6 +1337,23 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         | Value::Thunk(_)
         | Value::IoAction(_) => Err(Error::msg("attempted to apply a non-function")),
     }
+}
+
+fn record_get(g: &Globals, dict: Value, label: Value) -> Result<Value> {
+    let dict = force_value(g, dict)?;
+    let Value::Record(fields) = dict else {
+        return Err(Error::msg("__recordGet expects a record"));
+    };
+
+    let label = force_value(g, label)?;
+    let Value::String(label) = label else {
+        return Err(Error::msg("__recordGet expects String label"));
+    };
+
+    let Some((_, v)) = fields.into_iter().find(|(k, _)| k == &label) else {
+        return Err(Error::msg(format!("record missing field: {label}")));
+    };
+    force_value(g, v)
 }
 
 fn list_to_vec(g: &Globals, mut v: Value) -> Result<Vec<Value>> {

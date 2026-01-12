@@ -28,6 +28,27 @@ fn parser_import_hierarchical_name() {
 }
 
 #[test]
+fn parser_class_and_instance_basic() {
+    let src = r#"
+class C a where
+    f :: a -> a
+
+instance C Integer where
+    f x = x
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    assert!(m
+        .items
+        .iter()
+        .any(|it| matches!(it, crate::ast::Item::ClassDecl(_))));
+    assert!(m
+        .items
+        .iter()
+        .any(|it| matches!(it, crate::ast::Item::InstanceDecl(_))));
+}
+
+#[test]
 fn parser_binding_patterns() {
     let src = std::fs::read_to_string("tests/parser_binding_patterns.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
@@ -885,6 +906,437 @@ fn ir_run_main_show_to_string() {
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_method() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+main = do
+    stdoutWrite (show (inc 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_polymorphic_dict_passing() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+f x = inc x
+
+main = do
+    stdoutWrite (show (f 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_deferred_dict_higher_order() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+f x = inc x
+
+use h x = h x
+
+g x = use f x
+
+main = do
+    stdoutWrite (show (g 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_deferred_dict_let() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+f x = inc x
+use h x = h x
+
+g x = let
+    h = \y -> use f y
+in h x
+
+main = do
+    stdoutWrite (show (g 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_deferred_dict_where() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+f x = inc x
+use h x = h x
+
+g x = h x where
+    h = \y -> use f y
+
+main = do
+    stdoutWrite (show (g 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_deferred_dict_let_transitive() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+main = do
+    stdoutWrite (show (let
+        k = \y -> inc y
+        h = \y -> k y
+    in h 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_deferred_dict_where_transitive() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+x = h 1 where
+    k = \y -> inc y
+    h = \y -> k y
+
+main = do
+    stdoutWrite (show x)
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_deferred_dict_local_fn_as_value() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+use h x = h x
+
+g x = let
+    k = \y -> inc y
+in use k x
+
+main = do
+    stdoutWrite (show (g 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_deferred_dict_local_fn_as_value_callsite_ground() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+use h x = h x
+
+g = let
+    k = \y -> inc y
+in use k 1
+
+main = do
+    stdoutWrite (show g)
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_multi_constraints_callsite() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+class Dec a where
+    dec :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+instance Dec Integer where
+    dec x = x - 1
+
+f x = dec (inc x)
+
+main = do
+    stdoutWrite (show (f 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_multi_constraints_deferred_dict_higher_order() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+class Dec a where
+    dec :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+instance Dec Integer where
+    dec x = x - 1
+
+f x = dec (inc x)
+
+use h x = h x
+
+g x = use f x
+
+main = do
+    stdoutWrite (show (g 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_multi_constraints_local_fn_as_value_callsite_ground() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+class Dec a where
+    dec :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+instance Dec Integer where
+    dec x = x - 1
+
+use h x = h x
+
+g = let
+    k = \y -> dec (inc y)
+in use k 1
+
+main = do
+    stdoutWrite (show g)
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn typecheck_user_defined_typeclass_multi_constraints_missing_instance_fails() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+class Dec a where
+    dec :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+-- NOTE: missing `instance Dec Integer` on purpose.
+
+f x = dec (inc x)
+
+main = do
+    stdoutWrite (show (f 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let err = crate::types::typecheck(m).unwrap_err();
+    let msg = format!("{err}");
+
+    assert!(
+        msg.contains("Dec Integer")
+            && (msg.contains("cannot satisfy constraint")
+                || msg.contains("no instance found for method call `dec`")
+                || msg.contains("no instance found for dictionary argument")),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn typecheck_user_defined_typeclass_multi_constraints_missing_instance_higher_order_fails() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+class Dec a where
+    dec :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+-- NOTE: missing `instance Dec Integer` on purpose.
+
+f x = dec (inc x)
+use h x = h x
+g x = use f x
+
+main = do
+    stdoutWrite (show (g 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let err = crate::types::typecheck(m).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("Dec Integer")
+            && (msg.contains("cannot satisfy constraint")
+                || msg.contains("no instance found for method call `dec`")
+                || msg.contains("no instance found for dictionary argument")),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn typecheck_user_defined_typeclass_multi_constraints_missing_instance_local_fn_value_callsite_ground_fails(
+) {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+class Dec a where
+    dec :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+-- NOTE: missing `instance Dec Integer` on purpose.
+
+use h x = h x
+
+g = let
+    k = \y -> dec (inc y)
+in use k 1
+
+main = do
+    stdoutWrite (show g)
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let err = crate::types::typecheck(m).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("Dec Integer")
+            && (msg.contains("cannot satisfy constraint")
+                || msg.contains("no instance found for method call `dec`")
+                || msg.contains("no instance found for dictionary argument")),
+        "unexpected error: {msg}"
+    );
 }
 
 #[test]

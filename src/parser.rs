@@ -238,6 +238,14 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 flush_pending_fun_item(ts, &mut items, pending.take())?;
                 items.push(parse_type_alias(ts)?);
             }
+            Some(TokenKind::KwClass) => {
+                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                items.push(parse_class_decl(ts)?);
+            }
+            Some(TokenKind::KwInstance) => {
+                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                items.push(parse_instance_decl(ts)?);
+            }
             Some(
                 TokenKind::Ident(_)
                 | TokenKind::LParen
@@ -353,6 +361,110 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
     let ty = parse_type_expr(ts, Stop::LineEnd, is_type_alias_end)?;
 
     Ok(ast::Item::TypeAlias(ast::TypeAlias { name, params, ty }))
+}
+
+fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+    ts.expect(TokenKind::KwClass)?;
+    let name = ts.expect_ident()?;
+    let param = ts.expect_ident()?;
+    ts.expect(TokenKind::KwWhere)?;
+    ts.consume_line_end();
+    ts.skip_newlines();
+    ts.expect(TokenKind::Indent)?;
+
+    let mut methods = Vec::new();
+    loop {
+        ts.skip_newlines();
+        if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+            break;
+        }
+        if ts.is_eof() {
+            return Err(ts.err_here("unexpected EOF in class"));
+        }
+
+        let mname = ts.expect_ident()?;
+        ts.expect(TokenKind::ColonColon)?;
+        let ty = parse_qual_type(ts, Stop::LineEnd)?;
+        methods.push(ast::ClassMethodSig { name: mname, ty });
+        ts.consume_line_end();
+    }
+
+    ts.expect(TokenKind::Dedent)?;
+    ts.consume_line_end();
+
+    Ok(ast::Item::ClassDecl(ast::ClassDecl {
+        name,
+        param,
+        methods,
+    }))
+}
+
+fn parse_instance_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+    ts.expect(TokenKind::KwInstance)?;
+    let class = ts.expect_ident()?;
+    let ty = parse_type_expr(ts, Stop::LineEnd, is_type_end)?;
+    ts.expect(TokenKind::KwWhere)?;
+    ts.consume_line_end();
+    ts.skip_newlines();
+    ts.expect(TokenKind::Indent)?;
+
+    let mut method_items: Vec<ast::Item> = Vec::new();
+    let mut pending: Option<PendingFun> = None;
+    loop {
+        ts.skip_newlines();
+        if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+            break;
+        }
+        if ts.is_eof() {
+            return Err(ts.err_here("unexpected EOF in instance"));
+        }
+
+        match ts.peek_kind() {
+            Some(
+                TokenKind::Ident(_)
+                | TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::Integer(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::Char(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Question,
+            ) => match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
+                ParsedBind::Binding(b) => {
+                    flush_pending_fun_item(ts, &mut method_items, pending.take())?;
+                    method_items.push(ast::Item::Binding(b));
+                }
+                ParsedBind::FunClause(c) => {
+                    push_fun_clause_item(ts, &mut method_items, &mut pending, c)?;
+                }
+            },
+            Some(_) => return Err(ts.err_here("unexpected token in instance")),
+            None => break,
+        }
+
+        ts.consume_line_end();
+    }
+
+    flush_pending_fun_item(ts, &mut method_items, pending.take())?;
+    ts.expect(TokenKind::Dedent)?;
+    ts.consume_line_end();
+
+    let mut methods: Vec<ast::Binding> = Vec::new();
+    for it in method_items {
+        let ast::Item::Binding(b) = it else {
+            return Err(ts.err_here("unexpected item in instance"));
+        };
+        methods.push(b);
+    }
+
+    Ok(ast::Item::InstanceDecl(ast::InstanceDecl {
+        class,
+        ty,
+        methods,
+    }))
 }
 
 fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
