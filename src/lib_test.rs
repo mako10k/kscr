@@ -1233,6 +1233,44 @@ main = do
 }
 
 #[test]
+fn ir_run_main_user_defined_typeclass_multi_constraints_partial_scope_plus_callsite() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+class Dec a where
+    dec :: a -> a
+
+instance Inc Integer where
+    inc x = x + 1
+
+instance Dec Integer where
+    dec x = x - 1
+
+f x = dec (inc x)
+use h x = h x
+
+-- `g` needs only `Inc`, so only `__dict_Inc` is in scope.
+-- Passing `f` as a value to `use` should still resolve the missing `Dec` dict
+-- from the callsite ground argument `1`.
+g x = let
+    y = inc x
+in case y of
+    z -> use f 1
+
+main = do
+    stdoutWrite (show (g 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn typecheck_user_defined_typeclass_multi_constraints_missing_instance_fails() {
     let src = r#"
 class Inc a where
@@ -1337,6 +1375,15 @@ main = do
                 || msg.contains("no instance found for dictionary argument")),
         "unexpected error: {msg}"
     );
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_imports_instance() {
+    let tm = crate::types::typecheck_file(std::path::Path::new("tests/typeclass_import_main.ks"))
+        .unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]

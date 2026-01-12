@@ -3454,6 +3454,18 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
         }
     }
 
+    // MVP: always import class/instance declarations.
+    // Rationale: instances are required for constraint solving, and class declarations carry
+    // method types used to recognize method calls.
+    // (This is intentionally not gated by export lists yet.)
+    out.extend(
+        module
+            .items
+            .iter()
+            .filter(|it| matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
+            .cloned(),
+    );
+
     Ok(out)
 }
 
@@ -4553,17 +4565,22 @@ fn rewrite_class_dict_passing_in_module(
     ) -> Result<ast::Expr> {
         let span = expr.span;
 
-        fn expected_arg_types_for_call(
+        struct CallInfo {
+            expected_arg_tys: Vec<Ty>,
+            class_tys: HashMap<String, Ty>,
+        }
+
+        fn call_info_for_call(
             module_snapshot: &ast::Module,
             class_env: &ClassEnv,
             inferred: &HashMap<String, Scheme>,
             callee: &str,
             args: &[ast::Expr],
-        ) -> Option<Vec<Ty>> {
+        ) -> Option<CallInfo> {
             let scheme = inferred.get(callee)?;
 
             let mut cx = InferCtx::default();
-            let (_, mut callee_ty) = instantiate_qual(&mut cx, scheme);
+            let (cs, mut callee_ty) = instantiate_qual(&mut cx, scheme);
             let mut subst = Subst::new();
             let mut expected: Vec<Ty> = Vec::new();
 
@@ -4585,7 +4602,18 @@ fn rewrite_class_dict_passing_in_module(
                 callee_ty = apply(&subst, *cod);
             }
 
-            Some(expected.into_iter().map(|t| apply(&subst, t)).collect())
+            let mut class_tys: HashMap<String, Ty> = HashMap::new();
+            for c in cs {
+                let Constraint::Class { class, ty } = c else {
+                    continue;
+                };
+                class_tys.insert(class, apply(&subst, ty));
+            }
+
+            Some(CallInfo {
+                expected_arg_tys: expected.into_iter().map(|t| apply(&subst, t)).collect(),
+                class_tys,
+            })
         }
 
         fn pick_instance_dict(class_env: &ClassEnv, class: &str, ty: &Ty) -> Option<String> {
@@ -4642,8 +4670,8 @@ fn rewrite_class_dict_passing_in_module(
                     })
                     .collect::<Result<Vec<_>>>()?;
 
-                let expected_arg_tys: Option<Vec<Ty>> = if let ExprKind::Var(callee) = &func.kind {
-                    expected_arg_types_for_call(module_snapshot, class_env, inferred, callee, &args)
+                let call_info: Option<CallInfo> = if let ExprKind::Var(callee) = &func.kind {
+                    call_info_for_call(module_snapshot, class_env, inferred, callee, &args)
                 } else {
                     None
                 };
@@ -4660,19 +4688,22 @@ fn rewrite_class_dict_passing_in_module(
                         continue;
                     };
 
+                    let expected = call_info
+                        .as_ref()
+                        .and_then(|ci| ci.expected_arg_tys.get(i))
+                        .cloned();
+
                     let mut dict_args: Vec<ast::Expr> = Vec::new();
                     for class in classes {
                         let dict_var = dict_param_name(class);
                         if dicts_in_scope.contains(&dict_var) {
                             dict_args.push(Expr::new(span, ExprKind::Var(dict_var)));
+                            continue;
                         }
-                    }
 
-                    // If no dictionary is in scope, try resolving from the expected argument type
-                    // (e.g. `use k 1` can pick `Inc Integer` for `k` from `1`).
-                    if dict_args.is_empty() {
-                        let Some(expected) = expected_arg_tys.as_ref().and_then(|v| v.get(i))
-                        else {
+                        // Also try resolving from the expected argument type (callsite-ground),
+                        // even if some other dictionaries were found in scope.
+                        let Some(expected) = expected.as_ref() else {
                             continue;
                         };
 
@@ -4683,12 +4714,8 @@ fn rewrite_class_dict_passing_in_module(
                             other => other.clone(),
                         };
 
-                        for class in classes {
-                            if let Some(dict_name) =
-                                pick_instance_dict(class_env, class, &target_ty)
-                            {
-                                dict_args.push(Expr::new(span, ExprKind::Var(dict_name)));
-                            }
+                        if let Some(dict_name) = pick_instance_dict(class_env, class, &target_ty) {
+                            dict_args.push(Expr::new(span, ExprKind::Var(dict_name)));
                         }
                     }
                     if dict_args.is_empty() {
@@ -4715,25 +4742,66 @@ fn rewrite_class_dict_passing_in_module(
                                 continue;
                             }
 
-                            // Try resolving at call site via the first value argument.
-                            let Some(arg0) = args.first() else {
-                                // Partial application: leave dictionaries unapplied.
+                            // Partial application (no value args): keep dictionaries unapplied.
+                            if args.is_empty() {
                                 continue;
+                            }
+
+                            // Resolve using unified call information from *all* arguments when
+                            // available (top-level bindings), otherwise fall back to any ground
+                            // argument type (local bindings).
+                            let target_ty: Ty = if let Some(ci) = call_info.as_ref() {
+                                ci.class_tys
+                                    .get(class)
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        Error::msg(format!(
+                                            "cannot resolve dictionary for call to `{name}`: missing class type for {class}"
+                                        ))
+                                    })?
+                            } else {
+                                let mut chosen: Option<Ty> = None;
+                                let mut first_non_ground: Option<Ty> = None;
+                                for a in &args {
+                                    let Ok(a_ty) = infer_in_module_with_class_env(
+                                        module_snapshot,
+                                        class_env,
+                                        a.clone(),
+                                    ) else {
+                                        continue;
+                                    };
+                                    if !ftv_ty(&a_ty).is_empty() {
+                                        if first_non_ground.is_none() {
+                                            first_non_ground = Some(a_ty);
+                                        }
+                                        continue;
+                                    }
+                                    if instance_head_key_ty(&a_ty).is_ok() {
+                                        chosen = Some(a_ty);
+                                        break;
+                                    }
+                                }
+                                let Some(chosen) = chosen else {
+                                    let hint = first_non_ground
+                                        .map(|t| format!("{t}"))
+                                        .unwrap_or_else(|| "<unknown>".to_string());
+                                    return Err(Error::msg(format!(
+                                        "cannot resolve dictionary for call to `{name}`: no ground argument type available for {class} (e.g. {hint})"
+                                    )));
+                                };
+                                chosen
                             };
-                            let arg0_ty = infer_in_module_with_class_env(
-                                module_snapshot,
-                                class_env,
-                                arg0.clone(),
-                            )?;
-                            if !ftv_ty(&arg0_ty).is_empty() {
+
+                            if !ftv_ty(&target_ty).is_empty() {
                                 return Err(Error::msg(format!(
-                                    "cannot resolve dictionary for call to `{name}`: first argument type is not ground ({arg0_ty})"
+                                    "cannot resolve dictionary for call to `{name}`: cannot infer instance head for {class} (type is not ground: {target_ty})"
                                 )));
                             }
-                            let key = (class.clone(), instance_head_key_ty(&arg0_ty)?);
+
+                            let key = (class.clone(), instance_head_key_ty(&target_ty)?);
                             let Some(dict_name) = class_env.instances.get(&key) else {
                                 return Err(Error::msg(format!(
-                                    "no instance found for dictionary argument: {class} {arg0_ty}"
+                                    "no instance found for dictionary argument: {class} {target_ty}"
                                 )));
                             };
                             dict_args.push(Expr::new(span, ExprKind::Var(dict_name.clone())));
@@ -5252,22 +5320,64 @@ fn rewrite_class_method_calls_in_module(
                             ));
                         }
 
-                        // Resolve dictionary by the (ground) type of the first argument.
-                        let arg0_ty = infer_in_module_with_class_env(
-                            module_snapshot,
-                            class_env,
-                            arg0.clone(),
-                        )?;
-                        if !ftv_ty(&arg0_ty).is_empty() {
-                            return Err(Error::msg(format!(
-                                "cannot resolve method call `{mname}`: first argument type is not ground ({arg0_ty})"
-                            )));
+                        // Resolve dictionary by any usable ground argument type.
+                        // This helps cases like `eq x 1` where `x` isn't ground but `1` is.
+                        let mut first_non_ground: Option<Ty> = None;
+                        let mut first_missing_instance: Option<Ty> = None;
+                        let mut dict_name: Option<String> = None;
+
+                        for a in &args {
+                            let Ok(a_ty) = infer_in_module_with_class_env(
+                                module_snapshot,
+                                class_env,
+                                a.clone(),
+                            ) else {
+                                continue;
+                            };
+
+                            if !ftv_ty(&a_ty).is_empty() {
+                                if first_non_ground.is_none() {
+                                    first_non_ground = Some(a_ty);
+                                }
+                                continue;
+                            }
+
+                            let Ok(head) = instance_head_key_ty(&a_ty) else {
+                                // Ground but not a supported instance head.
+                                return Err(Error::msg(format!(
+                                    "cannot resolve method call `{mname}`: unsupported instance head type ({a_ty})"
+                                )));
+                            };
+
+                            let key = (class.clone(), head);
+                            if let Some(d) = class_env.instances.get(&key) {
+                                dict_name = Some(d.clone());
+                                break;
+                            }
+
+                            if first_missing_instance.is_none() {
+                                first_missing_instance = Some(a_ty);
+                            }
                         }
 
-                        let key = (class.clone(), instance_head_key_ty(&arg0_ty)?);
-                        let Some(dict_name) = class_env.instances.get(&key) else {
+                        let Some(dict_name) = dict_name else {
+                            if let Some(ty) = first_missing_instance {
+                                return Err(Error::msg(format!(
+                                    "no instance found for method call `{mname}`: {class} {ty}"
+                                )));
+                            }
+
+                            let ty_hint = first_non_ground.unwrap_or_else(|| {
+                                infer_in_module_with_class_env(
+                                    module_snapshot,
+                                    class_env,
+                                    arg0.clone(),
+                                )
+                                .unwrap_or(Ty::Con("<unknown>".to_string()))
+                            });
+
                             return Err(Error::msg(format!(
-                                "no instance found for method call `{mname}`: {class} {arg0_ty}"
+                                "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
                             )));
                         };
 
