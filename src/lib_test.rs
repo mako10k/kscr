@@ -33,15 +33,15 @@ fn parser_binding_patterns() {
     let m = crate::parser::parse_module(&src).unwrap();
     assert_eq!(m.items.len(), 3);
 
-    use crate::ast::{Item, Pattern};
+    use crate::ast::{Item, PatternKind};
 
     match &m.items[1] {
-        Item::Binding(b) => assert!(matches!(b.pat, Pattern::Tuple(_))),
+        Item::Binding(b) => assert!(matches!(&b.pat.kind, PatternKind::Tuple(_))),
         _ => panic!("expected binding"),
     }
 
     match &m.items[2] {
-        Item::Binding(b) => assert!(matches!(b.pat, Pattern::Wildcard)),
+        Item::Binding(b) => assert!(matches!(&b.pat.kind, PatternKind::Wildcard)),
         _ => panic!("expected binding"),
     }
 }
@@ -51,29 +51,41 @@ fn parser_fun_clause_desugar_single_clause_multi_args() {
     let m = crate::parser::parse_module("f x y = x\n").unwrap();
     assert_eq!(m.items.len(), 1);
 
-    use crate::ast::{Expr, Item, Pattern};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &m.items[0] else {
         panic!("expected binding");
     };
-    assert!(matches!(&b.pat, Pattern::Var(name) if name == "f"));
+    assert!(matches!(&b.pat.kind, PatternKind::Var(name) if name == "f"));
 
-    let Expr::Lambda { params, body } = &b.expr else {
+    let ExprKind::Lambda { params, body } = &b.expr.kind else {
         panic!("expected lambda");
     };
     assert_eq!(params.len(), 2);
 
-    let Expr::Case { arms, .. } = &**body else {
+    let ExprKind::Case { arms, .. } = &body.as_ref().kind else {
         panic!("expected case");
     };
     assert_eq!(arms.len(), 1);
 
     assert!(matches!(
-        &arms[0].pat,
-        Pattern::Tuple(ps)
-            if matches!(&ps[..], [Pattern::Var(x), Pattern::Var(y)] if x == "x" && y == "y")
+        &arms[0].pat.kind,
+        PatternKind::Tuple(ps)
+            if matches!(
+                &ps[..],
+                [
+                    crate::ast::Pattern {
+                        kind: PatternKind::Var(x),
+                        ..
+                    },
+                    crate::ast::Pattern {
+                        kind: PatternKind::Var(y),
+                        ..
+                    }
+                ] if x == "x" && y == "y"
+            )
     ));
-    assert!(matches!(&arms[0].body, Expr::Var(s) if s == "x"));
+    assert!(matches!(&arms[0].body.kind, ExprKind::Var(s) if s == "x"));
 }
 
 #[test]
@@ -81,13 +93,13 @@ fn parser_binding_operator_name_parens() {
     let m = crate::parser::parse_module("(++) = concat\n").unwrap();
     assert_eq!(m.items.len(), 1);
 
-    use crate::ast::{Expr, Item, Pattern};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &m.items[0] else {
         panic!("expected binding");
     };
-    assert!(matches!(&b.pat, Pattern::Var(name) if name == "++"));
-    assert!(matches!(&b.expr, Expr::Var(s) if s == "concat"));
+    assert!(matches!(&b.pat.kind, PatternKind::Var(name) if name == "++"));
+    assert!(matches!(&b.expr.kind, ExprKind::Var(s) if s == "concat"));
 }
 
 #[test]
@@ -95,34 +107,58 @@ fn parser_fun_clause_operator_name_parens() {
     let m = crate::parser::parse_module("(++) a b = concat a b\n").unwrap();
     assert_eq!(m.items.len(), 1);
 
-    use crate::ast::{Expr, Item, Pattern};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &m.items[0] else {
         panic!("expected binding");
     };
-    assert!(matches!(&b.pat, Pattern::Var(name) if name == "++"));
+    assert!(matches!(&b.pat.kind, PatternKind::Var(name) if name == "++"));
 
-    let Expr::Lambda { params, body } = &b.expr else {
+    let ExprKind::Lambda { params, body } = &b.expr.kind else {
         panic!("expected lambda");
     };
     assert_eq!(params.len(), 2);
 
-    let Expr::Case { arms, .. } = &**body else {
+    let ExprKind::Case { arms, .. } = &body.as_ref().kind else {
         panic!("expected case");
     };
     assert_eq!(arms.len(), 1);
 
     assert!(matches!(
-        &arms[0].pat,
-        Pattern::Tuple(ps)
-            if matches!(&ps[..], [Pattern::Var(a), Pattern::Var(b)] if a == "a" && b == "b")
+        &arms[0].pat.kind,
+        PatternKind::Tuple(ps)
+            if matches!(
+                &ps[..],
+                [
+                    crate::ast::Pattern {
+                        kind: PatternKind::Var(a),
+                        ..
+                    },
+                    crate::ast::Pattern {
+                        kind: PatternKind::Var(b),
+                        ..
+                    }
+                ] if a == "a" && b == "b"
+            )
     ));
 
-    let Expr::Apply { func, args } = &arms[0].body else {
+    let ExprKind::Apply { func, args } = &arms[0].body.kind else {
         panic!("expected apply");
     };
-    assert!(matches!(&**func, Expr::Var(s) if s == "concat"));
-    assert!(matches!(&args[..], [Expr::Var(a), Expr::Var(b)] if a == "a" && b == "b"));
+    assert!(matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "concat"));
+    assert!(matches!(
+        &args[..],
+        [
+            crate::ast::Expr {
+                kind: ExprKind::Var(a),
+                ..
+            },
+            crate::ast::Expr {
+                kind: ExprKind::Var(b),
+                ..
+            }
+        ] if a == "a" && b == "b"
+    ));
 }
 
 #[test]
@@ -130,34 +166,58 @@ fn parser_fun_clause_operator_name_infix() {
     let m = crate::parser::parse_module("a ++ b = concat a b\n").unwrap();
     assert_eq!(m.items.len(), 1);
 
-    use crate::ast::{Expr, Item, Pattern};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &m.items[0] else {
         panic!("expected binding");
     };
-    assert!(matches!(&b.pat, Pattern::Var(name) if name == "++"));
+    assert!(matches!(&b.pat.kind, PatternKind::Var(name) if name == "++"));
 
-    let Expr::Lambda { params, body } = &b.expr else {
+    let ExprKind::Lambda { params, body } = &b.expr.kind else {
         panic!("expected lambda");
     };
     assert_eq!(params.len(), 2);
 
-    let Expr::Case { arms, .. } = &**body else {
+    let ExprKind::Case { arms, .. } = &body.as_ref().kind else {
         panic!("expected case");
     };
     assert_eq!(arms.len(), 1);
 
     assert!(matches!(
-        &arms[0].pat,
-        Pattern::Tuple(ps)
-            if matches!(&ps[..], [Pattern::Var(a), Pattern::Var(b)] if a == "a" && b == "b")
+        &arms[0].pat.kind,
+        PatternKind::Tuple(ps)
+            if matches!(
+                &ps[..],
+                [
+                    crate::ast::Pattern {
+                        kind: PatternKind::Var(a),
+                        ..
+                    },
+                    crate::ast::Pattern {
+                        kind: PatternKind::Var(b),
+                        ..
+                    }
+                ] if a == "a" && b == "b"
+            )
     ));
 
-    let Expr::Apply { func, args } = &arms[0].body else {
+    let ExprKind::Apply { func, args } = &arms[0].body.kind else {
         panic!("expected apply");
     };
-    assert!(matches!(&**func, Expr::Var(s) if s == "concat"));
-    assert!(matches!(&args[..], [Expr::Var(a), Expr::Var(b)] if a == "a" && b == "b"));
+    assert!(matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "concat"));
+    assert!(matches!(
+        &args[..],
+        [
+            crate::ast::Expr {
+                kind: ExprKind::Var(a),
+                ..
+            },
+            crate::ast::Expr {
+                kind: ExprKind::Var(b),
+                ..
+            }
+        ] if a == "a" && b == "b"
+    ));
 }
 
 #[test]
@@ -222,13 +282,17 @@ fn parser_qualified_names_desugar() {
     let crate::ast::Item::Binding(b) = &m.items[0] else {
         panic!("expected binding");
     };
-    assert!(matches!(&b.expr, crate::ast::Expr::Var(s) if s == "A.B.OM.x"));
+    assert!(matches!(&b.expr.kind, crate::ast::ExprKind::Var(s) if s == "A.B.OM.x"));
 
     let m = crate::parser::parse_module("x = 1 :: OM.Integer\n").unwrap();
     let crate::ast::Item::Binding(b) = &m.items[0] else {
         panic!("expected binding");
     };
-    let crate::ast::Expr::Annot { ty, .. } = &b.expr else {
+    let crate::ast::Expr {
+        kind: crate::ast::ExprKind::Annot { ty, .. },
+        ..
+    } = &b.expr
+    else {
         panic!("expected annotation");
     };
     assert!(matches!(ty.ty, crate::ast::Type::Integer));
@@ -385,9 +449,9 @@ fn lexer_char_literal() {
 #[test]
 fn parser_char_literal() {
     let m = crate::parser::parse_module("x = 'a'\n").unwrap();
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(b.expr, Expr::Char('a'))),
+        Item::Binding(b) => assert!(matches!(b.expr.kind, ExprKind::Char('a'))),
         _ => panic!("expected binding"),
     }
 }
@@ -395,9 +459,9 @@ fn parser_char_literal() {
 #[test]
 fn parser_cons_pattern() {
     let m = crate::parser::parse_module("x:xs = ys\n").unwrap();
-    use crate::ast::{Item, Pattern};
+    use crate::ast::{Item, PatternKind};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::Cons(_, _))),
+        Item::Binding(b) => assert!(matches!(&b.pat.kind, PatternKind::Cons(_, _))),
         _ => panic!("expected binding"),
     }
 }
@@ -405,9 +469,9 @@ fn parser_cons_pattern() {
 #[test]
 fn parser_cons_expr() {
     let m = crate::parser::parse_module("xs = 1:[]\n").unwrap();
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.expr, Expr::Cons { .. })),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::Cons { .. })),
         _ => panic!("expected binding"),
     }
 }
@@ -436,9 +500,9 @@ fn typecheck_cons_expr() {
 #[test]
 fn parser_as_pattern() {
     let m = crate::parser::parse_module("xs@_ = [1]\n").unwrap();
-    use crate::ast::{Item, Pattern};
+    use crate::ast::{Item, PatternKind};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::As(_, _))),
+        Item::Binding(b) => assert!(matches!(&b.pat.kind, PatternKind::As(_, _))),
         _ => panic!("expected binding"),
     }
 }
@@ -465,13 +529,15 @@ fn typecheck_as_pattern_with_cons_binds_all() {
 #[test]
 fn parser_hole_pattern() {
     let m = crate::parser::parse_module("? = 1\n?x = 2\n").unwrap();
-    use crate::ast::{Item, Pattern};
+    use crate::ast::{Item, PatternKind};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::Hole(None))),
+        Item::Binding(b) => assert!(matches!(&b.pat.kind, PatternKind::Hole(None))),
         _ => panic!("expected binding"),
     }
     match &m.items[1] {
-        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::Hole(Some(name)) if name == "x")),
+        Item::Binding(b) => {
+            assert!(matches!(&b.pat.kind, PatternKind::Hole(Some(name)) if name == "x"))
+        }
         _ => panic!("expected binding"),
     }
 }
@@ -486,9 +552,9 @@ fn typecheck_hole_pattern_binds_nothing() {
 #[test]
 fn parser_record_loose_pattern() {
     let m = crate::parser::parse_module("{x: a, ...} = r\n").unwrap();
-    use crate::ast::{Item, Pattern};
+    use crate::ast::{Item, PatternKind};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::RecordLoose(_, _))),
+        Item::Binding(b) => assert!(matches!(&b.pat.kind, PatternKind::RecordLoose(_, _))),
         _ => panic!("expected binding"),
     }
 }
@@ -496,10 +562,10 @@ fn parser_record_loose_pattern() {
 #[test]
 fn parser_record_loose_pattern_with_rest() {
     let m = crate::parser::parse_module("{x: a, ...r} = r0\n").unwrap();
-    use crate::ast::{Item, Pattern};
+    use crate::ast::{Item, PatternKind};
     match &m.items[0] {
         Item::Binding(b) => {
-            assert!(matches!(&b.pat, Pattern::RecordLoose(_, Some(rest)) if rest == "r"))
+            assert!(matches!(&b.pat.kind, PatternKind::RecordLoose(_, Some(rest)) if rest == "r"))
         }
         _ => panic!("expected binding"),
     }
@@ -523,9 +589,9 @@ fn typecheck_record_loose_pattern_binds_rest() {
 #[test]
 fn parser_view_pattern() {
     let m = crate::parser::parse_module("(Just n <- id) = x\n").unwrap();
-    use crate::ast::{Item, Pattern};
+    use crate::ast::{Item, PatternKind};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.pat, Pattern::View(_, _))),
+        Item::Binding(b) => assert!(matches!(&b.pat.kind, PatternKind::View(_, _))),
         _ => panic!("expected binding"),
     }
 }
@@ -1144,30 +1210,30 @@ fn parser_golden_expr() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 5);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
 
     match &module.items[0] {
-        Item::Binding(b) => assert!(matches!(b.expr, Expr::Lambda { .. })),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::Lambda { .. })),
         _ => panic!("expected binding"),
     }
 
     match &module.items[1] {
-        Item::Binding(b) => assert!(matches!(b.expr, Expr::Lambda { .. })),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::Lambda { .. })),
         _ => panic!("expected binding"),
     }
 
     match &module.items[2] {
-        Item::Binding(b) => assert!(matches!(b.expr, Expr::If { .. })),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::If { .. })),
         _ => panic!("expected binding"),
     }
 
     match &module.items[3] {
-        Item::Binding(b) => assert!(matches!(b.expr, Expr::Apply { .. })),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::Apply { .. })),
         _ => panic!("expected binding"),
     }
 
     match &module.items[4] {
-        Item::Binding(b) => assert!(matches!(b.expr, Expr::Lambda { .. })),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::Lambda { .. })),
         _ => panic!("expected binding"),
     }
 }
@@ -1178,20 +1244,20 @@ fn parser_golden_list_expr() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 2);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
 
     match &module.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.expr, Expr::List(v) if v.is_empty())),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::List(v) if v.is_empty())),
         _ => panic!("expected binding"),
     }
 
     match &module.items[1] {
-        Item::Binding(b) => match &b.expr {
-            Expr::List(v) => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::List(v) => {
                 assert_eq!(v.len(), 3);
-                assert!(matches!(&v[0], Expr::Integer(s) if s == "1"));
-                assert!(matches!(&v[1], Expr::Integer(s) if s == "2"));
-                assert!(matches!(&v[2], Expr::Apply { .. }));
+                assert!(matches!(&v[0].kind, ExprKind::Integer(s) if s == "1"));
+                assert!(matches!(&v[1].kind, ExprKind::Integer(s) if s == "2"));
+                assert!(matches!(&v[2].kind, ExprKind::Apply { .. }));
             }
             _ => panic!("expected list"),
         },
@@ -1205,25 +1271,25 @@ fn parser_golden_tuple_expr() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 3);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
 
     match &module.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.expr, Expr::Unit)),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::Unit)),
         _ => panic!("expected binding"),
     }
 
     match &module.items[1] {
-        Item::Binding(b) => assert!(matches!(&b.expr, Expr::Apply { .. })),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::Apply { .. })),
         _ => panic!("expected binding"),
     }
 
     match &module.items[2] {
-        Item::Binding(b) => match &b.expr {
-            Expr::Tuple(v) => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::Tuple(v) => {
                 assert_eq!(v.len(), 3);
-                assert!(matches!(&v[0], Expr::Integer(s) if s == "1"));
-                assert!(matches!(&v[1], Expr::Integer(s) if s == "2"));
-                assert!(matches!(&v[2], Expr::Apply { .. }));
+                assert!(matches!(&v[0].kind, ExprKind::Integer(s) if s == "1"));
+                assert!(matches!(&v[1].kind, ExprKind::Integer(s) if s == "2"));
+                assert!(matches!(&v[2].kind, ExprKind::Apply { .. }));
             }
             _ => panic!("expected tuple"),
         },
@@ -1237,21 +1303,21 @@ fn parser_golden_record_expr() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 2);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
 
     match &module.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.expr, Expr::Record(v) if v.is_empty())),
+        Item::Binding(b) => assert!(matches!(&b.expr.kind, ExprKind::Record(v) if v.is_empty())),
         _ => panic!("expected binding"),
     }
 
     match &module.items[1] {
-        Item::Binding(b) => match &b.expr {
-            Expr::Record(v) => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::Record(v) => {
                 assert_eq!(v.len(), 2);
                 assert_eq!(v[0].0, "a");
-                assert!(matches!(&v[0].1, Expr::Integer(s) if s == "1"));
+                assert!(matches!(&v[0].1.kind, ExprKind::Integer(s) if s == "1"));
                 assert_eq!(v[1].0, "b");
-                assert!(matches!(&v[1].1, Expr::Apply { .. }));
+                assert!(matches!(&v[1].1.kind, ExprKind::Apply { .. }));
             }
             _ => panic!("expected record"),
         },
@@ -1265,18 +1331,18 @@ fn parser_golden_let_expr() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 2);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     match &module.items[0] {
-        Item::Binding(b) => match &b.expr {
-            Expr::Let { bindings, body } => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::Let { bindings, body } => {
                 assert_eq!(bindings.len(), 1);
                 assert!(matches!(
-                    bindings[0].pat,
-                    crate::ast::Pattern::Var(ref s) if s == "x"
+                    &bindings[0].pat.kind,
+                    PatternKind::Var(s) if s == "x"
                 ));
-                assert!(matches!(bindings[0].expr, Expr::Integer(ref s) if s == "1"));
-                assert!(matches!(**body, Expr::Var(ref s) if s == "x"));
+                assert!(matches!(&bindings[0].expr.kind, ExprKind::Integer(s) if s == "1"));
+                assert!(matches!(&body.as_ref().kind, ExprKind::Var(s) if s == "x"));
             }
             _ => panic!("expected let"),
         },
@@ -1284,18 +1350,18 @@ fn parser_golden_let_expr() {
     }
 
     match &module.items[1] {
-        Item::Binding(b) => match &b.expr {
-            Expr::Let { bindings, body } => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::Let { bindings, body } => {
                 assert_eq!(bindings.len(), 2);
                 assert!(matches!(
-                    bindings[0].pat,
-                    crate::ast::Pattern::Var(ref s) if s == "x"
+                    &bindings[0].pat.kind,
+                    PatternKind::Var(s) if s == "x"
                 ));
                 assert!(matches!(
-                    bindings[1].pat,
-                    crate::ast::Pattern::Var(ref s) if s == "y"
+                    &bindings[1].pat.kind,
+                    PatternKind::Var(s) if s == "y"
                 ));
-                assert!(matches!(**body, Expr::Apply { .. }));
+                assert!(matches!(&body.as_ref().kind, ExprKind::Apply { .. }));
             }
             _ => panic!("expected let"),
         },
@@ -1309,13 +1375,13 @@ fn parser_golden_case_expr() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 2);
 
-    use crate::ast::{Expr, Item, Pattern};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     match &module.items[0] {
-        Item::Binding(b) => match &b.expr {
-            Expr::Case { arms, .. } => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::Case { arms, .. } => {
                 assert_eq!(arms.len(), 1);
-                assert!(matches!(arms[0].pat, Pattern::Wildcard));
+                assert!(matches!(&arms[0].pat.kind, PatternKind::Wildcard));
             }
             _ => panic!("expected case"),
         },
@@ -1323,11 +1389,15 @@ fn parser_golden_case_expr() {
     }
 
     match &module.items[1] {
-        Item::Binding(b) => match &b.expr {
-            Expr::Case { arms, .. } => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::Case { arms, .. } => {
                 assert_eq!(arms.len(), 2);
-                assert!(matches!(arms[0].pat, Pattern::Literal(Expr::Bool(true))));
-                assert!(matches!(arms[1].pat, Pattern::Literal(Expr::Bool(false))));
+                assert!(
+                    matches!(&arms[0].pat.kind, PatternKind::Literal(e) if matches!(&e.kind, ExprKind::Bool(true)))
+                );
+                assert!(
+                    matches!(&arms[1].pat.kind, PatternKind::Literal(e) if matches!(&e.kind, ExprKind::Bool(false)))
+                );
             }
             _ => panic!("expected case"),
         },
@@ -1341,15 +1411,15 @@ fn parser_golden_where_expr() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 2);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     match &module.items[0] {
-        Item::Binding(b) => match &b.expr {
-            Expr::Where { bindings, .. } => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::Where { bindings, .. } => {
                 assert_eq!(bindings.len(), 1);
                 assert!(matches!(
-                    bindings[0].pat,
-                    crate::ast::Pattern::Var(ref s) if s == "x"
+                    &bindings[0].pat.kind,
+                    PatternKind::Var(s) if s == "x"
                 ));
             }
             _ => panic!("expected where"),
@@ -1358,16 +1428,16 @@ fn parser_golden_where_expr() {
     }
 
     match &module.items[1] {
-        Item::Binding(b) => match &b.expr {
-            Expr::Where { bindings, .. } => {
+        Item::Binding(b) => match &b.expr.kind {
+            ExprKind::Where { bindings, .. } => {
                 assert_eq!(bindings.len(), 2);
                 assert!(matches!(
-                    bindings[0].pat,
-                    crate::ast::Pattern::Var(ref s) if s == "x"
+                    &bindings[0].pat.kind,
+                    PatternKind::Var(s) if s == "x"
                 ));
                 assert!(matches!(
-                    bindings[1].pat,
-                    crate::ast::Pattern::Var(ref s) if s == "y"
+                    &bindings[1].pat.kind,
+                    PatternKind::Var(s) if s == "y"
                 ));
             }
             _ => panic!("expected where"),
@@ -1382,25 +1452,27 @@ fn parser_case_patterns() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 1);
 
-    use crate::ast::{Expr, Item, Pattern};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &module.items[0] else {
         panic!("expected binding");
     };
 
-    let Expr::Case { arms, .. } = &b.expr else {
+    let ExprKind::Case { arms, .. } = &b.expr.kind else {
         panic!("expected case");
     };
 
     assert_eq!(arms.len(), 7);
-    assert!(matches!(arms[0].pat, Pattern::Literal(Expr::Unit)));
-    assert!(matches!(arms[1].pat, Pattern::Tuple(_)));
-    assert!(matches!(arms[2].pat, Pattern::List(_)));
-    assert!(matches!(arms[3].pat, Pattern::Record(_)));
-    assert!(matches!(arms[4].pat, Pattern::Constructor { .. }));
-    assert!(matches!(arms[5].pat, Pattern::Wildcard));
+    assert!(
+        matches!(&arms[0].pat.kind, PatternKind::Literal(e) if matches!(&e.kind, ExprKind::Unit))
+    );
+    assert!(matches!(&arms[1].pat.kind, PatternKind::Tuple(_)));
+    assert!(matches!(&arms[2].pat.kind, PatternKind::List(_)));
+    assert!(matches!(&arms[3].pat.kind, PatternKind::Record(_)));
+    assert!(matches!(&arms[4].pat.kind, PatternKind::Constructor { .. }));
+    assert!(matches!(&arms[5].pat.kind, PatternKind::Wildcard));
     assert!(arms[5].guard.is_some());
-    assert!(matches!(arms[6].pat, Pattern::Or(_, _)));
+    assert!(matches!(&arms[6].pat.kind, PatternKind::Or(_, _)));
 }
 
 #[test]
@@ -1409,14 +1481,14 @@ fn parser_type_annotations() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 3);
 
-    use crate::ast::{Expr, Item, QualType, Type};
+    use crate::ast::{ExprKind, Item, QualType, Type};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
     };
     assert!(matches!(
-        b0.expr,
-        Expr::Annot {
+        &b0.expr.kind,
+        ExprKind::Annot {
             ty: QualType {
                 ty: Type::Integer,
                 ..
@@ -1429,8 +1501,8 @@ fn parser_type_annotations() {
         panic!("expected binding");
     };
     assert!(matches!(
-        b1.expr,
-        Expr::Annot {
+        &b1.expr.kind,
+        ExprKind::Annot {
             ty: QualType {
                 ty: Type::Float64,
                 ..
@@ -1442,12 +1514,12 @@ fn parser_type_annotations() {
     let Item::Binding(b2) = &module.items[2] else {
         panic!("expected binding");
     };
-    let Expr::List(v) = &b2.expr else {
+    let ExprKind::List(v) = &b2.expr.kind else {
         panic!("expected list");
     };
     assert!(matches!(
-        v[0],
-        Expr::Annot {
+        &v[0].kind,
+        ExprKind::Annot {
             ty: QualType {
                 ty: Type::Integer,
                 ..
@@ -1463,14 +1535,14 @@ fn parser_type_exprs() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 5);
 
-    use crate::ast::{Expr, Item, QualType, Type};
+    use crate::ast::{ExprKind, Item, QualType, Type};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
     };
     assert!(matches!(
-        b0.expr,
-        Expr::Annot {
+        &b0.expr.kind,
+        ExprKind::Annot {
             ty: QualType {
                 ty: Type::List(_),
                 ..
@@ -1483,8 +1555,8 @@ fn parser_type_exprs() {
         panic!("expected binding");
     };
     assert!(matches!(
-        b1.expr,
-        Expr::Annot {
+        &b1.expr.kind,
+        ExprKind::Annot {
             ty: QualType {
                 ty: Type::Tuple(_),
                 ..
@@ -1497,8 +1569,8 @@ fn parser_type_exprs() {
         panic!("expected binding");
     };
     assert!(matches!(
-        b2.expr,
-        Expr::Annot {
+        &b2.expr.kind,
+        ExprKind::Annot {
             ty: QualType {
                 ty: Type::Record(_),
                 ..
@@ -1511,8 +1583,8 @@ fn parser_type_exprs() {
         panic!("expected binding");
     };
     assert!(matches!(
-        b3.expr,
-        Expr::Annot {
+        &b3.expr.kind,
+        ExprKind::Annot {
             ty: QualType {
                 ty: Type::App { .. },
                 ..
@@ -1525,8 +1597,8 @@ fn parser_type_exprs() {
         panic!("expected binding");
     };
     assert!(matches!(
-        b4.expr,
-        Expr::Annot {
+        &b4.expr.kind,
+        ExprKind::Annot {
             ty: QualType {
                 ty: Type::Func(_, _),
                 ..
@@ -1542,12 +1614,12 @@ fn parser_type_holes() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 4);
 
-    use crate::ast::{Expr, Item, Type};
+    use crate::ast::{ExprKind, Item, Type};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
     };
-    let Expr::Annot { ty, .. } = &b0.expr else {
+    let ExprKind::Annot { ty, .. } = &b0.expr.kind else {
         panic!("expected annotation");
     };
     assert_eq!(&ty.ty, &Type::Hole(None));
@@ -1555,7 +1627,7 @@ fn parser_type_holes() {
     let Item::Binding(b1) = &module.items[1] else {
         panic!("expected binding");
     };
-    let Expr::Annot { ty, .. } = &b1.expr else {
+    let ExprKind::Annot { ty, .. } = &b1.expr.kind else {
         panic!("expected annotation");
     };
     assert_eq!(&ty.ty, &Type::Hole(Some("t".to_string())));
@@ -1563,7 +1635,7 @@ fn parser_type_holes() {
     let Item::Binding(b2) = &module.items[2] else {
         panic!("expected binding");
     };
-    let Expr::Annot { ty, .. } = &b2.expr else {
+    let ExprKind::Annot { ty, .. } = &b2.expr.kind else {
         panic!("expected annotation");
     };
     assert_eq!(&ty.ty, &Type::List(Box::new(Type::Hole(None))));
@@ -1571,7 +1643,7 @@ fn parser_type_holes() {
     let Item::Binding(b3) = &module.items[3] else {
         panic!("expected binding");
     };
-    let Expr::Annot { ty, .. } = &b3.expr else {
+    let ExprKind::Annot { ty, .. } = &b3.expr.kind else {
         panic!("expected annotation");
     };
     assert_eq!(
@@ -1586,27 +1658,29 @@ fn typecheck_expands_type_aliases() {
     let module = crate::parser::parse_module(&src).unwrap();
     let tm = crate::types::typecheck(module).unwrap();
 
-    use crate::ast::{Expr, Item, Pattern, Type};
+    use crate::ast::{ExprKind, Item, PatternKind, Type};
 
     let find_binding = |name: &str| -> &crate::ast::Binding {
         tm.module
             .items
             .iter()
             .find_map(|it| match it {
-                Item::Binding(b) if matches!(&b.pat, Pattern::Var(n) if n == name) => Some(b),
+                Item::Binding(b) if matches!(&b.pat.kind, PatternKind::Var(n) if n == name) => {
+                    Some(b)
+                }
                 _ => None,
             })
             .unwrap()
     };
 
     let b0 = find_binding("x");
-    let Expr::Annot { ty, .. } = &b0.expr else {
+    let ExprKind::Annot { ty, .. } = &b0.expr.kind else {
         panic!("expected annotation");
     };
     assert_eq!(&ty.ty, &Type::List(Box::new(Type::Char)));
 
     let b1 = find_binding("z");
-    let Expr::Annot { ty, .. } = &b1.expr else {
+    let ExprKind::Annot { ty, .. } = &b1.expr.kind else {
         panic!("expected annotation");
     };
     assert_eq!(&ty.ty, &Type::Tuple(vec![Type::Integer, Type::Bool]));
@@ -1631,14 +1705,14 @@ fn parser_do_blocks() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 1);
 
-    use crate::ast::{DoStmt, Expr, Item, Pattern};
+    use crate::ast::{DoStmt, ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &module.items[0] else {
         panic!("expected binding");
     };
-    assert!(matches!(b.pat, Pattern::Var(ref s) if s == "main"));
+    assert!(matches!(&b.pat.kind, PatternKind::Var(s) if s == "main"));
 
-    let Expr::Do(stmts) = &b.expr else {
+    let ExprKind::Do(stmts) = &b.expr.kind else {
         panic!("expected do");
     };
 
@@ -1652,18 +1726,21 @@ fn parser_do_blocks() {
 fn parser_do_braces_semicolons() {
     let module = crate::parser::parse_module("x = do { y <- IO 1; IO y }\n").unwrap();
 
-    use crate::ast::{DoStmt, Expr, Item, Pattern};
+    use crate::ast::{DoStmt, ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &module.items[0] else {
         panic!("expected binding");
     };
 
-    let Expr::Do(stmts) = &b.expr else {
+    let ExprKind::Do(stmts) = &b.expr.kind else {
         panic!("expected do");
     };
 
     assert_eq!(stmts.len(), 2);
-    assert!(matches!(stmts[0], DoStmt::Bind { pat: Pattern::Var(ref s), .. } if s == "y"));
+    let DoStmt::Bind { pat, .. } = &stmts[0] else {
+        panic!("expected bind");
+    };
+    assert!(matches!(&pat.kind, PatternKind::Var(s) if s == "y"));
     assert!(matches!(stmts[1], DoStmt::Expr(_)));
 }
 
@@ -1671,39 +1748,39 @@ fn parser_do_braces_semicolons() {
 fn parser_let_inline_semicolons() {
     let module = crate::parser::parse_module("x = let a = 1; b = 2 in a\n").unwrap();
 
-    use crate::ast::{Expr, Item, Pattern};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &module.items[0] else {
         panic!("expected binding");
     };
 
-    let Expr::Let { bindings, body } = &b.expr else {
+    let ExprKind::Let { bindings, body } = &b.expr.kind else {
         panic!("expected let");
     };
 
     assert_eq!(bindings.len(), 2);
-    assert!(matches!(bindings[0].pat, Pattern::Var(ref s) if s == "a"));
-    assert!(matches!(bindings[1].pat, Pattern::Var(ref s) if s == "b"));
-    assert!(matches!(**body, Expr::Var(ref s) if s == "a"));
+    assert!(matches!(&bindings[0].pat.kind, PatternKind::Var(s) if s == "a"));
+    assert!(matches!(&bindings[1].pat.kind, PatternKind::Var(s) if s == "b"));
+    assert!(matches!(&body.as_ref().kind, ExprKind::Var(s) if s == "a"));
 }
 
 #[test]
 fn parser_where_braces_semicolons() {
     let module = crate::parser::parse_module("x = a where { a = 1; b = 2 }\n").unwrap();
 
-    use crate::ast::{Expr, Item, Pattern};
+    use crate::ast::{ExprKind, Item, PatternKind};
 
     let Item::Binding(b) = &module.items[0] else {
         panic!("expected binding");
     };
 
-    let Expr::Where { bindings, .. } = &b.expr else {
+    let ExprKind::Where { bindings, .. } = &b.expr.kind else {
         panic!("expected where");
     };
 
     assert_eq!(bindings.len(), 2);
-    assert!(matches!(bindings[0].pat, Pattern::Var(ref s) if s == "a"));
-    assert!(matches!(bindings[1].pat, Pattern::Var(ref s) if s == "b"));
+    assert!(matches!(&bindings[0].pat.kind, PatternKind::Var(s) if s == "a"));
+    assert!(matches!(&bindings[1].pat.kind, PatternKind::Var(s) if s == "b"));
 }
 
 #[test]
@@ -1712,21 +1789,21 @@ fn parser_ctor_exprs() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 2);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
     };
     assert!(matches!(
-        b0.expr,
-        Expr::Apply { ref func, ref args }
-            if matches!(**func, Expr::Ctor(ref s) if s == "Just") && args.len() == 1
+        &b0.expr.kind,
+        ExprKind::Apply { func, args }
+            if matches!(&func.as_ref().kind, ExprKind::Ctor(s) if s == "Just") && args.len() == 1
     ));
 
     let Item::Binding(b1) = &module.items[1] else {
         panic!("expected binding");
     };
-    assert!(matches!(b1.expr, Expr::Ctor(ref s) if s == "Nothing"));
+    assert!(matches!(&b1.expr.kind, ExprKind::Ctor(s) if s == "Nothing"));
 }
 
 #[test]
@@ -1735,28 +1812,28 @@ fn parser_infix_backticks() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 2);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
     };
     assert!(matches!(
-        b0.expr,
-        Expr::Apply { ref func, ref args }
-            if matches!(**func, Expr::Var(ref s) if s == "f") && args.len() == 2
+        &b0.expr.kind,
+        ExprKind::Apply { func, args }
+            if matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "f") && args.len() == 2
     ));
 
     let Item::Binding(b1) = &module.items[1] else {
         panic!("expected binding");
     };
     // left associative: (a `f` b) `g` c
-    let Expr::Apply { func, args } = &b1.expr else {
+    let ExprKind::Apply { func, args } = &b1.expr.kind else {
         panic!("expected apply");
     };
-    assert!(matches!(**func, Expr::Var(ref s) if s == "g"));
+    assert!(matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "g"));
     assert_eq!(args.len(), 2);
-    assert!(matches!(args[1], Expr::Var(ref s) if s == "c"));
-    assert!(matches!(args[0], Expr::Apply { .. }));
+    assert!(matches!(&args[1].kind, ExprKind::Var(s) if s == "c"));
+    assert!(matches!(&args[0].kind, ExprKind::Apply { .. }));
 }
 
 #[test]
@@ -1765,31 +1842,31 @@ fn parser_symbol_ops() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 2);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
     };
     // 1 + (2 * 3)
-    let Expr::Apply { func, args } = &b0.expr else {
+    let ExprKind::Apply { func, args } = &b0.expr.kind else {
         panic!("expected apply");
     };
-    assert!(matches!(**func, Expr::Var(ref s) if s == "+"));
+    assert!(matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "+"));
     assert_eq!(args.len(), 2);
-    assert!(matches!(args[0], Expr::Integer(ref s) if s == "1"));
-    assert!(matches!(args[1], Expr::Apply { .. }));
+    assert!(matches!(&args[0].kind, ExprKind::Integer(s) if s == "1"));
+    assert!(matches!(&args[1].kind, ExprKind::Apply { .. }));
 
     let Item::Binding(b1) = &module.items[1] else {
         panic!("expected binding");
     };
     // (10 / 2) - 1
-    let Expr::Apply { func, args } = &b1.expr else {
+    let ExprKind::Apply { func, args } = &b1.expr.kind else {
         panic!("expected apply");
     };
-    assert!(matches!(**func, Expr::Var(ref s) if s == "-"));
+    assert!(matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "-"));
     assert_eq!(args.len(), 2);
-    assert!(matches!(args[1], Expr::Integer(ref s) if s == "1"));
-    assert!(matches!(args[0], Expr::Apply { .. }));
+    assert!(matches!(&args[1].kind, ExprKind::Integer(s) if s == "1"));
+    assert!(matches!(&args[0].kind, ExprKind::Apply { .. }));
 }
 
 #[test]
@@ -1798,36 +1875,36 @@ fn parser_cmp_and_logic_ops() {
     let module = crate::parser::parse_module(&src).unwrap();
     assert_eq!(module.items.len(), 3);
 
-    use crate::ast::{Expr, Item};
+    use crate::ast::{ExprKind, Item};
 
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
     };
     // (1 + (2 * 3)) == 7
-    let Expr::Apply { func, args } = &b0.expr else {
+    let ExprKind::Apply { func, args } = &b0.expr.kind else {
         panic!("expected apply");
     };
-    assert!(matches!(**func, Expr::Var(ref s) if s == "=="));
+    assert!(matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "=="));
     assert_eq!(args.len(), 2);
 
     let Item::Binding(b1) = &module.items[1] else {
         panic!("expected binding");
     };
     // (True && False) || True
-    let Expr::Apply { func, args } = &b1.expr else {
+    let ExprKind::Apply { func, args } = &b1.expr.kind else {
         panic!("expected apply");
     };
-    assert!(matches!(**func, Expr::Var(ref s) if s == "||"));
+    assert!(matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "||"));
     assert_eq!(args.len(), 2);
-    assert!(matches!(args[1], Expr::Bool(true)));
+    assert!(matches!(&args[1].kind, ExprKind::Bool(true)));
 
     let Item::Binding(b2) = &module.items[2] else {
         panic!("expected binding");
     };
     // (1 < 2) && (2 <= 3)
-    let Expr::Apply { func, args } = &b2.expr else {
+    let ExprKind::Apply { func, args } = &b2.expr.kind else {
         panic!("expected apply");
     };
-    assert!(matches!(**func, Expr::Var(ref s) if s == "&&"));
+    assert!(matches!(&func.as_ref().kind, ExprKind::Var(s) if s == "&&"));
     assert_eq!(args.len(), 2);
 }

@@ -4,6 +4,12 @@ pub struct Module {
     pub items: Vec<Item>,
 }
 
+pub type Span = crate::lexer::Span;
+
+pub fn dummy_span() -> Span {
+    Span { start: 0, end: 0 }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Import(ImportDecl),
@@ -80,7 +86,13 @@ pub struct DataCtor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Expr {
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExprKind {
     Unit,
     Integer(String),
     Float64(String),
@@ -128,6 +140,16 @@ pub enum Expr {
     Record(Vec<(String, Expr)>),
 }
 
+impl Expr {
+    pub fn new(span: Span, kind: ExprKind) -> Self {
+        Self { kind, span }
+    }
+
+    pub fn dummy(kind: ExprKind) -> Self {
+        Self::new(dummy_span(), kind)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaseArm {
     pub pat: Pattern,
@@ -142,7 +164,13 @@ pub enum DoStmt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Pattern {
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternKind {
     Var(String),
     Wildcard,
     Hole(Option<String>),
@@ -162,6 +190,16 @@ pub enum Pattern {
         name: String,
         args: Vec<Pattern>,
     },
+}
+
+impl Pattern {
+    pub fn new(span: Span, kind: PatternKind) -> Self {
+        Self { kind, span }
+    }
+
+    pub fn dummy(kind: PatternKind) -> Self {
+        Self::new(dummy_span(), kind)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

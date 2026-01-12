@@ -133,11 +133,11 @@ fn collect_ctor_aliases(module: &ast::Module) -> std::collections::HashMap<Strin
         let ast::Item::Binding(b) = it else {
             continue;
         };
-        let ast::Pattern::Var(name) = &b.pat else {
+        let ast::PatternKind::Var(name) = &b.pat.kind else {
             continue;
         };
-        match &b.expr {
-            ast::Expr::Var(v) | ast::Expr::Ctor(v) if v.contains('.') => {
+        match &b.expr.kind {
+            ast::ExprKind::Var(v) | ast::ExprKind::Ctor(v) if v.contains('.') => {
                 out.insert(name.clone(), v.clone());
             }
             _ => {}
@@ -194,7 +194,10 @@ pub fn lower_to_ir(module: &ast::Module) -> Result<IrModule> {
         };
 
         match &b.pat {
-            ast::Pattern::Var(name) => {
+            ast::Pattern {
+                kind: ast::PatternKind::Var(name),
+                ..
+            } => {
                 let expr = lower_expr(&b.expr, &mut fresh, &ctor_aliases)?;
                 items.push(IrItem::Binding {
                     name: name.clone(),
@@ -266,7 +269,10 @@ fn lower_do(
                 *fresh += 1;
 
                 let body = match pat {
-                    ast::Pattern::Var(name) => IrExpr::IoBind {
+                    ast::Pattern {
+                        kind: ast::PatternKind::Var(name),
+                        ..
+                    } => IrExpr::IoBind {
                         action: Box::new(lower_expr(expr, fresh, ctor_aliases)?),
                         param: name.clone(),
                         body: Box::new(acc),
@@ -297,26 +303,26 @@ fn lower_do(
 }
 
 fn collect_pat_vars(pat: &ast::Pattern, out: &mut std::collections::BTreeSet<String>) {
-    use ast::Pattern;
-    match pat {
-        Pattern::Var(n) => {
+    use ast::PatternKind;
+    match &pat.kind {
+        PatternKind::Var(n) => {
             out.insert(n.clone());
         }
-        Pattern::As(n, p) => {
+        PatternKind::As(n, p) => {
             out.insert(n.clone());
             collect_pat_vars(p, out);
         }
-        Pattern::Tuple(ps) | Pattern::List(ps) => {
+        PatternKind::Tuple(ps) | PatternKind::List(ps) => {
             for p in ps {
                 collect_pat_vars(p, out);
             }
         }
-        Pattern::Record(fs) => {
+        PatternKind::Record(fs) => {
             for (_, p) in fs {
                 collect_pat_vars(p, out);
             }
         }
-        Pattern::RecordLoose(fs, rest) => {
+        PatternKind::RecordLoose(fs, rest) => {
             for (_, p) in fs {
                 collect_pat_vars(p, out);
             }
@@ -324,29 +330,29 @@ fn collect_pat_vars(pat: &ast::Pattern, out: &mut std::collections::BTreeSet<Str
                 out.insert(n.clone());
             }
         }
-        Pattern::Cons(a, b) | Pattern::Or(a, b) => {
+        PatternKind::Cons(a, b) | PatternKind::Or(a, b) => {
             collect_pat_vars(a, out);
             collect_pat_vars(b, out);
         }
-        Pattern::Constructor { args, .. } => {
+        PatternKind::Constructor { args, .. } => {
             for p in args {
                 collect_pat_vars(p, out);
             }
         }
-        Pattern::View(p, _) => collect_pat_vars(p, out),
-        Pattern::Wildcard | Pattern::Hole(_) | Pattern::Literal(_) => {}
+        PatternKind::View(p, _) => collect_pat_vars(p, out),
+        PatternKind::Wildcard | PatternKind::Hole(_) | PatternKind::Literal(_) => {}
     }
 }
 
 fn lower_lit_expr(expr: &ast::Expr) -> Result<IrLiteral> {
-    use ast::Expr;
-    Ok(match expr {
-        Expr::Unit => IrLiteral::Unit,
-        Expr::Integer(s) => IrLiteral::Integer(s.clone()),
-        Expr::Float64(s) => IrLiteral::Float64(s.clone()),
-        Expr::Bool(b) => IrLiteral::Bool(*b),
-        Expr::String(s) => IrLiteral::String(s.clone()),
-        Expr::Char(c) => IrLiteral::Char(*c),
+    use ast::ExprKind;
+    Ok(match &expr.kind {
+        ExprKind::Unit => IrLiteral::Unit,
+        ExprKind::Integer(s) => IrLiteral::Integer(s.clone()),
+        ExprKind::Float64(s) => IrLiteral::Float64(s.clone()),
+        ExprKind::Bool(b) => IrLiteral::Bool(*b),
+        ExprKind::String(s) => IrLiteral::String(s.clone()),
+        ExprKind::Char(c) => IrLiteral::Char(*c),
         _ => return Err(Error::msg("unsupported literal")),
     })
 }
@@ -356,49 +362,51 @@ fn lower_pat(
     fresh: &mut usize,
     ctor_aliases: &std::collections::HashMap<String, String>,
 ) -> Result<IrPattern> {
-    use ast::Pattern;
-    Ok(match pat {
-        Pattern::Var(n) => IrPattern::Var(n.clone()),
-        Pattern::Wildcard => IrPattern::Wildcard,
-        Pattern::Hole(_) => IrPattern::Wildcard,
-        Pattern::Literal(e) => IrPattern::Literal(lower_lit_expr(e)?),
-        Pattern::Tuple(ps) => IrPattern::Tuple(
+    use ast::PatternKind;
+    Ok(match &pat.kind {
+        PatternKind::Var(n) => IrPattern::Var(n.clone()),
+        PatternKind::Wildcard => IrPattern::Wildcard,
+        PatternKind::Hole(_) => IrPattern::Wildcard,
+        PatternKind::Literal(e) => IrPattern::Literal(lower_lit_expr(e)?),
+        PatternKind::Tuple(ps) => IrPattern::Tuple(
             ps.iter()
                 .map(|p| lower_pat(p, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::List(ps) => IrPattern::List(
+        PatternKind::List(ps) => IrPattern::List(
             ps.iter()
                 .map(|p| lower_pat(p, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::Record(fields) => IrPattern::Record(
+        PatternKind::Record(fields) => IrPattern::Record(
             fields
                 .iter()
                 .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh, ctor_aliases)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::RecordLoose(fields, rest) => IrPattern::RecordLoose(
+        PatternKind::RecordLoose(fields, rest) => IrPattern::RecordLoose(
             fields
                 .iter()
                 .map(|(n, p)| Ok((n.clone(), lower_pat(p, fresh, ctor_aliases)?)))
                 .collect::<Result<Vec<_>>>()?,
             rest.clone(),
         ),
-        Pattern::Cons(a, b) => IrPattern::Cons(
+        PatternKind::Cons(a, b) => IrPattern::Cons(
             Box::new(lower_pat(a, fresh, ctor_aliases)?),
             Box::new(lower_pat(b, fresh, ctor_aliases)?),
         ),
-        Pattern::Or(a, b) => IrPattern::Or(
+        PatternKind::Or(a, b) => IrPattern::Or(
             Box::new(lower_pat(a, fresh, ctor_aliases)?),
             Box::new(lower_pat(b, fresh, ctor_aliases)?),
         ),
-        Pattern::As(n, p) => IrPattern::As(n.clone(), Box::new(lower_pat(p, fresh, ctor_aliases)?)),
-        Pattern::View(p, e) => IrPattern::View(
+        PatternKind::As(n, p) => {
+            IrPattern::As(n.clone(), Box::new(lower_pat(p, fresh, ctor_aliases)?))
+        }
+        PatternKind::View(p, e) => IrPattern::View(
             Box::new(lower_pat(p, fresh, ctor_aliases)?),
             Box::new(lower_expr(e, fresh, ctor_aliases)?),
         ),
-        Pattern::Constructor { name, args } => {
+        PatternKind::Constructor { name, args } => {
             let name = if name.contains('.') {
                 name.clone()
             } else {
@@ -423,29 +431,29 @@ fn lower_expr(
     fresh: &mut usize,
     ctor_aliases: &std::collections::HashMap<String, String>,
 ) -> Result<IrExpr> {
-    use ast::Expr;
-    Ok(match expr {
+    use ast::{ExprKind, PatternKind};
+    Ok(match &expr.kind {
         // literals
-        Expr::Unit => IrExpr::Unit,
-        Expr::Integer(s) => IrExpr::Integer(s.clone()),
-        Expr::Float64(s) => IrExpr::Float64(s.clone()),
-        Expr::Bool(b) => IrExpr::Bool(*b),
-        Expr::String(s) => IrExpr::String(s.clone()),
-        Expr::Char(c) => IrExpr::Char(*c),
-        Expr::Var(v) => IrExpr::Var(v.clone()),
-        Expr::Ctor(v) => IrExpr::Var(v.clone()),
-        Expr::Lambda { params, body } => IrExpr::Lambda {
+        ExprKind::Unit => IrExpr::Unit,
+        ExprKind::Integer(s) => IrExpr::Integer(s.clone()),
+        ExprKind::Float64(s) => IrExpr::Float64(s.clone()),
+        ExprKind::Bool(b) => IrExpr::Bool(*b),
+        ExprKind::String(s) => IrExpr::String(s.clone()),
+        ExprKind::Char(c) => IrExpr::Char(*c),
+        ExprKind::Var(v) => IrExpr::Var(v.clone()),
+        ExprKind::Ctor(v) => IrExpr::Var(v.clone()),
+        ExprKind::Lambda { params, body } => IrExpr::Lambda {
             params: params.clone(),
             body: Box::new(lower_expr(body, fresh, ctor_aliases)?),
         },
-        Expr::Apply { func, args } => IrExpr::Apply {
+        ExprKind::Apply { func, args } => IrExpr::Apply {
             func: Box::new(lower_expr(func, fresh, ctor_aliases)?),
             args: args
                 .iter()
                 .map(|e| lower_expr(e, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         },
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -454,12 +462,12 @@ fn lower_expr(
             then_branch: Box::new(lower_expr(then_branch, fresh, ctor_aliases)?),
             else_branch: Box::new(lower_expr(else_branch, fresh, ctor_aliases)?),
         },
-        Expr::Let { bindings, body } => {
+        ExprKind::Let { bindings, body } => {
             // Lower sequential let-bindings.
             let mut acc = lower_expr(body, fresh, ctor_aliases)?;
             for b in bindings.iter().rev() {
-                match &b.pat {
-                    ast::Pattern::Var(name) => {
+                match &b.pat.kind {
+                    PatternKind::Var(name) => {
                         acc = IrExpr::Let {
                             bindings: vec![(
                                 name.clone(),
@@ -472,7 +480,14 @@ fn lower_expr(
                         acc = IrExpr::Case {
                             expr: Box::new(lower_expr(&b.expr, fresh, ctor_aliases)?),
                             arms: vec![IrCaseArm {
-                                pat: lower_pat(pat, fresh, ctor_aliases)?,
+                                pat: lower_pat(
+                                    &ast::Pattern {
+                                        span: b.pat.span,
+                                        kind: pat.clone(),
+                                    },
+                                    fresh,
+                                    ctor_aliases,
+                                )?,
                                 guard: None,
                                 body: acc,
                             }],
@@ -482,27 +497,29 @@ fn lower_expr(
             }
             acc
         }
-        Expr::Cons { head, tail } => IrExpr::Cons {
+        ExprKind::Cons { head, tail } => IrExpr::Cons {
             head: Box::new(lower_expr(head, fresh, ctor_aliases)?),
             tail: Box::new(lower_expr(tail, fresh, ctor_aliases)?),
         },
-        Expr::List(es) => IrExpr::List(
+        ExprKind::List(es) => IrExpr::List(
             es.iter()
                 .map(|e| lower_expr(e, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Expr::Tuple(es) => IrExpr::Tuple(
+        ExprKind::Tuple(es) => IrExpr::Tuple(
             es.iter()
                 .map(|e| lower_expr(e, fresh, ctor_aliases))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Expr::Record(fields) => IrExpr::Record(
+        ExprKind::Record(fields) => IrExpr::Record(
             fields
                 .iter()
-                .map(|(n, e)| Ok((n.clone(), lower_expr(e, fresh, ctor_aliases)?)))
+                .map(|(n, e): &(String, ast::Expr)| {
+                    Ok((n.clone(), lower_expr(e, fresh, ctor_aliases)?))
+                })
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Expr::Case { expr, arms } => IrExpr::Case {
+        ExprKind::Case { expr, arms } => IrExpr::Case {
             expr: Box::new(lower_expr(expr, fresh, ctor_aliases)?),
             arms: arms
                 .iter()
@@ -519,8 +536,8 @@ fn lower_expr(
                 })
                 .collect::<Result<Vec<_>>>()?,
         },
-        Expr::Do(stmts) => lower_do(stmts, fresh, ctor_aliases)?,
-        Expr::Annot { expr, ty } => {
+        ExprKind::Do(stmts) => lower_do(stmts, fresh, ctor_aliases)?,
+        ExprKind::Annot { expr, ty } => {
             let inner = lower_expr(expr, fresh, ctor_aliases)?;
             if let Some(target) = cast_target_from_type(&ty.ty) {
                 IrExpr::CheckedCast {
@@ -531,12 +548,12 @@ fn lower_expr(
                 inner
             }
         }
-        Expr::Where { expr, bindings } => {
+        ExprKind::Where { expr, bindings } => {
             // Lower sequential where-bindings.
             let mut acc = lower_expr(expr, fresh, ctor_aliases)?;
             for b in bindings.iter().rev() {
-                match &b.pat {
-                    ast::Pattern::Var(name) => {
+                match &b.pat.kind {
+                    PatternKind::Var(name) => {
                         acc = IrExpr::Let {
                             bindings: vec![(
                                 name.clone(),
@@ -549,7 +566,14 @@ fn lower_expr(
                         acc = IrExpr::Case {
                             expr: Box::new(lower_expr(&b.expr, fresh, ctor_aliases)?),
                             arms: vec![IrCaseArm {
-                                pat: lower_pat(pat, fresh, ctor_aliases)?,
+                                pat: lower_pat(
+                                    &ast::Pattern {
+                                        span: b.pat.span,
+                                        kind: pat.clone(),
+                                    },
+                                    fresh,
+                                    ctor_aliases,
+                                )?,
                                 guard: None,
                                 body: acc,
                             }],

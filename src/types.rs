@@ -674,10 +674,10 @@ fn infer_pat_in(
     seen: &mut HashSet<String>,
     cs_out: &mut Vec<Constraint>,
 ) -> Result<Ty> {
-    use ast::{Expr, Pattern};
+    use ast::{ExprKind, PatternKind};
 
-    match pat {
-        Pattern::Var(name) => {
+    match &pat.kind {
+        PatternKind::Var(name) => {
             if !seen.insert(name.clone()) {
                 return Err(Error::msg("duplicate pattern variable"));
             }
@@ -685,24 +685,24 @@ fn infer_pat_in(
             binds.push((name.clone(), t.clone()));
             Ok(t)
         }
-        Pattern::Wildcard => Ok(cx.fresh()),
-        Pattern::Hole(_) => Ok(cx.fresh()),
-        Pattern::Literal(e) => Ok(match e {
-            Expr::Unit => Ty::Con("Unit".to_string()),
-            Expr::Integer(_) => Ty::Con("Integer".to_string()),
-            Expr::Float64(_) => Ty::Con("Float64".to_string()),
-            Expr::Bool(_) => Ty::Con("Bool".to_string()),
-            Expr::String(_) => Ty::Con("String".to_string()),
-            Expr::Char(_) => Ty::Con("Char".to_string()),
+        PatternKind::Wildcard => Ok(cx.fresh()),
+        PatternKind::Hole(_) => Ok(cx.fresh()),
+        PatternKind::Literal(e) => Ok(match &e.kind {
+            ExprKind::Unit => Ty::Con("Unit".to_string()),
+            ExprKind::Integer(_) => Ty::Con("Integer".to_string()),
+            ExprKind::Float64(_) => Ty::Con("Float64".to_string()),
+            ExprKind::Bool(_) => Ty::Con("Bool".to_string()),
+            ExprKind::String(_) => Ty::Con("String".to_string()),
+            ExprKind::Char(_) => Ty::Con("Char".to_string()),
             _ => return Err(Error::msg("unsupported literal pattern")),
         }),
-        Pattern::Tuple(ps) => Ok(Ty::Tuple(
+        PatternKind::Tuple(ps) => Ok(Ty::Tuple(
             ps.iter()
                 .map(|p| infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out))
                 .collect::<Result<Vec<_>>>()?,
         )),
 
-        Pattern::List(ps) => {
+        PatternKind::List(ps) => {
             if ps.is_empty() {
                 return Ok(Ty::List(Box::new(cx.fresh())));
             }
@@ -715,7 +715,7 @@ fn infer_pat_in(
             }
             Ok(Ty::List(Box::new(apply(subst, first))))
         }
-        Pattern::Record(fields) => {
+        PatternKind::Record(fields) => {
             let mut out = fields
                 .iter()
                 .map(|(n, p)| {
@@ -728,7 +728,7 @@ fn infer_pat_in(
             out.sort_by(|(a, _), (b, _)| a.cmp(b));
             Ok(Ty::Record(out))
         }
-        Pattern::RecordLoose(fields, rest_name) => {
+        PatternKind::RecordLoose(fields, rest_name) => {
             let mut out = fields
                 .iter()
                 .map(|(n, p)| {
@@ -759,7 +759,7 @@ fn infer_pat_in(
 
             Ok(Ty::RecordOpen(out, Box::new(rest_ty)))
         }
-        Pattern::Cons(hd, tl) => {
+        PatternKind::Cons(hd, tl) => {
             let elem = cx.fresh();
             let t_hd = infer_pat_in(cx, data_env, subst, env, hd, binds, seen, cs_out)?;
             let t_tl = infer_pat_in(cx, data_env, subst, env, tl, binds, seen, cs_out)?;
@@ -775,7 +775,7 @@ fn infer_pat_in(
 
             Ok(apply(subst, Ty::List(Box::new(elem))))
         }
-        Pattern::Or(a, b) => {
+        PatternKind::Or(a, b) => {
             let base_len = binds.len();
             let base_seen = seen.clone();
             let base_binds = binds.clone();
@@ -848,7 +848,7 @@ fn infer_pat_in(
 
             Ok(apply(subst, t_a))
         }
-        Pattern::As(name, p) => {
+        PatternKind::As(name, p) => {
             if !seen.insert(name.clone()) {
                 return Err(Error::msg("duplicate pattern variable"));
             }
@@ -856,7 +856,7 @@ fn infer_pat_in(
             binds.push((name.clone(), apply(subst, t.clone())));
             Ok(t)
         }
-        Pattern::View(p, e) => {
+        PatternKind::View(p, e) => {
             let t_scrut = cx.fresh();
             let t_view = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
 
@@ -875,7 +875,7 @@ fn infer_pat_in(
 
             Ok(apply(subst, t_scrut))
         }
-        Pattern::Constructor { name, args } => {
+        PatternKind::Constructor { name, args } => {
             let scheme = env
                 .get(name)
                 .ok_or_else(|| Error::msg("unknown constructor"))?;
@@ -928,8 +928,8 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
             continue;
         };
 
-        let ctx_name = match &b.pat {
-            ast::Pattern::Var(n) => n.as_str(),
+        let ctx_name = match &b.pat.kind {
+            ast::PatternKind::Var(n) => n.as_str(),
             _ => "<pattern>",
         };
 
@@ -1971,19 +1971,19 @@ fn infer_expr_in(
     env: &TypeEnv,
     expr: ast::Expr,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
-    use ast::Expr;
+    use ast::ExprKind;
 
-    match expr {
-        Expr::Unit => Ok((Subst::new(), vec![], Ty::Con("Unit".to_string()))),
-        Expr::Integer(_) => Ok((Subst::new(), vec![], Ty::Con("Integer".to_string()))),
-        Expr::Float64(_) => Ok((Subst::new(), vec![], Ty::Con("Float64".to_string()))),
-        Expr::Bool(true) | Expr::Bool(false) => {
+    match expr.kind {
+        ExprKind::Unit => Ok((Subst::new(), vec![], Ty::Con("Unit".to_string()))),
+        ExprKind::Integer(_) => Ok((Subst::new(), vec![], Ty::Con("Integer".to_string()))),
+        ExprKind::Float64(_) => Ok((Subst::new(), vec![], Ty::Con("Float64".to_string()))),
+        ExprKind::Bool(true) | ExprKind::Bool(false) => {
             Ok((Subst::new(), vec![], Ty::Con("Bool".to_string())))
         }
-        Expr::String(_) => Ok((Subst::new(), vec![], Ty::Con("String".to_string()))),
-        Expr::Char(_) => Ok((Subst::new(), vec![], Ty::Con("Char".to_string()))),
+        ExprKind::String(_) => Ok((Subst::new(), vec![], Ty::Con("String".to_string()))),
+        ExprKind::Char(_) => Ok((Subst::new(), vec![], Ty::Con("Char".to_string()))),
 
-        Expr::Var(name) => {
+        ExprKind::Var(name) => {
             let s = env
                 .get(&name)
                 .ok_or_else(|| Error::msg(format!("unbound variable: {name}")))?;
@@ -1991,7 +1991,7 @@ fn infer_expr_in(
             Ok((Subst::new(), cs, ty))
         }
 
-        Expr::Ctor(name) => {
+        ExprKind::Ctor(name) => {
             let s = env
                 .get(&name)
                 .ok_or_else(|| Error::msg("unknown constructor"))?;
@@ -1999,7 +1999,7 @@ fn infer_expr_in(
             Ok((Subst::new(), cs, ty))
         }
 
-        Expr::Lambda { params, body } => {
+        ExprKind::Lambda { params, body } => {
             if params.is_empty() {
                 return Err(Error::msg("expected lambda parameter"));
             }
@@ -2021,7 +2021,7 @@ fn infer_expr_in(
             Ok((s_body, cs_body, out))
         }
 
-        Expr::Apply { func, args } => {
+        ExprKind::Apply { func, args } => {
             let (mut s, mut cs, mut fun_ty) = infer_expr_in(cx, data_env, env, *func)?;
 
             for arg in args {
@@ -2047,7 +2047,7 @@ fn infer_expr_in(
             Ok((s, cs, fun_ty))
         }
 
-        Expr::Annot { expr, ty } => {
+        ExprKind::Annot { expr, ty } => {
             let (s1, mut cs1, t1) = infer_expr_in(cx, data_env, env, *expr)?;
             let mut holes = HashMap::new();
 
@@ -2086,7 +2086,7 @@ fn infer_expr_in(
             Ok((s.clone(), apply_constraints(&s, cs1), apply(&s, t_ann)))
         }
 
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -2119,7 +2119,7 @@ fn infer_expr_in(
             Ok((s.clone(), cs, apply(&s, apply(&s, t_then))))
         }
 
-        Expr::Tuple(elems) => {
+        ExprKind::Tuple(elems) => {
             let mut s = Subst::new();
             let mut cs: Vec<Constraint> = vec![];
             let mut ts = Vec::new();
@@ -2134,7 +2134,7 @@ fn infer_expr_in(
             Ok((s, cs, Ty::Tuple(ts)))
         }
 
-        Expr::Cons { head, tail } => {
+        ExprKind::Cons { head, tail } => {
             let (s_hd, cs_hd, t_hd) = infer_expr_in(cx, data_env, env, *head)?;
             let env2 = apply_env(&s_hd, env);
             let (s_tl, cs_tl, t_tl) = infer_expr_in(cx, data_env, &env2, *tail)?;
@@ -2154,7 +2154,7 @@ fn infer_expr_in(
             Ok((s.clone(), cs, Ty::List(Box::new(apply(&s, elem)))))
         }
 
-        Expr::List(elems) => {
+        ExprKind::List(elems) => {
             if elems.is_empty() {
                 return Ok((Subst::new(), vec![], Ty::List(Box::new(cx.fresh()))));
             }
@@ -2178,7 +2178,7 @@ fn infer_expr_in(
             Ok((s.clone(), cs, Ty::List(Box::new(apply(&s, elem_ty)))))
         }
 
-        Expr::Record(fields) => {
+        ExprKind::Record(fields) => {
             let mut s = Subst::new();
             let mut cs: Vec<Constraint> = vec![];
             let mut out = Vec::new();
@@ -2194,14 +2194,14 @@ fn infer_expr_in(
             Ok((s, cs, Ty::Record(out)))
         }
 
-        Expr::Let { bindings, body } => {
+        ExprKind::Let { bindings, body } => {
             let mut s = Subst::new();
             let mut cs: Vec<Constraint> = vec![];
             let mut env2 = env.clone();
 
             for b in bindings {
-                let ctx_name = match &b.pat {
-                    ast::Pattern::Var(n) => n.as_str(),
+                let ctx_name = match &b.pat.kind {
+                    ast::PatternKind::Var(n) => n.as_str(),
                     _ => "<pattern>",
                 };
 
@@ -2251,14 +2251,14 @@ fn infer_expr_in(
             Ok((s.clone(), cs, apply(&s, t_body)))
         }
 
-        Expr::Where { expr, bindings } => {
+        ExprKind::Where { expr, bindings } => {
             let mut s = Subst::new();
             let mut cs: Vec<Constraint> = vec![];
             let mut env2 = env.clone();
 
             for b in bindings {
-                let ctx_name = match &b.pat {
-                    ast::Pattern::Var(n) => n.as_str(),
+                let ctx_name = match &b.pat.kind {
+                    ast::PatternKind::Var(n) => n.as_str(),
                     _ => "<pattern>",
                 };
 
@@ -2308,7 +2308,7 @@ fn infer_expr_in(
             Ok((s.clone(), cs, apply(&s, t_body)))
         }
 
-        Expr::Case { expr, arms } => {
+        ExprKind::Case { expr, arms } => {
             if arms.is_empty() {
                 return Err(Error::msg("empty case"));
             }
@@ -2377,7 +2377,7 @@ fn infer_expr_in(
             Ok((s.clone(), cs, apply(&s, out_ty)))
         }
 
-        Expr::Do(stmts) => {
+        ExprKind::Do(stmts) => {
             if stmts.is_empty() {
                 return Err(Error::msg("empty do"));
             }
@@ -2622,82 +2622,84 @@ fn desugar_qualified_ref(name: &str, allowed: &HashSet<String>) -> Result<String
 }
 
 fn desugar_qualified_expr(expr: ast::Expr, allowed: &HashSet<String>) -> Result<ast::Expr> {
-    use ast::Expr;
-    Ok(match expr {
-        Expr::Var(n) => Expr::Var(desugar_qualified_ref(&n, allowed)?),
-        Expr::Ctor(n) => Expr::Ctor(desugar_qualified_ref(&n, allowed)?),
-        Expr::Lambda { params, body } => Expr::Lambda {
+    use ast::ExprKind;
+    let span = expr.span;
+    let kind = match expr.kind {
+        ExprKind::Var(n) => ExprKind::Var(desugar_qualified_ref(&n, allowed)?),
+        ExprKind::Ctor(n) => ExprKind::Ctor(desugar_qualified_ref(&n, allowed)?),
+        ExprKind::Lambda { params, body } => ExprKind::Lambda {
             params,
             body: Box::new(desugar_qualified_expr(*body, allowed)?),
         },
-        Expr::Apply { func, args } => Expr::Apply {
+        ExprKind::Apply { func, args } => ExprKind::Apply {
             func: Box::new(desugar_qualified_expr(*func, allowed)?),
             args: args
                 .into_iter()
                 .map(|e| desugar_qualified_expr(e, allowed))
                 .collect::<Result<Vec<_>>>()?,
         },
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => Expr::If {
+        } => ExprKind::If {
             cond: Box::new(desugar_qualified_expr(*cond, allowed)?),
             then_branch: Box::new(desugar_qualified_expr(*then_branch, allowed)?),
             else_branch: Box::new(desugar_qualified_expr(*else_branch, allowed)?),
         },
-        Expr::Let { bindings, body } => Expr::Let {
+        ExprKind::Let { bindings, body } => ExprKind::Let {
             bindings: bindings
                 .into_iter()
                 .map(|b| desugar_qualified_binding(b, allowed))
                 .collect::<Result<Vec<_>>>()?,
             body: Box::new(desugar_qualified_expr(*body, allowed)?),
         },
-        Expr::Where { expr, bindings } => Expr::Where {
+        ExprKind::Where { expr, bindings } => ExprKind::Where {
             expr: Box::new(desugar_qualified_expr(*expr, allowed)?),
             bindings: bindings
                 .into_iter()
                 .map(|b| desugar_qualified_binding(b, allowed))
                 .collect::<Result<Vec<_>>>()?,
         },
-        Expr::Annot { expr, ty } => Expr::Annot {
+        ExprKind::Annot { expr, ty } => ExprKind::Annot {
             expr: Box::new(desugar_qualified_expr(*expr, allowed)?),
             ty: desugar_qualified_qual_type(ty, allowed)?,
         },
-        Expr::Do(stmts) => Expr::Do(
+        ExprKind::Do(stmts) => ExprKind::Do(
             stmts
                 .into_iter()
                 .map(|s| desugar_qualified_do_stmt(s, allowed))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Expr::Case { expr, arms } => Expr::Case {
+        ExprKind::Case { expr, arms } => ExprKind::Case {
             expr: Box::new(desugar_qualified_expr(*expr, allowed)?),
             arms: arms
                 .into_iter()
                 .map(|a| desugar_qualified_case_arm(a, allowed))
                 .collect::<Result<Vec<_>>>()?,
         },
-        Expr::Cons { head, tail } => Expr::Cons {
+        ExprKind::Cons { head, tail } => ExprKind::Cons {
             head: Box::new(desugar_qualified_expr(*head, allowed)?),
             tail: Box::new(desugar_qualified_expr(*tail, allowed)?),
         },
-        Expr::List(es) => Expr::List(
+        ExprKind::List(es) => ExprKind::List(
             es.into_iter()
                 .map(|e| desugar_qualified_expr(e, allowed))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Expr::Tuple(es) => Expr::Tuple(
+        ExprKind::Tuple(es) => ExprKind::Tuple(
             es.into_iter()
                 .map(|e| desugar_qualified_expr(e, allowed))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Expr::Record(fs) => Expr::Record(
+        ExprKind::Record(fs) => ExprKind::Record(
             fs.into_iter()
                 .map(|(l, e)| Ok((l, desugar_qualified_expr(e, allowed)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
         x => x,
-    })
+    };
+    Ok(ast::Expr::new(span, kind))
 }
 
 fn desugar_qualified_case_arm(
@@ -2732,75 +2734,78 @@ fn desugar_qualified_binding(b: ast::Binding, allowed: &HashSet<String>) -> Resu
 }
 
 fn desugar_qualified_pattern(p: ast::Pattern, allowed: &HashSet<String>) -> Result<ast::Pattern> {
-    use ast::Pattern;
-    Ok(match p {
-        Pattern::Var(n) => {
+    use ast::PatternKind;
+    let span = p.span;
+    let kind = match p.kind {
+        PatternKind::Var(n) => {
             if n.contains('.') {
                 return Err(Error::msg(format!(
                     "qualified name is not allowed in binder: {n}"
                 )));
             }
-            Pattern::Var(n)
+            PatternKind::Var(n)
         }
-        Pattern::As(n, p) => {
+        PatternKind::As(n, p) => {
             if n.contains('.') {
                 return Err(Error::msg(format!(
                     "qualified name is not allowed in binder: {n}"
                 )));
             }
-            Pattern::As(n, Box::new(desugar_qualified_pattern(*p, allowed)?))
+            PatternKind::As(n, Box::new(desugar_qualified_pattern(*p, allowed)?))
         }
-        Pattern::Tuple(ps) => Pattern::Tuple(
+        PatternKind::Tuple(ps) => PatternKind::Tuple(
             ps.into_iter()
                 .map(|p| desugar_qualified_pattern(p, allowed))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::List(ps) => Pattern::List(
+        PatternKind::List(ps) => PatternKind::List(
             ps.into_iter()
                 .map(|p| desugar_qualified_pattern(p, allowed))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::Record(fs) => Pattern::Record(
+        PatternKind::Record(fs) => PatternKind::Record(
             fs.into_iter()
                 .map(|(l, p)| Ok((l, desugar_qualified_pattern(p, allowed)?)))
                 .collect::<Result<Vec<_>>>()?,
         ),
-        Pattern::RecordLoose(fs, rest) => {
-            if rest.as_ref().is_some_and(|n| n.contains('.')) {
-                return Err(Error::msg(format!(
-                    "qualified name is not allowed in binder: {}",
-                    rest.unwrap()
-                )));
+        PatternKind::RecordLoose(fs, rest) => {
+            if let Some(rest_name) = rest.as_ref() {
+                if rest_name.contains('.') {
+                    return Err(Error::msg(format!(
+                        "qualified name is not allowed in binder: {rest_name}"
+                    )));
+                }
             }
-            Pattern::RecordLoose(
+            PatternKind::RecordLoose(
                 fs.into_iter()
                     .map(|(l, p)| Ok((l, desugar_qualified_pattern(p, allowed)?)))
                     .collect::<Result<Vec<_>>>()?,
                 rest,
             )
         }
-        Pattern::Cons(a, b) => Pattern::Cons(
+        PatternKind::Cons(a, b) => PatternKind::Cons(
             Box::new(desugar_qualified_pattern(*a, allowed)?),
             Box::new(desugar_qualified_pattern(*b, allowed)?),
         ),
-        Pattern::Or(a, b) => Pattern::Or(
+        PatternKind::Or(a, b) => PatternKind::Or(
             Box::new(desugar_qualified_pattern(*a, allowed)?),
             Box::new(desugar_qualified_pattern(*b, allowed)?),
         ),
-        Pattern::View(p, e) => Pattern::View(
+        PatternKind::View(p, e) => PatternKind::View(
             Box::new(desugar_qualified_pattern(*p, allowed)?),
             Box::new(desugar_qualified_expr(*e, allowed)?),
         ),
-        Pattern::Constructor { name, args } => Pattern::Constructor {
+        PatternKind::Constructor { name, args } => PatternKind::Constructor {
             name: desugar_qualified_ref(&name, allowed)?,
             args: args
                 .into_iter()
                 .map(|p| desugar_qualified_pattern(p, allowed))
                 .collect::<Result<Vec<_>>>()?,
         },
-        Pattern::Literal(e) => Pattern::Literal(desugar_qualified_expr(e, allowed)?),
+        PatternKind::Literal(e) => PatternKind::Literal(desugar_qualified_expr(e, allowed)?),
         x => x,
-    })
+    };
+    Ok(ast::Pattern::new(span, kind))
 }
 
 fn desugar_qualified_type(ty: ast::Type, allowed: &HashSet<String>) -> Result<ast::Type> {
@@ -3104,8 +3109,8 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
     for n in exports.iter() {
         if values.contains(n) {
             out.push(ast::Item::Binding(ast::Binding {
-                pat: ast::Pattern::Var(n.clone()),
-                expr: ast::Expr::Var(format!("{qual}.{n}")),
+                pat: ast::Pattern::dummy(ast::PatternKind::Var(n.clone())),
+                expr: ast::Expr::dummy(ast::ExprKind::Var(format!("{qual}.{n}"))),
             }));
         }
 
@@ -3237,81 +3242,120 @@ fn qualify_expr(
     type_map: &HashMap<String, String>,
     ctor_map: &HashMap<String, String>,
 ) -> Result<ast::Expr> {
-    use ast::Expr;
-    Ok(match expr {
-        Expr::Var(n) => Expr::Var(val_map.get(&n).cloned().unwrap_or(n)),
-        Expr::Ctor(n) => Expr::Ctor(ctor_map.get(&n).cloned().unwrap_or(n)),
-        Expr::Lambda { params, body } => Expr::Lambda {
-            params,
-            body: Box::new(qualify_expr(*body, val_map, type_map, ctor_map)?),
-        },
-        Expr::Apply { func, args } => Expr::Apply {
-            func: Box::new(qualify_expr(*func, val_map, type_map, ctor_map)?),
-            args: args
-                .into_iter()
-                .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
-                .collect::<Result<Vec<_>>>()?,
-        },
-        Expr::If {
+    use ast::{Expr, ExprKind};
+    let span = expr.span;
+    Ok(match expr.kind {
+        ExprKind::Var(n) => Expr::new(span, ExprKind::Var(val_map.get(&n).cloned().unwrap_or(n))),
+        ExprKind::Ctor(n) => {
+            Expr::new(span, ExprKind::Ctor(ctor_map.get(&n).cloned().unwrap_or(n)))
+        }
+        ExprKind::Lambda { params, body } => Expr::new(
+            span,
+            ExprKind::Lambda {
+                params,
+                body: Box::new(qualify_expr(*body, val_map, type_map, ctor_map)?),
+            },
+        ),
+        ExprKind::Apply { func, args } => Expr::new(
+            span,
+            ExprKind::Apply {
+                func: Box::new(qualify_expr(*func, val_map, type_map, ctor_map)?),
+                args: args
+                    .into_iter()
+                    .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
+                    .collect::<Result<Vec<_>>>()?,
+            },
+        ),
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => Expr::If {
-            cond: Box::new(qualify_expr(*cond, val_map, type_map, ctor_map)?),
-            then_branch: Box::new(qualify_expr(*then_branch, val_map, type_map, ctor_map)?),
-            else_branch: Box::new(qualify_expr(*else_branch, val_map, type_map, ctor_map)?),
-        },
-        Expr::Let { bindings, body } => Expr::Let {
-            bindings: bindings
-                .into_iter()
-                .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
-                .collect::<Result<Vec<_>>>()?,
-            body: Box::new(qualify_expr(*body, val_map, type_map, ctor_map)?),
-        },
-        Expr::Where { expr, bindings } => Expr::Where {
-            expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
-            bindings: bindings
-                .into_iter()
-                .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
-                .collect::<Result<Vec<_>>>()?,
-        },
-        Expr::Annot { expr, ty } => Expr::Annot {
-            expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
-            ty: qualify_qual_type(ty, type_map)?,
-        },
-        Expr::Do(stmts) => Expr::Do(
-            stmts
-                .into_iter()
-                .map(|s| qualify_do_stmt(s, val_map, type_map, ctor_map))
-                .collect::<Result<Vec<_>>>()?,
+        } => Expr::new(
+            span,
+            ExprKind::If {
+                cond: Box::new(qualify_expr(*cond, val_map, type_map, ctor_map)?),
+                then_branch: Box::new(qualify_expr(*then_branch, val_map, type_map, ctor_map)?),
+                else_branch: Box::new(qualify_expr(*else_branch, val_map, type_map, ctor_map)?),
+            },
         ),
-        Expr::Case { expr, arms } => Expr::Case {
-            expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
-            arms: arms
-                .into_iter()
-                .map(|a| qualify_case_arm(a, val_map, type_map, ctor_map))
-                .collect::<Result<Vec<_>>>()?,
-        },
-        Expr::Cons { head, tail } => Expr::Cons {
-            head: Box::new(qualify_expr(*head, val_map, type_map, ctor_map)?),
-            tail: Box::new(qualify_expr(*tail, val_map, type_map, ctor_map)?),
-        },
-        Expr::List(es) => Expr::List(
-            es.into_iter()
-                .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
-                .collect::<Result<Vec<_>>>()?,
+        ExprKind::Let { bindings, body } => Expr::new(
+            span,
+            ExprKind::Let {
+                bindings: bindings
+                    .into_iter()
+                    .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
+                    .collect::<Result<Vec<_>>>()?,
+                body: Box::new(qualify_expr(*body, val_map, type_map, ctor_map)?),
+            },
         ),
-        Expr::Tuple(es) => Expr::Tuple(
-            es.into_iter()
-                .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
-                .collect::<Result<Vec<_>>>()?,
+        ExprKind::Where { expr, bindings } => Expr::new(
+            span,
+            ExprKind::Where {
+                expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
+                bindings: bindings
+                    .into_iter()
+                    .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
+                    .collect::<Result<Vec<_>>>()?,
+            },
         ),
-        Expr::Record(fs) => Expr::Record(
-            fs.into_iter()
-                .map(|(l, e)| Ok((l, qualify_expr(e, val_map, type_map, ctor_map)?)))
-                .collect::<Result<Vec<_>>>()?,
+        ExprKind::Annot { expr, ty } => Expr::new(
+            span,
+            ExprKind::Annot {
+                expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
+                ty: qualify_qual_type(ty, type_map)?,
+            },
         ),
-        x => x,
+        ExprKind::Do(stmts) => Expr::new(
+            span,
+            ExprKind::Do(
+                stmts
+                    .into_iter()
+                    .map(|s| qualify_do_stmt(s, val_map, type_map, ctor_map))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+        ExprKind::Case { expr, arms } => Expr::new(
+            span,
+            ExprKind::Case {
+                expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
+                arms: arms
+                    .into_iter()
+                    .map(|a| qualify_case_arm(a, val_map, type_map, ctor_map))
+                    .collect::<Result<Vec<_>>>()?,
+            },
+        ),
+        ExprKind::Cons { head, tail } => Expr::new(
+            span,
+            ExprKind::Cons {
+                head: Box::new(qualify_expr(*head, val_map, type_map, ctor_map)?),
+                tail: Box::new(qualify_expr(*tail, val_map, type_map, ctor_map)?),
+            },
+        ),
+        ExprKind::List(es) => Expr::new(
+            span,
+            ExprKind::List(
+                es.into_iter()
+                    .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+        ExprKind::Tuple(es) => Expr::new(
+            span,
+            ExprKind::Tuple(
+                es.into_iter()
+                    .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+        ExprKind::Record(fs) => Expr::new(
+            span,
+            ExprKind::Record(
+                fs.into_iter()
+                    .map(|(l, e)| Ok((l, qualify_expr(e, val_map, type_map, ctor_map)?)))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+        other => Expr::new(span, other),
     })
 }
 
@@ -3359,45 +3403,75 @@ fn qualify_local_binding(
 }
 
 fn qualify_pat_binders(p: ast::Pattern, val_map: &HashMap<String, String>) -> Result<ast::Pattern> {
-    use ast::Pattern;
-    Ok(match p {
-        Pattern::Var(n) => Pattern::Var(val_map.get(&n).cloned().unwrap_or(n)),
-        Pattern::As(n, p) => Pattern::As(
-            val_map.get(&n).cloned().unwrap_or(n),
-            Box::new(qualify_pat_binders(*p, val_map)?),
+    use ast::{Pattern, PatternKind};
+    let span = p.span;
+    Ok(match p.kind {
+        PatternKind::Var(n) => Pattern::new(
+            span,
+            PatternKind::Var(val_map.get(&n).cloned().unwrap_or(n)),
         ),
-        Pattern::Tuple(ps) => Pattern::Tuple(
-            ps.into_iter()
-                .map(|p| qualify_pat_binders(p, val_map))
-                .collect::<Result<Vec<_>>>()?,
+        PatternKind::As(n, p) => Pattern::new(
+            span,
+            PatternKind::As(
+                val_map.get(&n).cloned().unwrap_or(n),
+                Box::new(qualify_pat_binders(*p, val_map)?),
+            ),
         ),
-        Pattern::List(ps) => Pattern::List(
-            ps.into_iter()
-                .map(|p| qualify_pat_binders(p, val_map))
-                .collect::<Result<Vec<_>>>()?,
+        PatternKind::Tuple(ps) => Pattern::new(
+            span,
+            PatternKind::Tuple(
+                ps.into_iter()
+                    .map(|p| qualify_pat_binders(p, val_map))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::Record(fs) => Pattern::Record(
-            fs.into_iter()
-                .map(|(l, p)| Ok((l, qualify_pat_binders(p, val_map)?)))
-                .collect::<Result<Vec<_>>>()?,
+        PatternKind::List(ps) => Pattern::new(
+            span,
+            PatternKind::List(
+                ps.into_iter()
+                    .map(|p| qualify_pat_binders(p, val_map))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::RecordLoose(fs, rest) => Pattern::RecordLoose(
-            fs.into_iter()
-                .map(|(l, p)| Ok((l, qualify_pat_binders(p, val_map)?)))
-                .collect::<Result<Vec<_>>>()?,
-            rest.map(|n| val_map.get(&n).cloned().unwrap_or(n)),
+        PatternKind::Record(fs) => Pattern::new(
+            span,
+            PatternKind::Record(
+                fs.into_iter()
+                    .map(|(l, p)| Ok((l, qualify_pat_binders(p, val_map)?)))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::Cons(a, b) => Pattern::Cons(
-            Box::new(qualify_pat_binders(*a, val_map)?),
-            Box::new(qualify_pat_binders(*b, val_map)?),
+        PatternKind::RecordLoose(fs, rest) => Pattern::new(
+            span,
+            PatternKind::RecordLoose(
+                fs.into_iter()
+                    .map(|(l, p)| Ok((l, qualify_pat_binders(p, val_map)?)))
+                    .collect::<Result<Vec<_>>>()?,
+                rest.map(|n| val_map.get(&n).cloned().unwrap_or(n)),
+            ),
         ),
-        Pattern::Or(a, b) => Pattern::Or(
-            Box::new(qualify_pat_binders(*a, val_map)?),
-            Box::new(qualify_pat_binders(*b, val_map)?),
+        PatternKind::Cons(a, b) => Pattern::new(
+            span,
+            PatternKind::Cons(
+                Box::new(qualify_pat_binders(*a, val_map)?),
+                Box::new(qualify_pat_binders(*b, val_map)?),
+            ),
         ),
-        Pattern::View(p, e) => Pattern::View(Box::new(qualify_pat_binders(*p, val_map)?), e),
-        Pattern::Constructor { name, args } => Pattern::Constructor { name, args },
-        x => x,
+        PatternKind::Or(a, b) => Pattern::new(
+            span,
+            PatternKind::Or(
+                Box::new(qualify_pat_binders(*a, val_map)?),
+                Box::new(qualify_pat_binders(*b, val_map)?),
+            ),
+        ),
+        PatternKind::View(p, e) => Pattern::new(
+            span,
+            PatternKind::View(Box::new(qualify_pat_binders(*p, val_map)?), e),
+        ),
+        PatternKind::Constructor { name, args } => {
+            Pattern::new(span, PatternKind::Constructor { name, args })
+        }
+        other => Pattern::new(span, other),
     })
 }
 
@@ -3408,54 +3482,85 @@ fn qualify_pat_nonbinders(
     type_map: &HashMap<String, String>,
 ) -> Result<ast::Pattern> {
     let _ = type_map;
-    use ast::Pattern;
-    Ok(match p {
-        Pattern::Tuple(ps) => Pattern::Tuple(
-            ps.into_iter()
-                .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
-                .collect::<Result<Vec<_>>>()?,
+    use ast::{Pattern, PatternKind};
+    let span = p.span;
+    Ok(match p.kind {
+        PatternKind::Tuple(ps) => Pattern::new(
+            span,
+            PatternKind::Tuple(
+                ps.into_iter()
+                    .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::List(ps) => Pattern::List(
-            ps.into_iter()
-                .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
-                .collect::<Result<Vec<_>>>()?,
+        PatternKind::List(ps) => Pattern::new(
+            span,
+            PatternKind::List(
+                ps.into_iter()
+                    .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::Record(fs) => Pattern::Record(
-            fs.into_iter()
-                .map(|(l, p)| Ok((l, qualify_pat_nonbinders(p, ctor_map, val_map, type_map)?)))
-                .collect::<Result<Vec<_>>>()?,
+        PatternKind::Record(fs) => Pattern::new(
+            span,
+            PatternKind::Record(
+                fs.into_iter()
+                    .map(|(l, p)| Ok((l, qualify_pat_nonbinders(p, ctor_map, val_map, type_map)?)))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::RecordLoose(fs, rest) => Pattern::RecordLoose(
-            fs.into_iter()
-                .map(|(l, p)| Ok((l, qualify_pat_nonbinders(p, ctor_map, val_map, type_map)?)))
-                .collect::<Result<Vec<_>>>()?,
-            rest,
+        PatternKind::RecordLoose(fs, rest) => Pattern::new(
+            span,
+            PatternKind::RecordLoose(
+                fs.into_iter()
+                    .map(|(l, p)| Ok((l, qualify_pat_nonbinders(p, ctor_map, val_map, type_map)?)))
+                    .collect::<Result<Vec<_>>>()?,
+                rest,
+            ),
         ),
-        Pattern::Cons(a, b) => Pattern::Cons(
-            Box::new(qualify_pat_nonbinders(*a, ctor_map, val_map, type_map)?),
-            Box::new(qualify_pat_nonbinders(*b, ctor_map, val_map, type_map)?),
+        PatternKind::Cons(a, b) => Pattern::new(
+            span,
+            PatternKind::Cons(
+                Box::new(qualify_pat_nonbinders(*a, ctor_map, val_map, type_map)?),
+                Box::new(qualify_pat_nonbinders(*b, ctor_map, val_map, type_map)?),
+            ),
         ),
-        Pattern::Or(a, b) => Pattern::Or(
-            Box::new(qualify_pat_nonbinders(*a, ctor_map, val_map, type_map)?),
-            Box::new(qualify_pat_nonbinders(*b, ctor_map, val_map, type_map)?),
+        PatternKind::Or(a, b) => Pattern::new(
+            span,
+            PatternKind::Or(
+                Box::new(qualify_pat_nonbinders(*a, ctor_map, val_map, type_map)?),
+                Box::new(qualify_pat_nonbinders(*b, ctor_map, val_map, type_map)?),
+            ),
         ),
-        Pattern::As(n, p) => Pattern::As(
-            n,
-            Box::new(qualify_pat_nonbinders(*p, ctor_map, val_map, type_map)?),
+        PatternKind::As(n, p) => Pattern::new(
+            span,
+            PatternKind::As(
+                n,
+                Box::new(qualify_pat_nonbinders(*p, ctor_map, val_map, type_map)?),
+            ),
         ),
-        Pattern::View(p, e) => Pattern::View(
-            Box::new(qualify_pat_nonbinders(*p, ctor_map, val_map, type_map)?),
-            Box::new(qualify_expr(*e, val_map, type_map, ctor_map)?),
+        PatternKind::View(p, e) => Pattern::new(
+            span,
+            PatternKind::View(
+                Box::new(qualify_pat_nonbinders(*p, ctor_map, val_map, type_map)?),
+                Box::new(qualify_expr(*e, val_map, type_map, ctor_map)?),
+            ),
         ),
-        Pattern::Constructor { name, args } => Pattern::Constructor {
-            name: ctor_map.get(&name).cloned().unwrap_or(name),
-            args: args
-                .into_iter()
-                .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
-                .collect::<Result<Vec<_>>>()?,
-        },
-        Pattern::Literal(e) => Pattern::Literal(qualify_expr(e, val_map, type_map, ctor_map)?),
-        x => x,
+        PatternKind::Constructor { name, args } => Pattern::new(
+            span,
+            PatternKind::Constructor {
+                name: ctor_map.get(&name).cloned().unwrap_or(name),
+                args: args
+                    .into_iter()
+                    .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
+                    .collect::<Result<Vec<_>>>()?,
+            },
+        ),
+        PatternKind::Literal(e) => Pattern::new(
+            span,
+            PatternKind::Literal(qualify_expr(e, val_map, type_map, ctor_map)?),
+        ),
+        other => Pattern::new(span, other),
     })
 }
 
@@ -3539,9 +3644,9 @@ fn name_origin_hint(it: &ast::Item, name: &str) -> String {
 
     match it {
         ast::Item::Binding(b) => {
-            if let ast::Pattern::Var(n) = &b.pat {
+            if let ast::PatternKind::Var(n) = &b.pat.kind {
                 if n == name {
-                    if let ast::Expr::Var(v) = &b.expr {
+                    if let ast::ExprKind::Var(v) = &b.expr.kind {
                         if v.ends_with(&format!(".{name}")) {
                             if let Some(q) = qual_of(v) {
                                 return format!("import {q}");
@@ -3611,39 +3716,39 @@ fn item_defined_names(it: &ast::Item, out: &mut HashSet<String>) {
 }
 
 fn pat_defined_names(p: &ast::Pattern, out: &mut HashSet<String>) {
-    use ast::Pattern;
-    match p {
-        Pattern::Var(n) => {
+    use ast::PatternKind;
+    match &p.kind {
+        PatternKind::Var(n) => {
             out.insert(n.clone());
         }
-        Pattern::As(n, p) => {
+        PatternKind::As(n, p) => {
             out.insert(n.clone());
             pat_defined_names(p, out);
         }
-        Pattern::Tuple(ps) | Pattern::List(ps) => {
+        PatternKind::Tuple(ps) | PatternKind::List(ps) => {
             for p in ps {
                 pat_defined_names(p, out);
             }
         }
-        Pattern::Record(fs) | Pattern::RecordLoose(fs, _) => {
+        PatternKind::Record(fs) | PatternKind::RecordLoose(fs, _) => {
             for (_, p) in fs {
                 pat_defined_names(p, out);
             }
-            if let Pattern::RecordLoose(_, Some(rest)) = p {
+            if let PatternKind::RecordLoose(_, Some(rest)) = &p.kind {
                 out.insert(rest.clone());
             }
         }
-        Pattern::Cons(a, b) | Pattern::Or(a, b) => {
+        PatternKind::Cons(a, b) | PatternKind::Or(a, b) => {
             pat_defined_names(a, out);
             pat_defined_names(b, out);
         }
-        Pattern::View(p, _) => pat_defined_names(p, out),
-        Pattern::Constructor { args, .. } => {
+        PatternKind::View(p, _) => pat_defined_names(p, out),
+        PatternKind::Constructor { args, .. } => {
             for p in args {
                 pat_defined_names(p, out);
             }
         }
-        Pattern::Wildcard | Pattern::Hole(_) | Pattern::Literal(_) => {}
+        PatternKind::Wildcard | PatternKind::Hole(_) | PatternKind::Literal(_) => {}
     }
 }
 
@@ -3655,133 +3760,229 @@ fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
 }
 
 fn rewrite_show_calls_in_expr(expr: ast::Expr) -> ast::Expr {
-    use ast::Expr;
-    match expr {
-        Expr::Lambda { params, body } => Expr::Lambda {
-            params,
-            body: Box::new(rewrite_show_calls_in_expr(*body)),
-        },
-        Expr::Apply { func, args } => {
+    use ast::{Expr, ExprKind};
+    let span = expr.span;
+    match expr.kind {
+        ExprKind::Lambda { params, body } => Expr::new(
+            span,
+            ExprKind::Lambda {
+                params,
+                body: Box::new(rewrite_show_calls_in_expr(*body)),
+            },
+        ),
+        ExprKind::Apply { func, args } => {
             let func = rewrite_show_calls_in_expr(*func);
             let mut args: Vec<_> = args.into_iter().map(rewrite_show_calls_in_expr).collect();
 
-            match (&func, args.len()) {
-                (Expr::Var(n), 1) if n == "show" => {
-                    return Expr::Apply {
-                        func: Box::new(Expr::Var("__show".to_string())),
-                        args: vec![Expr::Var("__builtinShowDict".to_string()), args.remove(0)],
-                    };
+            match (&func.kind, args.len()) {
+                (ExprKind::Var(n), 1) if n == "show" => {
+                    return Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(Expr::new(span, ExprKind::Var("__show".to_string()))),
+                            args: vec![
+                                Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
+                                args.remove(0),
+                            ],
+                        },
+                    );
                 }
-                (Expr::Var(n), 1) if n == "toString" => {
-                    return Expr::Apply {
-                        func: Box::new(Expr::Var("__toString".to_string())),
-                        args: vec![Expr::Var("__builtinShowDict".to_string()), args.remove(0)],
-                    };
+                (ExprKind::Var(n), 1) if n == "toString" => {
+                    return Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(Expr::new(
+                                span,
+                                ExprKind::Var("__toString".to_string()),
+                            )),
+                            args: vec![
+                                Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
+                                args.remove(0),
+                            ],
+                        },
+                    );
                 }
-                (Expr::Var(n), 1) if n == "==" => {
-                    return Expr::Apply {
-                        func: Box::new(Expr::Var("__eq".to_string())),
-                        args: vec![Expr::Var("__builtinEqDict".to_string()), args.remove(0)],
-                    };
+                (ExprKind::Var(n), 1) if n == "==" => {
+                    return Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(Expr::new(span, ExprKind::Var("__eq".to_string()))),
+                            args: vec![
+                                Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
+                                args.remove(0),
+                            ],
+                        },
+                    );
                 }
-                (Expr::Var(n), 2) if n == "==" => {
+                (ExprKind::Var(n), 2) if n == "==" => {
                     let a = args.remove(0);
                     let b = args.remove(0);
-                    return Expr::Apply {
-                        func: Box::new(Expr::Var("__eq".to_string())),
-                        args: vec![Expr::Var("__builtinEqDict".to_string()), a, b],
-                    };
+                    return Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(Expr::new(span, ExprKind::Var("__eq".to_string()))),
+                            args: vec![
+                                Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
+                                a,
+                                b,
+                            ],
+                        },
+                    );
                 }
-                (Expr::Var(n), 1) if n == "/=" => {
-                    return Expr::Apply {
-                        func: Box::new(Expr::Var("not".to_string())),
-                        args: vec![Expr::Apply {
-                            func: Box::new(Expr::Var("__eq".to_string())),
-                            args: vec![Expr::Var("__builtinEqDict".to_string()), args.remove(0)],
-                        }],
-                    };
+                (ExprKind::Var(n), 1) if n == "/=" => {
+                    return Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(Expr::new(span, ExprKind::Var("not".to_string()))),
+                            args: vec![Expr::new(
+                                span,
+                                ExprKind::Apply {
+                                    func: Box::new(Expr::new(
+                                        span,
+                                        ExprKind::Var("__eq".to_string()),
+                                    )),
+                                    args: vec![
+                                        Expr::new(
+                                            span,
+                                            ExprKind::Var("__builtinEqDict".to_string()),
+                                        ),
+                                        args.remove(0),
+                                    ],
+                                },
+                            )],
+                        },
+                    );
                 }
-                (Expr::Var(n), 2) if n == "/=" => {
+                (ExprKind::Var(n), 2) if n == "/=" => {
                     let a = args.remove(0);
                     let b = args.remove(0);
-                    return Expr::Apply {
-                        func: Box::new(Expr::Var("not".to_string())),
-                        args: vec![Expr::Apply {
-                            func: Box::new(Expr::Var("__eq".to_string())),
-                            args: vec![Expr::Var("__builtinEqDict".to_string()), a, b],
-                        }],
-                    };
+                    return Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(Expr::new(span, ExprKind::Var("not".to_string()))),
+                            args: vec![Expr::new(
+                                span,
+                                ExprKind::Apply {
+                                    func: Box::new(Expr::new(
+                                        span,
+                                        ExprKind::Var("__eq".to_string()),
+                                    )),
+                                    args: vec![
+                                        Expr::new(
+                                            span,
+                                            ExprKind::Var("__builtinEqDict".to_string()),
+                                        ),
+                                        a,
+                                        b,
+                                    ],
+                                },
+                            )],
+                        },
+                    );
                 }
                 _ => {}
             }
 
-            Expr::Apply {
-                func: Box::new(func),
-                args,
-            }
+            Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(func),
+                    args,
+                },
+            )
         }
-        Expr::If {
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => Expr::If {
-            cond: Box::new(rewrite_show_calls_in_expr(*cond)),
-            then_branch: Box::new(rewrite_show_calls_in_expr(*then_branch)),
-            else_branch: Box::new(rewrite_show_calls_in_expr(*else_branch)),
-        },
-        Expr::Let { bindings, body } => Expr::Let {
-            bindings: bindings
-                .into_iter()
-                .map(rewrite_show_calls_in_binding)
-                .collect(),
-            body: Box::new(rewrite_show_calls_in_expr(*body)),
-        },
-        Expr::Where { expr, bindings } => Expr::Where {
-            expr: Box::new(rewrite_show_calls_in_expr(*expr)),
-            bindings: bindings
-                .into_iter()
-                .map(rewrite_show_calls_in_binding)
-                .collect(),
-        },
-        Expr::Annot { expr, ty } => Expr::Annot {
-            expr: Box::new(rewrite_show_calls_in_expr(*expr)),
-            ty,
-        },
-        Expr::Do(stmts) => Expr::Do(
-            stmts
-                .into_iter()
-                .map(|s| match s {
-                    ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
-                        pat,
-                        expr: rewrite_show_calls_in_expr(expr),
-                    },
-                    ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_show_calls_in_expr(e)),
-                })
-                .collect(),
+        } => Expr::new(
+            span,
+            ExprKind::If {
+                cond: Box::new(rewrite_show_calls_in_expr(*cond)),
+                then_branch: Box::new(rewrite_show_calls_in_expr(*then_branch)),
+                else_branch: Box::new(rewrite_show_calls_in_expr(*else_branch)),
+            },
         ),
-        Expr::Case { expr, arms } => Expr::Case {
-            expr: Box::new(rewrite_show_calls_in_expr(*expr)),
-            arms: arms
-                .into_iter()
-                .map(|a| ast::CaseArm {
-                    pat: a.pat,
-                    guard: a.guard.map(rewrite_show_calls_in_expr),
-                    body: rewrite_show_calls_in_expr(a.body),
-                })
-                .collect(),
-        },
-        Expr::Cons { head, tail } => Expr::Cons {
-            head: Box::new(rewrite_show_calls_in_expr(*head)),
-            tail: Box::new(rewrite_show_calls_in_expr(*tail)),
-        },
-        Expr::List(es) => Expr::List(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
-        Expr::Tuple(es) => Expr::Tuple(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
-        Expr::Record(fs) => Expr::Record(
-            fs.into_iter()
-                .map(|(l, e)| (l, rewrite_show_calls_in_expr(e)))
-                .collect(),
+        ExprKind::Let { bindings, body } => Expr::new(
+            span,
+            ExprKind::Let {
+                bindings: bindings
+                    .into_iter()
+                    .map(rewrite_show_calls_in_binding)
+                    .collect(),
+                body: Box::new(rewrite_show_calls_in_expr(*body)),
+            },
         ),
-        other => other,
+        ExprKind::Where { expr, bindings } => Expr::new(
+            span,
+            ExprKind::Where {
+                expr: Box::new(rewrite_show_calls_in_expr(*expr)),
+                bindings: bindings
+                    .into_iter()
+                    .map(rewrite_show_calls_in_binding)
+                    .collect(),
+            },
+        ),
+        ExprKind::Annot { expr, ty } => Expr::new(
+            span,
+            ExprKind::Annot {
+                expr: Box::new(rewrite_show_calls_in_expr(*expr)),
+                ty,
+            },
+        ),
+        ExprKind::Do(stmts) => Expr::new(
+            span,
+            ExprKind::Do(
+                stmts
+                    .into_iter()
+                    .map(|s| match s {
+                        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                            pat,
+                            expr: rewrite_show_calls_in_expr(expr),
+                        },
+                        ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_show_calls_in_expr(e)),
+                    })
+                    .collect(),
+            ),
+        ),
+        ExprKind::Case { expr, arms } => Expr::new(
+            span,
+            ExprKind::Case {
+                expr: Box::new(rewrite_show_calls_in_expr(*expr)),
+                arms: arms
+                    .into_iter()
+                    .map(|a| ast::CaseArm {
+                        pat: a.pat,
+                        guard: a.guard.map(rewrite_show_calls_in_expr),
+                        body: rewrite_show_calls_in_expr(a.body),
+                    })
+                    .collect(),
+            },
+        ),
+        ExprKind::Cons { head, tail } => Expr::new(
+            span,
+            ExprKind::Cons {
+                head: Box::new(rewrite_show_calls_in_expr(*head)),
+                tail: Box::new(rewrite_show_calls_in_expr(*tail)),
+            },
+        ),
+        ExprKind::List(es) => Expr::new(
+            span,
+            ExprKind::List(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
+        ),
+        ExprKind::Tuple(es) => Expr::new(
+            span,
+            ExprKind::Tuple(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
+        ),
+        ExprKind::Record(fs) => Expr::new(
+            span,
+            ExprKind::Record(
+                fs.into_iter()
+                    .map(|(l, e)| (l, rewrite_show_calls_in_expr(e)))
+                    .collect(),
+            ),
+        ),
+        other => Expr::new(span, other),
     }
 }
 
@@ -3879,154 +4080,222 @@ fn expand_pat(
     pat: ast::Pattern,
     aliases: &HashMap<String, ast::TypeAlias>,
 ) -> Result<ast::Pattern> {
-    use ast::Pattern;
-    Ok(match pat {
-        Pattern::Var(_) | Pattern::Wildcard | Pattern::Hole(_) | Pattern::Literal(_) => pat,
-        Pattern::Tuple(ps) => Pattern::Tuple(
-            ps.into_iter()
-                .map(|p| expand_pat(p, aliases))
-                .collect::<Result<Vec<_>>>()?,
+    use ast::{Pattern, PatternKind};
+    let span = pat.span;
+    Ok(match pat.kind {
+        kind @ (PatternKind::Var(_)
+        | PatternKind::Wildcard
+        | PatternKind::Hole(_)
+        | PatternKind::Literal(_)) => Pattern::new(span, kind),
+        PatternKind::Tuple(ps) => Pattern::new(
+            span,
+            PatternKind::Tuple(
+                ps.into_iter()
+                    .map(|p| expand_pat(p, aliases))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::List(ps) => Pattern::List(
-            ps.into_iter()
-                .map(|p| expand_pat(p, aliases))
-                .collect::<Result<Vec<_>>>()?,
+        PatternKind::List(ps) => Pattern::new(
+            span,
+            PatternKind::List(
+                ps.into_iter()
+                    .map(|p| expand_pat(p, aliases))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::Record(fields) => Pattern::Record(
-            fields
-                .into_iter()
-                .map(|(n, p)| Ok((n, expand_pat(p, aliases)?)))
-                .collect::<Result<Vec<_>>>()?,
+        PatternKind::Record(fields) => Pattern::new(
+            span,
+            PatternKind::Record(
+                fields
+                    .into_iter()
+                    .map(|(n, p)| Ok((n, expand_pat(p, aliases)?)))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
         ),
-        Pattern::RecordLoose(fields, rest) => Pattern::RecordLoose(
-            fields
-                .into_iter()
-                .map(|(n, p)| Ok((n, expand_pat(p, aliases)?)))
-                .collect::<Result<Vec<_>>>()?,
-            rest,
+        PatternKind::RecordLoose(fields, rest) => Pattern::new(
+            span,
+            PatternKind::RecordLoose(
+                fields
+                    .into_iter()
+                    .map(|(n, p)| Ok((n, expand_pat(p, aliases)?)))
+                    .collect::<Result<Vec<_>>>()?,
+                rest,
+            ),
         ),
-        Pattern::Cons(a, b) => Pattern::Cons(
-            Box::new(expand_pat(*a, aliases)?),
-            Box::new(expand_pat(*b, aliases)?),
+        PatternKind::Cons(a, b) => Pattern::new(
+            span,
+            PatternKind::Cons(
+                Box::new(expand_pat(*a, aliases)?),
+                Box::new(expand_pat(*b, aliases)?),
+            ),
         ),
-        Pattern::Or(a, b) => Pattern::Or(
-            Box::new(expand_pat(*a, aliases)?),
-            Box::new(expand_pat(*b, aliases)?),
+        PatternKind::Or(a, b) => Pattern::new(
+            span,
+            PatternKind::Or(
+                Box::new(expand_pat(*a, aliases)?),
+                Box::new(expand_pat(*b, aliases)?),
+            ),
         ),
-        Pattern::As(name, p) => Pattern::As(name, Box::new(expand_pat(*p, aliases)?)),
-        Pattern::View(p, e) => Pattern::View(
-            Box::new(expand_pat(*p, aliases)?),
-            Box::new(expand_expr(*e, aliases)?),
+        PatternKind::As(name, p) => Pattern::new(
+            span,
+            PatternKind::As(name, Box::new(expand_pat(*p, aliases)?)),
         ),
-        Pattern::Constructor { name, args } => Pattern::Constructor {
-            name,
-            args: args
-                .into_iter()
-                .map(|p| expand_pat(p, aliases))
-                .collect::<Result<Vec<_>>>()?,
-        },
+        PatternKind::View(p, e) => Pattern::new(
+            span,
+            PatternKind::View(
+                Box::new(expand_pat(*p, aliases)?),
+                Box::new(expand_expr(*e, aliases)?),
+            ),
+        ),
+        PatternKind::Constructor { name, args } => Pattern::new(
+            span,
+            PatternKind::Constructor {
+                name,
+                args: args
+                    .into_iter()
+                    .map(|p| expand_pat(p, aliases))
+                    .collect::<Result<Vec<_>>>()?,
+            },
+        ),
     })
 }
 
 fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Result<ast::Expr> {
-    use ast::Expr;
-    Ok(match expr {
-        Expr::Lambda { params, body } => Expr::Lambda {
-            params,
-            body: Box::new(expand_expr(*body, aliases)?),
-        },
-        Expr::Apply { func, args } => Expr::Apply {
-            func: Box::new(expand_expr(*func, aliases)?),
-            args: args
-                .into_iter()
-                .map(|e| expand_expr(e, aliases))
-                .collect::<Result<Vec<_>>>()?,
-        },
-        Expr::If {
+    use ast::{Expr, ExprKind};
+    let span = expr.span;
+    Ok(match expr.kind {
+        ExprKind::Lambda { params, body } => Expr::new(
+            span,
+            ExprKind::Lambda {
+                params,
+                body: Box::new(expand_expr(*body, aliases)?),
+            },
+        ),
+        ExprKind::Apply { func, args } => Expr::new(
+            span,
+            ExprKind::Apply {
+                func: Box::new(expand_expr(*func, aliases)?),
+                args: args
+                    .into_iter()
+                    .map(|e| expand_expr(e, aliases))
+                    .collect::<Result<Vec<_>>>()?,
+            },
+        ),
+        ExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => Expr::If {
-            cond: Box::new(expand_expr(*cond, aliases)?),
-            then_branch: Box::new(expand_expr(*then_branch, aliases)?),
-            else_branch: Box::new(expand_expr(*else_branch, aliases)?),
-        },
-        Expr::Let { bindings, body } => Expr::Let {
-            bindings: bindings
-                .into_iter()
-                .map(|b| {
-                    Ok(ast::Binding {
-                        pat: expand_pat(b.pat, aliases)?,
-                        expr: expand_expr(b.expr, aliases)?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-            body: Box::new(expand_expr(*body, aliases)?),
-        },
-        Expr::Where { expr, bindings } => Expr::Where {
-            expr: Box::new(expand_expr(*expr, aliases)?),
-            bindings: bindings
-                .into_iter()
-                .map(|b| {
-                    Ok(ast::Binding {
-                        pat: expand_pat(b.pat, aliases)?,
-                        expr: expand_expr(b.expr, aliases)?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        },
-        Expr::Annot { expr, ty } => Expr::Annot {
-            expr: Box::new(expand_expr(*expr, aliases)?),
-            ty: expand_qual_type(ty, aliases)?,
-        },
-        Expr::Do(stmts) => Expr::Do(
-            stmts
-                .into_iter()
-                .map(|s| {
-                    Ok(match s {
-                        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
-                            pat: expand_pat(pat, aliases)?,
-                            expr: expand_expr(expr, aliases)?,
-                        },
-                        ast::DoStmt::Expr(e) => ast::DoStmt::Expr(expand_expr(e, aliases)?),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
+        } => Expr::new(
+            span,
+            ExprKind::If {
+                cond: Box::new(expand_expr(*cond, aliases)?),
+                then_branch: Box::new(expand_expr(*then_branch, aliases)?),
+                else_branch: Box::new(expand_expr(*else_branch, aliases)?),
+            },
         ),
-        Expr::Case { expr, arms } => Expr::Case {
-            expr: Box::new(expand_expr(*expr, aliases)?),
-            arms: arms
-                .into_iter()
-                .map(|a| {
-                    Ok(ast::CaseArm {
-                        pat: expand_pat(a.pat, aliases)?,
-                        guard: a.guard.map(|g| expand_expr(g, aliases)).transpose()?,
-                        body: expand_expr(a.body, aliases)?,
+        ExprKind::Let { bindings, body } => Expr::new(
+            span,
+            ExprKind::Let {
+                bindings: bindings
+                    .into_iter()
+                    .map(|b| {
+                        Ok(ast::Binding {
+                            pat: expand_pat(b.pat, aliases)?,
+                            expr: expand_expr(b.expr, aliases)?,
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        },
-        Expr::Cons { head, tail } => Expr::Cons {
-            head: Box::new(expand_expr(*head, aliases)?),
-            tail: Box::new(expand_expr(*tail, aliases)?),
-        },
-        Expr::List(v) => Expr::List(
-            v.into_iter()
-                .map(|e| expand_expr(e, aliases))
-                .collect::<Result<Vec<_>>>()?,
+                    .collect::<Result<Vec<_>>>()?,
+                body: Box::new(expand_expr(*body, aliases)?),
+            },
         ),
-        Expr::Tuple(v) => Expr::Tuple(
-            v.into_iter()
-                .map(|e| expand_expr(e, aliases))
-                .collect::<Result<Vec<_>>>()?,
+        ExprKind::Where { expr, bindings } => Expr::new(
+            span,
+            ExprKind::Where {
+                expr: Box::new(expand_expr(*expr, aliases)?),
+                bindings: bindings
+                    .into_iter()
+                    .map(|b| {
+                        Ok(ast::Binding {
+                            pat: expand_pat(b.pat, aliases)?,
+                            expr: expand_expr(b.expr, aliases)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            },
         ),
-        Expr::Record(fields) => Expr::Record(
-            fields
-                .into_iter()
-                .map(|(n, e)| Ok((n, expand_expr(e, aliases)?)))
-                .collect::<Result<Vec<_>>>()?,
+        ExprKind::Annot { expr, ty } => Expr::new(
+            span,
+            ExprKind::Annot {
+                expr: Box::new(expand_expr(*expr, aliases)?),
+                ty: expand_qual_type(ty, aliases)?,
+            },
         ),
-        other => other,
+        ExprKind::Do(stmts) => Expr::new(
+            span,
+            ExprKind::Do(
+                stmts
+                    .into_iter()
+                    .map(|s| {
+                        Ok(match s {
+                            ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                                pat: expand_pat(pat, aliases)?,
+                                expr: expand_expr(expr, aliases)?,
+                            },
+                            ast::DoStmt::Expr(e) => ast::DoStmt::Expr(expand_expr(e, aliases)?),
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+        ExprKind::Case { expr, arms } => Expr::new(
+            span,
+            ExprKind::Case {
+                expr: Box::new(expand_expr(*expr, aliases)?),
+                arms: arms
+                    .into_iter()
+                    .map(|a| {
+                        Ok(ast::CaseArm {
+                            pat: expand_pat(a.pat, aliases)?,
+                            guard: a.guard.map(|g| expand_expr(g, aliases)).transpose()?,
+                            body: expand_expr(a.body, aliases)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            },
+        ),
+        ExprKind::Cons { head, tail } => Expr::new(
+            span,
+            ExprKind::Cons {
+                head: Box::new(expand_expr(*head, aliases)?),
+                tail: Box::new(expand_expr(*tail, aliases)?),
+            },
+        ),
+        ExprKind::List(v) => Expr::new(
+            span,
+            ExprKind::List(
+                v.into_iter()
+                    .map(|e| expand_expr(e, aliases))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+        ExprKind::Tuple(v) => Expr::new(
+            span,
+            ExprKind::Tuple(
+                v.into_iter()
+                    .map(|e| expand_expr(e, aliases))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+        ExprKind::Record(fields) => Expr::new(
+            span,
+            ExprKind::Record(
+                fields
+                    .into_iter()
+                    .map(|(n, e)| Ok((n, expand_expr(e, aliases)?)))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        ),
+        other => Expr::new(span, other),
     })
 }
 
@@ -4696,7 +4965,11 @@ mod inference_tests {
         let ast::Item::Binding(b) = &m.items[0] else {
             panic!("expected binding");
         };
-        let ast::Expr::Annot { ty, .. } = &b.expr else {
+        let ast::Expr {
+            kind: ast::ExprKind::Annot { ty, .. },
+            ..
+        } = &b.expr
+        else {
             panic!("expected annotation");
         };
         ty.clone()
@@ -4848,97 +5121,97 @@ mod inference_tests {
 
     #[test]
     fn type_error_includes_let_binding_name() {
-        let _ = infer_expr(ast::Expr::Let {
+        let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![ast::Binding {
-                pat: ast::Pattern::Var("x".to_string()),
-                expr: ast::Expr::Var("y".to_string()),
+                pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+                expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
             }],
-            body: Box::new(ast::Expr::Var("x".to_string())),
-        })
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
+        }))
         .unwrap_err();
 
-        let e = infer_expr(ast::Expr::Let {
+        let e = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![ast::Binding {
-                pat: ast::Pattern::Var("x".to_string()),
-                expr: ast::Expr::Var("y".to_string()),
+                pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+                expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
             }],
-            body: Box::new(ast::Expr::Var("x".to_string())),
-        })
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
+        }))
         .unwrap_err();
         assert!(format!("{e}").contains("in let binding x"));
     }
 
     #[test]
     fn type_error_includes_where_binding_name() {
-        let e = infer_expr(ast::Expr::Where {
-            expr: Box::new(ast::Expr::Var("x".to_string())),
+        let e = infer_expr(ast::Expr::dummy(ast::ExprKind::Where {
+            expr: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
             bindings: vec![ast::Binding {
-                pat: ast::Pattern::Var("x".to_string()),
-                expr: ast::Expr::Var("y".to_string()),
+                pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+                expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
             }],
-        })
+        }))
         .unwrap_err();
         assert!(format!("{e}").contains("in where binding x"));
     }
 
     #[test]
     fn type_error_includes_case_arm_number() {
-        let e = infer_expr(ast::Expr::Case {
-            expr: Box::new(ast::Expr::Integer("1".to_string())),
+        let e = infer_expr(ast::Expr::dummy(ast::ExprKind::Case {
+            expr: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("1".to_string()))),
             arms: vec![
                 ast::CaseArm {
-                    pat: ast::Pattern::Wildcard,
+                    pat: ast::Pattern::dummy(ast::PatternKind::Wildcard),
                     guard: None,
-                    body: ast::Expr::Var("y".to_string()),
+                    body: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
                 },
                 ast::CaseArm {
-                    pat: ast::Pattern::Wildcard,
+                    pat: ast::Pattern::dummy(ast::PatternKind::Wildcard),
                     guard: None,
-                    body: ast::Expr::Integer("0".to_string()),
+                    body: ast::Expr::dummy(ast::ExprKind::Integer("0".to_string())),
                 },
             ],
-        })
+        }))
         .unwrap_err();
         assert!(format!("{e}").contains("in case arm 1"));
     }
 
     #[test]
     fn type_error_includes_do_stmt_number() {
-        let e = infer_expr(ast::Expr::Do(vec![ast::DoStmt::Expr(ast::Expr::Var(
-            "y".to_string(),
-        ))]))
+        let e = infer_expr(ast::Expr::dummy(ast::ExprKind::Do(vec![
+            ast::DoStmt::Expr(ast::Expr::dummy(ast::ExprKind::Var("y".to_string()))),
+        ])))
         .unwrap_err();
         assert!(format!("{e}").contains("in do stmt 1"));
     }
 
     #[test]
     fn type_error_includes_if_then_context() {
-        let e = infer_expr(ast::Expr::If {
-            cond: Box::new(ast::Expr::Bool(true)),
-            then_branch: Box::new(ast::Expr::Var("y".to_string())),
-            else_branch: Box::new(ast::Expr::Integer("0".to_string())),
-        })
+        let e = infer_expr(ast::Expr::dummy(ast::ExprKind::If {
+            cond: Box::new(ast::Expr::dummy(ast::ExprKind::Bool(true))),
+            then_branch: Box::new(ast::Expr::dummy(ast::ExprKind::Var("y".to_string()))),
+            else_branch: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("0".to_string()))),
+        }))
         .unwrap_err();
         assert!(format!("{e}").contains("in if then"));
     }
 
     #[test]
     fn type_error_includes_if_cond_context() {
-        let e = infer_expr(ast::Expr::If {
-            cond: Box::new(ast::Expr::Integer("1".to_string())),
-            then_branch: Box::new(ast::Expr::Integer("0".to_string())),
-            else_branch: Box::new(ast::Expr::Integer("0".to_string())),
-        })
+        let e = infer_expr(ast::Expr::dummy(ast::ExprKind::If {
+            cond: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("1".to_string()))),
+            then_branch: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("0".to_string()))),
+            else_branch: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("0".to_string()))),
+        }))
         .unwrap_err();
         assert!(format!("{e}").contains("in if cond"));
     }
 
     #[test]
     fn infer_identity_lambda() {
-        let ty = infer_expr(ast::Expr::Lambda {
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Lambda {
             params: vec!["x".to_string()],
-            body: Box::new(ast::Expr::Var("x".to_string())),
-        })
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
+        }))
         .unwrap();
 
         let Ty::Func(a, b) = ty else {
@@ -4955,15 +5228,15 @@ mod inference_tests {
 
     #[test]
     fn infer_apply_identity() {
-        let id = ast::Expr::Lambda {
+        let id = ast::Expr::dummy(ast::ExprKind::Lambda {
             params: vec!["x".to_string()],
-            body: Box::new(ast::Expr::Var("x".to_string())),
-        };
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
+        });
 
-        let ty = infer_expr(ast::Expr::Apply {
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Apply {
             func: Box::new(id),
-            args: vec![ast::Expr::Integer("1".to_string())],
-        })
+            args: vec![ast::Expr::dummy(ast::ExprKind::Integer("1".to_string()))],
+        }))
         .unwrap();
 
         assert_eq!(ty, Ty::Con("Integer".to_string()));
@@ -4972,28 +5245,28 @@ mod inference_tests {
     #[test]
     fn infer_let_generalizes() {
         let id_binding = ast::Binding {
-            pat: ast::Pattern::Var("id".to_string()),
-            expr: ast::Expr::Lambda {
+            pat: ast::Pattern::dummy(ast::PatternKind::Var("id".to_string())),
+            expr: ast::Expr::dummy(ast::ExprKind::Lambda {
                 params: vec!["x".to_string()],
-                body: Box::new(ast::Expr::Var("x".to_string())),
-            },
+                body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
+            }),
         };
 
-        let body = ast::Expr::Tuple(vec![
-            ast::Expr::Apply {
-                func: Box::new(ast::Expr::Var("id".to_string())),
-                args: vec![ast::Expr::Integer("1".to_string())],
-            },
-            ast::Expr::Apply {
-                func: Box::new(ast::Expr::Var("id".to_string())),
-                args: vec![ast::Expr::Bool(true)],
-            },
-        ]);
+        let body = ast::Expr::dummy(ast::ExprKind::Tuple(vec![
+            ast::Expr::dummy(ast::ExprKind::Apply {
+                func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("id".to_string()))),
+                args: vec![ast::Expr::dummy(ast::ExprKind::Integer("1".to_string()))],
+            }),
+            ast::Expr::dummy(ast::ExprKind::Apply {
+                func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("id".to_string()))),
+                args: vec![ast::Expr::dummy(ast::ExprKind::Bool(true))],
+            }),
+        ]));
 
-        let ty = infer_expr(ast::Expr::Let {
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![id_binding],
             body: Box::new(body),
-        })
+        }))
         .unwrap();
 
         assert_eq!(
@@ -5008,20 +5281,20 @@ mod inference_tests {
     #[test]
     fn infer_let_tuple_pattern() {
         let b = ast::Binding {
-            pat: ast::Pattern::Tuple(vec![
-                ast::Pattern::Var("a".to_string()),
-                ast::Pattern::Var("b".to_string()),
-            ]),
-            expr: ast::Expr::Tuple(vec![
-                ast::Expr::Integer("1".to_string()),
-                ast::Expr::Bool(true),
-            ]),
+            pat: ast::Pattern::dummy(ast::PatternKind::Tuple(vec![
+                ast::Pattern::dummy(ast::PatternKind::Var("a".to_string())),
+                ast::Pattern::dummy(ast::PatternKind::Var("b".to_string())),
+            ])),
+            expr: ast::Expr::dummy(ast::ExprKind::Tuple(vec![
+                ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
+                ast::Expr::dummy(ast::ExprKind::Bool(true)),
+            ])),
         };
 
-        let ty = infer_expr(ast::Expr::Let {
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![b],
-            body: Box::new(ast::Expr::Var("b".to_string())),
-        })
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("b".to_string()))),
+        }))
         .unwrap();
 
         assert_eq!(ty, Ty::Con("Bool".to_string()));
@@ -5030,40 +5303,40 @@ mod inference_tests {
     #[test]
     fn infer_duplicate_pattern_vars_is_error() {
         let b = ast::Binding {
-            pat: ast::Pattern::Tuple(vec![
-                ast::Pattern::Var("x".to_string()),
-                ast::Pattern::Var("x".to_string()),
-            ]),
-            expr: ast::Expr::Tuple(vec![
-                ast::Expr::Integer("1".to_string()),
-                ast::Expr::Integer("2".to_string()),
-            ]),
+            pat: ast::Pattern::dummy(ast::PatternKind::Tuple(vec![
+                ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+                ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+            ])),
+            expr: ast::Expr::dummy(ast::ExprKind::Tuple(vec![
+                ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
+                ast::Expr::dummy(ast::ExprKind::Integer("2".to_string())),
+            ])),
         };
 
-        let _ = infer_expr(ast::Expr::Let {
+        let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![b],
-            body: Box::new(ast::Expr::Var("x".to_string())),
-        })
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
+        }))
         .unwrap_err();
     }
 
     #[test]
     fn infer_let_list_pattern() {
         let b = ast::Binding {
-            pat: ast::Pattern::List(vec![
-                ast::Pattern::Var("x".to_string()),
-                ast::Pattern::Var("y".to_string()),
-            ]),
-            expr: ast::Expr::List(vec![
-                ast::Expr::Integer("1".to_string()),
-                ast::Expr::Integer("2".to_string()),
-            ]),
+            pat: ast::Pattern::dummy(ast::PatternKind::List(vec![
+                ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+                ast::Pattern::dummy(ast::PatternKind::Var("y".to_string())),
+            ])),
+            expr: ast::Expr::dummy(ast::ExprKind::List(vec![
+                ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
+                ast::Expr::dummy(ast::ExprKind::Integer("2".to_string())),
+            ])),
         };
 
-        let ty = infer_expr(ast::Expr::Let {
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![b],
-            body: Box::new(ast::Expr::Var("y".to_string())),
-        })
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("y".to_string()))),
+        }))
         .unwrap();
 
         assert_eq!(ty, Ty::Con("Integer".to_string()));
@@ -5072,20 +5345,29 @@ mod inference_tests {
     #[test]
     fn infer_let_record_pattern() {
         let b = ast::Binding {
-            pat: ast::Pattern::Record(vec![
-                ("b".to_string(), ast::Pattern::Var("y".to_string())),
-                ("a".to_string(), ast::Pattern::Var("x".to_string())),
-            ]),
-            expr: ast::Expr::Record(vec![
-                ("a".to_string(), ast::Expr::Integer("1".to_string())),
-                ("b".to_string(), ast::Expr::Bool(true)),
-            ]),
+            pat: ast::Pattern::dummy(ast::PatternKind::Record(vec![
+                (
+                    "b".to_string(),
+                    ast::Pattern::dummy(ast::PatternKind::Var("y".to_string())),
+                ),
+                (
+                    "a".to_string(),
+                    ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+                ),
+            ])),
+            expr: ast::Expr::dummy(ast::ExprKind::Record(vec![
+                (
+                    "a".to_string(),
+                    ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
+                ),
+                ("b".to_string(), ast::Expr::dummy(ast::ExprKind::Bool(true))),
+            ])),
         };
 
-        let ty = infer_expr(ast::Expr::Let {
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![b],
-            body: Box::new(ast::Expr::Var("y".to_string())),
-        })
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("y".to_string()))),
+        }))
         .unwrap();
 
         assert_eq!(ty, Ty::Con("Bool".to_string()));
@@ -5094,14 +5376,20 @@ mod inference_tests {
     #[test]
     fn infer_record_field_mismatch_is_error() {
         let b = ast::Binding {
-            pat: ast::Pattern::Record(vec![("a".to_string(), ast::Pattern::Wildcard)]),
-            expr: ast::Expr::Record(vec![("b".to_string(), ast::Expr::Bool(true))]),
+            pat: ast::Pattern::dummy(ast::PatternKind::Record(vec![(
+                "a".to_string(),
+                ast::Pattern::dummy(ast::PatternKind::Wildcard),
+            )])),
+            expr: ast::Expr::dummy(ast::ExprKind::Record(vec![(
+                "b".to_string(),
+                ast::Expr::dummy(ast::ExprKind::Bool(true)),
+            )])),
         };
 
-        let _ = infer_expr(ast::Expr::Let {
+        let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![b],
-            body: Box::new(ast::Expr::Unit),
-        })
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Unit)),
+        }))
         .unwrap_err();
     }
 
@@ -5286,75 +5574,77 @@ x = show (Bad (\y -> y))
 
     #[test]
     fn infer_annotation_mismatch_is_error() {
-        let _ = infer_expr(ast::Expr::Annot {
-            expr: Box::new(ast::Expr::Integer("1".to_string())),
+        let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Annot {
+            expr: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("1".to_string()))),
             ty: ast::QualType {
                 preds: vec![],
                 ty: ast::Type::Bool,
             },
-        })
+        }))
         .unwrap_err();
     }
 
     #[test]
     fn infer_annotation_hole_resolves() {
-        let ty = infer_expr(ast::Expr::Annot {
-            expr: Box::new(ast::Expr::Integer("1".to_string())),
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Annot {
+            expr: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("1".to_string()))),
             ty: ast::QualType {
                 preds: vec![],
                 ty: ast::Type::Hole(None),
             },
-        })
+        }))
         .unwrap();
         assert_eq!(ty, Ty::Con("Integer".to_string()));
     }
 
     #[test]
     fn infer_if_expr() {
-        let ty = infer_expr(ast::Expr::If {
-            cond: Box::new(ast::Expr::Bool(true)),
-            then_branch: Box::new(ast::Expr::Integer("1".to_string())),
-            else_branch: Box::new(ast::Expr::Integer("2".to_string())),
-        })
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::If {
+            cond: Box::new(ast::Expr::dummy(ast::ExprKind::Bool(true))),
+            then_branch: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("1".to_string()))),
+            else_branch: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("2".to_string()))),
+        }))
         .unwrap();
         assert_eq!(ty, Ty::Con("Integer".to_string()));
     }
 
     #[test]
     fn infer_if_mismatch_is_error() {
-        let _ = infer_expr(ast::Expr::If {
-            cond: Box::new(ast::Expr::Bool(true)),
-            then_branch: Box::new(ast::Expr::Integer("1".to_string())),
-            else_branch: Box::new(ast::Expr::Bool(false)),
-        })
+        let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::If {
+            cond: Box::new(ast::Expr::dummy(ast::ExprKind::Bool(true))),
+            then_branch: Box::new(ast::Expr::dummy(ast::ExprKind::Integer("1".to_string()))),
+            else_branch: Box::new(ast::Expr::dummy(ast::ExprKind::Bool(false))),
+        }))
         .unwrap_err();
     }
 
     #[test]
     fn infer_case_expr() {
         let x_bind = ast::Binding {
-            pat: ast::Pattern::Var("x".to_string()),
-            expr: ast::Expr::Integer("1".to_string()),
+            pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+            expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
         };
 
-        let ty = infer_expr(ast::Expr::Let {
+        let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![x_bind],
-            body: Box::new(ast::Expr::Case {
-                expr: Box::new(ast::Expr::Var("x".to_string())),
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Case {
+                expr: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
                 arms: vec![
                     ast::CaseArm {
-                        pat: ast::Pattern::Literal(ast::Expr::Integer("0".to_string())),
+                        pat: ast::Pattern::dummy(ast::PatternKind::Literal(ast::Expr::dummy(
+                            ast::ExprKind::Integer("0".to_string()),
+                        ))),
                         guard: None,
-                        body: ast::Expr::Bool(true),
+                        body: ast::Expr::dummy(ast::ExprKind::Bool(true)),
                     },
                     ast::CaseArm {
-                        pat: ast::Pattern::Wildcard,
+                        pat: ast::Pattern::dummy(ast::PatternKind::Wildcard),
                         guard: None,
-                        body: ast::Expr::Bool(false),
+                        body: ast::Expr::dummy(ast::ExprKind::Bool(false)),
                     },
                 ],
-            }),
-        })
+            })),
+        }))
         .unwrap();
 
         assert_eq!(ty, Ty::Con("Bool".to_string()));
@@ -5387,28 +5677,30 @@ x = case Just 1 of
     #[test]
     fn infer_case_arm_mismatch_is_error() {
         let x_bind = ast::Binding {
-            pat: ast::Pattern::Var("x".to_string()),
-            expr: ast::Expr::Integer("1".to_string()),
+            pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
+            expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
         };
 
-        let _ = infer_expr(ast::Expr::Let {
+        let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![x_bind],
-            body: Box::new(ast::Expr::Case {
-                expr: Box::new(ast::Expr::Var("x".to_string())),
+            body: Box::new(ast::Expr::dummy(ast::ExprKind::Case {
+                expr: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
                 arms: vec![
                     ast::CaseArm {
-                        pat: ast::Pattern::Literal(ast::Expr::Integer("0".to_string())),
+                        pat: ast::Pattern::dummy(ast::PatternKind::Literal(ast::Expr::dummy(
+                            ast::ExprKind::Integer("0".to_string()),
+                        ))),
                         guard: None,
-                        body: ast::Expr::Bool(true),
+                        body: ast::Expr::dummy(ast::ExprKind::Bool(true)),
                     },
                     ast::CaseArm {
-                        pat: ast::Pattern::Wildcard,
+                        pat: ast::Pattern::dummy(ast::PatternKind::Wildcard),
                         guard: None,
-                        body: ast::Expr::Integer("1".to_string()),
+                        body: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
                     },
                 ],
-            }),
-        })
+            })),
+        }))
         .unwrap_err();
     }
 }

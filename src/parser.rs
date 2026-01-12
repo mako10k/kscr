@@ -22,6 +22,14 @@ fn line_col(line_starts: &[usize], offset: usize) -> (usize, usize) {
     (line_idx + 1, offset.saturating_sub(line_start) + 1)
 }
 
+fn expr_from(ts: &TokenStream, start: usize, kind: ast::ExprKind) -> ast::Expr {
+    ast::Expr::new(ts.span_from(start), kind)
+}
+
+fn pat_from(ts: &TokenStream, start: usize, kind: ast::PatternKind) -> ast::Pattern {
+    ast::Pattern::new(ts.span_from(start), kind)
+}
+
 fn parse_maybe_qualified_ident(ts: &mut TokenStream) -> Result<String> {
     let mut s = ts.expect_ident()?;
     while matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
@@ -588,9 +596,14 @@ fn desugar_fun(
 ) -> ast::Binding {
     let params: Vec<String> = (0..arity).map(|_| ts.fresh_name("_arg")).collect();
     let scrut = if arity == 1 {
-        ast::Expr::Var(params[0].clone())
+        ast::Expr::dummy(ast::ExprKind::Var(params[0].clone()))
     } else {
-        ast::Expr::Tuple(params.iter().map(|p| ast::Expr::Var(p.clone())).collect())
+        ast::Expr::dummy(ast::ExprKind::Tuple(
+            params
+                .iter()
+                .map(|p| ast::Expr::dummy(ast::ExprKind::Var(p.clone())))
+                .collect(),
+        ))
     };
 
     let arms = clauses
@@ -599,24 +612,24 @@ fn desugar_fun(
             pat: if arity == 1 {
                 pats.into_iter().next().expect("arity=1 clause")
             } else {
-                ast::Pattern::Tuple(pats)
+                ast::Pattern::dummy(ast::PatternKind::Tuple(pats))
             },
             guard,
             body,
         })
         .collect();
 
-    let body = ast::Expr::Case {
+    let body = ast::Expr::dummy(ast::ExprKind::Case {
         expr: Box::new(scrut),
         arms,
-    };
+    });
 
     ast::Binding {
-        pat: ast::Pattern::Var(name),
-        expr: ast::Expr::Lambda {
+        pat: ast::Pattern::dummy(ast::PatternKind::Var(name)),
+        expr: ast::Expr::dummy(ast::ExprKind::Lambda {
             params,
             body: Box::new(body),
-        },
+        }),
     }
 }
 
@@ -674,7 +687,7 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
 
     // Infix operator clause: `a ++ b = body`.
     {
-        let save = ts.i;
+        let save = (ts.i, ts.last_span_end);
         if let Ok(lhs) = parse_cons_pattern(ts) {
             if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
                 || (is_sym_op_token(ts.peek_kind())
@@ -701,19 +714,19 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
                 }
             }
         }
-        ts.i = save;
+        (ts.i, ts.last_span_end) = save;
     }
 
     // Parenthesized operator name clause: `(++) a b = body`.
     if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
-        let save = ts.i;
+        let save = (ts.i, ts.last_span_end);
         ts.bump();
         let op_ok =
             matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind());
-        ts.i = save;
+        (ts.i, ts.last_span_end) = save;
 
         if op_ok {
-            let save = ts.i;
+            let save = (ts.i, ts.last_span_end);
             if let Ok(name) = parse_paren_operator_name(ts) {
                 if !matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
                     let mut args = Vec::new();
@@ -740,13 +753,13 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
                     }
                 }
             }
-            ts.i = save;
+            (ts.i, ts.last_span_end) = save;
         }
     }
 
     // Regular identifier clause: `f x y = body`.
     if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
-        let save = ts.i;
+        let save = (ts.i, ts.last_span_end);
         let name = ts.expect_ident()?;
 
         if !matches!(ts.peek_kind(), Some(TokenKind::Eq))
@@ -776,7 +789,7 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
             }
         }
 
-        ts.i = save;
+        (ts.i, ts.last_span_end) = save;
     }
 
     Ok(ParsedBind::Binding(parse_binding_simple(ts, stop)?))
@@ -815,6 +828,7 @@ fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
 }
 
 fn parse_lambda(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::Backslash)?;
     let mut params = Vec::new();
     while matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
@@ -825,24 +839,30 @@ fn parse_lambda(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     }
     ts.expect(TokenKind::Arrow)?;
     let body = Box::new(parse_expr(ts, stop)?);
-    Ok(ast::Expr::Lambda { params, body })
+    Ok(expr_from(ts, start, ast::ExprKind::Lambda { params, body }))
 }
 
 fn parse_if(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::KwIf)?;
     let cond = Box::new(parse_expr(ts, Stop::Then)?);
     ts.expect(TokenKind::KwThen)?;
     let then_branch = Box::new(parse_expr(ts, Stop::Else)?);
     ts.expect(TokenKind::KwElse)?;
     let else_branch = Box::new(parse_expr(ts, stop)?);
-    Ok(ast::Expr::If {
-        cond,
-        then_branch,
-        else_branch,
-    })
+    Ok(expr_from(
+        ts,
+        start,
+        ast::ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        },
+    ))
 }
 
 fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::KwLet)?;
 
     let bindings = if matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
@@ -898,10 +918,11 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
 
     ts.expect(TokenKind::KwIn)?;
     let body = Box::new(parse_expr(ts, stop)?);
-    Ok(ast::Expr::Let { bindings, body })
+    Ok(expr_from(ts, start, ast::ExprKind::Let { bindings, body }))
 }
 
 fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::KwDo)?;
 
     // do { stmt; stmt; ... }
@@ -917,19 +938,19 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             }
 
             // Bind statement is `pat <- expr`.
-            let save = ts.i;
+            let save = (ts.i, ts.last_span_end);
             if let Ok(pat) = parse_pattern(ts) {
                 if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
                     ts.bump();
                     let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
                     stmts.push(ast::DoStmt::Bind { pat, expr });
                 } else {
-                    ts.i = save;
+                    (ts.i, ts.last_span_end) = save;
                     let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
                     stmts.push(ast::DoStmt::Expr(expr));
                 }
             } else {
-                ts.i = save;
+                (ts.i, ts.last_span_end) = save;
                 let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
                 stmts.push(ast::DoStmt::Expr(expr));
             }
@@ -941,7 +962,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             }
         }
         ts.expect(TokenKind::RBrace)?;
-        return Ok(ast::Expr::Do(stmts));
+        return Ok(expr_from(ts, start, ast::ExprKind::Do(stmts)));
     }
 
     // do\n  ... (indent block)
@@ -964,7 +985,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
         }
 
         // Bind statement is `pat <- expr`.
-        let save = ts.i;
+        let save = (ts.i, ts.last_span_end);
         if let Ok(pat) = parse_pattern(ts) {
             if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
                 ts.bump();
@@ -974,7 +995,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
                 continue;
             }
         }
-        ts.i = save;
+        (ts.i, ts.last_span_end) = save;
 
         let expr = parse_expr(ts, Stop::LineEnd)?;
         stmts.push(ast::DoStmt::Expr(expr));
@@ -984,10 +1005,11 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
     ts.expect(TokenKind::Dedent)?;
     ts.consume_line_end();
 
-    Ok(ast::Expr::Do(stmts))
+    Ok(expr_from(ts, start, ast::ExprKind::Do(stmts)))
 }
 
 fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::KwCase)?;
     let expr = Box::new(parse_expr(ts, Stop::Of)?);
     ts.expect(TokenKind::KwOf)?;
@@ -1015,15 +1037,20 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
         // Disambiguation: prefer `or-pattern` when `| <pattern> ->` is possible;
         // otherwise treat it as a case guard `| <expr> ->`.
         while matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
-            let save = ts.i;
+            let save = (ts.i, ts.last_span_end);
             ts.bump();
             if let Ok(rhs) = parse_cons_pattern(ts) {
                 if matches!(ts.peek_kind(), Some(TokenKind::Arrow)) {
-                    pat = ast::Pattern::Or(Box::new(pat), Box::new(rhs));
+                    let start = pat.span.start;
+                    pat = pat_from(
+                        ts,
+                        start,
+                        ast::PatternKind::Or(Box::new(pat), Box::new(rhs)),
+                    );
                     continue;
                 }
             }
-            ts.i = save;
+            (ts.i, ts.last_span_end) = save;
             break;
         }
 
@@ -1043,18 +1070,23 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
     ts.expect(TokenKind::Dedent)?;
     ts.consume_line_end();
 
-    Ok(ast::Expr::Case { expr, arms })
+    Ok(expr_from(ts, start, ast::ExprKind::Case { expr, arms }))
 }
 
 fn parse_annot(ts: &mut TokenStream, expr: ast::Expr, stop: Stop) -> Result<ast::Expr> {
+    let start = expr.span.start;
     ts.expect(TokenKind::ColonColon)?;
 
     let ty = parse_qual_type(ts, stop)?;
 
-    Ok(ast::Expr::Annot {
-        expr: Box::new(expr),
-        ty,
-    })
+    Ok(expr_from(
+        ts,
+        start,
+        ast::ExprKind::Annot {
+            expr: Box::new(expr),
+            ty,
+        },
+    ))
 }
 
 fn is_pred_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
@@ -1352,6 +1384,7 @@ fn is_record_field_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
 }
 
 fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
+    let start = expr.span.start;
     ts.expect(TokenKind::KwWhere)?;
 
     // where { x = 1; y = 2 }
@@ -1386,10 +1419,14 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
         flush_pending_fun_binding(ts, &mut bindings, pending.take());
 
         ts.expect(TokenKind::RBrace)?;
-        return Ok(ast::Expr::Where {
-            expr: Box::new(expr),
-            bindings,
-        });
+        return Ok(expr_from(
+            ts,
+            start,
+            ast::ExprKind::Where {
+                expr: Box::new(expr),
+                bindings,
+            },
+        ));
     }
 
     if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
@@ -1424,10 +1461,14 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
     ts.expect(TokenKind::Dedent)?;
     ts.consume_line_end();
 
-    Ok(ast::Expr::Where {
-        expr: Box::new(expr),
-        bindings,
-    })
+    Ok(expr_from(
+        ts,
+        start,
+        ast::ExprKind::Where {
+            expr: Box::new(expr),
+            bindings,
+        },
+    ))
 }
 
 fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
@@ -1439,7 +1480,12 @@ fn parse_or_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     while matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
         ts.bump();
         let rhs = parse_cons_pattern(ts)?;
-        pat = ast::Pattern::Or(Box::new(pat), Box::new(rhs));
+        let start = pat.span.start;
+        pat = pat_from(
+            ts,
+            start,
+            ast::PatternKind::Or(Box::new(pat), Box::new(rhs)),
+        );
     }
     Ok(pat)
 }
@@ -1451,7 +1497,12 @@ fn parse_cons_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
         ts.bump();
         let tail = parse_cons_pattern(ts)?;
-        return Ok(ast::Pattern::Cons(Box::new(pat), Box::new(tail)));
+        let start = pat.span.start;
+        return Ok(pat_from(
+            ts,
+            start,
+            ast::PatternKind::Cons(Box::new(pat), Box::new(tail)),
+        ));
     }
 
     Ok(pat)
@@ -1461,27 +1512,35 @@ fn parse_app_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     let mut pat = parse_pattern_atom(ts)?;
 
     // As-pattern: x @ pat
-    if let ast::Pattern::Var(name) = &pat {
+    if let ast::PatternKind::Var(name) = &pat.kind {
         if matches!(ts.peek_kind(), Some(TokenKind::At)) {
             let name = name.clone();
             ts.bump();
             let inner = parse_pattern(ts)?;
-            pat = ast::Pattern::As(name, Box::new(inner));
+            let start = pat.span.start;
+            pat = pat_from(ts, start, ast::PatternKind::As(name, Box::new(inner)));
         }
     }
 
     // Constructor application: Just x y
-    if let ast::Pattern::Constructor { name, mut args } = pat {
-        while ts.can_continue_pattern() {
-            args.push(parse_pattern_atom(ts)?);
+    {
+        let start = pat.span.start;
+        let kind = std::mem::replace(&mut pat.kind, ast::PatternKind::Wildcard);
+        if let ast::PatternKind::Constructor { name, mut args } = kind {
+            while ts.can_continue_pattern() {
+                args.push(parse_pattern_atom(ts)?);
+            }
+            pat = pat_from(ts, start, ast::PatternKind::Constructor { name, args });
+        } else {
+            pat.kind = kind;
         }
-        pat = ast::Pattern::Constructor { name, args };
     }
 
     Ok(pat)
 }
 
 fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     match ts.peek_kind() {
         Some(TokenKind::LParen) => parse_paren_or_tuple_pattern(ts),
         Some(TokenKind::LBracket) => parse_list_pattern(ts),
@@ -1489,7 +1548,7 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
 
         Some(TokenKind::Ident(s)) if s == "_" => {
             ts.bump();
-            Ok(ast::Pattern::Wildcard)
+            Ok(pat_from(ts, start, ast::PatternKind::Wildcard))
         }
         Some(TokenKind::Question) => {
             ts.bump();
@@ -1497,42 +1556,60 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
                 Some(TokenKind::Ident(_)) => Some(ts.expect_ident()?),
                 _ => None,
             };
-            Ok(ast::Pattern::Hole(name))
+            Ok(pat_from(ts, start, ast::PatternKind::Hole(name)))
         }
         Some(TokenKind::Ident(_)) => {
             let s = parse_maybe_qualified_ident(ts)?;
             if is_upper_by_last_segment(&s) {
-                Ok(ast::Pattern::Constructor {
-                    name: s,
-                    args: vec![],
-                })
+                Ok(pat_from(
+                    ts,
+                    start,
+                    ast::PatternKind::Constructor {
+                        name: s,
+                        args: vec![],
+                    },
+                ))
             } else {
-                Ok(ast::Pattern::Var(s))
+                Ok(pat_from(ts, start, ast::PatternKind::Var(s)))
             }
         }
 
         Some(TokenKind::True) => {
             ts.bump();
-            Ok(ast::Pattern::Literal(ast::Expr::Bool(true)))
+            let lit = expr_from(ts, start, ast::ExprKind::Bool(true));
+            Ok(pat_from(ts, start, ast::PatternKind::Literal(lit)))
         }
         Some(TokenKind::False) => {
             ts.bump();
-            Ok(ast::Pattern::Literal(ast::Expr::Bool(false)))
+            let lit = expr_from(ts, start, ast::ExprKind::Bool(false));
+            Ok(pat_from(ts, start, ast::PatternKind::Literal(lit)))
         }
         Some(TokenKind::Integer(_)) => match ts.bump() {
-            Some(TokenKind::Integer(s)) => Ok(ast::Pattern::Literal(ast::Expr::Integer(s))),
+            Some(TokenKind::Integer(s)) => {
+                let lit = expr_from(ts, start, ast::ExprKind::Integer(s));
+                Ok(pat_from(ts, start, ast::PatternKind::Literal(lit)))
+            }
             _ => unreachable!(),
         },
         Some(TokenKind::Float(_)) => match ts.bump() {
-            Some(TokenKind::Float(s)) => Ok(ast::Pattern::Literal(ast::Expr::Float64(s))),
+            Some(TokenKind::Float(s)) => {
+                let lit = expr_from(ts, start, ast::ExprKind::Float64(s));
+                Ok(pat_from(ts, start, ast::PatternKind::Literal(lit)))
+            }
             _ => unreachable!(),
         },
         Some(TokenKind::String(_)) => match ts.bump() {
-            Some(TokenKind::String(s)) => Ok(ast::Pattern::Literal(ast::Expr::String(s))),
+            Some(TokenKind::String(s)) => {
+                let lit = expr_from(ts, start, ast::ExprKind::String(s));
+                Ok(pat_from(ts, start, ast::PatternKind::Literal(lit)))
+            }
             _ => unreachable!(),
         },
         Some(TokenKind::Char(_)) => match ts.bump() {
-            Some(TokenKind::Char(ch)) => Ok(ast::Pattern::Literal(ast::Expr::Char(ch))),
+            Some(TokenKind::Char(ch)) => {
+                let lit = expr_from(ts, start, ast::ExprKind::Char(ch));
+                Ok(pat_from(ts, start, ast::PatternKind::Literal(lit)))
+            }
             _ => unreachable!(),
         },
 
@@ -1541,18 +1618,20 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
 }
 
 fn parse_paren_or_tuple_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::LParen)?;
 
     if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
         ts.bump();
-        return Ok(ast::Pattern::Literal(ast::Expr::Unit));
+        let unit = expr_from(ts, start, ast::ExprKind::Unit);
+        return Ok(pat_from(ts, start, ast::PatternKind::Literal(unit)));
     }
 
     // Operator binder pattern: `(++)`.
     if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind()) {
         let op = parse_operator_name(ts)?;
         ts.expect(TokenKind::RParen)?;
-        return Ok(ast::Pattern::Var(op));
+        return Ok(pat_from(ts, start, ast::PatternKind::Var(op)));
     }
 
     let first = parse_pattern(ts)?;
@@ -1562,7 +1641,11 @@ fn parse_paren_or_tuple_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
         ts.bump();
         let expr = parse_expr(ts, Stop::Pattern)?;
         ts.expect(TokenKind::RParen)?;
-        return Ok(ast::Pattern::View(Box::new(first), Box::new(expr)));
+        return Ok(pat_from(
+            ts,
+            start,
+            ast::PatternKind::View(Box::new(first), Box::new(expr)),
+        ));
     }
 
     if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
@@ -1572,19 +1655,21 @@ fn parse_paren_or_tuple_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
             elems.push(parse_pattern(ts)?);
         }
         ts.expect(TokenKind::RParen)?;
-        Ok(ast::Pattern::Tuple(elems))
+        Ok(pat_from(ts, start, ast::PatternKind::Tuple(elems)))
     } else {
         ts.expect(TokenKind::RParen)?;
-        Ok(first)
+        let ast::Pattern { kind, .. } = first;
+        Ok(pat_from(ts, start, kind))
     }
 }
 
 fn parse_list_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::LBracket)?;
 
     if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
         ts.bump();
-        return Ok(ast::Pattern::List(Vec::new()));
+        return Ok(pat_from(ts, start, ast::PatternKind::List(Vec::new())));
     }
 
     let mut elems = Vec::new();
@@ -1595,15 +1680,16 @@ fn parse_list_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     }
 
     ts.expect(TokenKind::RBracket)?;
-    Ok(ast::Pattern::List(elems))
+    Ok(pat_from(ts, start, ast::PatternKind::List(elems)))
 }
 
 fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::LBrace)?;
 
     if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
         ts.bump();
-        return Ok(ast::Pattern::Record(Vec::new()));
+        return Ok(pat_from(ts, start, ast::PatternKind::Record(Vec::new())));
     }
 
     let mut fields = Vec::new();
@@ -1637,9 +1723,9 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
 
     ts.expect(TokenKind::RBrace)?;
     Ok(if loose {
-        ast::Pattern::RecordLoose(fields, rest)
+        pat_from(ts, start, ast::PatternKind::RecordLoose(fields, rest))
     } else {
-        ast::Pattern::Record(fields)
+        pat_from(ts, start, ast::PatternKind::Record(fields))
     })
 }
 
@@ -1651,7 +1737,7 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
     let mut lhs = parse_application(ts, stop)?;
 
     while ts.can_continue_expr(stop) {
-        let save = ts.i;
+        let save = (ts.i, ts.last_span_end);
         let is_cons = matches!(ts.peek_kind(), Some(TokenKind::Colon));
 
         let (op, fixity) = match ts.peek_kind() {
@@ -1727,7 +1813,7 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
         };
 
         if fixity.prec < min_prec {
-            ts.i = save;
+            (ts.i, ts.last_span_end) = save;
             break;
         }
 
@@ -1741,16 +1827,25 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
         };
 
         let rhs = parse_binops(ts, stop, rhs_min_prec)?;
+        let start = lhs.span.start;
         lhs = if is_cons {
-            ast::Expr::Cons {
-                head: Box::new(lhs),
-                tail: Box::new(rhs),
-            }
+            expr_from(
+                ts,
+                start,
+                ast::ExprKind::Cons {
+                    head: Box::new(lhs),
+                    tail: Box::new(rhs),
+                },
+            )
         } else {
-            ast::Expr::Apply {
-                func: Box::new(ast::Expr::Var(op)),
-                args: vec![lhs, rhs],
-            }
+            expr_from(
+                ts,
+                start,
+                ast::ExprKind::Apply {
+                    func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(op))),
+                    args: vec![lhs, rhs],
+                },
+            )
         };
     }
 
@@ -1792,42 +1887,48 @@ fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         Ok(exprs.remove(0))
     } else {
         let func = Box::new(exprs.remove(0));
-        Ok(ast::Expr::Apply { func, args: exprs })
+        let start = func.span.start;
+        Ok(expr_from(
+            ts,
+            start,
+            ast::ExprKind::Apply { func, args: exprs },
+        ))
     }
 }
 
 fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     match ts.peek_kind() {
         Some(TokenKind::True) => {
             ts.bump();
-            Ok(ast::Expr::Bool(true))
+            Ok(expr_from(ts, start, ast::ExprKind::Bool(true)))
         }
         Some(TokenKind::False) => {
             ts.bump();
-            Ok(ast::Expr::Bool(false))
+            Ok(expr_from(ts, start, ast::ExprKind::Bool(false)))
         }
         Some(TokenKind::Integer(_)) => match ts.bump() {
-            Some(TokenKind::Integer(s)) => Ok(ast::Expr::Integer(s)),
+            Some(TokenKind::Integer(s)) => Ok(expr_from(ts, start, ast::ExprKind::Integer(s))),
             _ => unreachable!(),
         },
         Some(TokenKind::Float(_)) => match ts.bump() {
-            Some(TokenKind::Float(s)) => Ok(ast::Expr::Float64(s)),
+            Some(TokenKind::Float(s)) => Ok(expr_from(ts, start, ast::ExprKind::Float64(s))),
             _ => unreachable!(),
         },
         Some(TokenKind::String(_)) => match ts.bump() {
-            Some(TokenKind::String(s)) => Ok(ast::Expr::String(s)),
+            Some(TokenKind::String(s)) => Ok(expr_from(ts, start, ast::ExprKind::String(s))),
             _ => unreachable!(),
         },
         Some(TokenKind::Char(_)) => match ts.bump() {
-            Some(TokenKind::Char(ch)) => Ok(ast::Expr::Char(ch)),
+            Some(TokenKind::Char(ch)) => Ok(expr_from(ts, start, ast::ExprKind::Char(ch))),
             _ => unreachable!(),
         },
         Some(TokenKind::Ident(_)) => {
             let s = parse_maybe_qualified_ident(ts)?;
             if is_upper_by_last_segment(&s) {
-                Ok(ast::Expr::Ctor(s))
+                Ok(expr_from(ts, start, ast::ExprKind::Ctor(s)))
             } else {
-                Ok(ast::Expr::Var(s))
+                Ok(expr_from(ts, start, ast::ExprKind::Var(s)))
             }
         }
         Some(TokenKind::LBracket) => parse_list_expr(ts),
@@ -1838,11 +1939,12 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
 }
 
 fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::LParen)?;
 
     if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
         ts.bump();
-        return Ok(ast::Expr::Unit);
+        return Ok(expr_from(ts, start, ast::ExprKind::Unit));
     }
 
     // Sections + operator prefixification:
@@ -1850,7 +1952,7 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     //   (op x)    => \a -> a `op` x
     //   (x op)    => \a -> x `op` a
     {
-        let save = ts.i;
+        let save = (ts.i, ts.last_span_end);
         if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
             || matches!(
                 ts.peek_kind(),
@@ -1882,25 +1984,30 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
             if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
                 ts.bump();
-                return Ok(ast::Expr::Var(op));
+                return Ok(expr_from(ts, start, ast::ExprKind::Var(op)));
             }
 
             let rhs = parse_expr(ts, Stop::LineEnd)?;
             ts.expect(TokenKind::RParen)?;
             let param = ts.fresh_name("__section");
-            return Ok(ast::Expr::Lambda {
-                params: vec![param.clone()],
-                body: Box::new(ast::Expr::Apply {
-                    func: Box::new(ast::Expr::Var(op)),
-                    args: vec![ast::Expr::Var(param), rhs],
-                }),
+            let body = ast::Expr::dummy(ast::ExprKind::Apply {
+                func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(op))),
+                args: vec![ast::Expr::dummy(ast::ExprKind::Var(param.clone())), rhs],
             });
+            return Ok(expr_from(
+                ts,
+                start,
+                ast::ExprKind::Lambda {
+                    params: vec![param],
+                    body: Box::new(body),
+                },
+            ));
         }
-        ts.i = save;
+        (ts.i, ts.last_span_end) = save;
     }
 
     {
-        let save = ts.i;
+        let save = (ts.i, ts.last_span_end);
         if let Ok(lhs) = parse_application(ts, Stop::LineEnd) {
             if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
                 || matches!(
@@ -1934,17 +2041,22 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
                 if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
                     ts.bump();
                     let param = ts.fresh_name("__section");
-                    return Ok(ast::Expr::Lambda {
-                        params: vec![param.clone()],
-                        body: Box::new(ast::Expr::Apply {
-                            func: Box::new(ast::Expr::Var(op)),
-                            args: vec![lhs, ast::Expr::Var(param)],
-                        }),
+                    let body = ast::Expr::dummy(ast::ExprKind::Apply {
+                        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(op))),
+                        args: vec![lhs, ast::Expr::dummy(ast::ExprKind::Var(param.clone()))],
                     });
+                    return Ok(expr_from(
+                        ts,
+                        start,
+                        ast::ExprKind::Lambda {
+                            params: vec![param],
+                            body: Box::new(body),
+                        },
+                    ));
                 }
             }
         }
-        ts.i = save;
+        (ts.i, ts.last_span_end) = save;
     }
 
     let first = parse_expr(ts, Stop::LineEnd)?;
@@ -1955,19 +2067,21 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
             elems.push(parse_expr(ts, Stop::LineEnd)?);
         }
         ts.expect(TokenKind::RParen)?;
-        Ok(ast::Expr::Tuple(elems))
+        Ok(expr_from(ts, start, ast::ExprKind::Tuple(elems)))
     } else {
         ts.expect(TokenKind::RParen)?;
-        Ok(first)
+        let ast::Expr { kind, .. } = first;
+        Ok(expr_from(ts, start, kind))
     }
 }
 
 fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::LBracket)?;
 
     if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
         ts.bump();
-        return Ok(ast::Expr::List(Vec::new()));
+        return Ok(expr_from(ts, start, ast::ExprKind::List(Vec::new())));
     }
 
     let first = parse_expr(ts, Stop::Pattern)?;
@@ -1983,19 +2097,19 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
         let mut gens = Vec::new();
         loop {
-            let save = ts.i;
+            let save = (ts.i, ts.last_span_end);
             if let Ok(pat) = parse_pattern(ts) {
                 if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
                     ts.bump();
                     let rhs = parse_expr(ts, Stop::Pattern)?;
                     gens.push(Gen::Bind(pat, rhs));
                 } else {
-                    ts.i = save;
+                    (ts.i, ts.last_span_end) = save;
                     let e = parse_expr(ts, Stop::Pattern)?;
                     gens.push(Gen::Guard(e));
                 }
             } else {
-                ts.i = save;
+                (ts.i, ts.last_span_end) = save;
                 let e = parse_expr(ts, Stop::Pattern)?;
                 gens.push(Gen::Guard(e));
             }
@@ -2009,44 +2123,54 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
         ts.expect(TokenKind::RBracket)?;
 
-        let mut out = ast::Expr::List(vec![first]);
+        let mut out = ast::Expr::dummy(ast::ExprKind::List(vec![first]));
         for g in gens.into_iter().rev() {
-            out = match g {
-                Gen::Guard(cond) => ast::Expr::If {
+            out = ast::Expr::dummy(match g {
+                Gen::Guard(cond) => ast::ExprKind::If {
                     cond: Box::new(cond),
                     then_branch: Box::new(out),
-                    else_branch: Box::new(ast::Expr::List(Vec::new())),
+                    else_branch: Box::new(ast::Expr::dummy(ast::ExprKind::List(Vec::new()))),
                 },
-                Gen::Bind(pat, xs) => match pat {
-                    ast::Pattern::Var(name) => ast::Expr::Apply {
-                        func: Box::new(ast::Expr::Var("concatMap".to_string())),
+                Gen::Bind(pat, xs) => match pat.kind {
+                    ast::PatternKind::Var(name) => ast::ExprKind::Apply {
+                        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
+                            "concatMap".to_string(),
+                        ))),
                         args: vec![
-                            ast::Expr::Lambda {
+                            ast::Expr::dummy(ast::ExprKind::Lambda {
                                 params: vec![name],
                                 body: Box::new(out),
-                            },
+                            }),
                             xs,
                         ],
                     },
-                    ast::Pattern::Wildcard => ast::Expr::Apply {
-                        func: Box::new(ast::Expr::Var("concatMap".to_string())),
+                    ast::PatternKind::Wildcard => ast::ExprKind::Apply {
+                        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
+                            "concatMap".to_string(),
+                        ))),
                         args: vec![
-                            ast::Expr::Lambda {
+                            ast::Expr::dummy(ast::ExprKind::Lambda {
                                 params: vec!["_".to_string()],
                                 body: Box::new(out),
-                            },
+                            }),
                             xs,
                         ],
                     },
-                    other_pat => {
+                    other_kind => {
+                        let other_pat = ast::Pattern {
+                            kind: other_kind,
+                            span: pat.span,
+                        };
                         let tmp = ts.fresh_name("_lc");
-                        ast::Expr::Apply {
-                            func: Box::new(ast::Expr::Var("concatMap".to_string())),
+                        ast::ExprKind::Apply {
+                            func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
+                                "concatMap".to_string(),
+                            ))),
                             args: vec![
-                                ast::Expr::Lambda {
+                                ast::Expr::dummy(ast::ExprKind::Lambda {
                                     params: vec![tmp.clone()],
-                                    body: Box::new(ast::Expr::Case {
-                                        expr: Box::new(ast::Expr::Var(tmp)),
+                                    body: Box::new(ast::Expr::dummy(ast::ExprKind::Case {
+                                        expr: Box::new(ast::Expr::dummy(ast::ExprKind::Var(tmp))),
                                         arms: vec![
                                             ast::CaseArm {
                                                 pat: other_pat,
@@ -2054,22 +2178,27 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
                                                 body: out,
                                             },
                                             ast::CaseArm {
-                                                pat: ast::Pattern::Wildcard,
+                                                pat: ast::Pattern::dummy(
+                                                    ast::PatternKind::Wildcard,
+                                                ),
                                                 guard: None,
-                                                body: ast::Expr::List(Vec::new()),
+                                                body: ast::Expr::dummy(ast::ExprKind::List(
+                                                    Vec::new(),
+                                                )),
                                             },
                                         ],
-                                    }),
-                                },
+                                    })),
+                                }),
                                 xs,
                             ],
                         }
                     }
                 },
-            };
+            });
         }
 
-        return Ok(out);
+        let ast::Expr { kind, .. } = out;
+        return Ok(expr_from(ts, start, kind));
     }
 
     // List literal: [e1, e2, ...]
@@ -2080,15 +2209,16 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     }
 
     ts.expect(TokenKind::RBracket)?;
-    Ok(ast::Expr::List(elems))
+    Ok(expr_from(ts, start, ast::ExprKind::List(elems)))
 }
 
 fn parse_record_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::LBrace)?;
 
     if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
         ts.bump();
-        return Ok(ast::Expr::Record(Vec::new()));
+        return Ok(expr_from(ts, start, ast::ExprKind::Record(Vec::new())));
     }
 
     let mut fields = Vec::new();
@@ -2106,12 +2236,13 @@ fn parse_record_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     }
 
     ts.expect(TokenKind::RBrace)?;
-    Ok(ast::Expr::Record(fields))
+    Ok(expr_from(ts, start, ast::ExprKind::Record(fields)))
 }
 
 struct TokenStream {
     tokens: Vec<lexer::Token>,
     i: usize,
+    last_span_end: usize,
     gensym: u32,
     fixities: HashMap<String, Fixity>,
     line_starts: Vec<usize>,
@@ -2126,9 +2257,21 @@ impl TokenStream {
         Self {
             tokens,
             i: 0,
+            last_span_end: 0,
             gensym: 0,
             fixities,
             line_starts,
+        }
+    }
+
+    fn peek_span(&self) -> Option<lexer::Span> {
+        self.tokens.get(self.i).map(|t| t.span)
+    }
+
+    fn span_from(&self, start: usize) -> lexer::Span {
+        lexer::Span {
+            start,
+            end: self.last_span_end.max(start),
         }
     }
 
@@ -2172,7 +2315,9 @@ impl TokenStream {
     }
 
     fn bump(&mut self) -> Option<TokenKind> {
-        let t = self.tokens.get(self.i)?.kind.clone();
+        let tok = self.tokens.get(self.i)?;
+        self.last_span_end = tok.span.end;
+        let t = tok.kind.clone();
         self.i += 1;
         Some(t)
     }
