@@ -251,7 +251,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                     push_fun_clause_item(ts, &mut items, &mut pending, c)?;
                 }
             },
-            Some(_) => return Err(Error::msg("unexpected token at top-level")),
+            Some(_) => return Err(ts.err_here("unexpected token at top-level")),
             None => break,
         }
 
@@ -420,6 +420,7 @@ fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 }
 
 fn parse_fixity_op(ts: &mut TokenStream) -> Result<String> {
+    let pos = ts.pos_str_here();
     match ts.bump() {
         Some(TokenKind::Ident(s)) => Ok(s),
         Some(TokenKind::Plus) => Ok("+".to_string()),
@@ -436,23 +437,29 @@ fn parse_fixity_op(ts: &mut TokenStream) -> Result<String> {
         Some(TokenKind::Ge) => Ok(">=".to_string()),
         Some(TokenKind::AndAnd) => Ok("&&".to_string()),
         Some(TokenKind::OrOr) => Ok("||".to_string()),
-        _ => Err(Error::msg("expected operator name")),
+        _ => Err(Error::msg(format!("expected operator name at {pos}"))),
     }
 }
 
 fn parse_fixity_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+    let kw_pos = ts.pos_str_here();
     let assoc = match ts.bump() {
         Some(TokenKind::KwInfix) => ast::FixityAssoc::Infix,
         Some(TokenKind::KwInfixl) => ast::FixityAssoc::Infixl,
         Some(TokenKind::KwInfixr) => ast::FixityAssoc::Infixr,
-        _ => return Err(Error::msg("expected fixity keyword")),
+        _ => return Err(Error::msg(format!("expected fixity keyword at {kw_pos}"))),
     };
 
+    let prec_pos = ts.pos_str_here();
     let prec = match ts.bump() {
         Some(TokenKind::Integer(s)) => s
             .parse::<u8>()
-            .map_err(|_| Error::msg("invalid fixity precedence"))?,
-        _ => return Err(Error::msg("expected fixity precedence")),
+            .map_err(|_| Error::msg(format!("invalid fixity precedence at {prec_pos}")))?,
+        _ => {
+            return Err(Error::msg(format!(
+                "expected fixity precedence at {prec_pos}"
+            )))
+        }
     };
 
     let mut ops = Vec::new();
@@ -814,7 +821,7 @@ fn parse_lambda(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         params.push(ts.expect_ident()?);
     }
     if params.is_empty() {
-        return Err(Error::msg("expected lambda parameter"));
+        return Err(ts.err_here("expected lambda parameter"));
     }
     ts.expect(TokenKind::Arrow)?;
     let body = Box::new(parse_expr(ts, stop)?);
@@ -851,7 +858,7 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                 break;
             }
             if ts.is_eof() {
-                return Err(Error::msg("unexpected EOF in let"));
+                return Err(ts.err_here("unexpected EOF in let"));
             }
             match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
                 ParsedBind::Binding(b) => {
@@ -906,7 +913,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
                 break;
             }
             if ts.is_eof() {
-                return Err(Error::msg("unexpected EOF in do"));
+                return Err(ts.err_here("unexpected EOF in do"));
             }
 
             // Bind statement is `pat <- expr`.
@@ -939,7 +946,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
 
     // do\n  ... (indent block)
     if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
-        return Err(Error::msg("expected newline after 'do'"));
+        return Err(ts.err_here("expected newline after 'do'"));
     }
 
     ts.consume_line_end();
@@ -953,7 +960,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             break;
         }
         if ts.is_eof() {
-            return Err(Error::msg("unexpected EOF in do"));
+            return Err(ts.err_here("unexpected EOF in do"));
         }
 
         // Bind statement is `pat <- expr`.
@@ -986,7 +993,7 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
     ts.expect(TokenKind::KwOf)?;
 
     if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
-        return Err(Error::msg("expected newline after 'of'"));
+        return Err(ts.err_here("expected newline after 'of'"));
     }
 
     ts.consume_line_end();
@@ -1000,7 +1007,7 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             break;
         }
         if ts.is_eof() {
-            return Err(Error::msg("unexpected EOF in case"));
+            return Err(ts.err_here("unexpected EOF in case"));
         }
 
         let mut pat = parse_cons_pattern(ts)?;
@@ -1083,12 +1090,12 @@ fn parse_predicate(ts: &mut TokenStream, stop: Stop) -> Result<ast::Predicate> {
         "Lacks" => {
             let label = match ts.bump() {
                 Some(TokenKind::String(s)) => s,
-                _ => return Err(Error::msg("expected string literal after Lacks")),
+                _ => return Err(ts.err_here("expected string literal after Lacks")),
             };
             let row = parse_type_expr(ts, stop, is_pred_end)?;
             Ok(ast::Predicate::Lacks { label, row })
         }
-        _ => Err(Error::msg("unknown constraint predicate")),
+        _ => Err(ts.err_here("unknown constraint predicate")),
     }
 }
 
@@ -1328,7 +1335,7 @@ fn parse_type_atom(
                 None => ast::Type::Record(fields),
             })
         }
-        _ => Err(Error::msg("expected type")),
+        _ => Err(ts.err_here("expected type")),
     }
 }
 
@@ -1386,7 +1393,7 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
     }
 
     if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
-        return Err(Error::msg("expected newline after 'where'"));
+        return Err(ts.err_here("expected newline after 'where'"));
     }
 
     ts.consume_line_end();
@@ -1401,7 +1408,7 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
             break;
         }
         if ts.is_eof() {
-            return Err(Error::msg("unexpected EOF in where"));
+            return Err(ts.err_here("unexpected EOF in where"));
         }
         match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
             ParsedBind::Binding(b) => {
@@ -1529,7 +1536,7 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
             _ => unreachable!(),
         },
 
-        _ => Err(Error::msg("expected pattern")),
+        _ => Err(ts.err_here("expected pattern")),
     }
 }
 
@@ -1615,7 +1622,7 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
             if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
                 let n = ts.expect_ident()?;
                 if n.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    return Err(Error::msg("...rest must be a variable"));
+                    return Err(ts.err_here("...rest must be a variable"));
                 }
                 rest = Some(n);
             }
@@ -1826,7 +1833,7 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
         Some(TokenKind::LBracket) => parse_list_expr(ts),
         Some(TokenKind::LParen) => parse_paren_or_tuple_expr(ts),
         Some(TokenKind::LBrace) => parse_record_expr(ts),
-        _ => Err(Error::msg("expected expression")),
+        _ => Err(ts.err_here("expected expression")),
     }
 }
 
@@ -2139,6 +2146,10 @@ impl TokenStream {
         self.pos_str_at(offset)
     }
 
+    fn err_here(&self, msg: impl std::fmt::Display) -> Error {
+        Error::msg(format!("{msg} at {}", self.pos_str_here()))
+    }
+
     fn fixity(&self, op: &str) -> Fixity {
         self.fixities
             .get(op)
@@ -2167,25 +2178,29 @@ impl TokenStream {
     }
 
     fn expect(&mut self, kind: TokenKind) -> Result<()> {
+        let pos = self.pos_str_here();
         let got = self
             .bump()
-            .ok_or_else(|| Error::msg(format!("unexpected EOF at {}", self.pos_str_here())))?;
+            .ok_or_else(|| Error::msg(format!("unexpected EOF at {pos}, expected {kind:?}")))?;
+
         if got == kind {
             Ok(())
         } else {
             Err(Error::msg(format!(
-                "unexpected token at {}",
-                self.pos_str_here()
+                "unexpected token {got:?} at {pos}, expected {kind:?}"
             )))
         }
     }
 
     fn expect_ident(&mut self) -> Result<String> {
+        let pos = self.pos_str_here();
         match self.bump() {
             Some(TokenKind::Ident(s)) => Ok(s),
-            _ => Err(Error::msg(format!(
-                "expected identifier at {}",
-                self.pos_str_here()
+            Some(got) => Err(Error::msg(format!(
+                "expected identifier at {pos}, got {got:?}"
+            ))),
+            None => Err(Error::msg(format!(
+                "unexpected EOF at {pos}, expected identifier"
             ))),
         }
     }
