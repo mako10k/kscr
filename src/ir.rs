@@ -463,39 +463,60 @@ fn lower_expr(
             else_branch: Box::new(lower_expr(else_branch, fresh, ctor_aliases)?),
         },
         ExprKind::Let { bindings, body } => {
-            // Lower sequential let-bindings.
-            let mut acc = lower_expr(body, fresh, ctor_aliases)?;
-            for b in bindings.iter().rev() {
+            // Order-independent recursive let-bindings.
+            // - Variable binders become direct bindings.
+            // - Pattern binders are lowered as:
+            //     tmp = rhs
+            //     v = case tmp of pat -> v
+            //   for each bound variable v.
+            let mut out_bindings: Vec<(String, IrExpr)> = Vec::new();
+
+            for b in bindings {
                 match &b.pat.kind {
                     PatternKind::Var(name) => {
-                        acc = IrExpr::Let {
-                            bindings: vec![(
-                                name.clone(),
-                                lower_expr(&b.expr, fresh, ctor_aliases)?,
-                            )],
-                            body: Box::new(acc),
-                        };
+                        out_bindings.push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
                     }
                     pat => {
-                        acc = IrExpr::Case {
-                            expr: Box::new(lower_expr(&b.expr, fresh, ctor_aliases)?),
-                            arms: vec![IrCaseArm {
-                                pat: lower_pat(
-                                    &ast::Pattern {
-                                        span: b.pat.span,
-                                        kind: pat.clone(),
-                                    },
-                                    fresh,
-                                    ctor_aliases,
-                                )?,
-                                guard: None,
-                                body: acc,
-                            }],
-                        };
+                        let mut vars = std::collections::BTreeSet::new();
+                        collect_pat_vars(&b.pat, &mut vars);
+                        if vars.is_empty() {
+                            continue;
+                        }
+
+                        let tmp = format!("_ir_let{fresh}");
+                        *fresh += 1;
+                        out_bindings.push((tmp.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
+
+                        let ir_pat = lower_pat(
+                            &ast::Pattern {
+                                span: b.pat.span,
+                                kind: pat.clone(),
+                            },
+                            fresh,
+                            ctor_aliases,
+                        )?;
+
+                        for v in vars {
+                            out_bindings.push((
+                                v.clone(),
+                                IrExpr::Case {
+                                    expr: Box::new(IrExpr::Var(tmp.clone())),
+                                    arms: vec![IrCaseArm {
+                                        pat: ir_pat.clone(),
+                                        guard: None,
+                                        body: IrExpr::Var(v),
+                                    }],
+                                },
+                            ));
+                        }
                     }
                 }
             }
-            acc
+
+            IrExpr::Let {
+                bindings: out_bindings,
+                body: Box::new(lower_expr(body, fresh, ctor_aliases)?),
+            }
         }
         ExprKind::Cons { head, tail } => IrExpr::Cons {
             head: Box::new(lower_expr(head, fresh, ctor_aliases)?),
@@ -549,39 +570,55 @@ fn lower_expr(
             }
         }
         ExprKind::Where { expr, bindings } => {
-            // Lower sequential where-bindings.
-            let mut acc = lower_expr(expr, fresh, ctor_aliases)?;
-            for b in bindings.iter().rev() {
+            // Same semantics as `let`: order-independent recursive bindings in scope for `expr`.
+            let mut out_bindings: Vec<(String, IrExpr)> = Vec::new();
+
+            for b in bindings {
                 match &b.pat.kind {
                     PatternKind::Var(name) => {
-                        acc = IrExpr::Let {
-                            bindings: vec![(
-                                name.clone(),
-                                lower_expr(&b.expr, fresh, ctor_aliases)?,
-                            )],
-                            body: Box::new(acc),
-                        };
+                        out_bindings.push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
                     }
                     pat => {
-                        acc = IrExpr::Case {
-                            expr: Box::new(lower_expr(&b.expr, fresh, ctor_aliases)?),
-                            arms: vec![IrCaseArm {
-                                pat: lower_pat(
-                                    &ast::Pattern {
-                                        span: b.pat.span,
-                                        kind: pat.clone(),
-                                    },
-                                    fresh,
-                                    ctor_aliases,
-                                )?,
-                                guard: None,
-                                body: acc,
-                            }],
-                        };
+                        let mut vars = std::collections::BTreeSet::new();
+                        collect_pat_vars(&b.pat, &mut vars);
+                        if vars.is_empty() {
+                            continue;
+                        }
+
+                        let tmp = format!("_ir_where{fresh}");
+                        *fresh += 1;
+                        out_bindings.push((tmp.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
+
+                        let ir_pat = lower_pat(
+                            &ast::Pattern {
+                                span: b.pat.span,
+                                kind: pat.clone(),
+                            },
+                            fresh,
+                            ctor_aliases,
+                        )?;
+
+                        for v in vars {
+                            out_bindings.push((
+                                v.clone(),
+                                IrExpr::Case {
+                                    expr: Box::new(IrExpr::Var(tmp.clone())),
+                                    arms: vec![IrCaseArm {
+                                        pat: ir_pat.clone(),
+                                        guard: None,
+                                        body: IrExpr::Var(v),
+                                    }],
+                                },
+                            ));
+                        }
                     }
                 }
             }
-            acc
+
+            IrExpr::Let {
+                bindings: out_bindings,
+                body: Box::new(lower_expr(expr, fresh, ctor_aliases)?),
+            }
         }
     })
 }
@@ -1035,14 +1072,27 @@ fn eval_expr(
             }
         }
         IrExpr::Let { bindings, body } => {
+            // Recursive, order-independent let-bindings.
+            // Allocate thunks first so each RHS sees the full environment.
             let mut env2 = env.clone();
+            let mut thunks: Vec<(std::rc::Rc<std::cell::RefCell<ThunkState>>, IrExpr)> = Vec::new();
+
             for (name, e) in bindings {
                 let t = std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
-                    expr: e.clone(),
-                    env: env2.clone(),
+                    expr: IrExpr::Unit,
+                    env: std::collections::HashMap::new(),
                 }));
-                env2.insert(name.clone(), Value::Thunk(t));
+                env2.insert(name.clone(), Value::Thunk(t.clone()));
+                thunks.push((t, e.clone()));
             }
+
+            for (t, e) in thunks {
+                *t.borrow_mut() = ThunkState::Unevaluated {
+                    expr: e,
+                    env: env2.clone(),
+                };
+            }
+
             eval_expr(g, &env2, body)?
         }
         IrExpr::Cons { head, tail } => {

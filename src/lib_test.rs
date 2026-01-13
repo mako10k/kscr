@@ -1704,7 +1704,7 @@ fn ir_lowering_pattern_let() {
     let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
         panic!("expected single binding");
     };
-    assert!(matches!(expr, crate::ir::IrExpr::Case { .. }));
+    assert!(matches!(expr, crate::ir::IrExpr::Let { .. }));
 }
 
 #[test]
@@ -1716,7 +1716,7 @@ fn ir_lowering_pattern_where() {
     let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
         panic!("expected single binding");
     };
-    assert!(matches!(expr, crate::ir::IrExpr::Case { .. }));
+    assert!(matches!(expr, crate::ir::IrExpr::Let { .. }));
 }
 
 #[test]

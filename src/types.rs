@@ -2846,6 +2846,176 @@ fn infer_expr_in(
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
     use ast::ExprKind;
 
+    fn infer_local_letrec_bindings(
+        cx: &mut InferCtx,
+        data_env: &DataEnv,
+        base_env: &TypeEnv,
+        bindings: Vec<ast::Binding>,
+        ctx_prefix: &str,
+    ) -> Result<(Subst, TypeEnv)> {
+        // Constraints produced while typechecking local bindings are captured in their
+        // generalized schemes. They should not leak to the surrounding expression.
+        let mut s = Subst::new();
+        let mut env_global = base_env.clone();
+
+        let n = bindings.len();
+        if n == 0 {
+            return Ok((s, env_global));
+        }
+
+        let mut ctx_names: Vec<String> = Vec::with_capacity(n);
+        let mut defined_names: Vec<HashSet<String>> = Vec::with_capacity(n);
+        for b in &bindings {
+            let ctx_name = match &b.pat.kind {
+                ast::PatternKind::Var(name) => name.clone(),
+                _ => "<pattern>".to_string(),
+            };
+            ctx_names.push(ctx_name);
+            let mut names = HashSet::new();
+            pat_defined_names(&b.pat, &mut names);
+            defined_names.push(names);
+        }
+
+        let mut name_to_binding: HashMap<String, usize> = HashMap::new();
+        for (i, names) in defined_names.iter().enumerate() {
+            for name in names {
+                name_to_binding.insert(name.clone(), i);
+            }
+        }
+
+        let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for i in 0..n {
+            let mut deps = HashSet::new();
+            let empty: HashSet<String> = HashSet::new();
+            collect_deps_in_expr(&bindings[i].expr, &name_to_binding, &empty, &mut deps);
+            graph[i] = deps.into_iter().collect();
+        }
+
+        let comps = tarjan_scc(&graph);
+        let mut node_to_comp = vec![0usize; n];
+        for (ci, comp) in comps.iter().enumerate() {
+            for &v in comp {
+                node_to_comp[v] = ci;
+            }
+        }
+
+        // Component graph: dependency -> dependent.
+        let comp_n = comps.len();
+        let mut comp_edges: Vec<HashSet<usize>> = vec![HashSet::new(); comp_n];
+        let mut indeg = vec![0usize; comp_n];
+        for u in 0..n {
+            let cu = node_to_comp[u];
+            for &v in &graph[u] {
+                let cv = node_to_comp[v];
+                if cu == cv {
+                    continue;
+                }
+                if comp_edges[cv].insert(cu) {
+                    indeg[cu] += 1;
+                }
+            }
+        }
+
+        let mut queue: std::collections::VecDeque<usize> = indeg
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &d)| if d == 0 { Some(i) } else { None })
+            .collect();
+        let mut comp_order = Vec::with_capacity(comp_n);
+        while let Some(c) = queue.pop_front() {
+            comp_order.push(c);
+            for &to in comp_edges[c].iter() {
+                indeg[to] -= 1;
+                if indeg[to] == 0 {
+                    queue.push_back(to);
+                }
+            }
+        }
+        if comp_order.len() != comp_n {
+            return Err(Error::msg("internal error: cyclic component graph"));
+        }
+
+        type BindingInfer = (Vec<(String, Ty)>, Vec<Constraint>);
+
+        for ci in comp_order {
+            let comp = &comps[ci];
+
+            // Placeholders for all names in this SCC (monomorphic during inference).
+            let mut placeholders: HashMap<String, Ty> = HashMap::new();
+            let mut env_scc = env_global.clone();
+            for &bi in comp {
+                for name in &defined_names[bi] {
+                    let tv = cx.fresh();
+                    placeholders.insert(name.clone(), tv.clone());
+                    env_scc.insert(name.clone(), Scheme::mono(tv));
+                }
+            }
+
+            let mut per_bind: Vec<BindingInfer> = Vec::new();
+            for &bi in comp {
+                let b = bindings[bi].clone();
+                let ctx_name = &ctx_names[bi];
+
+                let mut binds = Vec::new();
+                let mut seen = HashSet::new();
+                let mut cs_pat = Vec::new();
+                let pat_ty = infer_pat_in(
+                    cx,
+                    data_env,
+                    &mut s,
+                    &env_scc,
+                    &b.pat,
+                    &mut binds,
+                    &mut seen,
+                    &mut cs_pat,
+                )
+                .map_err(|e| Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}")))?;
+
+                let env_in = apply_env(&s, &env_scc);
+                let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cx, data_env, &env_in, b.expr)
+                    .map_err(|e| Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}")))?;
+                s = compose(&s_rhs, &s);
+
+                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
+                    .map_err(|e| Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}")))?;
+                s = compose(&s_pat, &s);
+
+                // Connect binder types to their placeholders so recursive references unify.
+                for (name, t) in &binds {
+                    if let Some(ph) = placeholders.get(name).cloned() {
+                        let su = unify(apply(&s, t.clone()), apply(&s, ph))
+                            .map_err(|e| Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}")))?;
+                        s = compose(&su, &s);
+                    }
+                }
+
+                let mut cs = cs_rhs;
+                cs.extend(cs_pat);
+                per_bind.push((binds, cs));
+            }
+
+            let env_gen_base = apply_env(&s, &env_global);
+            let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
+            for (binds, cs) in per_bind {
+                for (name, t) in binds {
+                    let cs = simplify_constraints(
+                        data_env,
+                        &ClassEnv::default(),
+                        apply_constraints(&s, cs.clone()),
+                    )?;
+                    let scheme = generalize_qual(&env_gen_base, cs, apply(&s, t));
+                    new_schemes.push((name, scheme));
+                }
+            }
+
+            for (name, scheme) in new_schemes {
+                env_global.insert(name, scheme);
+            }
+        }
+
+        Ok((s, env_global))
+    }
+
     match expr.kind {
         ExprKind::Unit => Ok((Subst::new(), vec![], Ty::Con("Unit".to_string()))),
         ExprKind::Integer(_) => Ok((Subst::new(), vec![], Ty::Con("Integer".to_string()))),
@@ -3075,116 +3245,22 @@ fn infer_expr_in(
         }
 
         ExprKind::Let { bindings, body } => {
-            let mut s = Subst::new();
-            // Constraints produced while typechecking local bindings are captured in their
-            // generalized schemes. They should not leak to the surrounding expression.
-            let mut env2 = env.clone();
-
-            for b in bindings {
-                let ctx_name = match &b.pat.kind {
-                    ast::PatternKind::Var(n) => n.as_str(),
-                    _ => "<pattern>",
-                };
-
-                let mut binds = Vec::new();
-                let mut seen = HashSet::new();
-                let mut cs_pat = Vec::new();
-                let pat_ty = infer_pat_in(
-                    cx,
-                    data_env,
-                    &mut s,
-                    &env2,
-                    &b.pat,
-                    &mut binds,
-                    &mut seen,
-                    &mut cs_pat,
-                )
-                .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
-
-                let env_in = apply_env(&s, &env2);
-                let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cx, data_env, &env_in, b.expr)
-                    .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
-                s = compose(&s_rhs, &s);
-
-                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
-                    .map_err(|e| Error::msg(format!("in let binding {ctx_name}: {e}")))?;
-                s = compose(&s_pat, &s);
-
-                for (name, t) in binds {
-                    let env_gen = apply_env(&s, &env2);
-                    let mut cs = cs_rhs.clone();
-                    cs.extend(cs_pat.clone());
-                    let cs = simplify_constraints(
-                        data_env,
-                        &ClassEnv::default(),
-                        apply_constraints(&s, cs),
-                    )?;
-                    let scheme = generalize_qual(&env_gen, cs, apply(&s, t));
-                    env2.insert(name, scheme);
-                }
-            }
-
-            let env_body = apply_env(&s, &env2);
+            let (s_bind, env2) =
+                infer_local_letrec_bindings(cx, data_env, env, bindings, "let")?;
+            let env_body = apply_env(&s_bind, &env2);
             let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *body)
                 .map_err(|e| Error::msg(format!("in let body: {e}")))?;
-            let s = compose(&s_body, &s);
+            let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
 
         ExprKind::Where { expr, bindings } => {
-            let mut s = Subst::new();
-            // Constraints produced while typechecking local bindings are captured in their
-            // generalized schemes. They should not leak to the surrounding expression.
-            let mut env2 = env.clone();
-
-            for b in bindings {
-                let ctx_name = match &b.pat.kind {
-                    ast::PatternKind::Var(n) => n.as_str(),
-                    _ => "<pattern>",
-                };
-
-                let mut binds = Vec::new();
-                let mut seen = HashSet::new();
-                let mut cs_pat = Vec::new();
-                let pat_ty = infer_pat_in(
-                    cx,
-                    data_env,
-                    &mut s,
-                    &env2,
-                    &b.pat,
-                    &mut binds,
-                    &mut seen,
-                    &mut cs_pat,
-                )
-                .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
-
-                let env_in = apply_env(&s, &env2);
-                let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cx, data_env, &env_in, b.expr)
-                    .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
-                s = compose(&s_rhs, &s);
-
-                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
-                    .map_err(|e| Error::msg(format!("in where binding {ctx_name}: {e}")))?;
-                s = compose(&s_pat, &s);
-
-                for (name, t) in binds {
-                    let env_gen = apply_env(&s, &env2);
-                    let mut cs = cs_rhs.clone();
-                    cs.extend(cs_pat.clone());
-                    let cs = simplify_constraints(
-                        data_env,
-                        &ClassEnv::default(),
-                        apply_constraints(&s, cs),
-                    )?;
-                    let scheme = generalize_qual(&env_gen, cs, apply(&s, t));
-                    env2.insert(name, scheme);
-                }
-            }
-
-            let env_body = apply_env(&s, &env2);
+            let (s_bind, env2) =
+                infer_local_letrec_bindings(cx, data_env, env, bindings, "where")?;
+            let env_body = apply_env(&s_bind, &env2);
             let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *expr)
                 .map_err(|e| Error::msg(format!("in where body: {e}")))?;
-            let s = compose(&s_body, &s);
+            let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
 

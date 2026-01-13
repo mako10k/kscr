@@ -1870,4 +1870,44 @@ mod tests {
         run(args.into_iter()).unwrap();
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn cli_run_allows_forward_reference_in_let_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_allows_forward_reference_in_let_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  main = let\n    a = b + 1\n    b = 2\n  in case a of\n    3 -> IO ()\n    _ -> case (1 / 0) of\n      _ -> IO ()\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_allows_forward_reference_in_where_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_allows_forward_reference_in_where_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  main = case a of\n    3 -> IO ()\n    _ -> case (1 / 0) of\n      _ -> IO ()\n  where\n    a = b + 1\n    b = 2\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
 }
