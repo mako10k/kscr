@@ -7,6 +7,9 @@ On creation it:
 - Ensures `clippy` + `rustfmt` are installed
 - Tries to install optional quality-gate tools (`cargo-geiger`, `cargo-udeps`)
 
+It also includes:
+- GitHub CLI (`gh`) via a devcontainer Feature
+
 Useful commands:
 
 ```bash
@@ -15,4 +18,10 @@ cargo clippy -- -D warnings
 cargo fmt -- --check
 cargo geiger
 cargo +nightly udeps
+```
+
+Verify that GitHub CLI is available:
+
+```bash
+gh --version
 ```
