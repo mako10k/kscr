@@ -1,5 +1,5 @@
 module Prelude where
-  export String, print, readLine, getLine, putStr, putStrLn, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export String, print, readLine, getLine, putStr, putStrLn, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Rational(..), numerator, denominator, toPair, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   import Prelude.Functor
   import Prelude.Applicative
@@ -7,6 +7,10 @@ module Prelude where
   import Prelude.Semigroup
   import Prelude.Monoid
   import Prelude.Group
+  import Prelude.Ring
+  import Prelude.Field
+  import Prelude.Integral
+  import Prelude.Rational
 
   -- Haskell-like alias: String ~ [Char]
   type String = [Char]
@@ -72,6 +76,19 @@ module Prelude where
 
   instance Group Integer where
     invert x = 0 - x
+
+  instance Ring Integer where
+    zero = 0
+    one = 1
+    add a b = a + b
+    mul a b = a * b
+    neg a = 0 - a
+
+  instance Integral Integer where
+    div a b = __divInt a b
+    mod a b = __modInt a b
+    quot a b = __quotInt a b
+    rem a b = __remInt a b
 
   maybe = \d -> \f -> \m -> case m of
     Nothing -> d

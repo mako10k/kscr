@@ -1309,6 +1309,28 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
+    // Integer division primitives (used by stdlib Integral Integer instance).
+    // __quotInt :: Integer -> Integer -> Integer   (truncate toward 0)
+    // __remInt  :: Integer -> Integer -> Integer   (remainder, sign follows dividend)
+    // __divInt  :: Integer -> Integer -> Integer   (floor division)
+    // __modInt  :: Integer -> Integer -> Integer   (modulus, sign follows divisor)
+    for name in ["__quotInt", "__remInt", "__divInt", "__modInt"] {
+        env.insert(
+            name.to_string(),
+            Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("Integer".to_string())),
+                        Box::new(Ty::Con("Integer".to_string())),
+                    )),
+                ),
+            },
+        );
+    }
+
     // - :: Integer -> Integer -> Integer
     env.insert(
         "-".to_string(),

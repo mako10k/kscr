@@ -693,6 +693,14 @@ pub enum Value {
     BuiltinMul1(Box<Value>),
     BuiltinDiv,
     BuiltinDiv1(Box<Value>),
+    BuiltinQuotInt,
+    BuiltinQuotInt1(Box<Value>),
+    BuiltinRemInt,
+    BuiltinRemInt1(Box<Value>),
+    BuiltinDivInt,
+    BuiltinDivInt1(Box<Value>),
+    BuiltinModInt,
+    BuiltinModInt1(Box<Value>),
     BuiltinEq,
     BuiltinEq1(Box<Value>),
     BuiltinEqInt,
@@ -878,6 +886,19 @@ fn eval_var(
 
     if name == "/" {
         return Ok(Value::BuiltinDiv);
+    }
+
+    if name == "__quotInt" {
+        return Ok(Value::BuiltinQuotInt);
+    }
+    if name == "__remInt" {
+        return Ok(Value::BuiltinRemInt);
+    }
+    if name == "__divInt" {
+        return Ok(Value::BuiltinDivInt);
+    }
+    if name == "__modInt" {
+        return Ok(Value::BuiltinModInt);
     }
 
     if name == "==" {
@@ -1340,6 +1361,15 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinMul1(a) => mul_int(g, *a, arg),
         Value::BuiltinDiv => Ok(Value::BuiltinDiv1(Box::new(arg))),
         Value::BuiltinDiv1(a) => div_int(g, *a, arg),
+
+        Value::BuiltinQuotInt => Ok(Value::BuiltinQuotInt1(Box::new(arg))),
+        Value::BuiltinQuotInt1(a) => quot_int(g, *a, arg),
+        Value::BuiltinRemInt => Ok(Value::BuiltinRemInt1(Box::new(arg))),
+        Value::BuiltinRemInt1(a) => rem_int(g, *a, arg),
+        Value::BuiltinDivInt => Ok(Value::BuiltinDivInt1(Box::new(arg))),
+        Value::BuiltinDivInt1(a) => div_floor_int(g, *a, arg),
+        Value::BuiltinModInt => Ok(Value::BuiltinModInt1(Box::new(arg))),
+        Value::BuiltinModInt1(a) => mod_floor_int(g, *a, arg),
         Value::BuiltinEq => Ok(Value::BuiltinEq1(Box::new(arg))),
         Value::BuiltinEq1(a) => eq_value(g, *a, arg),
         Value::BuiltinEqInt => Ok(Value::BuiltinEqInt1(Box::new(arg))),
@@ -1469,6 +1499,96 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         | Value::Thunk(_)
         | Value::IoAction(_) => Err(Error::msg("attempted to apply a non-function")),
     }
+}
+
+fn quot_rem_trunc(a: Integer, b: Integer) -> (Integer, Integer) {
+    // Truncating division (toward zero), compatible with current Integer `/`.
+    // Remainder computed as: r = a - (a / b) * b.
+    let q = a.clone() / b.clone();
+    let r = a - (q.clone() * b);
+    (q, r)
+}
+
+#[allow(clippy::assign_op_pattern)]
+fn div_mod_floor(a: Integer, b: Integer) -> (Integer, Integer) {
+    // Floor division / modulus (Haskell-like `div`/`mod`).
+    // If signs differ and remainder is non-zero, adjust:
+    //   q' = q - 1
+    //   r' = r + b
+    let (mut q, mut r) = quot_rem_trunc(a.clone(), b.clone());
+    if !int_is_zero(&r) {
+        let zero = int_from_i64(0);
+        let signs_differ = (a < zero) != (b < int_from_i64(0));
+        if signs_differ {
+            q = q - int_from_i64(1);
+            r = r + b;
+        }
+    }
+    (q, r)
+}
+
+fn quot_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("__quotInt expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("__quotInt expects Integer"));
+    };
+    if int_is_zero(&b) {
+        return Err(Error::msg("division by zero"));
+    }
+    let (q, _) = quot_rem_trunc(a, b);
+    Ok(Value::Integer(q))
+}
+
+fn rem_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("__remInt expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("__remInt expects Integer"));
+    };
+    if int_is_zero(&b) {
+        return Err(Error::msg("division by zero"));
+    }
+    let (_, r) = quot_rem_trunc(a, b);
+    Ok(Value::Integer(r))
+}
+
+fn div_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("__divInt expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("__divInt expects Integer"));
+    };
+    if int_is_zero(&b) {
+        return Err(Error::msg("division by zero"));
+    }
+    let (q, _) = div_mod_floor(a, b);
+    Ok(Value::Integer(q))
+}
+
+fn mod_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
+    let a = force_value(g, a)?;
+    let b = force_value(g, b)?;
+    let Value::Integer(a) = a else {
+        return Err(Error::msg("__modInt expects Integer"));
+    };
+    let Value::Integer(b) = b else {
+        return Err(Error::msg("__modInt expects Integer"));
+    };
+    if int_is_zero(&b) {
+        return Err(Error::msg("division by zero"));
+    }
+    let (_, r) = div_mod_floor(a, b);
+    Ok(Value::Integer(r))
 }
 
 fn record_get(g: &Globals, dict: Value, label: Value) -> Result<Value> {
