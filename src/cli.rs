@@ -261,14 +261,14 @@ impl ReplState {
         self.loaded_modules.join(", ")
     }
 
-    fn write_src(&self, expr: Option<&str>, include_main: bool) -> Result<()> {
-        let src = build_repl_module_src(&self.defs, &self.loaded_modules, expr, include_main);
+    fn write_src(&self, expr: Option<&str>, main_src: Option<&str>) -> Result<()> {
+        let src = build_repl_module_src(&self.defs, &self.loaded_modules, expr, main_src);
         std::fs::write(&self.repl_path, src)?;
         Ok(())
     }
 
     fn type_of(&self, expr: &str) -> Result<String> {
-        self.write_src(Some(expr), false)?;
+        self.write_src(Some(expr), None)?;
         let tm = types::typecheck_file(&self.repl_path)?;
         let Some(s) = tm.inferred.get("it") else {
             return Err(crate::error::Error::msg("internal: missing it"));
@@ -277,7 +277,44 @@ impl ReplState {
     }
 
     fn eval_expr(&self, expr: &str) -> Result<()> {
-        self.write_src(Some(expr), true)?;
+        fn io_result_ty(ty: &types::Ty) -> Option<&types::Ty> {
+            match ty {
+                types::Ty::App { head, args }
+                    if matches!(head.as_ref(), types::Ty::Con(name) if name == "IO")
+                        && args.len() == 1 =>
+                {
+                    Some(&args[0])
+                }
+                _ => None,
+            }
+        }
+
+        fn is_unit_ty(ty: &types::Ty) -> bool {
+            matches!(ty, types::Ty::Con(name) if name == "Unit")
+        }
+
+        // Phase 1: typecheck `it` without forcing a printing strategy.
+        self.write_src(Some(expr), None)?;
+        let tm = types::typecheck_file(&self.repl_path)?;
+        let Some(it) = tm.inferred.get("it") else {
+            return Err(crate::error::Error::msg("internal: missing it"));
+        };
+
+        // Phase 2: decide how to run/print.
+        // - Pure `a`: print `it` (requires `Show a`)
+        // - `IO Unit`: run `it` (no `Show (IO Unit)`)
+        // - `IO a`: run then print result (requires `Show a`)
+        let main_src = match io_result_ty(&it.ty) {
+            Some(res) if is_unit_ty(res) => "main = it".to_string(),
+            Some(_) => {
+                // Use braces to avoid indentation/layout sensitivity.
+                "main = do { x <- it; stdoutWrite (toString x ++ \"\\n\") }".to_string()
+            }
+            None => "main = stdoutWrite (toString it ++ \"\\n\")".to_string(),
+        };
+
+        // Phase 3: typecheck + run `main`.
+        self.write_src(Some(expr), Some(&main_src))?;
         let tm = types::typecheck_file(&self.repl_path)?;
         let irm = ir::lower_to_ir(&tm.module)?;
         let _ = ir::run_main(&irm)?;
@@ -452,7 +489,7 @@ fn build_repl_module_src(
     defs: &[String],
     loaded_modules: &[String],
     expr: Option<&str>,
-    include_main: bool,
+    main_src: Option<&str>,
 ) -> String {
     let mut out = String::new();
 
@@ -475,8 +512,9 @@ fn build_repl_module_src(
         out.push('\n');
     }
 
-    if include_main {
-        out.push_str("main = stdoutWrite (toString it ++ \"\\n\")\n");
+    if let Some(main_src) = main_src {
+        out.push_str(main_src);
+        out.push('\n');
     }
 
     out
@@ -517,6 +555,12 @@ mod repl_tests {
         let defs = ["x = 41"];
         let ty = repl_eval_for_test(&defs, "x + 1").unwrap();
         assert!(ty.contains("Integer"));
+    }
+
+    #[test]
+    fn repl_io_unit_expr_runs_without_show_io_constraint() {
+        let ty = repl_eval_for_test(&[], "stdoutWrite \"1234\\n\"").unwrap();
+        assert!(ty.contains("IO Unit"));
     }
 
     #[test]
