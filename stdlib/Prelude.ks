@@ -1,5 +1,5 @@
 module Prelude where
-  export print, readLine, getLine, putStr, putStrLn, (>>=), (>>), return, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export print, readLine, getLine, putStr, putStrLn, error, (>>=), (>>), return, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   import Prelude.Monad
 

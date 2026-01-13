@@ -721,6 +721,56 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_import_data_maybe_stdlib_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_import_data_maybe_stdlib_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("Main.ks");
+        std::fs::write(
+            &path,
+            "module Main where\n  import Prelude\n  import qualified Data.Maybe as M\n  main = do\n    print (show (M.fromMaybe 0 (Just 1)))\n    print (show (M.fromMaybe 0 Nothing))\n    print (show (M.isJust (Just 1)))\n    print (show (M.isNothing Nothing))\n    putStrLn \"maybe ok\"\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cli_run_import_data_either_stdlib_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_import_data_either_stdlib_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("Main.ks");
+        std::fs::write(
+            &path,
+            "module Main where\n  import Prelude\n  import qualified Data.Either as E\n  f = E.either (\\x -> x + 1) (\\y -> y + 2)\n  main = do\n    print (show (f (Left 1)))\n    print (show (f (Right 2)))\n    print (show (E.fromLeft 0 (Left 9)))\n    print (show (E.fromRight 0 (Right 9)))\n    putStrLn \"either ok\"\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cli_run_exceptions_smoke() {
         let path = std::env::temp_dir().join(format!(
             "kscr_cli_run_exceptions_smoke_{}.ks",
