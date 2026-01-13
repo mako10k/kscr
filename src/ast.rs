@@ -26,6 +26,8 @@ pub enum Item {
 pub struct ClassDecl {
     pub name: String,
     pub param: String,
+    /// Superclass constraints (Haskell-style): `class (C a, D a) => E a where ...`.
+    pub supers: Vec<Predicate>,
     pub methods: Vec<ClassMethodSig>,
     /// Default method implementations inside the class.
     ///
@@ -262,6 +264,8 @@ pub enum Predicate {
     ShowRow(Type),
     Eq(Type),
     EqRow(Type),
+    /// User-defined typeclass constraint: `C t`.
+    Class { class: String, ty: Type },
     Lacks { label: String, row: Type },
 }
 

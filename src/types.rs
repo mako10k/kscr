@@ -1671,6 +1671,13 @@ fn collect_ctor_env_with_class_env(
                     let t = lower_surface_type(cx, t, &mut holes);
                     cs.push(Constraint::EqRow(t));
                 }
+                ast::Predicate::Class { class, ty } => {
+                    let t = lower_surface_type(cx, ty, &mut holes);
+                    cs.push(Constraint::Class {
+                        class: class.clone(),
+                        ty: t,
+                    });
+                }
                 ast::Predicate::Lacks { label, row } => {
                     let row = lower_surface_type(cx, row, &mut holes);
                     cs.push(Constraint::Lacks {
@@ -1731,6 +1738,8 @@ type DataEnv = HashMap<String, ast::DataDecl>;
 struct ClassEnv {
     /// class name -> parameter name (e.g. `class C a where` => (C, a))
     class_params: HashMap<String, String>,
+    /// class name -> superclass predicates (Haskell-style)
+    class_supers: HashMap<String, Vec<ast::Predicate>>,
     /// method name -> list of classes that define it
     method_classes: HashMap<String, Vec<String>>,
     /// (class, method) -> declared method type
@@ -1826,6 +1835,7 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
             return Err(Error::msg("duplicate class"));
         }
         env.class_params.insert(c.name.clone(), c.param.clone());
+        env.class_supers.insert(c.name.clone(), c.supers.clone());
 
         for m in &c.methods {
             class_method_names
@@ -1866,6 +1876,86 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
                 classes.join(", ")
             )));
         }
+    }
+
+    // Validate superclass predicates (minimal, Haskell-aligned):
+    // - super predicates must be of the form `P a` where `a` is the class parameter
+    // - user-defined superclasses must refer to known classes
+    for (class, supers) in &env.class_supers {
+        let Some(param) = env.class_params.get(class) else {
+            return Err(Error::msg("internal: missing class param"));
+        };
+
+        for p in supers {
+            match p {
+                ast::Predicate::Show(ast::Type::Var(v))
+                | ast::Predicate::ShowRow(ast::Type::Var(v))
+                | ast::Predicate::Eq(ast::Type::Var(v))
+                | ast::Predicate::EqRow(ast::Type::Var(v))
+                    if v == param => {}
+
+                ast::Predicate::Class { class: sup, ty: ast::Type::Var(v) } if v == param => {
+                    if !env.class_params.contains_key(sup) {
+                        return Err(Error::msg(format!(
+                            "unknown superclass `{sup}` in class `{class}`"
+                        )));
+                    }
+                }
+
+                _ => {
+                    return Err(Error::msg(format!(
+                        "MVP: superclass constraints must be of the form `C {param}`"
+                    )))
+                }
+            }
+        }
+    }
+
+    // Detect cycles in the user-defined superclass graph.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Mark {
+        Temp,
+        Perm,
+    }
+
+    fn dfs_cycle(
+        env: &ClassEnv,
+        node: &str,
+        marks: &mut HashMap<String, Mark>,
+        stack: &mut Vec<String>,
+    ) -> Result<()> {
+        if matches!(marks.get(node), Some(Mark::Perm)) {
+            return Ok(());
+        }
+        if matches!(marks.get(node), Some(Mark::Temp)) {
+            // Found a cycle; report a readable path.
+            stack.push(node.to_string());
+            return Err(Error::msg(format!(
+                "cyclic superclass constraints: {}",
+                stack.join(" => ")
+            )));
+        }
+
+        marks.insert(node.to_string(), Mark::Temp);
+        stack.push(node.to_string());
+
+        if let Some(supers) = env.class_supers.get(node) {
+            for p in supers {
+                if let ast::Predicate::Class { class: sup, .. } = p {
+                    dfs_cycle(env, sup, marks, stack)?;
+                }
+            }
+        }
+
+        stack.pop();
+        marks.insert(node.to_string(), Mark::Perm);
+        Ok(())
+    }
+
+    let mut marks: HashMap<String, Mark> = HashMap::new();
+    for c in env.class_params.keys() {
+        let mut stack: Vec<String> = Vec::new();
+        dfs_cycle(&env, c, &mut marks, &mut stack)?;
     }
 
     // Desugar instances into bindings for dictionaries + method implementations.
@@ -2329,16 +2419,47 @@ fn simplify_constraints(
     class_env: &ClassEnv,
     cs: Vec<Constraint>,
 ) -> Result<Vec<Constraint>> {
+    use std::collections::VecDeque;
+
+    fn lower_super_predicate(p: &ast::Predicate, ty: &Ty) -> Constraint {
+        match p {
+            ast::Predicate::Show(_) => Constraint::Show(ty.clone()),
+            ast::Predicate::ShowRow(_) => Constraint::ShowRow(ty.clone()),
+            ast::Predicate::Eq(_) => Constraint::Eq(ty.clone()),
+            ast::Predicate::EqRow(_) => Constraint::EqRow(ty.clone()),
+            ast::Predicate::Class { class, .. } => Constraint::Class {
+                class: class.clone(),
+                ty: ty.clone(),
+            },
+            ast::Predicate::Lacks { .. } => unreachable!(
+                "internal error: Lacks predicate is not allowed in superclass constraints"
+            ),
+        }
+    }
+
     let mut out = Vec::new();
     let mut in_progress = Vec::new();
+    let mut work: VecDeque<Constraint> = cs.into_iter().collect();
+    let mut expanded: HashMap<String, ()> = HashMap::new();
 
-    for c in cs {
+    while let Some(c) = work.pop_front() {
         match c {
             Constraint::Show(t) => out.extend(entails_show(data_env, &t, &mut in_progress)?),
             Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, &mut in_progress)?),
             Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, &mut in_progress)?),
             Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, &mut in_progress)?),
+            Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
             Constraint::Class { class, ty } => {
+                // Haskell-aligned superclass closure: `C t` entails `super(C) t`.
+                let expand_key = format!("{class}:{ty:?}");
+                if expanded.insert(expand_key, ()).is_none() {
+                    if let Some(supers) = class_env.class_supers.get(&class) {
+                        for p in supers {
+                            work.push_back(lower_super_predicate(p, &ty));
+                        }
+                    }
+                }
+
                 // If the constraint is polymorphic, keep it for dictionary passing.
                 // If it is ground, resolve it by requiring a known instance.
                 if !ftv_ty(&ty).is_empty() {
@@ -2352,7 +2473,6 @@ fn simplify_constraints(
                     }
                 }
             }
-            Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
         }
     }
 
@@ -2472,6 +2592,13 @@ fn infer_expr_in(
                         cs1.push(Constraint::Lacks {
                             label: label.clone(),
                             row,
+                        });
+                    }
+                    ast::Predicate::Class { class, ty } => {
+                        let ty = lower_surface_type(cx, ty, &mut holes);
+                        cs1.push(Constraint::Class {
+                            class: class.clone(),
+                            ty,
                         });
                     }
                 }
@@ -3250,6 +3377,10 @@ fn desugar_qualified_predicate(
         ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(desugar_qualified_type(t, allowed)?),
         ast::Predicate::Eq(t) => ast::Predicate::Eq(desugar_qualified_type(t, allowed)?),
         ast::Predicate::EqRow(t) => ast::Predicate::EqRow(desugar_qualified_type(t, allowed)?),
+        ast::Predicate::Class { class, ty } => ast::Predicate::Class {
+            class,
+            ty: desugar_qualified_type(ty, allowed)?,
+        },
         ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
             label,
             row: desugar_qualified_type(row, allowed)?,
@@ -4054,6 +4185,10 @@ fn qualify_predicate(
         ast::Predicate::ShowRow(t) => ast::Predicate::ShowRow(qualify_type(t, type_map)?),
         ast::Predicate::Eq(t) => ast::Predicate::Eq(qualify_type(t, type_map)?),
         ast::Predicate::EqRow(t) => ast::Predicate::EqRow(qualify_type(t, type_map)?),
+        ast::Predicate::Class { class, ty } => ast::Predicate::Class {
+            class,
+            ty: qualify_type(ty, type_map)?,
+        },
         ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
             label,
             row: qualify_type(row, type_map)?,
@@ -6256,6 +6391,34 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
         ast::Item::ClassDecl(c) => Ok(ast::Item::ClassDecl(ast::ClassDecl {
             name: c.name,
             param: c.param,
+            supers: c
+                .supers
+                .into_iter()
+                .map(|p| {
+                    Ok(match p {
+                        ast::Predicate::Show(t) => {
+                            ast::Predicate::Show(expand_type(t, aliases, &mut Vec::new())?)
+                        }
+                        ast::Predicate::ShowRow(t) => {
+                            ast::Predicate::ShowRow(expand_type(t, aliases, &mut Vec::new())?)
+                        }
+                        ast::Predicate::Eq(t) => {
+                            ast::Predicate::Eq(expand_type(t, aliases, &mut Vec::new())?)
+                        }
+                        ast::Predicate::EqRow(t) => {
+                            ast::Predicate::EqRow(expand_type(t, aliases, &mut Vec::new())?)
+                        }
+                        ast::Predicate::Class { class, ty } => ast::Predicate::Class {
+                            class,
+                            ty: expand_type(ty, aliases, &mut Vec::new())?,
+                        },
+                        ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
+                            label,
+                            row: expand_type(row, aliases, &mut Vec::new())?,
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
             methods: c
                 .methods
                 .into_iter()
@@ -6283,6 +6446,16 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                                         ast::Predicate::EqRow(t) => ast::Predicate::EqRow(
                                             expand_type(t, aliases, &mut Vec::new())?,
                                         ),
+                                        ast::Predicate::Class { class, ty } => {
+                                            ast::Predicate::Class {
+                                                class,
+                                                ty: expand_type(
+                                                    ty,
+                                                    aliases,
+                                                    &mut Vec::new(),
+                                                )?,
+                                            }
+                                        }
                                         ast::Predicate::Lacks { label, row } => {
                                             ast::Predicate::Lacks {
                                                 label,
@@ -6569,6 +6742,10 @@ fn expand_qual_type(
                 ast::Predicate::EqRow(t) => {
                     ast::Predicate::EqRow(expand_type(t, aliases, &mut stack)?)
                 }
+                ast::Predicate::Class { class, ty } => ast::Predicate::Class {
+                    class,
+                    ty: expand_type(ty, aliases, &mut stack)?,
+                },
                 ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
                     label,
                     row: expand_type(row, aliases, &mut stack)?,
@@ -7247,6 +7424,10 @@ mod inference_tests {
                 ast::Predicate::Lacks { label, row } => cs.push(Constraint::Lacks {
                     label: label.clone(),
                     row: lower_surface_type(&mut cx, row, &mut holes),
+                }),
+                ast::Predicate::Class { class, ty } => cs.push(Constraint::Class {
+                    class: class.clone(),
+                    ty: lower_surface_type(&mut cx, ty, &mut holes),
                 }),
             }
         }

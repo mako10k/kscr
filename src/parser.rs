@@ -372,6 +372,35 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
 
 fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwClass)?;
+
+    // Optional superclass context (Haskell-style):
+    //   class (p1, p2) => C a where
+    //   class p => C a where
+    let mut supers: Vec<ast::Predicate> = Vec::new();
+    if is_class_super_parens(ts) {
+        ts.bump();
+        supers.push(parse_predicate(ts, Stop::LineEnd)?);
+        while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            ts.bump();
+            supers.push(parse_predicate(ts, Stop::LineEnd)?);
+        }
+        ts.expect(TokenKind::RParen)?;
+        ts.expect(TokenKind::FatArrow)?;
+    } else {
+        // Single predicate form, but only if followed by `=>`.
+        let save = ts.i;
+        if let Ok(pred) = parse_predicate(ts, Stop::LineEnd) {
+            if matches!(ts.peek_kind(), Some(TokenKind::FatArrow)) {
+                ts.bump();
+                supers.push(pred);
+            } else {
+                ts.i = save;
+            }
+        } else {
+            ts.i = save;
+        }
+    }
+
     let name = ts.expect_ident()?;
     let param = ts.expect_ident()?;
     ts.expect(TokenKind::KwWhere)?;
@@ -382,6 +411,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         return Ok(ast::Item::ClassDecl(ast::ClassDecl {
             name,
             param,
+            supers,
             methods: Vec::new(),
             default_methods: Vec::new(),
         }));
@@ -487,6 +517,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     Ok(ast::Item::ClassDecl(ast::ClassDecl {
         name,
         param,
+        supers,
         methods,
         default_methods,
     }))
@@ -1349,8 +1380,37 @@ fn parse_predicate(ts: &mut TokenStream, stop: Stop) -> Result<ast::Predicate> {
             let row = parse_type_expr(ts, stop, is_pred_end)?;
             Ok(ast::Predicate::Lacks { label, row })
         }
-        _ => Err(ts.err_here("unknown constraint predicate")),
+        other => Ok(ast::Predicate::Class {
+            class: other.to_string(),
+            ty: parse_type_expr(ts, stop, is_pred_end)?,
+        }),
     }
+}
+
+fn is_class_super_parens(ts: &TokenStream) -> bool {
+    if !matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+        return false;
+    }
+
+    let mut depth: i32 = 0;
+    let mut j = ts.i;
+    while let Some(tok) = ts.tokens.get(j) {
+        match &tok.kind {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return matches!(
+                        ts.tokens.get(j + 1).map(|t| &t.kind),
+                        Some(TokenKind::FatArrow)
+                    );
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    false
 }
 
 fn parse_qual_type(ts: &mut TokenStream, stop: Stop) -> Result<ast::QualType> {
@@ -1609,7 +1669,6 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
     let start = expr.span.start;
     ts.expect(TokenKind::KwWhere)?;
 
-    // where { x = 1; y = 2 }
     if matches!(ts.peek_kind(), Some(TokenKind::LBrace)) {
         ts.bump();
         let mut bindings = Vec::new();

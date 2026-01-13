@@ -49,6 +49,73 @@ instance C Integer where
 }
 
 #[test]
+fn parser_class_superclass_context_parens() {
+    let src = r#"
+class (Eq a) => Ord a where
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let cls = m
+        .items
+        .iter()
+        .find_map(|it| match it {
+            crate::ast::Item::ClassDecl(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected class decl");
+
+    assert_eq!(cls.name, "Ord");
+    assert_eq!(cls.param, "a");
+    assert_eq!(
+        cls.supers,
+        vec![crate::ast::Predicate::Eq(crate::ast::Type::Var("a".to_string()))]
+    );
+}
+
+#[test]
+fn parser_class_superclass_context_single_pred() {
+    let src = r#"
+class Eq a => Ord a where
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let cls = m
+        .items
+        .iter()
+        .find_map(|it| match it {
+            crate::ast::Item::ClassDecl(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected class decl");
+
+    assert_eq!(cls.name, "Ord");
+    assert_eq!(cls.param, "a");
+    assert_eq!(
+        cls.supers,
+        vec![crate::ast::Predicate::Eq(crate::ast::Type::Var("a".to_string()))]
+    );
+}
+
+#[test]
+fn typecheck_rejects_bad_superclass_predicate_shape() {
+    let src = r#"
+class Inc a where
+    inc :: a -> a
+
+class (Inc Integer) => C a where
+    c :: a -> a
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let err = crate::types::typecheck(m).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("superclass") && msg.contains("MVP: superclass constraints"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
 fn parser_binding_patterns() {
     let src = std::fs::read_to_string("tests/parser_binding_patterns.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
