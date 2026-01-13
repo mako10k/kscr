@@ -253,11 +253,6 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 "=" => TokenKind::Eq,
                 "|" => TokenKind::Pipe,
                 _ => {
-                    if op.starts_with(':') {
-                        return Err(crate::error::Error::msg(
-                            "operators starting with ':' are reserved",
-                        ));
-                    }
                     TokenKind::Operator(op.to_string())
                 }
             };

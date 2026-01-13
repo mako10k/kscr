@@ -308,22 +308,47 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 
     let mut ctors = Vec::new();
     loop {
-        let ctor_name = ts.expect_ident()?;
-        let mut args = Vec::new();
-        while matches!(
-            ts.peek_kind(),
-            Some(TokenKind::Ident(s)) if s != "deriving"
-        ) || matches!(
-            ts.peek_kind(),
-            Some(TokenKind::LParen) | Some(TokenKind::LBracket) | Some(TokenKind::LBrace)
-        ) {
-            // Atom-level type parsing for ctor args.
-            args.push(parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?);
+        // Try prefix ctor first: `Ctor a b` / `(:*:) a b`.
+        // If that fails, accept Haskell-style infix ctor: `a :*: b`.
+        let save = (ts.i, ts.last_span_end);
+        let parsed = if let Ok(ctor_name) = parse_ctor_name(ts) {
+            let mut args = Vec::new();
+            while matches!(
+                ts.peek_kind(),
+                Some(TokenKind::Ident(s)) if s != "deriving"
+            ) || matches!(
+                ts.peek_kind(),
+                Some(TokenKind::LParen) | Some(TokenKind::LBracket) | Some(TokenKind::LBrace)
+            ) {
+                // Atom-level type parsing for ctor args.
+                args.push(parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?);
+            }
+            Some(ast::DataCtor {
+                name: ctor_name,
+                args,
+            })
+        } else {
+            (ts.i, ts.last_span_end) = save;
+            // Infix ctor form: `<ty> :<op>: <ty>`.
+            let lhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
+            let Some(TokenKind::Operator(op)) = ts.peek_kind() else {
+                return Err(ts.err_here("expected constructor name"));
+            };
+            if !is_ctor_symbol(op.as_str()) {
+                return Err(ts.err_here("expected ':'-prefixed constructor operator"));
+            }
+            let op = op.clone();
+            ts.bump();
+            let rhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
+            Some(ast::DataCtor {
+                name: op,
+                args: vec![lhs, rhs],
+            })
+        };
+
+        if let Some(ctor) = parsed {
+            ctors.push(ctor);
         }
-        ctors.push(ast::DataCtor {
-            name: ctor_name,
-            args,
-        });
 
         match ts.peek_kind() {
             Some(TokenKind::Pipe) => {
@@ -657,10 +682,10 @@ fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
             }
         } else {
             let mut ctors = Vec::new();
-            ctors.push(ts.expect_ident()?);
+            ctors.push(parse_ctor_name(ts)?);
             while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
                 ts.bump();
-                ctors.push(ts.expect_ident()?);
+                ctors.push(parse_ctor_name(ts)?);
             }
             ts.expect(TokenKind::RParen)?;
             ast::ExportSpec::Type {
@@ -736,6 +761,55 @@ fn parse_fixity_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     }
 
     Ok(ast::Item::Fixity(ast::FixityDecl { assoc, prec, ops }))
+}
+
+fn parse_ctor_name(ts: &mut TokenStream) -> Result<String> {
+    let pos = ts.pos_str_here();
+
+    match ts.peek_kind() {
+        Some(TokenKind::Ident(_)) => {
+            let name = ts.expect_ident()?;
+            if name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+            {
+                Ok(name)
+            } else {
+                Err(Error::msg(format!("expected constructor name at {pos}")))
+            }
+        }
+        Some(TokenKind::Operator(op)) => {
+            let op = op.clone();
+            ts.bump();
+            if is_ctor_symbol(&op) {
+                Ok(op)
+            } else {
+                Err(Error::msg(format!("expected constructor name at {pos}")))
+            }
+        }
+        Some(TokenKind::LParen) => {
+            // Allow parenthesized operator constructors: (:*:) / (:)
+            let save = (ts.i, ts.last_span_end);
+            ts.bump();
+            let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick))
+                || is_sym_op_token(ts.peek_kind());
+            if !op_ok {
+                (ts.i, ts.last_span_end) = save;
+                return Err(Error::msg(format!("expected constructor name at {pos}")));
+            }
+            let op = parse_operator_name(ts)?;
+            ts.expect(TokenKind::RParen)?;
+            if is_ctor_symbol(&op) {
+                Ok(op)
+            } else {
+                Err(Error::msg(format!(
+                    "expected ':'-prefixed constructor operator at {pos}"
+                )))
+            }
+        }
+        _ => Err(Error::msg(format!("expected constructor name at {pos}"))),
+    }
 }
 
 #[derive(Clone)]
@@ -903,6 +977,7 @@ fn is_sym_op_token(kind: Option<&TokenKind>) -> bool {
         kind,
         Some(
             TokenKind::Operator(_)
+                | TokenKind::Colon
                 | TokenKind::Plus
                 | TokenKind::Minus
                 | TokenKind::Star
@@ -920,6 +995,18 @@ fn is_sym_op_token(kind: Option<&TokenKind>) -> bool {
                 | TokenKind::OrOr
         )
     )
+}
+
+fn is_ctor_symbol(op: &str) -> bool {
+    op.starts_with(':')
+}
+
+fn op_expr_kind(op: String) -> ast::ExprKind {
+    if is_ctor_symbol(&op) || is_upper_by_last_segment(&op) {
+        ast::ExprKind::Ctor(op)
+    } else {
+        ast::ExprKind::Var(op)
+    }
 }
 
 fn parse_operator_name(ts: &mut TokenStream) -> Result<String> {
@@ -955,6 +1042,9 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
                     && !matches!(ts.peek_kind(), Some(TokenKind::Colon)))
             {
                 let op = parse_operator_name(ts)?;
+                if is_ctor_symbol(&op) {
+                    return Err(ts.err_here("operators starting with ':' are reserved"));
+                }
                 let rhs = parse_cons_pattern(ts)?;
 
                 if matches!(ts.peek_kind(), Some(TokenKind::Eq) | Some(TokenKind::Pipe)) {
@@ -989,6 +1079,9 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
         if op_ok {
             let save = (ts.i, ts.last_span_end);
             if let Ok(name) = parse_paren_operator_name(ts) {
+                if is_ctor_symbol(&name) {
+                    return Err(ts.err_here("operators starting with ':' are reserved"));
+                }
                 if !matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
                     let mut args = Vec::new();
                     while !matches!(ts.peek_kind(), Some(TokenKind::Eq) | Some(TokenKind::Pipe)) {
@@ -1793,6 +1886,24 @@ fn parse_cons_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
         ));
     }
 
+    // Infix constructor operator pattern: a :*: b (right-associative)
+    if let Some(TokenKind::Operator(op)) = ts.peek_kind() {
+        if is_ctor_symbol(op.as_str()) {
+            let op = op.clone();
+            ts.bump();
+            let rhs = parse_cons_pattern(ts)?;
+            let start = pat.span.start;
+            return Ok(pat_from(
+                ts,
+                start,
+                ast::PatternKind::Constructor {
+                    name: op,
+                    args: vec![pat, rhs],
+                },
+            ));
+        }
+    }
+
     Ok(pat)
 }
 
@@ -1818,7 +1929,21 @@ fn parse_app_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
             while ts.can_continue_pattern() {
                 args.push(parse_pattern_atom(ts)?);
             }
-            pat = pat_from(ts, start, ast::PatternKind::Constructor { name, args });
+            if name == ":" {
+                if args.len() == 2 {
+                    let lhs = args.remove(0);
+                    let rhs = args.remove(0);
+                    pat = pat_from(
+                        ts,
+                        start,
+                        ast::PatternKind::Cons(Box::new(lhs), Box::new(rhs)),
+                    );
+                } else {
+                    return Err(ts.err_here("(:) pattern expects exactly 2 arguments"));
+                }
+            } else {
+                pat = pat_from(ts, start, ast::PatternKind::Constructor { name, args });
+            }
         } else {
             pat.kind = kind;
         }
@@ -1927,6 +2052,16 @@ fn parse_paren_or_tuple_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind()) {
         let op = parse_operator_name(ts)?;
         ts.expect(TokenKind::RParen)?;
+        if op == ":" || is_ctor_symbol(&op) {
+            return Ok(pat_from(
+                ts,
+                start,
+                ast::PatternKind::Constructor {
+                    name: op,
+                    args: vec![],
+                },
+            ));
+        }
         return Ok(pat_from(ts, start, ast::PatternKind::Var(op)));
     }
 
@@ -2043,6 +2178,11 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
                 ts.expect(TokenKind::Backtick)?;
                 (op.clone(), ts.fixity(&op))
             }
+            Some(TokenKind::Operator(op)) => {
+                let op = op.clone();
+                ts.bump();
+                (op.clone(), ts.fixity(&op))
+            }
             Some(TokenKind::Star) => {
                 ts.bump();
                 ("*".to_string(), ts.fixity("*"))
@@ -2142,11 +2282,12 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
                 },
             )
         } else {
+            let func_kind = op_expr_kind(op);
             expr_from(
                 ts,
                 start,
                 ast::ExprKind::Apply {
-                    func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(op))),
+                    func: Box::new(ast::Expr::dummy(func_kind)),
                     args: vec![lhs, rhs],
                 },
             )
@@ -2265,28 +2406,7 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     //   (x op)    => \a -> x `op` a
     {
         let save = (ts.i, ts.last_span_end);
-        if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
-            || matches!(
-                ts.peek_kind(),
-                Some(
-                    TokenKind::Plus
-                        | TokenKind::Minus
-                        | TokenKind::Star
-                        | TokenKind::Slash
-                        | TokenKind::PlusPlus
-                        | TokenKind::EqEq
-                        | TokenKind::SlashEq
-                        | TokenKind::Lt
-                        | TokenKind::Le
-                        | TokenKind::Gt
-                        | TokenKind::Ge
-                        | TokenKind::GtGt
-                        | TokenKind::GtGtEq
-                        | TokenKind::AndAnd
-                        | TokenKind::OrOr
-                )
-            )
-        {
+        if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind()) {
             let op = if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
                 ts.expect(TokenKind::Backtick)?;
                 let op = ts.expect_ident()?;
@@ -2298,16 +2418,39 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
             if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
                 ts.bump();
-                return Ok(expr_from(ts, start, ast::ExprKind::Var(op)));
+                if op == ":" {
+                    let a = ts.fresh_name("__cons_a");
+                    let b = ts.fresh_name("__cons_b");
+                    let body = ast::Expr::dummy(ast::ExprKind::Cons {
+                        head: Box::new(ast::Expr::dummy(ast::ExprKind::Var(a.clone()))),
+                        tail: Box::new(ast::Expr::dummy(ast::ExprKind::Var(b.clone()))),
+                    });
+                    return Ok(expr_from(
+                        ts,
+                        start,
+                        ast::ExprKind::Lambda {
+                            params: vec![a, b],
+                            body: Box::new(body),
+                        },
+                    ));
+                }
+                return Ok(expr_from(ts, start, op_expr_kind(op)));
             }
 
             let rhs = parse_expr(ts, Stop::LineEnd)?;
             ts.expect(TokenKind::RParen)?;
             let param = ts.fresh_name("__section");
-            let body = ast::Expr::dummy(ast::ExprKind::Apply {
-                func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(op))),
-                args: vec![ast::Expr::dummy(ast::ExprKind::Var(param.clone())), rhs],
-            });
+            let body = if op == ":" {
+                ast::Expr::dummy(ast::ExprKind::Cons {
+                    head: Box::new(ast::Expr::dummy(ast::ExprKind::Var(param.clone()))),
+                    tail: Box::new(rhs),
+                })
+            } else {
+                ast::Expr::dummy(ast::ExprKind::Apply {
+                    func: Box::new(ast::Expr::dummy(op_expr_kind(op))),
+                    args: vec![ast::Expr::dummy(ast::ExprKind::Var(param.clone())), rhs],
+                })
+            };
             return Ok(expr_from(
                 ts,
                 start,
@@ -2323,28 +2466,7 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     {
         let save = (ts.i, ts.last_span_end);
         if let Ok(lhs) = parse_application(ts, Stop::LineEnd) {
-            if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
-                || matches!(
-                    ts.peek_kind(),
-                    Some(
-                        TokenKind::Plus
-                            | TokenKind::Minus
-                            | TokenKind::Star
-                            | TokenKind::Slash
-                            | TokenKind::PlusPlus
-                            | TokenKind::EqEq
-                            | TokenKind::SlashEq
-                            | TokenKind::Lt
-                            | TokenKind::Le
-                            | TokenKind::Gt
-                            | TokenKind::Ge
-                            | TokenKind::GtGt
-                            | TokenKind::GtGtEq
-                            | TokenKind::AndAnd
-                            | TokenKind::OrOr
-                    )
-                )
-            {
+            if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind()) {
                 let op = if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
                     ts.expect(TokenKind::Backtick)?;
                     let op = ts.expect_ident()?;
@@ -2357,10 +2479,17 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
                 if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
                     ts.bump();
                     let param = ts.fresh_name("__section");
-                    let body = ast::Expr::dummy(ast::ExprKind::Apply {
-                        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(op))),
-                        args: vec![lhs, ast::Expr::dummy(ast::ExprKind::Var(param.clone()))],
-                    });
+                    let body = if op == ":" {
+                        ast::Expr::dummy(ast::ExprKind::Cons {
+                            head: Box::new(lhs),
+                            tail: Box::new(ast::Expr::dummy(ast::ExprKind::Var(param.clone()))),
+                        })
+                    } else {
+                        ast::Expr::dummy(ast::ExprKind::Apply {
+                            func: Box::new(ast::Expr::dummy(op_expr_kind(op))),
+                            args: vec![lhs, ast::Expr::dummy(ast::ExprKind::Var(param.clone()))],
+                        })
+                    };
                     return Ok(expr_from(
                         ts,
                         start,

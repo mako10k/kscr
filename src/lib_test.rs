@@ -502,7 +502,7 @@ fn parser_golden_basic() {
 fn parser_golden_decl() {
     let src = std::fs::read_to_string("tests/parser_decl.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
-    assert_eq!(m.items.len(), 5);
+    assert_eq!(m.items.len(), 10);
 
     use crate::ast::{Item, Type};
 
@@ -513,9 +513,23 @@ fn parser_golden_decl() {
         _ => panic!("expected type alias"),
     }
 
-    assert!(matches!(m.items[2], Item::Binding(_)));
+    match &m.items[2] {
+        Item::DataDecl(dd) => {
+            assert_eq!(dd.name, "Pair");
+            assert_eq!(dd.params, vec!["a".to_string(), "b".to_string()]);
+            assert_eq!(dd.ctors.len(), 1);
+            assert_eq!(dd.ctors[0].name, ":*:");
+            assert_eq!(dd.ctors[0].args, vec![Type::Var("a".to_string()), Type::Var("b".to_string())]);
+        }
+        _ => panic!("expected data decl"),
+    }
     assert!(matches!(m.items[3], Item::Binding(_)));
     assert!(matches!(m.items[4], Item::Binding(_)));
+    assert!(matches!(m.items[5], Item::Binding(_)));
+    assert!(matches!(m.items[6], Item::Binding(_)));
+    assert!(matches!(m.items[7], Item::Binding(_)));
+    assert!(matches!(m.items[8], Item::Binding(_)));
+    assert!(matches!(m.items[9], Item::Binding(_)));
 }
 
 #[test]
