@@ -1493,6 +1493,36 @@ main = do
 }
 
 #[test]
+fn ir_run_main_user_defined_typeclass_superclass_dict_projection() {
+    let src = r#"
+class A a where
+    foo :: a -> a
+
+class (A a) => B a where
+    bar :: a -> a
+
+instance A Integer where
+    foo x = x + 1
+
+instance B Integer where
+    bar x = foo x
+
+useB = (\x -> foo x) :: (B a) => a -> a
+
+main = do
+    stdoutWrite (show (bar 1))
+    stdoutWrite (show (useB 1))
+    IO ()
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn typecheck_list_comprehension_with_guard() {
     let m = crate::parser::parse_module("xs = [x | x <- [1, 2], True]\n").unwrap();
     let tm = crate::types::typecheck(m).unwrap();
