@@ -1809,6 +1809,39 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_issue3_top_level_bindings_are_letrec_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_issue3_top_level_letrec_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export f, g\n  g x = x + 1\n  f x = g x\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import qualified A as A1\n  import qualified A as A2\n  y1 = A1.f 1\n  y2 = A2.f 1\n  main = case (y1 == 2) of\n    True -> case (y2 == 2) of\n      True -> IO ()\n      False -> case (1 / 0) of\n        _ -> IO ()\n    False -> case (1 / 0) of\n      _ -> IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cli_typecheck_reports_cyclic_imports_smoke() {
         let dir = std::env::temp_dir().join(format!(
             "kscr_cli_typecheck_cyclic_imports_smoke_{}",
