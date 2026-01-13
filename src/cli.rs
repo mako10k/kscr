@@ -618,6 +618,23 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_import_data_list_stdlib_smoke() {
+        let path = std::env::temp_dir().join("kscr_cli_run_import_data_list_stdlib_smoke.ks");
+        std::fs::write(
+            &path,
+            "module Main where\n  import Prelude\n  import qualified Data.List as L\n  main = do\n    print (show (L.map (\\x -> x + 1) [1, 2, 3]))\n    print (show (L.filter (\\x -> x == 2) [1, 2, 3]))\n    print (show (L.concat [[1], [2, 3]]))\n    print (show (L.append [1, 2] [3]))\n    putStrLn \"list ok\"\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn cli_typecheck_imports_smoke() {
         let dir =
             std::env::temp_dir().join(format!("kscr_cli_import_smoke_{}", std::process::id()));
@@ -673,6 +690,27 @@ mod tests {
             "module Main where\n  import Prelude\n  inc = \\x -> x + 1\n  main = do\n    print (show (map inc [1, 2]))\n    print (show (filter (\\x -> x == 2) [1, 2, 3]))\n    print (show (concat [[1], [2, 3]]))\n    print (show (catMaybes [Just 1, Nothing, Just 3]))\n    print (\"hello\" ++ \"world\")\n    print (append \"hello\" \"world\")\n    putStrLn \"prelude ok\"\n",
         )
         .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_import_data_list_from_stdlib_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_import_data_list_stdlib_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  import Prelude\n  import qualified Data.List as L\n  main = do\n    print (show (L.null []))\n    print (show (L.singleton 1))\n    print (show (L.tail [1, 2, 3]))\n    print (show (L.append [1, 2] [3]))\n    putStrLn \"list ok\"\n",
+        )
+        .unwrap();
+
         let args = vec![
             "kscr".to_string(),
             "run".to_string(),
