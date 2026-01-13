@@ -221,9 +221,11 @@ The language employs static type inference to ensure type safety at compile time
 
 ### Type Safety Guarantees
 - **No runtime *type* errors**: Well-typed programs do not encounter type errors at runtime.
-- **Exhaustiveness checking**: Pattern matches are checked for exhaustiveness at compile time.
+- **Exhaustiveness checking (MVP)**: Pattern matches are checked for exhaustiveness at compile time when the checker can prove coverage from the scrutinee type (see section 8).
 - **Effect isolation**: Pure and effectful code are separated by the type system (see `LanguageSemantics.md`).
 - **Checked cast failure**: Inserted checked casts may still fail at runtime (overflow/invalid conversion), raising a runtime error.
+
+Note: the language also provides explicit partiality via `error :: forall a. String -> a` (pure bottom) and `throw :: forall a. String -> IO a` (effectful exception).
 
 ---
 
@@ -251,9 +253,30 @@ Patterns and variable bindings are central to the type system, enabling expressi
 ### Binding Semantics
 - **Type Safety**: Each variable bound in a pattern is assigned a type inferred from the matched value.
 - **Non-overlapping**: Variable names in a single pattern must not overlap.
-- **Exhaustiveness**: Pattern matches should be exhaustive or explicitly handle non-exhaustive cases (runtime error otherwise).
+- **Exhaustiveness**: Pattern matches should be exhaustive; non-exhaustive cases may be rejected at typecheck time (MVP) or may still fail at runtime depending on the scrutinee type/pattern forms.
 - **Scoping**: Variables bound in a pattern are in scope only in the corresponding expression branch.
 - **Shadowing**: Inner bindings can shadow outer ones, but shadowing is discouraged for clarity.
+
+### Exhaustiveness Checking (MVP)
+
+Exhaustiveness checking is currently **best-effort** and intentionally conservative:
+
+- Any unguarded arm with a catch-all pattern (`_`, a variable pattern, or a hole pattern) makes the `case` exhaustive.
+- Arms with guards do **not** contribute to coverage (they are treated as potentially failing).
+
+For specific scrutinee types, the checker enforces the following:
+
+- `Bool`: must cover both `True` and `False` (or have a catch-all).
+- `Unit`: must cover `()` (or have a catch-all).
+- `List a`: must cover both `[]` and a cons pattern whose tail is a catch-all (e.g. `x:xs`, `_:xs`).
+	- Note: patterns like `x:[]` are not treated as covering all non-empty lists.
+- Known ADTs: must cover all constructors of the data type (constructor names may be qualified, e.g. `A.Just`).
+
+For the following types, the checker requires an explicit catch-all (`_ -> ...`) because the domain is effectively unbounded:
+
+- `Integer`, `Float64`, `Char`, `String`
+
+For polymorphic scrutinees and other complex forms (e.g. certain view/record/tuple patterns), exhaustiveness may not be decidable with the current MVP implementation; in such cases the checker may accept the program and the runtime may still raise a non-exhaustive match error.
 
 ### Example
 ```

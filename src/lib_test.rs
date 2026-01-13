@@ -5,6 +5,22 @@ fn scaffold_parser_accepts_binding() {
 }
 
 #[test]
+fn typecheck_rejects_non_exhaustive_case_on_integer() {
+    let src = "module Main where\n  a x = case x of\n    1 -> \"1\"\n  main = IO ()\n";
+    let ast = crate::parser::parse_module(src).unwrap();
+    let e = crate::types::typecheck(ast).unwrap_err();
+    assert!(format!("{e}").contains("non-exhaustive case"));
+}
+
+#[test]
+fn typecheck_rejects_non_exhaustive_fun_clauses_for_adt() {
+    let src = "module Main where\n  data OneTwoThree = One | Two | Three\n  a One = 1\n  a Two = 2\n  main = IO ()\n";
+    let ast = crate::parser::parse_module(src).unwrap();
+    let e = crate::types::typecheck(ast).unwrap_err();
+    assert!(format!("{e}").contains("missing constructors"));
+}
+
+#[test]
 fn parser_module_basic() {
     let src = std::fs::read_to_string("tests/module_basic.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
@@ -356,6 +372,9 @@ fn ir_run_main_fun_clauses_multi_clause_and_multi_args() {
         "  5 -> case (f 7 0) of\n",
         "    7 -> case (f 1 2) of\n",
         "      9 -> IO ()\n",
+        "      _ -> throw \"assert failed\"\n",
+        "    _ -> throw \"assert failed\"\n",
+        "  _ -> throw \"assert failed\"\n",
     );
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
@@ -372,6 +391,8 @@ fn ir_run_main_guarded_fun_clause_top_level() {
         "main = case (f 0) of\n",
         "  1 -> case (f 3) of\n",
         "    2 -> IO ()\n",
+        "    _ -> throw \"assert failed\"\n",
+        "  _ -> throw \"assert failed\"\n",
     );
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
@@ -391,6 +412,10 @@ fn ir_run_main_fun_clauses_in_let_and_where() {
         "    2 -> case (g 0) of\n",
         "      1 -> case (g 9) of\n",
         "        2 -> IO ()\n",
+        "        _ -> throw \"assert failed\"\n",
+        "      _ -> throw \"assert failed\"\n",
+        "    _ -> throw \"assert failed\"\n",
+        "  _ -> throw \"assert failed\"\n",
         "where\n",
         "  g 0 = 1\n",
         "  g _ = 2\n",
@@ -781,7 +806,7 @@ fn typecheck_list_comprehension_simple() {
 
 #[test]
 fn ir_run_main_list_comprehension() {
-    let src = "main = case [x | x <- [1, 2]] of\n  [1, 2] -> IO ()\n";
+    let src = "main = case [x | x <- [1, 2]] of\n  [1, 2] -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -791,7 +816,7 @@ fn ir_run_main_list_comprehension() {
 
 #[test]
 fn ir_run_main_plus_operator() {
-    let src = "main = case (1 + 2) of\n  3 -> IO ()\n";
+    let src = "main = case (1 + 2) of\n  3 -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -801,7 +826,7 @@ fn ir_run_main_plus_operator() {
 
 #[test]
 fn ir_run_main_eqeq_operator() {
-    let src = "main = case (1 == 1) of\n  True -> IO ()\n";
+    let src = "main = case (1 == 1) of\n  True -> IO ()\n  False -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -811,7 +836,7 @@ fn ir_run_main_eqeq_operator() {
 
 #[test]
 fn ir_run_main_minus_operator() {
-    let src = "main = case (3 - 2) of\n  1 -> IO ()\n";
+    let src = "main = case (3 - 2) of\n  1 -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -821,7 +846,7 @@ fn ir_run_main_minus_operator() {
 
 #[test]
 fn ir_run_main_mul_operator() {
-    let src = "main = case (2 * 3) of\n  6 -> IO ()\n";
+    let src = "main = case (2 * 3) of\n  6 -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -831,7 +856,7 @@ fn ir_run_main_mul_operator() {
 
 #[test]
 fn ir_run_main_div_operator() {
-    let src = "main = case (6 / 2) of\n  3 -> IO ()\n";
+    let src = "main = case (6 / 2) of\n  3 -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -841,7 +866,7 @@ fn ir_run_main_div_operator() {
 
 #[test]
 fn ir_run_main_lt_le_operators() {
-    let src = "main = case (1 < 2) of\n  True -> case (2 <= 2) of\n    True -> IO ()\n";
+    let src = "main = case (1 < 2) of\n  True -> case (2 <= 2) of\n    True -> IO ()\n    False -> throw \"assert failed\"\n  False -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -851,7 +876,7 @@ fn ir_run_main_lt_le_operators() {
 
 #[test]
 fn ir_run_main_gt_ge_ne_operators() {
-    let src = "main = case (2 > 1) of\n  True -> case (2 >= 2) of\n    True -> case (1 /= 2) of\n      True -> IO ()\n";
+    let src = "main = case (2 > 1) of\n  True -> case (2 >= 2) of\n    True -> case (1 /= 2) of\n      True -> IO ()\n      False -> throw \"assert failed\"\n    False -> throw \"assert failed\"\n  False -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -861,7 +886,7 @@ fn ir_run_main_gt_ge_ne_operators() {
 
 #[test]
 fn ir_run_main_and_or_short_circuit() {
-    let src = "main = let\n  bad = case True of\n    False -> True\nin case (False && bad) of\n  False -> case (True || bad) of\n    True -> IO ()\n";
+    let src = "main = let\n  bad = error \"boom\"\nin case (False && bad) of\n  False -> case (True || bad) of\n    True -> IO ()\n    False -> throw \"assert failed\"\n  True -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -871,7 +896,7 @@ fn ir_run_main_and_or_short_circuit() {
 
 #[test]
 fn ir_run_main_not_builtin() {
-    let src = "main = case (not False) of\n  True -> IO ()\n";
+    let src = "main = case (not False) of\n  True -> IO ()\n  False -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -891,7 +916,7 @@ fn ir_run_main_int_bool_to_string() {
 
 #[test]
 fn ir_run_main_large_integer_ok() {
-    let src = "main = case (999999999999999999999999999999 + 1) of\n  1000000000000000000000000000000 -> IO ()\n";
+    let src = "main = case (999999999999999999999999999999 + 1) of\n  1000000000000000000000000000000 -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -901,7 +926,7 @@ fn ir_run_main_large_integer_ok() {
 
 #[test]
 fn ir_run_main_checked_cast_i32_ok() {
-    let src = "main = case (1 :: i32) of\n  1 -> IO ()\n";
+    let src = "main = case (1 :: i32) of\n  1 -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -911,7 +936,7 @@ fn ir_run_main_checked_cast_i32_ok() {
 
 #[test]
 fn ir_run_main_checked_cast_i32_overflow_is_error() {
-    let src = "main = case (2147483648 :: i32) of\n  0 -> IO ()\n";
+    let src = "main = case (2147483648 :: i32) of\n  0 -> IO ()\n  _ -> throw \"expected i32 overflow\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -921,7 +946,7 @@ fn ir_run_main_checked_cast_i32_overflow_is_error() {
 
 #[test]
 fn ir_run_main_checked_cast_i32_negative_overflow_is_error() {
-    let src = "main = case ((0 - 2147483649) :: i32) of\n  0 -> IO ()\n";
+    let src = "main = case ((0 - 2147483649) :: i32) of\n  0 -> IO ()\n  _ -> throw \"expected i32 overflow\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -931,7 +956,7 @@ fn ir_run_main_checked_cast_i32_negative_overflow_is_error() {
 
 #[test]
 fn ir_run_main_integer_div_trunc_toward_zero() {
-    let src = "main = case (((0 - 7) / 2) == (0 - 3)) of\n  True -> IO ()\n";
+    let src = "main = case (((0 - 7) / 2) == (0 - 3)) of\n  True -> IO ()\n  False -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -941,7 +966,7 @@ fn ir_run_main_integer_div_trunc_toward_zero() {
 
 #[test]
 fn ir_run_main_integer_div_round_trip_big() {
-    let src = "a = 100000000000000000000\nmain = case (((a * a) / a) == a) of\n  True -> IO ()\n";
+    let src = "a = 100000000000000000000\nmain = case (((a * a) / a) == a) of\n  True -> IO ()\n  False -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -951,7 +976,7 @@ fn ir_run_main_integer_div_round_trip_big() {
 
 #[test]
 fn ir_run_main_ffi_add_i32_ok() {
-    let src = "main = case (ffiAddI32 1 2) of\n  3 -> IO ()\n";
+    let src = "main = case (ffiAddI32 1 2) of\n  3 -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -961,7 +986,7 @@ fn ir_run_main_ffi_add_i32_ok() {
 
 #[test]
 fn ir_run_main_ffi_add_i32_arg_out_of_range_is_error() {
-    let src = "main = case (ffiAddI32 2147483648 0) of\n  0 -> IO ()\n";
+    let src = "main = case (ffiAddI32 2147483648 0) of\n  0 -> IO ()\n  _ -> throw \"expected ffiAddI32 out-of-range\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -973,7 +998,7 @@ fn ir_run_main_ffi_add_i32_arg_out_of_range_is_error() {
 
 #[test]
 fn ir_run_main_ffi_add_i32_overflow_is_error() {
-    let src = "main = case (ffiAddI32 2147483647 1) of\n  0 -> IO ()\n";
+    let src = "main = case (ffiAddI32 2147483647 1) of\n  0 -> IO ()\n  _ -> throw \"expected ffiAddI32 overflow\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -983,7 +1008,7 @@ fn ir_run_main_ffi_add_i32_overflow_is_error() {
 
 #[test]
 fn ir_run_main_ffi_add_f32_overflow_is_error() {
-    let src = "main = case (ffiAddF32 1e39 1.0) of\n  0.0 -> IO ()\n";
+    let src = "main = case (ffiAddF32 1e39 1.0) of\n  0.0 -> IO ()\n  _ -> throw \"expected ffiAddF32 overflow\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1643,7 +1668,7 @@ fn ir_lowering_loose_record_pattern() {
 
 #[test]
 fn ir_lowering_view_pattern() {
-    let src = "id = \\x -> x\nx = case 1 of\n  (n <- id) -> n\n";
+    let src = "id = \\x -> x\nx = case 1 of\n  (n <- id) -> n\n  _ -> 0\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1747,7 +1772,7 @@ fn ir_run_main_io_unit() {
 
 #[test]
 fn ir_run_main_cons_pattern_matches() {
-    let src = "main = case [1, 2] of\n  x:xs -> IO ()\n";
+    let src = "main = case [1, 2] of\n  x:xs -> IO ()\n  [] -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1757,7 +1782,7 @@ fn ir_run_main_cons_pattern_matches() {
 
 #[test]
 fn ir_run_main_cons_expr_and_pattern() {
-    let src = "main = case (1:[]) of\n  x:xs -> IO ()\n";
+    let src = "main = case (1:[]) of\n  x:xs -> IO ()\n  [] -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1768,7 +1793,7 @@ fn ir_run_main_cons_expr_and_pattern() {
 #[test]
 fn ir_cons_expr_head_is_lazy() {
     let src =
-        "main = let\n  bad = case True of\n    False -> 0\nin case (bad:[]) of\n  _:xs -> IO ()\n";
+        "main = let\n  bad = error \"boom\"\nin case (bad:[]) of\n  _:xs -> IO ()\n  [] -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1779,7 +1804,7 @@ fn ir_cons_expr_head_is_lazy() {
 #[test]
 fn ir_cons_expr_tail_is_lazy() {
     let src =
-        "main = let\n  bad = case True of\n    False -> []\nin case (1:bad) of\n  x:xs -> IO ()\n";
+        "main = let\n  bad = error \"boom\"\nin case (1:bad) of\n  x:xs -> IO ()\n  [] -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1789,7 +1814,7 @@ fn ir_cons_expr_tail_is_lazy() {
 
 #[test]
 fn ir_cons_pattern_is_lazy_in_tail() {
-    let src = "main = let\n  bad = case True of\n    False -> 0\n  xs = [1, bad]\nin case xs of\n  x:xt -> IO ()\n";
+    let src = "main = let\n  bad = error \"boom\"\n  xs = [1, bad]\nin case xs of\n  x:xt -> IO ()\n  [] -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1799,7 +1824,7 @@ fn ir_cons_pattern_is_lazy_in_tail() {
 
 #[test]
 fn ir_let_is_lazy() {
-    let src = "main = let\n  x = case True of\n    False -> ()\nin IO ()\n";
+    let src = "main = let\n  x = error \"boom\"\nin IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1809,7 +1834,7 @@ fn ir_let_is_lazy() {
 
 #[test]
 fn ir_apply_args_are_lazy() {
-    let src = "main = let\n  bad = case True of\n    False -> ()\n  f = \\a b -> a\nin do\n  IO (f 1 bad)\n  IO ()\n";
+    let src = "main = let\n  bad = error \"boom\"\n  f = \\a b -> a\nin do\n  IO (f 1 bad)\n  IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1819,7 +1844,7 @@ fn ir_apply_args_are_lazy() {
 
 #[test]
 fn ir_tuple_elems_are_lazy() {
-    let src = "main = let\n  bad = case True of\n    False -> ()\n  x = (1, bad)\n  first = case x of\n    (a, b) -> a\nin do\n  IO first\n  IO ()\n";
+    let src = "main = let\n  bad = error \"boom\"\n  x = (1, bad)\n  first = case x of\n    (a, b) -> a\nin do\n  IO first\n  IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();

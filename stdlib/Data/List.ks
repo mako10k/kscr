@@ -9,8 +9,10 @@ module Data.List where
 
   singleton x = [x]
 
+  head [] = error "head: empty list"
   head (x:_) = x
 
+  tail [] = error "tail: empty list"
   tail (_:xs) = xs
 
   map f xs = concatMap (\x -> [f x]) xs

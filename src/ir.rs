@@ -724,6 +724,7 @@ pub enum Value {
     BuiltinEqDictApply2(Box<Value>, Box<Value>),
     BuiltinRecordGet,
     BuiltinRecordGet1(Box<Value>),
+    BuiltinError,
     BuiltinThrow,
     BuiltinCatch,
     BuiltinCatch1(Box<Value>),
@@ -950,6 +951,10 @@ fn eval_var(
 
     if name == "__recordGet" {
         return Ok(Value::BuiltinRecordGet);
+    }
+
+    if name == "error" {
+        return Ok(Value::BuiltinError);
     }
 
     if name == "throw" {
@@ -1362,6 +1367,13 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinRecordGet => Ok(Value::BuiltinRecordGet1(Box::new(arg))),
         Value::BuiltinRecordGet1(d) => record_get(g, *d, arg),
         Value::BuiltinShow => show_to_string(g, arg),
+        Value::BuiltinError => {
+            let arg = force_value(g, arg)?;
+            let Value::String(s) = arg else {
+                return Err(Error::msg("error expects String"));
+            };
+            Err(Error::msg(format!("error: {s}")))
+        }
         Value::BuiltinThrow => {
             let arg = force_value(g, arg)?;
             let Value::String(s) = arg else {

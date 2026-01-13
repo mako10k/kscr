@@ -1653,6 +1653,20 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
+    // error :: forall a. String -> a
+    // Pure bottom value used for explicit partiality / testing laziness.
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
+    env.insert(
+        "error".to_string(),
+        Scheme {
+            vars: vec![a],
+            constraints: vec![],
+            ty: Ty::Func(Box::new(Ty::Con("String".to_string())), Box::new(Ty::Var(a))),
+        },
+    );
+
     // throw :: forall a. String -> IO a
     let Ty::Var(a) = cx.fresh() else {
         unreachable!()
@@ -2430,6 +2444,155 @@ fn entails_appendable(ty: &Ty) -> Result<Vec<Constraint>> {
             )))
         }
     })
+}
+
+fn check_case_exhaustive(
+    data_env: &DataEnv,
+    scrut_ty: &Ty,
+    arms: &[(ast::Pattern, bool)],
+) -> Result<()> {
+    use ast::{ExprKind, PatternKind};
+
+    fn unqual_name(name: &str) -> &str {
+        name.rsplit('.').next().unwrap_or(name)
+    }
+
+    fn is_catch_all(p: &ast::Pattern) -> bool {
+        match &p.kind {
+            PatternKind::Var(_) | PatternKind::Wildcard | PatternKind::Hole(_) => true,
+            PatternKind::As(_, inner) => is_catch_all(inner),
+            PatternKind::Or(a, b) => is_catch_all(a) || is_catch_all(b),
+            _ => false,
+        }
+    }
+
+    fn is_list_cons_all(p: &ast::Pattern) -> bool {
+        match &p.kind {
+            PatternKind::As(_, inner) => is_list_cons_all(inner),
+            PatternKind::Or(a, b) => is_list_cons_all(a) || is_list_cons_all(b),
+            PatternKind::Cons(_, tail) => is_catch_all(tail),
+            _ => false,
+        }
+    }
+
+    fn collect_top_alts(p: &ast::Pattern, out: &mut Vec<String>) {
+        match &p.kind {
+            PatternKind::As(_, inner) => collect_top_alts(inner, out),
+            PatternKind::Or(a, b) => {
+                collect_top_alts(a, out);
+                collect_top_alts(b, out);
+            }
+            PatternKind::Constructor { name, .. } => {
+                out.push(format!("ctor:{}", unqual_name(name)))
+            }
+            PatternKind::Cons(_, _) if is_list_cons_all(p) => {
+                out.push("list:cons_all".to_string())
+            }
+            PatternKind::List(ps) if ps.is_empty() => out.push("list:nil".to_string()),
+            PatternKind::Literal(e) => match &e.kind {
+                ExprKind::Bool(b) => out.push(format!("bool:{b}")),
+                ExprKind::Unit => out.push("unit".to_string()),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    // Guarded arms are conservatively treated as non-covering.
+    if arms
+        .iter()
+        .any(|(pat, has_guard)| !*has_guard && is_catch_all(pat))
+    {
+        return Ok(());
+    }
+
+    let mut alts: Vec<String> = Vec::new();
+    for (pat, has_guard) in arms {
+        if *has_guard {
+            continue;
+        }
+        collect_top_alts(pat, &mut alts);
+    }
+
+    // Normalize.
+    alts.sort();
+    alts.dedup();
+
+    match scrut_ty {
+        Ty::Con(name) if name == "Bool" => {
+            let has_true = alts.iter().any(|a| a == "bool:true");
+            let has_false = alts.iter().any(|a| a == "bool:false");
+            if has_true && has_false {
+                Ok(())
+            } else {
+                Err(Error::msg("non-exhaustive case: missing Bool branch (add `_ -> ...`)"))
+            }
+        }
+        Ty::Con(name) if name == "Unit" => {
+            if alts.iter().any(|a| a == "unit") {
+                Ok(())
+            } else {
+                Err(Error::msg("non-exhaustive case on Unit (add `_ -> ...`)"))
+            }
+        }
+        Ty::List(_) => {
+            let has_nil = alts.iter().any(|a| a == "list:nil");
+            let has_cons = alts.iter().any(|a| a == "list:cons_all");
+            if has_nil && has_cons {
+                Ok(())
+            } else {
+                Err(Error::msg(
+                    "non-exhaustive case on List: missing `[]` or `(_:_)` (add `_ -> ...`)",
+                ))
+            }
+        }
+        Ty::Con(name)
+            if matches!(
+                name.as_str(),
+                "Integer" | "Float64" | "Char" | "String"
+            ) => Err(Error::msg(format!(
+            "non-exhaustive case on {name} (add `_ -> ...`)"
+        ))),
+        // Best-effort check only: if we can't prove non-exhaustiveness, do not error.
+        Ty::Var(_) => Ok(()),
+        Ty::App { .. } | Ty::Con(_) => {
+            // Try ADT constructor coverage for (possibly applied) data types.
+            let ty_name = match scrut_ty {
+                Ty::Con(n) => Some(n.clone()),
+                Ty::App { head, .. } => match head.as_ref() {
+                    Ty::Con(n) => Some(n.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            let Some(ty_name) = ty_name else {
+                return Ok(());
+            };
+
+            let Some(d) = data_env.get(&ty_name) else {
+                return Ok(());
+            };
+
+            let mut missing: Vec<String> = Vec::new();
+            for c in &d.ctors {
+                let key = format!("ctor:{}", unqual_name(&c.name));
+                if !alts.iter().any(|a| a == &key) {
+                    missing.push(c.name.clone());
+                }
+            }
+
+            if missing.is_empty() {
+                Ok(())
+            } else {
+                Err(Error::msg(format!(
+                    "non-exhaustive case on {ty_name}: missing constructors: {}",
+                    missing.join(", ")
+                )))
+            }
+        }
+        _ => Ok(()),
+    }
 }
 
 fn data_derives_show(d: &ast::DataDecl) -> bool {
@@ -3296,9 +3459,13 @@ fn infer_expr_in(
                 .map_err(|e| Error::msg(format!("in case scrutinee: {e}")))?;
             let mut out_ty = cx.fresh();
 
+            let mut pats_for_exhaustive_check: Vec<(ast::Pattern, bool)> = Vec::new();
+
             for (i, arm) in arms.into_iter().enumerate() {
                 let arm_no = i + 1;
                 let ast::CaseArm { pat, guard, body } = arm;
+
+                pats_for_exhaustive_check.push((pat.clone(), guard.is_some()));
 
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
@@ -3352,6 +3519,10 @@ fn infer_expr_in(
                 cs = apply_constraints(&s, cs);
                 out_ty = apply(&s, out_ty);
             }
+
+            let scrut_ty = apply(&s, scrut_ty);
+            check_case_exhaustive(data_env, &scrut_ty, &pats_for_exhaustive_check)
+                .map_err(|e| Error::msg(format!("in case: {e}")))?;
 
             Ok((s.clone(), cs, apply(&s, out_ty)))
         }
