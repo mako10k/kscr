@@ -250,6 +250,44 @@ fn parser_fun_clause_operator_name_parens() {
 }
 
 #[test]
+fn parser_binding_operator_name_arbitrary() {
+    let m = crate::parser::parse_module("(<+>) = f\n").unwrap();
+    assert_eq!(m.items.len(), 1);
+
+    use crate::ast::{ExprKind, Item, PatternKind};
+
+    let Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(&b.pat.kind, PatternKind::Var(name) if name == "<+>"));
+    assert!(matches!(&b.expr.kind, ExprKind::Var(s) if s == "f"));
+}
+
+#[test]
+fn parser_fun_clause_operator_name_infix_arbitrary() {
+    let m = crate::parser::parse_module("a <+> b = a\n").unwrap();
+    assert_eq!(m.items.len(), 1);
+
+    use crate::ast::{ExprKind, Item};
+    let Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+
+    // Desugars to a lambda + case; just sanity check it parsed.
+    assert!(matches!(&b.expr.kind, ExprKind::Lambda { .. }));
+}
+
+#[test]
+fn parser_rejects_operator_starting_with_colon() {
+    let err = crate::parser::parse_module("(:+) a b = a\n").unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("operators starting with ':'"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
 fn parser_fun_clause_operator_name_infix() {
     let m = crate::parser::parse_module("a ++ b = concat a b\n").unwrap();
     assert_eq!(m.items.len(), 1);

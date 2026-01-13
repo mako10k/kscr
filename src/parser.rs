@@ -118,6 +118,7 @@ fn default_fixity(op: &str) -> Fixity {
 fn token_op_name(kind: &TokenKind) -> Option<String> {
     Some(match kind {
         TokenKind::Ident(s) => s.clone(),
+        TokenKind::Operator(s) => s.clone(),
         TokenKind::Plus => "+".to_string(),
         TokenKind::Minus => "-".to_string(),
         TokenKind::Star => "*".to_string(),
@@ -680,6 +681,7 @@ fn parse_fixity_op(ts: &mut TokenStream) -> Result<String> {
     let pos = ts.pos_str_here();
     match ts.bump() {
         Some(TokenKind::Ident(s)) => Ok(s),
+        Some(TokenKind::Operator(s)) => Ok(s),
         Some(TokenKind::Plus) => Ok("+".to_string()),
         Some(TokenKind::Minus) => Ok("-".to_string()),
         Some(TokenKind::Star) => Ok("*".to_string()),
@@ -895,6 +897,8 @@ fn is_sym_op_token(kind: Option<&TokenKind>) -> bool {
     matches!(
         kind,
         Some(
+            TokenKind::Operator(_)
+                |
             TokenKind::Plus
                 | TokenKind::Minus
                 | TokenKind::Star

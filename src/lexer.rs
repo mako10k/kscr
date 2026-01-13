@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Ident(String),
+    Operator(String),
     Integer(String),
     Float(String),
     String(String),
@@ -85,6 +86,14 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
     let mut tokens = Vec::new();
     let bytes = src.as_bytes();
     let mut i = 0usize;
+
+    let is_operator_byte = |b: u8| -> bool {
+        matches!(
+            b,
+            b'!' | b'#' | b'$' | b'%' | b'&' | b'*' | b'+' | b'-' | b'/' | b'<' | b'=' | b'>'
+                | b'^' | b'|' | b'~' | b':'
+        )
+    };
 
     let mut push = |kind: TokenKind, start: usize, end: usize| {
         tokens.push(Token {
@@ -190,6 +199,57 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                     i += 1;
                 }
             }
+            continue;
+        }
+
+        // Operator-like runs (Haskell-like): allow arbitrary symbol sequences,
+        // except those starting with ':' (reserved for constructors).
+        //
+        // Note: this runs before punctuation matching so that operators like "+>" are
+        // lexed as a single token instead of "+" then ">".
+        if is_operator_byte(bytes[i]) {
+            let start = i;
+            i += 1;
+            while i < bytes.len() && is_operator_byte(bytes[i]) {
+                i += 1;
+            }
+            let op = &src[start..i];
+
+            // Keep existing token kinds for well-known operators / punctuation-like symbols.
+            let kind = match op {
+                "->" => TokenKind::Arrow,
+                "<-" => TokenKind::LeftArrow,
+                "=>" => TokenKind::FatArrow,
+                "==" => TokenKind::EqEq,
+                "/=" => TokenKind::SlashEq,
+                "<=" => TokenKind::Le,
+                ">=" => TokenKind::Ge,
+                ">>=" => TokenKind::GtGtEq,
+                ">>" => TokenKind::GtGt,
+                "&&" => TokenKind::AndAnd,
+                "||" => TokenKind::OrOr,
+                "++" => TokenKind::PlusPlus,
+                "::" => TokenKind::ColonColon,
+                ":" => TokenKind::Colon,
+                "+" => TokenKind::Plus,
+                "-" => TokenKind::Minus,
+                "*" => TokenKind::Star,
+                "/" => TokenKind::Slash,
+                "<" => TokenKind::Lt,
+                ">" => TokenKind::Gt,
+                "=" => TokenKind::Eq,
+                "|" => TokenKind::Pipe,
+                _ => {
+                    if op.starts_with(':') {
+                        return Err(crate::error::Error::msg(
+                            "operators starting with ':' are reserved",
+                        ));
+                    }
+                    TokenKind::Operator(op.to_string())
+                }
+            };
+
+            push(kind, start, i);
             continue;
         }
 
