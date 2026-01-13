@@ -3,11 +3,18 @@ module Main where
 
   data Id a = Id a
 
+  instance Functor Id where
+    fmap f ma = case ma of
+      Id x -> Id (f x)
+
+  instance Applicative Id where
+    pure x = Id x
+    mf <*> mx = case mf of
+      Id f -> fmap f mx
+
   instance Monad Id where
     ma >>= f = case ma of
       Id x -> f x
-
-    return = \x -> Id x
 
   x = do
     a <- Id 1

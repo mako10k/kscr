@@ -4277,16 +4277,68 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
     // MVP: always import class/instance declarations.
     // Rationale: instances are required for constraint solving, and class declarations carry
     // method types used to recognize method calls.
-    // (This is intentionally not gated by export lists yet.)
-    out.extend(
-        module
-            .items
-            .iter()
-            .filter(|it| matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
-            .cloned(),
-    );
+    //
+    // NOTE: we must also qualify *types inside* these declarations (instance heads, method
+    // signatures, superclass predicates) so that instance resolution matches the qualified type
+    // constructors introduced by imports (e.g. `Prelude.Maybe`).
+    out.extend(qualify_class_instance_decls(module, qual, &exports)?);
 
     Ok(out)
+}
+
+fn qualify_class_instance_decls(
+    module: &ast::Module,
+    qual: &str,
+    exports: &HashSet<String>,
+) -> Result<Vec<ast::Item>> {
+    let mut types: HashSet<String> = HashSet::new();
+    for it in import_items(module) {
+        match it {
+            ast::Item::TypeAlias(ta) => {
+                types.insert(ta.name);
+            }
+            ast::Item::DataDecl(d) => {
+                types.insert(d.name);
+            }
+            _ => {}
+        }
+    }
+
+    let priv_qual = format!("{qual}$p");
+    let type_map: HashMap<String, String> = types
+        .into_iter()
+        .map(|n| {
+            let q = if exports.contains(&n) { qual } else { &priv_qual };
+            (n.clone(), format!("{q}.{n}"))
+        })
+        .collect();
+
+    module
+        .items
+        .iter()
+        .filter(|it| matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
+        .cloned()
+        .map(|it| {
+            Ok(match it {
+                ast::Item::ClassDecl(mut c) => {
+                    c.supers = c
+                        .supers
+                        .into_iter()
+                        .map(|p| qualify_predicate(p, &type_map))
+                        .collect::<Result<Vec<_>>>()?;
+                    for m in &mut c.methods {
+                        m.ty = qualify_qual_type(m.ty.clone(), &type_map)?;
+                    }
+                    ast::Item::ClassDecl(c)
+                }
+                ast::Item::InstanceDecl(mut inst) => {
+                    inst.ty = qualify_type(inst.ty, &type_map)?;
+                    ast::Item::InstanceDecl(inst)
+                }
+                other => other,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 fn qualify_items(
@@ -6216,7 +6268,9 @@ fn rewrite_class_method_calls_in_module(
     inferred: &HashMap<String, Scheme>,
 ) -> Result<()> {
     fn instance_head_key_ty_for_class(class: &str, ty: &Ty) -> Result<String> {
-        if class == "Monad" {
+        // MVP: higher-kinded classes select instances by the type constructor head.
+        // e.g. `Functor` instance is declared for `Maybe`, but call sites see `Maybe a`.
+        if class == "Monad" || class == "Applicative" || class == "Functor" {
             return Ok(match ty {
                 Ty::Con(name) => name.clone(),
                 Ty::App { head, .. } => {
@@ -6388,22 +6442,18 @@ fn rewrite_class_method_calls_in_module(
                         let dict_var = format!("__dict_{class}");
                         let mut chosen_name_for_known: Option<String> = None;
 
+                        // Dictionary resolution order (important):
+                        // 1) Explicit in-scope dictionary parameters.
+                        // 2) Resolve by argument types (when possible).
+                        // 3) Reuse/derive from previously chosen dictionaries (helps `return` in `do`).
+                        //
+                        // Without (2) before (3), a surrounding `Monad IO` call can incorrectly
+                        // force unrelated nested calls like `fmap ... (Just 1)` to use `Functor IO`.
                         let dict_expr: ast::Expr = if dicts_in_scope.contains(&dict_var) {
                             chosen_name_for_known = Some(dict_var.clone());
                             Expr::new(span, ExprKind::Var(dict_var))
-                        } else if let Some(d) = known_dicts_in_scope.get(class) {
-                            chosen_name_for_known = Some(d.clone());
-                            Expr::new(span, ExprKind::Var(d.clone()))
-                        } else if let Some(d) = derive_dict_expr_from_candidates(
-                            span,
-                            class_env,
-                            class,
-                            dicts_in_scope,
-                            known_dicts_in_scope,
-                        ) {
-                            d
                         } else {
-                            // Resolve dictionary by any usable ground argument type.
+                            // Resolve dictionary by any usable argument type.
                             // This helps cases like `eq x 1` where `x` isn't ground but `1` is.
                             let mut first_non_ground: Option<Ty> = None;
                             let mut first_missing_instance: Option<Ty> = None;
@@ -6478,7 +6528,21 @@ fn rewrite_class_method_calls_in_module(
                                 }
                             }
 
-                            let Some(dict_name) = dict_name else {
+                            if let Some(dict_name) = dict_name {
+                                chosen_name_for_known = Some(dict_name.clone());
+                                Expr::new(span, ExprKind::Var(dict_name))
+                            } else if let Some(d) = known_dicts_in_scope.get(class) {
+                                chosen_name_for_known = Some(d.clone());
+                                Expr::new(span, ExprKind::Var(d.clone()))
+                            } else if let Some(d) = derive_dict_expr_from_candidates(
+                                span,
+                                class_env,
+                                class,
+                                dicts_in_scope,
+                                known_dicts_in_scope,
+                            ) {
+                                d
+                            } else {
                                 if let Some(ty) = first_missing_instance {
                                     return Err(Error::msg(format!(
                                         "no instance found for method call `{mname}`: {class} {ty}"
@@ -6502,9 +6566,7 @@ fn rewrite_class_method_calls_in_module(
                                 return Err(Error::msg(format!(
                                     "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
                                 )));
-                            };
-                            chosen_name_for_known = Some(dict_name.clone());
-                            Expr::new(span, ExprKind::Var(dict_name))
+                            }
                         };
 
                         // Propagate the chosen dictionary name to nested expressions, so that

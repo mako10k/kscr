@@ -1,11 +1,17 @@
 module Prelude.Monad where
-  export Monad(..), (>>=), (>>), return
+  export Monad(..), (>>=), (>>), return, (=<<)
 
-  infixl 10 >>=, >>
+  import Prelude.Applicative
 
-  class Monad m where
+  infixl 10 >>=, >>, =<<
+
+  class Applicative m => Monad m where
     (>>=) :: m a -> (a -> m b) -> m b
     (>>) :: m a -> m b -> m b
     return :: a -> m a
 
+    return = pure
+
     ma >> mb = ma >>= (\_ -> mb)
+
+  (=<<) f ma = ma >>= f
