@@ -366,6 +366,8 @@ pub enum Constraint {
     ShowRow(Ty),
     Eq(Ty),
     EqRow(Ty),
+    /// Builtin constraint for (++) overloading: only `String` and list types are allowed.
+    Appendable(Ty),
     /// User-defined typeclass constraint: `C t`.
     Class {
         class: String,
@@ -415,6 +417,10 @@ fn fmt_constraint(
         }
         Constraint::EqRow(t) => {
             write!(f, "EqRow ")?;
+            fmt_ty_prec(f, t, 0, vars)
+        }
+        Constraint::Appendable(t) => {
+            write!(f, "Appendable ")?;
             fmt_ty_prec(f, t, 0, vars)
         }
         Constraint::Class { class, ty } => {
@@ -528,6 +534,7 @@ fn ftv_constraint(c: &Constraint) -> HashSet<u32> {
         | Constraint::ShowRow(t)
         | Constraint::Eq(t)
         | Constraint::EqRow(t)
+        | Constraint::Appendable(t)
         | Constraint::Class { ty: t, .. } => ftv_ty(t),
         Constraint::Lacks { row, .. } => ftv_ty(row),
     }
@@ -578,6 +585,7 @@ fn replace_vars_constraint(c: &Constraint, m: &HashMap<u32, Ty>) -> Constraint {
         Constraint::ShowRow(t) => Constraint::ShowRow(replace_vars(t, m)),
         Constraint::Eq(t) => Constraint::Eq(replace_vars(t, m)),
         Constraint::EqRow(t) => Constraint::EqRow(replace_vars(t, m)),
+        Constraint::Appendable(t) => Constraint::Appendable(replace_vars(t, m)),
         Constraint::Class { class, ty } => Constraint::Class {
             class: class.clone(),
             ty: replace_vars(ty, m),
@@ -636,6 +644,7 @@ fn apply_constraint(subst: &Subst, c: &Constraint) -> Constraint {
         Constraint::ShowRow(t) => Constraint::ShowRow(apply(subst, t.clone())),
         Constraint::Eq(t) => Constraint::Eq(apply(subst, t.clone())),
         Constraint::EqRow(t) => Constraint::EqRow(apply(subst, t.clone())),
+        Constraint::Appendable(t) => Constraint::Appendable(apply(subst, t.clone())),
         Constraint::Class { class, ty } => Constraint::Class {
             class: class.clone(),
             ty: apply(subst, ty.clone()),
@@ -1530,18 +1539,18 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
-    // ++ :: String -> String -> String
+    // ++ :: Appendable a => a -> a -> a
+    let Ty::Var(v) = cx.fresh() else {
+        unreachable!()
+    };
     env.insert(
         "++".to_string(),
         Scheme {
-            vars: vec![],
-            constraints: vec![],
+            vars: vec![v],
+            constraints: vec![Constraint::Appendable(Ty::Var(v))],
             ty: Ty::Func(
-                Box::new(Ty::Con("String".to_string())),
-                Box::new(Ty::Func(
-                    Box::new(Ty::Con("String".to_string())),
-                    Box::new(Ty::Con("String".to_string())),
-                )),
+                Box::new(Ty::Var(v)),
+                Box::new(Ty::Func(Box::new(Ty::Var(v)), Box::new(Ty::Var(v)))),
             ),
         },
     );
@@ -2410,6 +2419,19 @@ fn eq_primitives(name: &str) -> bool {
     )
 }
 
+fn entails_appendable(ty: &Ty) -> Result<Vec<Constraint>> {
+    Ok(match ty {
+        Ty::Var(_) => vec![Constraint::Appendable(ty.clone())],
+        Ty::Con(name) if name == "String" => vec![],
+        Ty::List(_) => vec![],
+        _ => {
+            return Err(Error::msg(format!(
+                "cannot satisfy constraint: Appendable {ty}"
+            )))
+        }
+    })
+}
+
 fn data_derives_show(d: &ast::DataDecl) -> bool {
     d.deriving.iter().any(|c| c == "Show")
 }
@@ -2736,6 +2758,7 @@ fn simplify_constraints(
             Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, &mut in_progress)?),
             Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, &mut in_progress)?),
             Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, &mut in_progress)?),
+            Constraint::Appendable(t) => out.extend(entails_appendable(&t)?),
             Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
             Constraint::Class { class, ty } => {
                 // Haskell-aligned superclass closure: `C t` entails `super(C) t`.
@@ -8313,6 +8336,7 @@ mod inference_tests {
             Constraint::ShowRow(t) => Constraint::ShowRow(canon_ty_in(t, m, next)),
             Constraint::Eq(t) => Constraint::Eq(canon_ty_in(t, m, next)),
             Constraint::EqRow(t) => Constraint::EqRow(canon_ty_in(t, m, next)),
+            Constraint::Appendable(t) => Constraint::Appendable(canon_ty_in(t, m, next)),
             Constraint::Class { class, ty } => Constraint::Class {
                 class: class.clone(),
                 ty: canon_ty_in(ty, m, next),

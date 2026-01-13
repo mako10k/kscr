@@ -1879,14 +1879,23 @@ fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
 
 fn str_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
-    let Value::String(a) = a else {
-        return Err(Error::msg("++ expects String"));
-    };
-    let Value::String(b) = b else {
-        return Err(Error::msg("++ expects String"));
-    };
-    Ok(Value::String(format!("{a}{b}")))
+
+    match a {
+        Value::String(a) => {
+            let b = force_value(g, b)?;
+            let Value::String(b) = b else {
+                return Err(Error::msg("++ expects String or List"));
+            };
+            Ok(Value::String(format!("{a}{b}")))
+        }
+        Value::ListNil => Ok(b),
+        Value::ListCons(h, t) => {
+            // NOTE: this is eager in the left spine (MVP), but does not force elements.
+            let rest = str_append(g, *t, b)?;
+            Ok(Value::ListCons(h, Box::new(rest)))
+        }
+        _ => Err(Error::msg("++ expects String or List")),
+    }
 }
 
 fn quote_string(s: &str) -> String {

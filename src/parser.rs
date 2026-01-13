@@ -86,9 +86,14 @@ fn default_fixity(op: &str) -> Fixity {
             prec: 70,
             assoc: Assoc::Left,
         },
-        "+" | "-" | "++" => Fixity {
+        "+" | "-" => Fixity {
             prec: 60,
             assoc: Assoc::Left,
+        },
+        "++" => Fixity {
+            // Haskell-like: (++) is right associative and slightly lower precedence than (+).
+            prec: 55,
+            assoc: Assoc::Right,
         },
         "==" | "/=" | "<" | "<=" | ">" | ">=" => Fixity {
             prec: 50,

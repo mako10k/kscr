@@ -622,7 +622,7 @@ mod tests {
         let path = std::env::temp_dir().join("kscr_cli_run_import_data_list_stdlib_smoke.ks");
         std::fs::write(
             &path,
-            "module Main where\n  import Prelude\n  import qualified Data.List as L\n  main = do\n    print (show (L.map (\\x -> x + 1) [1, 2, 3]))\n    print (show (L.filter (\\x -> x == 2) [1, 2, 3]))\n    print (show (L.concat [[1], [2, 3]]))\n    print (show (L.append [1, 2] [3]))\n    putStrLn \"list ok\"\n",
+            "module Main where\n  import Prelude\n  import qualified Data.List as L\n  main = do\n    print (show (L.map (\\x -> x + 1) [1, 2, 3]))\n    print (show (L.filter (\\x -> x == 2) [1, 2, 3]))\n    print (show (L.concat [[1], [2, 3]]))\n    print (show (L.append [1, 2] [3]))\n    print (show (L.length [1, 2, 3]))\n    print (show (L.take 2 [1, 2, 3, 4]))\n    print (show (L.drop 2 [1, 2, 3, 4]))\n    print (show (L.reverse [1, 2, 3]))\n    print (show (L.foldr (\\x -> \\acc -> x + acc) 0 [1, 2, 3]))\n    print (show (L.elem 2 [1, 2, 3]))\n    print (show (L.find (\\x -> x == 2) [1, 2, 3]))\n    putStrLn \"list ok\"\n",
         )
         .unwrap();
         let args = vec![
