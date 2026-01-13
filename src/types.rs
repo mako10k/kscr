@@ -938,59 +938,245 @@ pub fn infer_in_module(module: &ast::Module, expr: ast::Expr) -> Result<Ty> {
 }
 
 pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
-    let mut cx = InferCtx::default();
-    let data_env = collect_data_env(module);
-    let class_env = ClassEnv::default();
-    let mut env = collect_ctor_env(&mut cx, module)?;
-    let mut subst = Subst::new();
-    let mut out = HashMap::new();
+    infer_module_with_class_env(module, &ClassEnv::default())
+}
 
-    for it in &module.items {
-        let ast::Item::Binding(b) = it else {
-            continue;
-        };
+fn collect_deps_in_pattern(
+    pat: &ast::Pattern,
+    name_to_binding: &HashMap<String, usize>,
+    bound: &HashSet<String>,
+    out: &mut HashSet<usize>,
+) {
+    use ast::PatternKind;
+    match &pat.kind {
+        PatternKind::View(p, e) => {
+            collect_deps_in_expr(e, name_to_binding, bound, out);
+            collect_deps_in_pattern(p, name_to_binding, bound, out);
+        }
+        PatternKind::Tuple(ps) | PatternKind::List(ps) => {
+            for p in ps {
+                collect_deps_in_pattern(p, name_to_binding, bound, out);
+            }
+        }
+        PatternKind::Record(fs) => {
+            for (_, p) in fs {
+                collect_deps_in_pattern(p, name_to_binding, bound, out);
+            }
+        }
+        PatternKind::RecordLoose(fs, _) => {
+            for (_, p) in fs {
+                collect_deps_in_pattern(p, name_to_binding, bound, out);
+            }
+        }
+        PatternKind::Cons(a, b) | PatternKind::Or(a, b) => {
+            collect_deps_in_pattern(a, name_to_binding, bound, out);
+            collect_deps_in_pattern(b, name_to_binding, bound, out);
+        }
+        PatternKind::As(_, p) => collect_deps_in_pattern(p, name_to_binding, bound, out),
+        PatternKind::Literal(e) => collect_deps_in_expr(e, name_to_binding, bound, out),
+        PatternKind::Constructor { args, .. } => {
+            for p in args {
+                collect_deps_in_pattern(p, name_to_binding, bound, out);
+            }
+        }
+        PatternKind::Var(_) | PatternKind::Wildcard | PatternKind::Hole(_) => {}
+    }
+}
 
-        let ctx_name = match &b.pat.kind {
-            ast::PatternKind::Var(n) => n.as_str(),
-            _ => "<pattern>",
-        };
+fn collect_deps_in_binding_seq(
+    bindings: &[ast::Binding],
+    body: Option<&ast::Expr>,
+    name_to_binding: &HashMap<String, usize>,
+    bound: &HashSet<String>,
+    out: &mut HashSet<usize>,
+) {
+    let mut bound_seq = bound.clone();
+    for b in bindings {
+        collect_deps_in_expr(&b.expr, name_to_binding, &bound_seq, out);
+        let mut names = HashSet::new();
+        pat_defined_names(&b.pat, &mut names);
+        for n in names {
+            bound_seq.insert(n);
+        }
+    }
+    if let Some(body) = body {
+        collect_deps_in_expr(body, name_to_binding, &bound_seq, out);
+    }
+}
 
-        let mut binds = Vec::new();
-        let mut seen = HashSet::new();
-        let mut cs_pat = Vec::new();
-        let pat_ty = infer_pat_in(
-            &mut cx,
-            &data_env,
-            &mut subst,
-            &env,
-            &b.pat,
-            &mut binds,
-            &mut seen,
-            &mut cs_pat,
-        )
-        .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+fn collect_deps_in_expr(
+    expr: &ast::Expr,
+    name_to_binding: &HashMap<String, usize>,
+    bound: &HashSet<String>,
+    out: &mut HashSet<usize>,
+) {
+    use ast::ExprKind;
+    match &expr.kind {
+        ExprKind::Var(n) => {
+            if !n.contains('.') && !bound.contains(n) {
+                if let Some(i) = name_to_binding.get(n) {
+                    out.insert(*i);
+                }
+            }
+        }
+        ExprKind::Ctor(_) => {}
+        ExprKind::Lambda { params, body } => {
+            let mut bound2 = bound.clone();
+            for p in params {
+                bound2.insert(p.clone());
+            }
+            collect_deps_in_expr(body, name_to_binding, &bound2, out);
+        }
+        ExprKind::Apply { func, args } => {
+            collect_deps_in_expr(func, name_to_binding, bound, out);
+            for a in args {
+                collect_deps_in_expr(a, name_to_binding, bound, out);
+            }
+        }
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_deps_in_expr(cond, name_to_binding, bound, out);
+            collect_deps_in_expr(then_branch, name_to_binding, bound, out);
+            collect_deps_in_expr(else_branch, name_to_binding, bound, out);
+        }
+        ExprKind::Let { bindings, body } => {
+            collect_deps_in_binding_seq(bindings, Some(body), name_to_binding, bound, out);
+        }
+        ExprKind::Where { expr, bindings } => {
+            // The `where` bindings are in scope in `expr`.
+            let mut all_names = HashSet::new();
+            for b in bindings {
+                pat_defined_names(&b.pat, &mut all_names);
+            }
+            let mut bound_expr = bound.clone();
+            for n in all_names {
+                bound_expr.insert(n);
+            }
+            collect_deps_in_expr(expr, name_to_binding, &bound_expr, out);
 
-        let env_in = apply_env(&subst, &env);
-        let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &data_env, &env_in, b.expr.clone())
-            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
-        subst = compose(&s_rhs, &subst);
+            // Sequential bindings: earlier where-binders are in scope for later ones.
+            collect_deps_in_binding_seq(bindings, None, name_to_binding, bound, out);
+        }
+        ExprKind::Annot { expr, .. } => collect_deps_in_expr(expr, name_to_binding, bound, out),
+        ExprKind::Do(stmts) => {
+            let mut bound_do = bound.clone();
+            for s in stmts {
+                match s {
+                    ast::DoStmt::Bind { pat, expr } => {
+                        collect_deps_in_expr(expr, name_to_binding, &bound_do, out);
+                        let mut names = HashSet::new();
+                        pat_defined_names(pat, &mut names);
+                        for n in names {
+                            bound_do.insert(n);
+                        }
+                    }
+                    ast::DoStmt::Expr(e) => {
+                        collect_deps_in_expr(e, name_to_binding, &bound_do, out);
+                    }
+                }
+            }
+        }
+        ExprKind::Case { expr, arms } => {
+            collect_deps_in_expr(expr, name_to_binding, bound, out);
+            for a in arms {
+                // View-pattern expressions do not see the newly bound names.
+                collect_deps_in_pattern(&a.pat, name_to_binding, bound, out);
 
-        let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))
-            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
-        subst = compose(&s_pat, &subst);
+                let mut bound_arm = bound.clone();
+                let mut names = HashSet::new();
+                pat_defined_names(&a.pat, &mut names);
+                for n in names {
+                    bound_arm.insert(n);
+                }
+                if let Some(g) = &a.guard {
+                    collect_deps_in_expr(g, name_to_binding, &bound_arm, out);
+                }
+                collect_deps_in_expr(&a.body, name_to_binding, &bound_arm, out);
+            }
+        }
+        ExprKind::Cons { head, tail } => {
+            collect_deps_in_expr(head, name_to_binding, bound, out);
+            collect_deps_in_expr(tail, name_to_binding, bound, out);
+        }
+        ExprKind::List(es) | ExprKind::Tuple(es) => {
+            for e in es {
+                collect_deps_in_expr(e, name_to_binding, bound, out);
+            }
+        }
+        ExprKind::Record(fs) => {
+            for (_, e) in fs {
+                collect_deps_in_expr(e, name_to_binding, bound, out);
+            }
+        }
+        ExprKind::Unit
+        | ExprKind::Integer(_)
+        | ExprKind::Float64(_)
+        | ExprKind::Bool(_)
+        | ExprKind::String(_)
+        | ExprKind::Char(_) => {}
+    }
+}
 
-        for (name, t) in binds {
-            let env_gen = apply_env(&subst, &env);
-            let mut cs = cs_rhs.clone();
-            cs.extend(cs_pat.clone());
-            let cs = simplify_constraints(&data_env, &class_env, apply_constraints(&subst, cs))?;
-            let scheme = generalize_qual(&env_gen, cs, apply(&subst, t));
-            env.insert(name.clone(), scheme.clone());
-            out.insert(name, scheme);
+fn tarjan_scc(graph: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    struct TarjanState {
+        index: usize,
+        indices: Vec<Option<usize>>,
+        lowlink: Vec<usize>,
+        stack: Vec<usize>,
+        on_stack: Vec<bool>,
+        out: Vec<Vec<usize>>,
+    }
+
+    fn strongconnect(v: usize, graph: &[Vec<usize>], st: &mut TarjanState) {
+        st.indices[v] = Some(st.index);
+        st.lowlink[v] = st.index;
+        st.index += 1;
+        st.stack.push(v);
+        st.on_stack[v] = true;
+
+        for &w in &graph[v] {
+            if st.indices[w].is_none() {
+                strongconnect(w, graph, st);
+                st.lowlink[v] = st.lowlink[v].min(st.lowlink[w]);
+            } else if st.on_stack[w] {
+                st.lowlink[v] = st.lowlink[v].min(st.indices[w].unwrap());
+            }
+        }
+
+        if st.lowlink[v] == st.indices[v].unwrap() {
+            let mut comp = Vec::new();
+            loop {
+                let w = st.stack.pop().unwrap();
+                st.on_stack[w] = false;
+                comp.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            st.out.push(comp);
         }
     }
 
-    Ok(out)
+    let n = graph.len();
+    let mut st = TarjanState {
+        index: 0,
+        indices: vec![None; n],
+        lowlink: vec![0usize; n],
+        stack: Vec::new(),
+        on_stack: vec![false; n],
+        out: Vec::new(),
+    };
+
+    for v in 0..n {
+        if st.indices[v].is_none() {
+            strongconnect(v, graph, &mut st);
+        }
+    }
+
+    st.out
 }
 
 fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> {
@@ -6440,53 +6626,192 @@ fn infer_module_with_class_env(
     module: &ast::Module,
     class_env: &ClassEnv,
 ) -> Result<HashMap<String, Scheme>> {
+    // Order-independent top-level inference (Haskell-like): compute SCCs of top-level bindings,
+    // then typecheck SCCs in dependency order, generalizing non-recursive groups.
     let mut cx = InferCtx::default();
     let data_env = collect_data_env(module);
-    let mut env = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
-    let mut subst = Subst::new();
-    let mut out = HashMap::new();
+    let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
+
+    // Collect top-level bindings as nodes.
+    let mut bindings: Vec<ast::Binding> = Vec::new();
+    let mut ctx_names: Vec<String> = Vec::new();
+    let mut defined_names: Vec<HashSet<String>> = Vec::new();
 
     for it in &module.items {
         let ast::Item::Binding(b) = it else {
             continue;
         };
 
-        let ctx_name = match &b.pat.kind {
-            ast::PatternKind::Var(n) => n.as_str(),
-            _ => "<pattern>",
+        let ctx = match &b.pat.kind {
+            ast::PatternKind::Var(n) => n.clone(),
+            _ => "<pattern>".to_string(),
         };
 
-        let mut binds = Vec::new();
-        let mut seen = HashSet::new();
-        let mut cs_pat = Vec::new();
-        let pat_ty = infer_pat_in(
-            &mut cx,
-            &data_env,
-            &mut subst,
-            &env,
-            &b.pat,
-            &mut binds,
-            &mut seen,
-            &mut cs_pat,
-        )
-        .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+        let mut names = HashSet::new();
+        pat_defined_names(&b.pat, &mut names);
 
-        let env_in = apply_env(&subst, &env);
-        let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &data_env, &env_in, b.expr.clone())
+        bindings.push(b.clone());
+        ctx_names.push(ctx);
+        defined_names.push(names);
+    }
+
+    let n = bindings.len();
+    let mut name_to_binding: HashMap<String, usize> = HashMap::new();
+    for (i, names) in defined_names.iter().enumerate() {
+        for name in names {
+            // If there are duplicates, let the later phase produce a readable error.
+            name_to_binding.insert(name.clone(), i);
+        }
+    }
+
+    // Build dependency graph between binding-nodes.
+    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for i in 0..n {
+        let mut deps = HashSet::new();
+        let empty: HashSet<String> = HashSet::new();
+        collect_deps_in_expr(&bindings[i].expr, &name_to_binding, &empty, &mut deps);
+        // Ensure direct self-recursion is recorded.
+        for name in &defined_names[i] {
+            if let Some(j) = name_to_binding.get(name) {
+                if *j == i {
+                    // nothing
+                }
+            }
+        }
+        graph[i] = deps.into_iter().collect();
+    }
+
+    let comps = tarjan_scc(&graph);
+    let mut node_to_comp = vec![0usize; n];
+    for (ci, comp) in comps.iter().enumerate() {
+        for &v in comp {
+            node_to_comp[v] = ci;
+        }
+    }
+
+    // Build component graph with edges dependency -> dependent.
+    let comp_n = comps.len();
+    let mut comp_edges: Vec<HashSet<usize>> = vec![HashSet::new(); comp_n];
+    let mut indeg = vec![0usize; comp_n];
+    for u in 0..n {
+        let cu = node_to_comp[u];
+        for &v in &graph[u] {
+            let cv = node_to_comp[v];
+            if cu == cv {
+                continue;
+            }
+            // u depends on v, so cv -> cu
+            if comp_edges[cv].insert(cu) {
+                indeg[cu] += 1;
+            }
+        }
+    }
+
+    // Kahn topo sort over components.
+    let mut queue: std::collections::VecDeque<usize> = indeg
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &d)| if d == 0 { Some(i) } else { None })
+        .collect();
+    let mut comp_order = Vec::new();
+    while let Some(c) = queue.pop_front() {
+        comp_order.push(c);
+        for &to in comp_edges[c].iter() {
+            indeg[to] -= 1;
+            if indeg[to] == 0 {
+                queue.push_back(to);
+            }
+        }
+    }
+
+    if comp_order.len() != comp_n {
+        return Err(Error::msg("internal error: cyclic component graph"));
+    }
+
+    let mut subst = Subst::new();
+    let mut out = HashMap::new();
+
+    type BindingInfer = (Vec<(String, Ty)>, Vec<Constraint>);
+
+    for ci in comp_order {
+        let comp = &comps[ci];
+
+        // Pre-bind all names in this SCC as monomorphic placeholders.
+        let mut env_scc = env_global.clone();
+        let mut scc_names: HashSet<String> = HashSet::new();
+        for &bi in comp {
+            for n in &defined_names[bi] {
+                scc_names.insert(n.clone());
+            }
+        }
+
+        for name in scc_names.iter() {
+            let Ty::Var(v) = cx.fresh() else {
+                unreachable!()
+            };
+            env_scc.insert(
+                name.clone(),
+                Scheme {
+                    vars: vec![],
+                    constraints: vec![],
+                    ty: Ty::Var(v),
+                },
+            );
+        }
+
+        // Infer each binding in the SCC under the placeholder environment.
+        let mut per_bind: Vec<BindingInfer> = Vec::new();
+        for &bi in comp {
+            let b = &bindings[bi];
+            let ctx_name = &ctx_names[bi];
+
+            let mut binds = Vec::new();
+            let mut seen = HashSet::new();
+            let mut cs_pat = Vec::new();
+            let pat_ty = infer_pat_in(
+                &mut cx,
+                &data_env,
+                &mut subst,
+                &env_scc,
+                &b.pat,
+                &mut binds,
+                &mut seen,
+                &mut cs_pat,
+            )
             .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
-        subst = compose(&s_rhs, &subst);
 
-        let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))
-            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
-        subst = compose(&s_pat, &subst);
+            let env_in = apply_env(&subst, &env_scc);
+            let (s_rhs, cs_rhs, t_rhs) =
+                infer_expr_in(&mut cx, &data_env, &env_in, b.expr.clone())
+                    .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+            subst = compose(&s_rhs, &subst);
 
-        for (name, t) in binds {
-            let env_gen = apply_env(&subst, &env);
-            let mut cs = cs_rhs.clone();
-            cs.extend(cs_pat.clone());
-            let cs = simplify_constraints(&data_env, class_env, apply_constraints(&subst, cs))?;
-            let scheme = generalize_qual(&env_gen, cs, apply(&subst, t));
-            env.insert(name.clone(), scheme.clone());
+            let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))
+                .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+            subst = compose(&s_pat, &subst);
+
+            let mut cs = cs_rhs;
+            cs.extend(cs_pat);
+            per_bind.push((binds, cs));
+        }
+
+        // Generalize all names in the SCC against the environment *outside* the SCC.
+        let env_gen_base = apply_env(&subst, &env_global);
+        let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
+        for (binds, cs) in per_bind {
+            for (name, t) in binds {
+                let cs = simplify_constraints(
+                    &data_env,
+                    class_env,
+                    apply_constraints(&subst, cs.clone()),
+                )?;
+                let scheme = generalize_qual(&env_gen_base, cs, apply(&subst, t));
+                new_schemes.push((name, scheme));
+            }
+        }
+
+        for (name, scheme) in new_schemes {
+            env_global.insert(name.clone(), scheme.clone());
             out.insert(name, scheme);
         }
     }

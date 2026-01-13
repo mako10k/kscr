@@ -1815,9 +1815,9 @@ mod tests {
     }
 
     #[test]
-    fn cli_run_rejects_recursive_value_definition() {
+    fn cli_run_allows_recursive_value_definition_if_unused() {
         let path = std::env::temp_dir().join(format!(
-            "kscr_cli_run_rejects_recursive_value_definition_{}.ks",
+            "kscr_cli_run_allows_recursive_value_definition_if_unused_{}.ks",
             std::process::id()
         ));
         std::fs::write(&path, "module Main where\n  x = x\n  main = IO ()\n").unwrap();
@@ -1826,8 +1826,48 @@ mod tests {
             "run".to_string(),
             path.to_string_lossy().to_string(),
         ];
+        run(args.into_iter()).unwrap();
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_forced_recursive_value_definition_errors() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_forced_recursive_value_definition_errors_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  x = x\n  main = case x of\n    _ -> IO ()\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
         let e = run(args.into_iter()).unwrap_err();
-        assert!(format!("{e}").contains("unbound variable: x"));
+        assert!(format!("{e}").contains("cyclic definition"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn cli_run_allows_forward_reference_top_level_smoke() {
+        let path = std::env::temp_dir().join(format!(
+            "kscr_cli_run_allows_forward_reference_top_level_smoke_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "module Main where\n  a = b + 1\n  b = 2\n  main = case a of\n    3 -> IO ()\n    _ -> case (1 / 0) of\n      _ -> IO ()\n",
+        )
+        .unwrap();
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            path.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
         let _ = std::fs::remove_file(path);
     }
 }
