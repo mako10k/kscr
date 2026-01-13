@@ -722,9 +722,14 @@ mod tests {
 
     #[test]
     fn cli_run_import_data_maybe_stdlib_smoke() {
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "kscr_cli_run_import_data_maybe_stdlib_smoke_{}",
-            std::process::id()
+            "kscr_cli_run_import_data_maybe_stdlib_smoke_{}_{}",
+            std::process::id(),
+            uniq
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -747,9 +752,14 @@ mod tests {
 
     #[test]
     fn cli_run_import_data_either_stdlib_smoke() {
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let dir = std::env::temp_dir().join(format!(
-            "kscr_cli_run_import_data_either_stdlib_smoke_{}",
-            std::process::id()
+            "kscr_cli_run_import_data_either_stdlib_smoke_{}_{}",
+            std::process::id(),
+            uniq
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

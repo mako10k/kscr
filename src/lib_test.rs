@@ -84,7 +84,9 @@ class (Eq a) => Ord a where
     assert_eq!(cls.param, "a");
     assert_eq!(
         cls.supers,
-        vec![crate::ast::Predicate::Eq(crate::ast::Type::Var("a".to_string()))]
+        vec![crate::ast::Predicate::Eq(crate::ast::Type::Var(
+            "a".to_string()
+        ))]
     );
 }
 
@@ -108,7 +110,9 @@ class Eq a => Ord a where
     assert_eq!(cls.param, "a");
     assert_eq!(
         cls.supers,
-        vec![crate::ast::Predicate::Eq(crate::ast::Type::Var("a".to_string()))]
+        vec![crate::ast::Predicate::Eq(crate::ast::Type::Var(
+            "a".to_string()
+        ))]
     );
 }
 
@@ -806,7 +810,8 @@ fn typecheck_list_comprehension_simple() {
 
 #[test]
 fn ir_run_main_list_comprehension() {
-    let src = "main = case [x | x <- [1, 2]] of\n  [1, 2] -> IO ()\n  _ -> throw \"assert failed\"\n";
+    let src =
+        "main = case [x | x <- [1, 2]] of\n  [1, 2] -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
@@ -1834,7 +1839,8 @@ fn ir_let_is_lazy() {
 
 #[test]
 fn ir_apply_args_are_lazy() {
-    let src = "main = let\n  bad = error \"boom\"\n  f = \\a b -> a\nin do\n  IO (f 1 bad)\n  IO ()\n";
+    let src =
+        "main = let\n  bad = error \"boom\"\n  f = \\a b -> a\nin do\n  IO (f 1 bad)\n  IO ()\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();

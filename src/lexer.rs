@@ -90,8 +90,21 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
     let is_operator_byte = |b: u8| -> bool {
         matches!(
             b,
-            b'!' | b'#' | b'$' | b'%' | b'&' | b'*' | b'+' | b'-' | b'/' | b'<' | b'=' | b'>'
-                | b'^' | b'|' | b'~' | b':'
+            b'!' | b'#'
+                | b'$'
+                | b'%'
+                | b'&'
+                | b'*'
+                | b'+'
+                | b'-'
+                | b'/'
+                | b'<'
+                | b'='
+                | b'>'
+                | b'^'
+                | b'|'
+                | b'~'
+                | b':'
         )
     };
 

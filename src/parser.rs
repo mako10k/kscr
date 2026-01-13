@@ -481,16 +481,16 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         match ts.peek_kind() {
             Some(
                 TokenKind::Ident(_)
-                    | TokenKind::LParen
-                    | TokenKind::LBracket
-                    | TokenKind::LBrace
-                    | TokenKind::Integer(_)
-                    | TokenKind::Float(_)
-                    | TokenKind::String(_)
-                    | TokenKind::Char(_)
-                    | TokenKind::True
-                    | TokenKind::False
-                    | TokenKind::Question,
+                | TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::Integer(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::Char(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Question,
             ) => match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
                 ParsedBind::Binding(b) => {
                     flush_pending_fun_item(ts, &mut default_items, pending.take())?;
@@ -903,8 +903,7 @@ fn is_sym_op_token(kind: Option<&TokenKind>) -> bool {
         kind,
         Some(
             TokenKind::Operator(_)
-                |
-            TokenKind::Plus
+                | TokenKind::Plus
                 | TokenKind::Minus
                 | TokenKind::Star
                 | TokenKind::Slash

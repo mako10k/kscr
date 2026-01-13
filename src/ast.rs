@@ -265,8 +265,14 @@ pub enum Predicate {
     Eq(Type),
     EqRow(Type),
     /// User-defined typeclass constraint: `C t`.
-    Class { class: String, ty: Type },
-    Lacks { label: String, row: Type },
+    Class {
+        class: String,
+        ty: Type,
+    },
+    Lacks {
+        label: String,
+        row: Type,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

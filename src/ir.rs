@@ -474,7 +474,8 @@ fn lower_expr(
             for b in bindings {
                 match &b.pat.kind {
                     PatternKind::Var(name) => {
-                        out_bindings.push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
+                        out_bindings
+                            .push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
                     }
                     pat => {
                         let mut vars = std::collections::BTreeSet::new();
@@ -576,7 +577,8 @@ fn lower_expr(
             for b in bindings {
                 match &b.pat.kind {
                     PatternKind::Var(name) => {
-                        out_bindings.push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
+                        out_bindings
+                            .push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
                     }
                     pat => {
                         let mut vars = std::collections::BTreeSet::new();
@@ -714,8 +716,8 @@ pub enum Value {
     BuiltinNot,
     BuiltinIntToString,
     BuiltinBoolToString,
-    BuiltinStrAppend,
-    BuiltinStrAppend1(Box<Value>),
+    BuiltinListAppend,
+    BuiltinListAppend1(Box<Value>),
     BuiltinShow,
     BuiltinShowDictApply,
     BuiltinShowDictApply1(Box<Value>),
@@ -923,7 +925,7 @@ fn eval_var(
     }
 
     if name == "++" {
-        return Ok(Value::BuiltinStrAppend);
+        return Ok(Value::BuiltinListAppend);
     }
 
     if name == "show" || name == "toString" {
@@ -1255,7 +1257,11 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
             }
             IoOutcome::Thrown(e) => {
                 let ctor = eval_var(g, &std::collections::HashMap::new(), "Left")?;
-                Ok(IoOutcome::Value(apply_one(g, ctor, string_to_char_list(&e))?))
+                Ok(IoOutcome::Value(apply_one(
+                    g,
+                    ctor,
+                    string_to_char_list(&e),
+                )?))
             }
         },
 
@@ -1267,7 +1273,9 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
             let func = force_value(g, func)?;
             let act = apply_one(g, func, v)?;
             let Value::IoAction(act) = act else {
-                return Err(Error::msg("__ioBind: body did not evaluate to an IO action"));
+                return Err(Error::msg(
+                    "__ioBind: body did not evaluate to an IO action",
+                ));
             };
             run_io(g, *act)
         }
@@ -1355,8 +1363,8 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinNot => not_bool(g, arg),
         Value::BuiltinIntToString => int_to_string(g, arg),
         Value::BuiltinBoolToString => bool_to_string(g, arg),
-        Value::BuiltinStrAppend => Ok(Value::BuiltinStrAppend1(Box::new(arg))),
-        Value::BuiltinStrAppend1(a) => str_append(g, *a, arg),
+        Value::BuiltinListAppend => Ok(Value::BuiltinListAppend1(Box::new(arg))),
+        Value::BuiltinListAppend1(a) => list_append(g, *a, arg),
         Value::BuiltinShowDictApply => Ok(Value::BuiltinShowDictApply1(Box::new(arg))),
         Value::BuiltinShowDictApply1(d) => show_with_dict(g, *d, arg),
         Value::BuiltinEqDictApply => Ok(Value::BuiltinEqDictApply1(Box::new(arg))),
@@ -1914,14 +1922,14 @@ fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
     Ok(string_to_char_list(if a { "True" } else { "False" }))
 }
 
-fn str_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
+fn list_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
 
     match a {
         Value::ListNil => Ok(b),
         Value::ListCons(h, t) => {
             // NOTE: this is eager in the left spine (MVP), but does not force elements.
-            let rest = str_append(g, *t, b)?;
+            let rest = list_append(g, *t, b)?;
             Ok(Value::ListCons(h, Box::new(rest)))
         }
         _ => Err(Error::msg("++ expects List")),

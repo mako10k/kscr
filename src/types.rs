@@ -366,8 +366,6 @@ pub enum Constraint {
     ShowRow(Ty),
     Eq(Ty),
     EqRow(Ty),
-    /// Builtin constraint for (++) overloading: only `String` and list types are allowed.
-    Appendable(Ty),
     /// User-defined typeclass constraint: `C t`.
     Class {
         class: String,
@@ -417,10 +415,6 @@ fn fmt_constraint(
         }
         Constraint::EqRow(t) => {
             write!(f, "EqRow ")?;
-            fmt_ty_prec(f, t, 0, vars)
-        }
-        Constraint::Appendable(t) => {
-            write!(f, "Appendable ")?;
             fmt_ty_prec(f, t, 0, vars)
         }
         Constraint::Class { class, ty } => {
@@ -534,7 +528,6 @@ fn ftv_constraint(c: &Constraint) -> HashSet<u32> {
         | Constraint::ShowRow(t)
         | Constraint::Eq(t)
         | Constraint::EqRow(t)
-        | Constraint::Appendable(t)
         | Constraint::Class { ty: t, .. } => ftv_ty(t),
         Constraint::Lacks { row, .. } => ftv_ty(row),
     }
@@ -585,7 +578,6 @@ fn replace_vars_constraint(c: &Constraint, m: &HashMap<u32, Ty>) -> Constraint {
         Constraint::ShowRow(t) => Constraint::ShowRow(replace_vars(t, m)),
         Constraint::Eq(t) => Constraint::Eq(replace_vars(t, m)),
         Constraint::EqRow(t) => Constraint::EqRow(replace_vars(t, m)),
-        Constraint::Appendable(t) => Constraint::Appendable(replace_vars(t, m)),
         Constraint::Class { class, ty } => Constraint::Class {
             class: class.clone(),
             ty: replace_vars(ty, m),
@@ -644,7 +636,6 @@ fn apply_constraint(subst: &Subst, c: &Constraint) -> Constraint {
         Constraint::ShowRow(t) => Constraint::ShowRow(apply(subst, t.clone())),
         Constraint::Eq(t) => Constraint::Eq(apply(subst, t.clone())),
         Constraint::EqRow(t) => Constraint::EqRow(apply(subst, t.clone())),
-        Constraint::Appendable(t) => Constraint::Appendable(apply(subst, t.clone())),
         Constraint::Class { class, ty } => Constraint::Class {
             class: class.clone(),
             ty: apply(subst, ty.clone()),
@@ -1567,10 +1558,7 @@ fn collect_ctor_env_with_class_env(
         Scheme {
             vars: vec![v],
             constraints: vec![Constraint::Show(Ty::Var(v))],
-            ty: Ty::Func(
-                Box::new(Ty::Var(v)),
-                Box::new(char_list.clone()),
-            ),
+            ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
         },
     );
 
@@ -1583,10 +1571,7 @@ fn collect_ctor_env_with_class_env(
         Scheme {
             vars: vec![v],
             constraints: vec![Constraint::Show(Ty::Var(v))],
-            ty: Ty::Func(
-                Box::new(Ty::Var(v)),
-                Box::new(char_list.clone()),
-            ),
+            ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
         },
     );
 
@@ -1697,10 +1682,7 @@ fn collect_ctor_env_with_class_env(
         head: Box::new(Ty::Con("IO".to_string())),
         args: vec![Ty::Var(a)],
     };
-    let handler = Ty::Func(
-        Box::new(char_list.clone()),
-        Box::new(io_a.clone()),
-    );
+    let handler = Ty::Func(Box::new(char_list.clone()), Box::new(io_a.clone()));
     env.insert(
         "catch".to_string(),
         Scheme {
@@ -2106,7 +2088,10 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
                 | ast::Predicate::EqRow(ast::Type::Var(v))
                     if v == param => {}
 
-                ast::Predicate::Class { class: sup, ty: ast::Type::Var(v) } if v == param => {
+                ast::Predicate::Class {
+                    class: sup,
+                    ty: ast::Type::Var(v),
+                } if v == param => {
                     if !env.class_params.contains_key(sup) {
                         return Err(Error::msg(format!(
                             "unknown superclass `{sup}` in class `{class}`"
@@ -2210,16 +2195,13 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         }
 
         match expr.kind {
-            ExprKind::Lambda { params: mut ps, body } => {
+            ExprKind::Lambda {
+                params: mut ps,
+                body,
+            } => {
                 let mut all: Vec<String> = params.to_vec();
                 all.append(&mut ps);
-                ast::Expr::new(
-                    span,
-                    ExprKind::Lambda {
-                        params: all,
-                        body,
-                    },
-                )
+                ast::Expr::new(span, ExprKind::Lambda { params: all, body })
             }
             other => ast::Expr::new(
                 span,
@@ -2300,11 +2282,12 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         for mname in method_names {
             let expr = if let Some(e) = inst_methods.get(mname) {
                 e.clone()
-            } else if let Some(e) = class_default_methods.get(&(inst.class.clone(), mname.clone())) {
+            } else if let Some(e) = class_default_methods.get(&(inst.class.clone(), mname.clone()))
+            {
                 e.clone()
             } else {
                 return Err(Error::msg(format!(
-                        "missing method implementation for `{}` in instance {} {}",
+                    "missing method implementation for `{}` in instance {} {}",
                     mname, inst.class, ty_key
                 )));
             };
@@ -2433,19 +2416,6 @@ fn eq_primitives(name: &str) -> bool {
     matches!(name, "Integer" | "Bool" | "Char" | "Unit" | "Float64")
 }
 
-fn entails_appendable(ty: &Ty) -> Result<Vec<Constraint>> {
-    Ok(match ty {
-        Ty::Var(_) => vec![Constraint::Appendable(ty.clone())],
-        Ty::Con(name) if name == "String" => vec![],
-        Ty::List(_) => vec![],
-        _ => {
-            return Err(Error::msg(format!(
-                "cannot satisfy constraint: Appendable {ty}"
-            )))
-        }
-    })
-}
-
 fn check_case_exhaustive(
     data_env: &DataEnv,
     scrut_ty: &Ty,
@@ -2485,9 +2455,7 @@ fn check_case_exhaustive(
             PatternKind::Constructor { name, .. } => {
                 out.push(format!("ctor:{}", unqual_name(name)))
             }
-            PatternKind::Cons(_, _) if is_list_cons_all(p) => {
-                out.push("list:cons_all".to_string())
-            }
+            PatternKind::Cons(_, _) if is_list_cons_all(p) => out.push("list:cons_all".to_string()),
             PatternKind::List(ps) if ps.is_empty() => out.push("list:nil".to_string()),
             PatternKind::Literal(e) => match &e.kind {
                 ExprKind::Bool(b) => out.push(format!("bool:{b}")),
@@ -2525,7 +2493,9 @@ fn check_case_exhaustive(
             if has_true && has_false {
                 Ok(())
             } else {
-                Err(Error::msg("non-exhaustive case: missing Bool branch (add `_ -> ...`)"))
+                Err(Error::msg(
+                    "non-exhaustive case: missing Bool branch (add `_ -> ...`)",
+                ))
             }
         }
         Ty::Con(name) if name == "Unit" => {
@@ -2546,13 +2516,9 @@ fn check_case_exhaustive(
                 ))
             }
         }
-        Ty::Con(name)
-            if matches!(
-                name.as_str(),
-                "Integer" | "Float64" | "Char" | "String"
-            ) => Err(Error::msg(format!(
-            "non-exhaustive case on {name} (add `_ -> ...`)"
-        ))),
+        Ty::Con(name) if matches!(name.as_str(), "Integer" | "Float64" | "Char") => Err(
+            Error::msg(format!("non-exhaustive case on {name} (add `_ -> ...`)")),
+        ),
         // Best-effort check only: if we can't prove non-exhaustiveness, do not error.
         Ty::Var(_) => Ok(()),
         Ty::App { .. } | Ty::Con(_) => {
@@ -2921,7 +2887,6 @@ fn simplify_constraints(
             Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, &mut in_progress)?),
             Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, &mut in_progress)?),
             Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, &mut in_progress)?),
-            Constraint::Appendable(t) => out.extend(entails_appendable(&t)?),
             Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
             Constraint::Class { class, ty } => {
                 // Haskell-aligned superclass closure: `C t` entails `super(C) t`.
@@ -2986,11 +2951,7 @@ fn simplify_constraints(
 
     let mut keep: Vec<bool> = vec![true; out.len()];
     for (i, ci_constraint) in out.iter().enumerate() {
-        let Constraint::Class {
-            class: ci,
-            ty: ti,
-        } = ci_constraint
-        else {
+        let Constraint::Class { class: ci, ty: ti } = ci_constraint else {
             continue;
         };
 
@@ -2998,11 +2959,7 @@ fn simplify_constraints(
             if i == j {
                 continue;
             }
-            let Constraint::Class {
-                class: cj,
-                ty: tj,
-            } = cj_constraint
-            else {
+            let Constraint::Class { class: cj, ty: tj } = cj_constraint else {
                 continue;
             };
 
@@ -3169,8 +3126,9 @@ fn infer_expr_in(
                 // Connect binder types to their placeholders so recursive references unify.
                 for (name, t) in &binds {
                     if let Some(ph) = placeholders.get(name).cloned() {
-                        let su = unify(apply(&s, t.clone()), apply(&s, ph))
-                            .map_err(|e| Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}")))?;
+                        let su = unify(apply(&s, t.clone()), apply(&s, ph)).map_err(|e| {
+                            Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}"))
+                        })?;
                         s = compose(&su, &s);
                     }
                 }
@@ -3435,8 +3393,7 @@ fn infer_expr_in(
         }
 
         ExprKind::Let { bindings, body } => {
-            let (s_bind, env2) =
-                infer_local_letrec_bindings(cx, data_env, env, bindings, "let")?;
+            let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "let")?;
             let env_body = apply_env(&s_bind, &env2);
             let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *body)
                 .map_err(|e| Error::msg(format!("in let body: {e}")))?;
@@ -3445,8 +3402,7 @@ fn infer_expr_in(
         }
 
         ExprKind::Where { expr, bindings } => {
-            let (s_bind, env2) =
-                infer_local_letrec_bindings(cx, data_env, env, bindings, "where")?;
+            let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "where")?;
             let env_body = apply_env(&s_bind, &env2);
             let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *expr)
                 .map_err(|e| Error::msg(format!("in where body: {e}")))?;
@@ -5058,7 +5014,10 @@ fn rewrite_show_calls_in_expr(expr: ast::Expr) -> ast::Expr {
                             body: Box::new(Expr::new(
                                 span,
                                 ExprKind::Apply {
-                                    func: Box::new(Expr::new(span, ExprKind::Var("not".to_string()))),
+                                    func: Box::new(Expr::new(
+                                        span,
+                                        ExprKind::Var("not".to_string()),
+                                    )),
                                     args: vec![Expr::new(
                                         span,
                                         ExprKind::Apply {
@@ -5575,8 +5534,7 @@ fn rewrite_class_dict_passing_in_module(
                     class_env,
                     inferred,
                     arg.clone(),
-                )
-                {
+                ) {
                     if let Ok(s) = unify(apply(&subst, (*dom).clone()), apply(&subst, arg_ty)) {
                         subst = compose(&s, &subst);
                     }
@@ -5685,7 +5643,9 @@ fn rewrite_class_dict_passing_in_module(
                         }
 
                         // Superclass projection from any in-scope dictionary.
-                        if let Some(d) = derive_dict_from_scope(span, class_env, dicts_in_scope, class) {
+                        if let Some(d) =
+                            derive_dict_from_scope(span, class_env, dicts_in_scope, class)
+                        {
                             dict_args.push(d);
                             continue;
                         }
@@ -5732,7 +5692,9 @@ fn rewrite_class_dict_passing_in_module(
                             }
 
                             // Superclass projection from any in-scope dictionary.
-                            if let Some(d) = derive_dict_from_scope(span, class_env, dicts_in_scope, class) {
+                            if let Some(d) =
+                                derive_dict_from_scope(span, class_env, dicts_in_scope, class)
+                            {
                                 dict_args.push(d);
                                 continue;
                             }
@@ -6257,14 +6219,14 @@ fn rewrite_class_method_calls_in_module(
         if class == "Monad" {
             return Ok(match ty {
                 Ty::Con(name) => name.clone(),
-                Ty::App { head, .. } => match head.as_ref() {
-                    Ty::Con(name) => name.clone(),
-                    _ => {
-                        return Err(Error::msg(
+                Ty::App { head, .. } => {
+                    match head.as_ref() {
+                        Ty::Con(name) => name.clone(),
+                        _ => return Err(Error::msg(
                             "MVP: class constraints support only constructor/app instance heads",
-                        ))
+                        )),
                     }
-                },
+                }
                 _ => {
                     return Err(Error::msg(
                         "MVP: class constraints support only constructor/app instance heads",
@@ -6330,7 +6292,11 @@ fn rewrite_class_method_calls_in_module(
             None
         }
 
-        fn project_dict_along_path(span: ast::Span, mut base: ast::Expr, path: &[String]) -> ast::Expr {
+        fn project_dict_along_path(
+            span: ast::Span,
+            mut base: ast::Expr,
+            path: &[String],
+        ) -> ast::Expr {
             for sup in path {
                 let get = ast::Expr::new(span, ast::ExprKind::Var("__recordGet".to_string()));
                 base = ast::Expr::new(
@@ -6367,7 +6333,12 @@ fn rewrite_class_method_calls_in_module(
             // Candidates from previously chosen concrete dictionaries.
             let mut known_candidates: Vec<(String, ast::Expr)> = known_dicts_in_scope
                 .iter()
-                .map(|(c, n)| (c.clone(), ast::Expr::new(span, ast::ExprKind::Var(n.clone()))))
+                .map(|(c, n)| {
+                    (
+                        c.clone(),
+                        ast::Expr::new(span, ast::ExprKind::Var(n.clone())),
+                    )
+                })
                 .collect();
             known_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
 
@@ -6488,7 +6459,8 @@ fn rewrite_class_method_calls_in_module(
                                         }
                                     }
 
-                                    let Ok(head) = instance_head_key_ty_for_class(class, &a_ty) else {
+                                    let Ok(head) = instance_head_key_ty_for_class(class, &a_ty)
+                                    else {
                                         // This argument is ground but isn't a supported instance head.
                                         // Keep searching other arguments that might yield an instance.
                                         continue;
@@ -7055,9 +7027,8 @@ fn infer_module_with_class_env(
             .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
 
             let env_in = apply_env(&subst, &env_scc);
-            let (s_rhs, cs_rhs, t_rhs) =
-                infer_expr_in(&mut cx, &data_env, &env_in, b.expr.clone())
-                    .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+            let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &data_env, &env_in, b.expr.clone())
+                .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
             subst = compose(&s_rhs, &subst);
 
             let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))
@@ -7176,9 +7147,7 @@ fn desugar_do_to_monad_ops_in_module(module: &mut ast::Module) -> Result<()> {
                 let mut acc = match last {
                     DoStmt::Expr(e) => desugar_expr(e, fresh)?,
                     DoStmt::Bind { .. } => {
-                        return Err(Error::msg(
-                            "do-block must end with an expression statement",
-                        ))
+                        return Err(Error::msg("do-block must end with an expression statement"))
                     }
                 };
 
@@ -7346,10 +7315,7 @@ fn desugar_do_to_monad_ops_in_module(module: &mut ast::Module) -> Result<()> {
     }
 
     fn desugar_binding(binding: &mut ast::Binding, fresh: &mut usize) -> Result<()> {
-        let expr = std::mem::replace(
-            &mut binding.expr,
-            ast::Expr::dummy(ast::ExprKind::Unit),
-        );
+        let expr = std::mem::replace(&mut binding.expr, ast::Expr::dummy(ast::ExprKind::Unit));
         binding.expr = desugar_expr(expr, fresh)?;
         Ok(())
     }
@@ -7477,11 +7443,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                                         ast::Predicate::Class { class, ty } => {
                                             ast::Predicate::Class {
                                                 class,
-                                                ty: expand_type(
-                                                    ty,
-                                                    aliases,
-                                                    &mut Vec::new(),
-                                                )?,
+                                                ty: expand_type(ty, aliases, &mut Vec::new())?,
                                             }
                                         }
                                         ast::Predicate::Lacks { label, row } => {
@@ -8511,7 +8473,6 @@ mod inference_tests {
             Constraint::ShowRow(t) => Constraint::ShowRow(canon_ty_in(t, m, next)),
             Constraint::Eq(t) => Constraint::Eq(canon_ty_in(t, m, next)),
             Constraint::EqRow(t) => Constraint::EqRow(canon_ty_in(t, m, next)),
-            Constraint::Appendable(t) => Constraint::Appendable(canon_ty_in(t, m, next)),
             Constraint::Class { class, ty } => Constraint::Class {
                 class: class.clone(),
                 ty: canon_ty_in(ty, m, next),
@@ -8932,10 +8893,7 @@ x = do
         let Ty::Func(a, b) = &s.ty else {
             panic!("expected function type");
         };
-        assert_eq!(
-            **b,
-            Ty::List(Box::new(Ty::Con("Char".to_string())))
-        );
+        assert_eq!(**b, Ty::List(Box::new(Ty::Con("Char".to_string()))));
         assert_eq!(&**a, t);
     }
 
