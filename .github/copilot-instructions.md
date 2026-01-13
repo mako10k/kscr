@@ -65,6 +65,23 @@ The codebase enforces `#![forbid(unsafe_code)]` in `src/lib.rs`. Unsafe code is 
 
 When design choices are ambiguous, **lean toward Haskell-like semantics** (especially for import/qualified name resolution).
 
+## Language-First Rule (No AdHoc Stdlib Workarounds)
+
+kscr は「言語処理系」の実装であり、標準ライブラリはその上に乗る検証対象です。
+
+- **Stdlib が原因でテストが落ちた場合、まず言語仕様/実装の不備を疑う**（lexer/parser/typechecker/IR/runtime）。
+- **ライブラリ側のアドホック回避で“たまたま通す”変更は原則禁止**。必要な場合でも、暫定対応として最小化し、後述の Issue を必ず起票する。
+- **正しい解決策は、言語仕様に沿うように処理系を修正すること**（例: layout ルール、トップレベル letrec、型クラス辞書渡し、デフォルト化、演算子トークン規則など）。
+- 変更は必ず「再現テスト → 修正 → 回帰防止」の順で行う（stdlib 側に workaround を足すより、処理系にテストを追加して直す）。
+
+### Spec/Impl Mismatch: Issue First
+
+仕様（docs）と実装（Rust）がズレている/曖昧な挙動を見つけたら、次を行う:
+
+1. 最小の再現コード（.ks）と期待/実際をまとめる
+2. GitHub Issue を起票する（タイトルに subsystem を含める: Parser/Typechecker/IR/Runtime など）
+3. 必要なら docs を更新し、言語仕様として固定する
+
 ### Adding New Language Features (Only When Tests Demand It)
 
 Follow this sequence:
