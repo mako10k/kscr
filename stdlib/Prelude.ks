@@ -1,7 +1,10 @@
 module Prelude where
-  export print, readLine, getLine, putStr, putStrLn, error, (>>=), (>>), return, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export String, print, readLine, getLine, putStr, putStrLn, error, (>>=), (>>), return, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   import Prelude.Monad
+
+  -- Haskell-like alias: String ~ [Char]
+  type String = [Char]
 
   instance Monad IO where
     ma >>= f = __ioBind ma f

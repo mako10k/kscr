@@ -1588,7 +1588,6 @@ fn parse_type_atom(
                 "Bool" => ast::Type::Bool,
                 "Float64" => ast::Type::Float64,
                 "Char" => ast::Type::Char,
-                "String" => ast::Type::String,
                 _ => ast::Type::Var(s),
             })
         }
@@ -1890,8 +1889,16 @@ fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
         },
         Some(TokenKind::String(_)) => match ts.bump() {
             Some(TokenKind::String(s)) => {
-                let lit = expr_from(ts, start, ast::ExprKind::String(s));
-                Ok(pat_from(ts, start, ast::PatternKind::Literal(lit)))
+                // Desugar string literal patterns into list-of-char patterns.
+                // This aligns with Haskell surface semantics where String ~ [Char].
+                let ps = s
+                    .chars()
+                    .map(|ch| {
+                        let lit = ast::Expr::dummy(ast::ExprKind::Char(ch));
+                        ast::Pattern::dummy(ast::PatternKind::Literal(lit))
+                    })
+                    .collect::<Vec<_>>();
+                Ok(pat_from(ts, start, ast::PatternKind::List(ps)))
             }
             _ => unreachable!(),
         },
@@ -2214,7 +2221,15 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
             _ => unreachable!(),
         },
         Some(TokenKind::String(_)) => match ts.bump() {
-            Some(TokenKind::String(s)) => Ok(expr_from(ts, start, ast::ExprKind::String(s))),
+            Some(TokenKind::String(s)) => {
+                // Desugar string literal expressions into list-of-char expressions.
+                // This aligns with Haskell surface semantics where String ~ [Char].
+                let es = s
+                    .chars()
+                    .map(|ch| ast::Expr::dummy(ast::ExprKind::Char(ch)))
+                    .collect::<Vec<_>>();
+                Ok(expr_from(ts, start, ast::ExprKind::List(es)))
+            }
             _ => unreachable!(),
         },
         Some(TokenKind::Char(_)) => match ts.bump() {

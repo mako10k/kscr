@@ -1225,7 +1225,7 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
             while s.ends_with(['\n', '\r']) {
                 s.pop();
             }
-            Ok(IoOutcome::Value(Value::String(s)))
+            Ok(IoOutcome::Value(string_to_char_list(&s)))
         }
 
         #[cfg(feature = "unsafe_ffi")]
@@ -1241,7 +1241,7 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
             IoOutcome::Value(v) => Ok(IoOutcome::Value(v)),
             IoOutcome::Thrown(e) => {
                 let h = force_value(g, handler)?;
-                let act = apply_one(g, h, Value::String(e))?;
+                let act = apply_one(g, h, string_to_char_list(&e))?;
                 let Value::IoAction(act) = act else {
                     return Err(Error::msg("catch handler did not evaluate to an IO action"));
                 };
@@ -1255,7 +1255,7 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
             }
             IoOutcome::Thrown(e) => {
                 let ctor = eval_var(g, &std::collections::HashMap::new(), "Left")?;
-                Ok(IoOutcome::Value(apply_one(g, ctor, Value::String(e))?))
+                Ok(IoOutcome::Value(apply_one(g, ctor, string_to_char_list(&e))?))
             }
         },
 
@@ -1319,9 +1319,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::IoCtor => Ok(Value::IoAction(Box::new(IoAction::Pure(arg)))),
         Value::BuiltinStdoutWrite => {
             let arg = force_value(g, arg)?;
-            let Value::String(s) = arg else {
-                return Err(Error::msg("stdoutWrite expects String"));
-            };
+            let s = value_to_string(g, arg)?;
             Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
         }
         Value::BuiltinConcatMap => Ok(Value::BuiltinConcatMap1(Box::new(arg))),
@@ -1369,16 +1367,12 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinShow => show_to_string(g, arg),
         Value::BuiltinError => {
             let arg = force_value(g, arg)?;
-            let Value::String(s) = arg else {
-                return Err(Error::msg("error expects String"));
-            };
+            let s = value_to_string(g, arg)?;
             Err(Error::msg(format!("error: {s}")))
         }
         Value::BuiltinThrow => {
             let arg = force_value(g, arg)?;
-            let Value::String(s) = arg else {
-                return Err(Error::msg("throw expects String"));
-            };
+            let s = value_to_string(g, arg)?;
             Ok(Value::IoAction(Box::new(IoAction::Throw(s))))
         }
         Value::BuiltinCatch => Ok(Value::BuiltinCatch1(Box::new(arg))),
@@ -1435,9 +1429,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         #[cfg(feature = "unsafe_ffi")]
         Value::BuiltinFfiPuts => {
             let arg = force_value(g, arg)?;
-            let Value::String(s) = arg else {
-                return Err(Error::msg("ffiPuts expects String"));
-            };
+            let s = value_to_string(g, arg)?;
             Ok(Value::IoAction(Box::new(IoAction::FfiPuts(s))))
         }
         Value::Closure {
@@ -1478,14 +1470,47 @@ fn record_get(g: &Globals, dict: Value, label: Value) -> Result<Value> {
     };
 
     let label = force_value(g, label)?;
-    let Value::String(label) = label else {
-        return Err(Error::msg("__recordGet expects String label"));
+    let label = match label {
+        Value::String(s) => s,
+        other => value_to_string(g, other)
+            .map_err(|_| Error::msg("__recordGet expects String/[Char] label"))?,
     };
 
     let Some((_, v)) = fields.into_iter().find(|(k, _)| k == &label) else {
         return Err(Error::msg(format!("record missing field: {label}")));
     };
     force_value(g, v)
+}
+
+fn vec_chars_to_list(chars: Vec<char>) -> Value {
+    let mut out = Value::ListNil;
+    for ch in chars.into_iter().rev() {
+        out = Value::ListCons(Box::new(Value::Char(ch)), Box::new(out));
+    }
+    out
+}
+
+fn string_to_char_list(s: &str) -> Value {
+    vec_chars_to_list(s.chars().collect())
+}
+
+fn value_to_string(g: &Globals, v: Value) -> Result<String> {
+    match v {
+        Value::String(s) => Ok(s),
+        Value::ListNil | Value::ListCons(_, _) => {
+            let elems = list_to_vec(g, v)?;
+            let mut out = String::new();
+            for e in elems {
+                let e = force_value(g, e)?;
+                let Value::Char(ch) = e else {
+                    return Err(Error::msg("expected [Char]"));
+                };
+                out.push(ch);
+            }
+            Ok(out)
+        }
+        _ => Err(Error::msg("expected String/[Char]")),
+    }
 }
 
 fn list_to_vec(g: &Globals, mut v: Value) -> Result<Vec<Value>> {
@@ -1878,7 +1903,7 @@ fn int_to_string(g: &Globals, a: Value) -> Result<Value> {
     let Value::Integer(a) = a else {
         return Err(Error::msg("intToString expects Integer"));
     };
-    Ok(Value::String(a.to_string()))
+    Ok(string_to_char_list(&a.to_string()))
 }
 
 fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
@@ -1886,27 +1911,20 @@ fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
     let Value::Bool(a) = a else {
         return Err(Error::msg("boolToString expects Bool"));
     };
-    Ok(Value::String(if a { "True" } else { "False" }.to_string()))
+    Ok(string_to_char_list(if a { "True" } else { "False" }))
 }
 
 fn str_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let a = force_value(g, a)?;
 
     match a {
-        Value::String(a) => {
-            let b = force_value(g, b)?;
-            let Value::String(b) = b else {
-                return Err(Error::msg("++ expects String or List"));
-            };
-            Ok(Value::String(format!("{a}{b}")))
-        }
         Value::ListNil => Ok(b),
         Value::ListCons(h, t) => {
             // NOTE: this is eager in the left spine (MVP), but does not force elements.
             let rest = str_append(g, *t, b)?;
             Ok(Value::ListCons(h, Box::new(rest)))
         }
-        _ => Err(Error::msg("++ expects String or List")),
+        _ => Err(Error::msg("++ expects List")),
     }
 }
 
@@ -1959,7 +1977,24 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
             format!("({})", parts.join(", "))
         }
         Value::ListNil | Value::ListCons(_, _) => {
+            // Haskell-like Show instance special-case: [Char] prints as a quoted string.
             let elems = list_to_vec(g, v)?;
+            let mut chars = Vec::with_capacity(elems.len());
+            let mut all_char = true;
+            for e in &elems {
+                let e = force_value(g, e.clone())?;
+                if let Value::Char(ch) = e {
+                    chars.push(ch);
+                } else {
+                    all_char = false;
+                    break;
+                }
+            }
+            if all_char {
+                let s: String = chars.into_iter().collect();
+                return Ok(quote_string(&s));
+            }
+
             let mut parts = Vec::new();
             for e in elems {
                 parts.push(show_value_str(g, e)?);
@@ -2002,7 +2037,7 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
 }
 
 fn show_to_string(g: &Globals, a: Value) -> Result<Value> {
-    Ok(Value::String(show_value_str(g, a)?))
+    Ok(string_to_char_list(&show_value_str(g, a)?))
 }
 
 fn show_with_dict(g: &Globals, dict: Value, a: Value) -> Result<Value> {

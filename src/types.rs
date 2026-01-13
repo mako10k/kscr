@@ -720,7 +720,7 @@ fn infer_pat_in(
             ExprKind::Integer(_) => Ty::Con("Integer".to_string()),
             ExprKind::Float64(_) => Ty::Con("Float64".to_string()),
             ExprKind::Bool(_) => Ty::Con("Bool".to_string()),
-            ExprKind::String(_) => Ty::Con("String".to_string()),
+            ExprKind::String(_) => Ty::List(Box::new(Ty::Con("Char".to_string()))),
             ExprKind::Char(_) => Ty::Con("Char".to_string()),
             _ => return Err(Error::msg("unsupported literal pattern")),
         }),
@@ -1513,7 +1513,9 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
-    // intToString :: Integer -> String
+    let char_list = Ty::List(Box::new(Ty::Con("Char".to_string())));
+
+    // intToString :: Integer -> [Char]
     env.insert(
         "intToString".to_string(),
         Scheme {
@@ -1521,12 +1523,12 @@ fn collect_ctor_env_with_class_env(
             constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Con("String".to_string())),
+                Box::new(char_list.clone()),
             ),
         },
     );
 
-    // boolToString :: Bool -> String
+    // boolToString :: Bool -> [Char]
     env.insert(
         "boolToString".to_string(),
         Scheme {
@@ -1534,28 +1536,29 @@ fn collect_ctor_env_with_class_env(
             constraints: vec![],
             ty: Ty::Func(
                 Box::new(Ty::Con("Bool".to_string())),
-                Box::new(Ty::Con("String".to_string())),
+                Box::new(char_list.clone()),
             ),
         },
     );
 
-    // ++ :: Appendable a => a -> a -> a
+    // ++ :: forall a. [a] -> [a] -> [a]
     let Ty::Var(v) = cx.fresh() else {
         unreachable!()
     };
+    let list_a = Ty::List(Box::new(Ty::Var(v)));
     env.insert(
         "++".to_string(),
         Scheme {
             vars: vec![v],
-            constraints: vec![Constraint::Appendable(Ty::Var(v))],
+            constraints: vec![],
             ty: Ty::Func(
-                Box::new(Ty::Var(v)),
-                Box::new(Ty::Func(Box::new(Ty::Var(v)), Box::new(Ty::Var(v)))),
+                Box::new(list_a.clone()),
+                Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_a))),
             ),
         },
     );
 
-    // show :: Show a => a -> String
+    // show :: Show a => a -> [Char]
     let Ty::Var(v) = cx.fresh() else {
         unreachable!()
     };
@@ -1566,12 +1569,12 @@ fn collect_ctor_env_with_class_env(
             constraints: vec![Constraint::Show(Ty::Var(v))],
             ty: Ty::Func(
                 Box::new(Ty::Var(v)),
-                Box::new(Ty::Con("String".to_string())),
+                Box::new(char_list.clone()),
             ),
         },
     );
 
-    // toString :: Show a => a -> String
+    // toString :: Show a => a -> [Char]
     let Ty::Var(v) = cx.fresh() else {
         unreachable!()
     };
@@ -1582,12 +1585,12 @@ fn collect_ctor_env_with_class_env(
             constraints: vec![Constraint::Show(Ty::Var(v))],
             ty: Ty::Func(
                 Box::new(Ty::Var(v)),
-                Box::new(Ty::Con("String".to_string())),
+                Box::new(char_list.clone()),
             ),
         },
     );
 
-    // stdoutWrite :: String -> IO Unit
+    // stdoutWrite :: [Char] -> IO Unit
     // Low-level IO primitive used as a building block for higher-level IO.
     env.insert(
         "stdoutWrite".to_string(),
@@ -1595,7 +1598,7 @@ fn collect_ctor_env_with_class_env(
             vars: vec![],
             constraints: vec![],
             ty: Ty::Func(
-                Box::new(Ty::Con("String".to_string())),
+                Box::new(char_list.clone()),
                 Box::new(Ty::App {
                     head: Box::new(Ty::Con("IO".to_string())),
                     args: vec![Ty::Con("Unit".to_string())],
@@ -1604,7 +1607,7 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
-    // stdinReadLine :: IO String
+    // stdinReadLine :: IO [Char]
     // Low-level IO primitive used as a building block for higher-level IO.
     env.insert(
         "stdinReadLine".to_string(),
@@ -1613,12 +1616,12 @@ fn collect_ctor_env_with_class_env(
             constraints: vec![],
             ty: Ty::App {
                 head: Box::new(Ty::Con("IO".to_string())),
-                args: vec![Ty::Con("String".to_string())],
+                args: vec![char_list.clone()],
             },
         },
     );
 
-    // readLine :: IO String
+    // readLine :: IO [Char]
     // NOTE: currently a builtin for early ergonomics.
     // In the future, `readLine` should become a library function built on top of IO primitives
     // such as `stdinReadLine`.
@@ -1629,12 +1632,12 @@ fn collect_ctor_env_with_class_env(
             constraints: vec![],
             ty: Ty::App {
                 head: Box::new(Ty::Con("IO".to_string())),
-                args: vec![Ty::Con("String".to_string())],
+                args: vec![char_list.clone()],
             },
         },
     );
 
-    // print :: String -> IO Unit
+    // print :: [Char] -> IO Unit
     // NOTE: currently a builtin for observability.
     // In the future, `print` should become a library function built on top of IO primitives
     // such as `stdoutWrite`.
@@ -1644,7 +1647,7 @@ fn collect_ctor_env_with_class_env(
             vars: vec![],
             constraints: vec![],
             ty: Ty::Func(
-                Box::new(Ty::Con("String".to_string())),
+                Box::new(char_list.clone()),
                 Box::new(Ty::App {
                     head: Box::new(Ty::Con("IO".to_string())),
                     args: vec![Ty::Con("Unit".to_string())],
@@ -1653,7 +1656,7 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
-    // error :: forall a. String -> a
+    // error :: forall a. [Char] -> a
     // Pure bottom value used for explicit partiality / testing laziness.
     let Ty::Var(a) = cx.fresh() else {
         unreachable!()
@@ -1663,11 +1666,11 @@ fn collect_ctor_env_with_class_env(
         Scheme {
             vars: vec![a],
             constraints: vec![],
-            ty: Ty::Func(Box::new(Ty::Con("String".to_string())), Box::new(Ty::Var(a))),
+            ty: Ty::Func(Box::new(char_list.clone()), Box::new(Ty::Var(a))),
         },
     );
 
-    // throw :: forall a. String -> IO a
+    // throw :: forall a. [Char] -> IO a
     let Ty::Var(a) = cx.fresh() else {
         unreachable!()
     };
@@ -1677,7 +1680,7 @@ fn collect_ctor_env_with_class_env(
             vars: vec![a],
             constraints: vec![],
             ty: Ty::Func(
-                Box::new(Ty::Con("String".to_string())),
+                Box::new(char_list.clone()),
                 Box::new(Ty::App {
                     head: Box::new(Ty::Con("IO".to_string())),
                     args: vec![Ty::Var(a)],
@@ -1686,7 +1689,7 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
-    // catch :: forall a. IO a -> (String -> IO a) -> IO a
+    // catch :: forall a. IO a -> ([Char] -> IO a) -> IO a
     let Ty::Var(a) = cx.fresh() else {
         unreachable!()
     };
@@ -1695,7 +1698,7 @@ fn collect_ctor_env_with_class_env(
         args: vec![Ty::Var(a)],
     };
     let handler = Ty::Func(
-        Box::new(Ty::Con("String".to_string())),
+        Box::new(char_list.clone()),
         Box::new(io_a.clone()),
     );
     env.insert(
@@ -1710,7 +1713,7 @@ fn collect_ctor_env_with_class_env(
         },
     );
 
-    // try :: forall a. IO a -> IO (Prelude.Either String a)
+    // try :: forall a. IO a -> IO (Prelude.Either [Char] a)
     let Ty::Var(a) = cx.fresh() else {
         unreachable!()
     };
@@ -1720,7 +1723,7 @@ fn collect_ctor_env_with_class_env(
     };
     let either = Ty::App {
         head: Box::new(Ty::Con("Prelude.Either".to_string())),
-        args: vec![Ty::Con("String".to_string()), Ty::Var(a)],
+        args: vec![char_list.clone(), Ty::Var(a)],
     };
     env.insert(
         "try".to_string(),
@@ -2423,14 +2426,11 @@ fn lower_surface_type_with_tys(
 }
 
 fn show_primitives(name: &str) -> bool {
-    matches!(name, "Integer" | "Bool" | "String" | "Char" | "Unit")
+    matches!(name, "Integer" | "Bool" | "Char" | "Unit")
 }
 
 fn eq_primitives(name: &str) -> bool {
-    matches!(
-        name,
-        "Integer" | "Bool" | "String" | "Char" | "Unit" | "Float64"
-    )
+    matches!(name, "Integer" | "Bool" | "Char" | "Unit" | "Float64")
 }
 
 fn entails_appendable(ty: &Ty) -> Result<Vec<Constraint>> {
@@ -3209,7 +3209,11 @@ fn infer_expr_in(
         ExprKind::Bool(true) | ExprKind::Bool(false) => {
             Ok((Subst::new(), vec![], Ty::Con("Bool".to_string())))
         }
-        ExprKind::String(_) => Ok((Subst::new(), vec![], Ty::Con("String".to_string()))),
+        ExprKind::String(_) => Ok((
+            Subst::new(),
+            vec![],
+            Ty::List(Box::new(Ty::Con("Char".to_string()))),
+        )),
         ExprKind::Char(_) => Ok((Subst::new(), vec![], Ty::Con("Char".to_string()))),
 
         ExprKind::Var(name) => {
@@ -8928,7 +8932,10 @@ x = do
         let Ty::Func(a, b) = &s.ty else {
             panic!("expected function type");
         };
-        assert_eq!(**b, Ty::Con("String".to_string()));
+        assert_eq!(
+            **b,
+            Ty::List(Box::new(Ty::Con("Char".to_string())))
+        );
         assert_eq!(&**a, t);
     }
 
@@ -8949,15 +8956,15 @@ x = do
 
         assert_eq!(
             env.get("a").unwrap(),
-            &Scheme::mono(Ty::Con("String".to_string()))
+            &Scheme::mono(Ty::List(Box::new(Ty::Con("Char".to_string()))))
         );
         assert_eq!(
             env.get("b").unwrap(),
-            &Scheme::mono(Ty::Con("String".to_string()))
+            &Scheme::mono(Ty::List(Box::new(Ty::Con("Char".to_string()))))
         );
         assert_eq!(
             env.get("c").unwrap(),
-            &Scheme::mono(Ty::Con("String".to_string()))
+            &Scheme::mono(Ty::List(Box::new(Ty::Con("Char".to_string()))))
         );
     }
 
@@ -8972,11 +8979,11 @@ y = show Nothing
 
         assert_eq!(
             env.get("x").unwrap(),
-            &Scheme::mono(Ty::Con("String".to_string()))
+            &Scheme::mono(Ty::List(Box::new(Ty::Con("Char".to_string()))))
         );
 
         let y = env.get("y").unwrap();
-        assert_eq!(y.ty, Ty::Con("String".to_string()));
+        assert_eq!(y.ty, Ty::List(Box::new(Ty::Con("Char".to_string()))));
         assert!(y
             .constraints
             .iter()
