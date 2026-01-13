@@ -3692,7 +3692,8 @@ fn load_module_with_imports(entry: &Path) -> Result<ast::Module> {
     let mut loader = ModuleLoader {
         cache: HashMap::new(),
         stack: vec![entry.clone()],
-        emitted: HashSet::new(),
+        emitted_qualified: HashSet::new(),
+        emitted_unqualified: HashSet::new(),
     };
 
     let entry_mod = loader.load_ast(&entry)?;
@@ -3720,10 +3721,17 @@ fn load_module_with_imports(entry: &Path) -> Result<ast::Module> {
     })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ImportQualKey {
+    path: PathBuf,
+    qual: String,
+}
+
 struct ModuleLoader {
     cache: HashMap<PathBuf, ast::Module>,
     stack: Vec<PathBuf>,
-    emitted: HashSet<PathBuf>,
+    emitted_qualified: HashSet<ImportQualKey>,
+    emitted_unqualified: HashSet<PathBuf>,
 }
 
 fn module_allowed_qualifiers(module: &ast::Module) -> HashSet<String> {
@@ -3742,6 +3750,7 @@ fn desugar_qualified_ref(name: &str, allowed: &HashSet<String>) -> Result<String
     let Some((qual, _)) = name.rsplit_once('.') else {
         return Ok(name.to_string());
     };
+
     if !allowed.contains(qual) {
         let mut allowed: Vec<_> = allowed.iter().cloned().collect();
         allowed.sort();
@@ -3749,7 +3758,8 @@ fn desugar_qualified_ref(name: &str, allowed: &HashSet<String>) -> Result<String
             "unknown qualifier {qual} in {name} (allowed: {})",
             allowed.join(", ")
         )));
-    }
+    };
+
     Ok(name.to_string())
 }
 
@@ -3848,7 +3858,10 @@ fn desugar_qualified_case_arm(
     })
 }
 
-fn desugar_qualified_do_stmt(stmt: ast::DoStmt, allowed: &HashSet<String>) -> Result<ast::DoStmt> {
+fn desugar_qualified_do_stmt(
+    stmt: ast::DoStmt,
+    allowed: &HashSet<String>,
+) -> Result<ast::DoStmt> {
     Ok(match stmt {
         ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
             pat: desugar_qualified_pattern(pat, allowed)?,
@@ -3858,14 +3871,20 @@ fn desugar_qualified_do_stmt(stmt: ast::DoStmt, allowed: &HashSet<String>) -> Re
     })
 }
 
-fn desugar_qualified_binding(b: ast::Binding, allowed: &HashSet<String>) -> Result<ast::Binding> {
+fn desugar_qualified_binding(
+    b: ast::Binding,
+    allowed: &HashSet<String>,
+) -> Result<ast::Binding> {
     Ok(ast::Binding {
         pat: desugar_qualified_pattern(b.pat, allowed)?,
         expr: desugar_qualified_expr(b.expr, allowed)?,
     })
 }
 
-fn desugar_qualified_pattern(p: ast::Pattern, allowed: &HashSet<String>) -> Result<ast::Pattern> {
+fn desugar_qualified_pattern(
+    p: ast::Pattern,
+    allowed: &HashSet<String>,
+) -> Result<ast::Pattern> {
     use ast::PatternKind;
     let span = p.span;
     let kind = match p.kind {
@@ -4085,6 +4104,8 @@ impl ModuleLoader {
                 continue;
             };
 
+            let qual = id.as_name.as_deref().unwrap_or(&id.module);
+
             let rel = id.module.replace('.', "/");
             let local = dir.join(format!("{}.ks", rel));
             let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
@@ -4132,8 +4153,21 @@ impl ModuleLoader {
             self.collect_imports(&imported, imported_dir, out)?;
             self.stack.pop();
 
-            if self.emitted.insert(p) {
-                out.extend(import_items_for_decl(&imported, id)?);
+            let exports = module_exported_names(&imported)?;
+
+            // Emit qualified bindings for each (module file, qualifier) pair.
+            let key = ImportQualKey {
+                path: p.clone(),
+                qual: qual.to_string(),
+            };
+            if self.emitted_qualified.insert(key) {
+                out.extend(import_qualified_items_for_decl(&imported, qual, &exports)?);
+            }
+
+            // Emit unqualified forwarders at most once per module file.
+            // This keeps the flattened module namespace reasonably conflict-free.
+            if !id.qualified && self.emitted_unqualified.insert(p) {
+                out.extend(import_unqualified_forwarders(&imported, qual, &exports)?);
             }
         }
         Ok(())
@@ -4230,26 +4264,32 @@ fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
     Ok(exports)
 }
 
-fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result<Vec<ast::Item>> {
-    // Haskell-leaning behavior:
-    // - `import A` brings unqualified exports + qualifier `A.`
-    // - `import A as OM` brings unqualified exports + qualifier `OM.`
-    // - `import qualified A` brings qualifier `A.` only (no unqualified)
-    // - `import qualified A as OM` brings qualifier `OM.` only (no unqualified)
-
-    let qual = decl.as_name.as_deref().unwrap_or(&decl.module);
-
-    let exports = module_exported_names(module)?;
-
+fn import_qualified_items_for_decl(
+    module: &ast::Module,
+    qual: &str,
+    exports: &HashSet<String>,
+) -> Result<Vec<ast::Item>> {
     // Always provide qualifier names (but only for exported items).
-    let mut out = qualify_items(module, qual, &exports)?;
+    let mut out = qualify_items(module, qual, exports)?;
 
-    // Qualified-only imports do not bring unqualified names.
-    if decl.qualified {
-        return Ok(out);
-    }
+    // MVP: always import class/instance declarations.
+    // Rationale: instances are required for constraint solving, and class declarations carry
+    // method types used to recognize method calls.
+    //
+    // NOTE: we must also qualify *types inside* these declarations (instance heads, method
+    // signatures, superclass predicates) so that instance resolution matches the qualified type
+    // constructors introduced by imports (e.g. `Prelude.Maybe`).
+    out.extend(qualify_class_instance_decls(module, qual, exports)?);
+    Ok(out)
+}
 
+fn import_unqualified_forwarders(
+    module: &ast::Module,
+    qual: &str,
+    exports: &HashSet<String>,
+) -> Result<Vec<ast::Item>> {
     // Bring unqualified exports as simple forwarders: `x = QUAL.x`.
+    let mut out = Vec::new();
 
     let mut values = HashSet::new();
     let mut type_aliases = HashMap::new();
@@ -4295,15 +4335,6 @@ fn import_items_for_decl(module: &ast::Module, decl: &ast::ImportDecl) -> Result
             }));
         }
     }
-
-    // MVP: always import class/instance declarations.
-    // Rationale: instances are required for constraint solving, and class declarations carry
-    // method types used to recognize method calls.
-    //
-    // NOTE: we must also qualify *types inside* these declarations (instance heads, method
-    // signatures, superclass predicates) so that instance resolution matches the qualified type
-    // constructors introduced by imports (e.g. `Prelude.Maybe`).
-    out.extend(qualify_class_instance_decls(module, qual, &exports)?);
 
     Ok(out)
 }
