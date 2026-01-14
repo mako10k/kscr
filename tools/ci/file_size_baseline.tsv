@@ -1,0 +1,15 @@
+path	lines
+crates/kscr_unsafe_bigint/src/lib.rs	37
+crates/kscr_unsafe_ffi/src/lib.rs	13
+src/ast.rs	282
+src/cli.rs	2039
+src/debug.rs	16
+src/error.rs	30
+src/ir.rs	2542
+src/lexer.rs	662
+src/lib.rs	17
+src/lib_test.rs	2652
+src/main.rs	10
+src/parser.rs	2927
+src/safe_bigint.rs	544
+src/types.rs	9541
