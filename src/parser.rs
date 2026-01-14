@@ -1368,20 +1368,68 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
     let expr = Box::new(parse_expr(ts, Stop::Of)?);
     ts.expect(TokenKind::KwOf)?;
 
-    if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
-        return Err(ts.err_here("expected newline after 'of'"));
-    }
+    // Support both:
+    //   case e of\n  ... (indent block)
+    // and inline:
+    //   case e of pat -> expr; pat2 -> expr2
+    if matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        ts.consume_line_end();
+        ts.skip_newlines();
+        ts.expect(TokenKind::Indent)?;
 
-    ts.consume_line_end();
-    ts.skip_newlines();
-    ts.expect(TokenKind::Indent)?;
+        let mut arms = Vec::new();
+        loop {
+            ts.skip_newlines();
+            if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+                break;
+            }
+            if ts.is_eof() {
+                return Err(ts.err_here("unexpected EOF in case"));
+            }
+
+            let mut pat = parse_cons_pattern(ts)?;
+
+            // Disambiguation: prefer `or-pattern` when `| <pattern> ->` is possible;
+            // otherwise treat it as a case guard `| <expr> ->`.
+            while matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+                let save = (ts.i, ts.last_span_end);
+                ts.bump();
+                if let Ok(rhs) = parse_cons_pattern(ts) {
+                    if matches!(ts.peek_kind(), Some(TokenKind::Arrow)) {
+                        let start = pat.span.start;
+                        pat = pat_from(
+                            ts,
+                            start,
+                            ast::PatternKind::Or(Box::new(pat), Box::new(rhs)),
+                        );
+                        continue;
+                    }
+                }
+                (ts.i, ts.last_span_end) = save;
+                break;
+            }
+
+            let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+                ts.bump();
+                Some(parse_expr(ts, Stop::Pattern)?)
+            } else {
+                None
+            };
+
+            ts.expect(TokenKind::Arrow)?;
+            let body = parse_expr(ts, Stop::LineEnd)?;
+            arms.push(ast::CaseArm { pat, guard, body });
+            ts.consume_line_end();
+        }
+
+        ts.expect(TokenKind::Dedent)?;
+        ts.consume_line_end();
+
+        return Ok(expr_from(ts, start, ast::ExprKind::Case { expr, arms }));
+    }
 
     let mut arms = Vec::new();
     loop {
-        ts.skip_newlines();
-        if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
-            break;
-        }
         if ts.is_eof() {
             return Err(ts.err_here("unexpected EOF in case"));
         }
@@ -1416,13 +1464,15 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
         };
 
         ts.expect(TokenKind::Arrow)?;
-        let body = parse_expr(ts, Stop::LineEnd)?;
+        let body = parse_expr(ts, Stop::SemiOrRBrace)?;
         arms.push(ast::CaseArm { pat, guard, body });
-        ts.consume_line_end();
-    }
 
-    ts.expect(TokenKind::Dedent)?;
-    ts.consume_line_end();
+        if matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
+            ts.bump();
+            continue;
+        }
+        break;
+    }
 
     Ok(expr_from(ts, start, ast::ExprKind::Case { expr, arms }))
 }
@@ -1810,8 +1860,42 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
         ));
     }
 
+    // Support both:
+    //   expr where\n  ... (indent block)
+    // and inline:
+    //   expr where x = 1; y = 2
     if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
-        return Err(ts.err_here("expected newline after 'where'"));
+        let mut bindings = Vec::new();
+        let mut pending: Option<PendingFun> = None;
+
+        match parse_binding_or_fun_clause(ts, Stop::LetBind)? {
+            ParsedBind::Binding(b) => bindings.push(b),
+            ParsedBind::FunClause(c) => {
+                push_fun_clause_binding(ts, &mut bindings, &mut pending, c)
+            }
+        }
+        while matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
+            ts.bump();
+            match parse_binding_or_fun_clause(ts, Stop::LetBind)? {
+                ParsedBind::Binding(b) => {
+                    flush_pending_fun_binding(ts, &mut bindings, pending.take());
+                    bindings.push(b);
+                }
+                ParsedBind::FunClause(c) => {
+                    push_fun_clause_binding(ts, &mut bindings, &mut pending, c)
+                }
+            }
+        }
+        flush_pending_fun_binding(ts, &mut bindings, pending.take());
+
+        return Ok(expr_from(
+            ts,
+            start,
+            ast::ExprKind::Where {
+                expr: Box::new(expr),
+                bindings,
+            },
+        ));
     }
 
     ts.consume_line_end();
