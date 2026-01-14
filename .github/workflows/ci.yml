@@ -29,7 +29,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-test_clippy_geiger-
 
       - name: cargo test
         run: cargo test -- --test-threads=1
@@ -73,7 +73,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-nightly_udeps-
 
       - name: file size ratchet
         run: bash tools/ci/check_file_size_ratchet.sh
