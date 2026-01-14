@@ -2,6 +2,14 @@
 
 kscr is a Rust-based toolchain for a lazy functional scripting language with Haskell-like semantics.
 
+## Safety / Git operations (MANDATORY)
+
+- NEVER run destructive or state-changing git commands without explicit user permission.
+   - Includes (non-exhaustive): `git checkout`, `git switch`, `git reset --hard`, `git clean -fd`, `git merge`, `git rebase`, `git cherry-pick`, `git revert`.
+   - If the user has not clearly approved it in the current conversation, ask first.
+- Prefer read-only commands when gathering context (e.g. `git status`, `git diff`, `git log`, `git show`).
+- If the user asks to merge, do not merge until CI status is confirmed and the user explicitly approves the merge action.
+
 ## What to optimize for
 
 - End-to-end runnability first (lexer → parser → typechecker → IR → runtime).
