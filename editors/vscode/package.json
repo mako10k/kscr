@@ -1,0 +1,41 @@
+{
+  "name": "kscr-vscode",
+  "displayName": "kscr",
+  "description": "Syntax highlighting and basic editing support for kscr (.ks).",
+  "version": "0.0.1",
+  "publisher": "mako10k",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mako10k/kscr.git",
+    "directory": "editors/vscode"
+  },
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "kscr",
+        "aliases": [
+          "kscr",
+          "ks"
+        ],
+        "extensions": [
+          ".ks"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "kscr",
+        "scopeName": "source.kscr",
+        "path": "./syntaxes/kscr.tmLanguage.json"
+      }
+    ]
+  }
+}

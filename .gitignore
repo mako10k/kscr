@@ -20,5 +20,8 @@ Thumbs.db
 *.log
 *.tmp
 
+# VS Code extension packages
+*.vsix
+
 # By convention, ignore generated binaries
 kscr
