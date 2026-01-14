@@ -180,6 +180,7 @@ Suggested priority order:
 3. LSP (primary goal)
    - Implement `textDocument/definition`, `hover`, `diagnostics` via `kscr`
    - Respect kscr module resolution (import base is the importing file’s directory)
+  - Design doc: [docs/LSPDesign.md](docs/LSPDesign.md)
 4. Semantic highlighting
    - Colorize types/constructors/local bindings/top-level bindings
 

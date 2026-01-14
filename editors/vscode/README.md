@@ -25,3 +25,4 @@ Install the generated `.vsix` in VS Code:
 - lexer: https://github.com/mako10k/kscr/blob/main/src/lexer.rs
 - BNF: https://github.com/mako10k/kscr/blob/main/docs/LanguageBNF.md
 - 設計メモ: https://github.com/mako10k/kscr/blob/main/docs/VSCodeExtension.md
+- LSP設計: https://github.com/mako10k/kscr/blob/main/docs/LSPDesign.md
