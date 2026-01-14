@@ -1842,6 +1842,39 @@ mod tests {
     }
 
     #[test]
+    fn cli_run_issue5_class_method_as_value_smoke() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_cli_run_issue5_method_as_value_smoke_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export f\n  class C a where\n    m :: a -> a\n  instance C Unit where\n    m x = x\n  f = m\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import Prelude\n  import A\n  y = f ()\n  main = case y of\n    () -> IO ()\n",
+        )
+        .unwrap();
+
+        let args = vec![
+            "kscr".to_string(),
+            "run".to_string(),
+            main.to_string_lossy().to_string(),
+        ];
+        run(args.into_iter()).unwrap();
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn cli_typecheck_reports_cyclic_imports_smoke() {
         let dir = std::env::temp_dir().join(format!(
             "kscr_cli_typecheck_cyclic_imports_smoke_{}",
