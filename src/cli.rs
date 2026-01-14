@@ -1,4 +1,5 @@
 use crate::{ast, ir, parser, types, Result};
+mod cli_llvm_ir;
 #[cfg(feature = "readline")]
 use rustyline::{error::ReadlineError, DefaultEditor};
 use std::collections::HashSet;
@@ -86,27 +87,7 @@ where
             Ok(())
         }
         "repl" => repl(),
-        "llvm-ir" => {
-            #[cfg(feature = "llvm")]
-            {
-                let _path = args
-                    .next()
-                    .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
-                    .into();
-                // For now, generate placeholder LLVM IR
-                // In the future, this will lower the actual IR to LLVM IR
-                let llvm_ir = kscr_llvm::generate_llvm_ir_text("main")
-                    .map_err(|e| crate::error::Error::msg(e))?;
-                println!("{}", llvm_ir);
-                Ok(())
-            }
-            #[cfg(not(feature = "llvm"))]
-            {
-                Err(crate::error::Error::msg(
-                    "llvm-ir command requires --features llvm",
-                ))
-            }
-        }
+        "llvm-ir" => cli_llvm_ir::cmd_llvm_ir(args),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
 }
@@ -185,11 +166,9 @@ fn render_typecheck_report(
     show_all: bool,
 ) -> String {
     let mut out = String::new();
-
     if let Some(name) = &module.name {
         out.push_str(&format!("module {name}\n"));
     }
-
     if let Some(specs) = exported_specs(module) {
         let mut specs: Vec<_> = specs
             .into_iter()
