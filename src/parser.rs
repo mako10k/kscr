@@ -680,6 +680,13 @@ fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
                 name,
                 ctors: ast::ExportCtors::All,
             }
+        } else if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
+            ts.bump();
+            ts.expect(TokenKind::RParen)?;
+            ast::ExportSpec::Type {
+                name,
+                ctors: ast::ExportCtors::All,
+            }
         } else {
             let mut ctors = Vec::new();
             ctors.push(parse_ctor_name(ts)?);
