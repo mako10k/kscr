@@ -3756,7 +3756,7 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
         env.local_to_module.insert(local, id.module.clone());
     }
 
-    for (_local, module_name) in &env.local_to_module {
+    for module_name in env.local_to_module.values() {
         *module_counts.entry(module_name.clone()).or_insert(0) += 1;
     }
     env.ambiguous_modules = module_counts
@@ -3768,7 +3768,7 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
 }
 
 fn desugar_qualified_ref(name: &str, env: &QualEnv) -> Result<String> {
-    let Some((qual, member)) = name.rsplit_once('.') else {
+    let Some((qual, _member)) = name.rsplit_once('.') else {
         return Ok(name.to_string());
     };
 
@@ -3780,14 +3780,6 @@ fn desugar_qualified_ref(name: &str, env: &QualEnv) -> Result<String> {
             allowed.join(", ")
         )));
     };
-
-    // If this qualifier is an alias and the target module is uniquely imported, normalize the
-    // reference to the canonical module qualifier.
-    if let Some(module_name) = env.local_to_module.get(qual) {
-        if !env.ambiguous_modules.contains(module_name) {
-            return Ok(format!("{module_name}.{member}"));
-        }
-    }
 
     Ok(name.to_string())
 }
@@ -4049,9 +4041,7 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
         .into_iter()
         .map(|it| {
             Ok(match it {
-                ast::Item::Binding(b) => {
-                    ast::Item::Binding(desugar_qualified_binding(b, &env)?)
-                }
+                ast::Item::Binding(b) => ast::Item::Binding(desugar_qualified_binding(b, &env)?),
                 ast::Item::TypeAlias(mut ta) => {
                     ta.ty = desugar_qualified_type(ta.ty, &env)?;
                     ast::Item::TypeAlias(ta)
@@ -4387,7 +4377,11 @@ fn qualify_class_instance_decls(
     let type_map: HashMap<String, String> = types
         .into_iter()
         .map(|n| {
-            let q = if exports.contains(&n) { qual } else { &priv_qual };
+            let q = if exports.contains(&n) {
+                qual
+            } else {
+                &priv_qual
+            };
             (n.clone(), format!("{q}.{n}"))
         })
         .collect();
@@ -5633,6 +5627,7 @@ fn rewrite_class_dict_passing_in_module(
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rewrite_expr(
         module_snapshot: &ast::Module,
         class_env: &ClassEnv,
@@ -5825,9 +5820,12 @@ fn rewrite_class_dict_passing_in_module(
                 // in scope (e.g. resolve missing dicts from a ground argument like `1`).
                 let mut callsite_ground_tys: Vec<Ty> = Vec::new();
                 for a in &args {
-                    if let Ok(t) =
-                        infer_in_module_with_class_env(module_snapshot, class_env, inferred, a.clone())
-                    {
+                    if let Ok(t) = infer_in_module_with_class_env(
+                        module_snapshot,
+                        class_env,
+                        inferred,
+                        a.clone(),
+                    ) {
                         if ftv_ty(&t).is_empty() {
                             callsite_ground_tys.push(t);
                         }
@@ -5988,7 +5986,8 @@ fn rewrite_class_dict_passing_in_module(
                                         continue;
                                     }
 
-                                    if let Some(dict_name) = pick_instance_dict(class_env, class, &a_ty)
+                                    if let Some(dict_name) =
+                                        pick_instance_dict(class_env, class, &a_ty)
                                     {
                                         picked = Some(dict_name);
                                         break;

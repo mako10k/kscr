@@ -252,9 +252,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 ">" => TokenKind::Gt,
                 "=" => TokenKind::Eq,
                 "|" => TokenKind::Pipe,
-                _ => {
-                    TokenKind::Operator(op.to_string())
-                }
+                _ => TokenKind::Operator(op.to_string()),
             };
 
             push(kind, start, i);

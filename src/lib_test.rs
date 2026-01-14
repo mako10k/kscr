@@ -270,6 +270,20 @@ fn parser_fun_clause_operator_name_parens() {
 }
 
 #[test]
+fn parser_case_allows_inline_of_arms_with_semicolons() {
+    let src = "x = case a of Just y -> y; _ -> 0\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    assert_eq!(m.items.len(), 1);
+}
+
+#[test]
+fn parser_where_allows_inline_bindings_with_semicolons() {
+    let src = "x = 1 where y = 2; z = 3\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    assert_eq!(m.items.len(), 1);
+}
+
+#[test]
 fn parser_binding_operator_name_arbitrary() {
     let m = crate::parser::parse_module("(<+>) = f\n").unwrap();
     assert_eq!(m.items.len(), 1);
@@ -519,7 +533,10 @@ fn parser_golden_decl() {
             assert_eq!(dd.params, vec!["a".to_string(), "b".to_string()]);
             assert_eq!(dd.ctors.len(), 1);
             assert_eq!(dd.ctors[0].name, ":*:");
-            assert_eq!(dd.ctors[0].args, vec![Type::Var("a".to_string()), Type::Var("b".to_string())]);
+            assert_eq!(
+                dd.ctors[0].args,
+                vec![Type::Var("a".to_string()), Type::Var("b".to_string())]
+            );
         }
         _ => panic!("expected data decl"),
     }

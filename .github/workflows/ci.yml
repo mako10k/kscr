@@ -21,10 +21,18 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: cargo test
-        run: cargo test
+        run: cargo test -- --test-threads=1
 
       - name: cargo fmt (check)
         run: cargo fmt -- --check
@@ -36,7 +44,9 @@ jobs:
         run: cargo install cargo-geiger --locked --version 0.13.0
 
       - name: cargo geiger
-        run: cargo geiger
+        run: |
+          cargo fetch --locked
+          cargo geiger --locked --offline
 
   nightly_udeps:
     name: nightly udeps (informational)
@@ -49,7 +59,15 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Install cargo-udeps
         run: cargo install cargo-udeps --locked
