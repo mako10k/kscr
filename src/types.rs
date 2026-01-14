@@ -17,6 +17,100 @@ pub struct TypedModule {
     pub inferred: HashMap<String, Scheme>,
 }
 
+#[cfg(test)]
+mod flake_debug_tests {
+    use super::*;
+
+    fn collect_defined_names(module: &ast::Module) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for it in &module.items {
+            item_defined_names(it, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    #[ignore]
+    fn debug_flake_import_data_maybe_qualified() {
+        // This test is intentionally ignored. Run manually with:
+        // `cargo test debug_flake_import_data_maybe_qualified -- --ignored --nocapture`
+        //
+        // Goal: capture when `M.fromMaybe` becomes unbound.
+        let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe as M\n  main = do\n    print (show (M.fromMaybe 0 (Just 1)))\n    putStrLn \"maybe ok\"\n";
+
+        let iters: u32 = std::env::var("KSCR_FLAKE_ITERS")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(50);
+
+        for i in 1..=iters {
+            let uniq = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "kscr_debug_flake_maybe_{}_{}_{}",
+                std::process::id(),
+                i,
+                uniq
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("Main.ks");
+            std::fs::write(&path, src).unwrap();
+
+            let res = typecheck_file(&path);
+            if let Err(e) = &res {
+                let es = e.to_string();
+                if es.contains("unbound variable: M.fromMaybe") {
+                    let flattened = load_module_with_imports(&path).unwrap();
+                    let names = collect_defined_names(&flattened);
+
+                    let mut from_maybe_like: Vec<_> = names
+                        .iter()
+                        .filter(|n| n.ends_with(".fromMaybe"))
+                        .cloned()
+                        .collect();
+                    from_maybe_like.sort();
+
+                    let mut m_qual: Vec<_> = names
+                        .iter()
+                        .filter(|n| n.starts_with("M."))
+                        .cloned()
+                        .collect();
+                    m_qual.sort();
+                    if m_qual.len() > 40 {
+                        m_qual.truncate(40);
+                    }
+
+                    let stdlib_maybe = stdlib_cache::stdlib_root().join("Data/Maybe.ks");
+                    let imported_ast = ModuleLoader {
+                        cache: std::collections::HashMap::new(),
+                        stack: vec![stdlib_maybe.clone()],
+                        emitted_qualified: std::collections::HashSet::new(),
+                        emitted_unqualified: std::collections::HashSet::new(),
+                    }
+                    .load_ast(&stdlib_maybe)
+                    .unwrap();
+                    let exports = module_exported_names(&imported_ast).unwrap();
+
+                    eprintln!("typecheck failed with flake signature at iter {i}: {e}");
+                    eprintln!("  flattened defines M.fromMaybe? {}", names.contains("M.fromMaybe"));
+                    eprintln!("  stdlib/Data/Maybe.ks export has fromMaybe? {}", exports.contains("fromMaybe"));
+                    eprintln!("  names ending with .fromMaybe: {from_maybe_like:?}");
+                    eprintln!("  some names starting with M.: {m_qual:?}");
+                    panic!("reproduced flake: {e}");
+                } else {
+                    // Unexpected failure: surface it.
+                    panic!("typecheck failed at iter {i}: {e}");
+                }
+            }
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
 // --- Milestone 2.2.1: Unification core (scaffolding) ---
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1013,7 +1107,7 @@ fn collect_deps_in_expr(
     use ast::ExprKind;
     match &expr.kind {
         ExprKind::Var(n) => {
-            if !n.contains('.') && !bound.contains(n) {
+            if !bound.contains(n) {
                 if let Some(i) = name_to_binding.get(n) {
                     out.insert(*i);
                 }
@@ -7314,7 +7408,9 @@ fn infer_module_with_class_env(
     let n = bindings.len();
     let mut name_to_binding: HashMap<String, usize> = HashMap::new();
     for (i, names) in defined_names.iter().enumerate() {
-        for name in names {
+        let mut ns: Vec<&String> = names.iter().collect();
+        ns.sort();
+        for name in ns {
             // If there are duplicates, let the later phase produce a readable error.
             name_to_binding.insert(name.clone(), i);
         }
@@ -7334,7 +7430,9 @@ fn infer_module_with_class_env(
                 }
             }
         }
-        graph[i] = deps.into_iter().collect();
+        let mut dv: Vec<usize> = deps.into_iter().collect();
+        dv.sort_unstable();
+        graph[i] = dv;
     }
 
     let comps = tarjan_scc(&graph);
@@ -7363,19 +7461,22 @@ fn infer_module_with_class_env(
         }
     }
 
-    // Kahn topo sort over components.
-    let mut queue: std::collections::VecDeque<usize> = indeg
+    // Kahn topo sort over components (deterministic tie-breaking).
+    // Use a min-heap so runs don't depend on hash iteration order.
+    let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<usize>> = indeg
         .iter()
         .enumerate()
-        .filter_map(|(i, &d)| if d == 0 { Some(i) } else { None })
+        .filter_map(|(i, &d)| if d == 0 { Some(std::cmp::Reverse(i)) } else { None })
         .collect();
     let mut comp_order = Vec::new();
-    while let Some(c) = queue.pop_front() {
+    while let Some(std::cmp::Reverse(c)) = heap.pop() {
         comp_order.push(c);
-        for &to in comp_edges[c].iter() {
+        let mut tos: Vec<usize> = comp_edges[c].iter().copied().collect();
+        tos.sort_unstable();
+        for to in tos {
             indeg[to] -= 1;
             if indeg[to] == 0 {
-                queue.push_back(to);
+                heap.push(std::cmp::Reverse(to));
             }
         }
     }
@@ -7400,6 +7501,9 @@ fn infer_module_with_class_env(
                 scc_names.insert(n.clone());
             }
         }
+
+        let mut scc_names: Vec<String> = scc_names.into_iter().collect();
+        scc_names.sort();
 
         for name in scc_names.iter() {
             let Ty::Var(v) = cx.fresh() else {
