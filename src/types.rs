@@ -10,7 +10,7 @@ use crate::{ast, error::Error, parser, Result};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-
+mod stdlib_cache;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedModule {
     pub module: ast::Module,
@@ -3720,7 +3720,6 @@ fn load_module_with_imports(entry: &Path) -> Result<ast::Module> {
         items,
     })
 }
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ImportQualKey {
     path: PathBuf,
@@ -4085,11 +4084,13 @@ impl ModuleLoader {
         if let Some(m) = self.cache.get(path) {
             return Ok(m.clone());
         }
-
+        if let Some(m) = stdlib_cache::load_ast_stdlib_cached(path)? {
+            self.cache.insert(path.to_path_buf(), m.clone());
+            return Ok(m);
+        }
         let src = std::fs::read_to_string(path)?;
         let mut m = parser::parse_module(&src)?;
         desugar_module_qualified_names(&mut m)?;
-
         self.cache.insert(path.to_path_buf(), m.clone());
         Ok(m)
     }
@@ -4110,8 +4111,7 @@ impl ModuleLoader {
 
             let rel = id.module.replace('.', "/");
             let local = dir.join(format!("{}.ks", rel));
-            let stdlib = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
-            let stdlib = stdlib.join(format!("{}.ks", rel));
+            let stdlib = stdlib_cache::stdlib_root().join(format!("{}.ks", rel));
 
             let p = std::fs::canonicalize(&local)
                 .or_else(|_| std::fs::canonicalize(&stdlib))
