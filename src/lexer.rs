@@ -88,9 +88,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
     let mut i = 0usize;
 
     let is_ident_start_byte = |b: u8| -> bool { b.is_ascii_alphabetic() || b == b'_' };
-    let is_ident_continue_byte = |b: u8| -> bool {
-        is_ident_start_byte(b) || b.is_ascii_digit()
-    };
+    let is_ident_continue_byte = |b: u8| -> bool { is_ident_start_byte(b) || b.is_ascii_digit() };
 
     let is_operator_byte = |b: u8| -> bool {
         matches!(
@@ -231,7 +229,11 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
         // `TokenKind::Dot`, while standalone '.' can be an operator token.
         if bytes[i] == b'.' {
             let prev = if i > 0 { bytes[i - 1] } else { b' ' };
-            let next = if i + 1 < bytes.len() { bytes[i + 1] } else { b' ' };
+            let next = if i + 1 < bytes.len() {
+                bytes[i + 1]
+            } else {
+                b' '
+            };
             if is_ident_continue_byte(prev) && is_ident_start_byte(next) {
                 let start = i;
                 i += 1;
@@ -272,9 +274,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 ">" => TokenKind::Gt,
                 "=" => TokenKind::Eq,
                 "|" => TokenKind::Pipe,
-                _ => {
-                    TokenKind::Operator(op.to_string())
-                }
+                _ => TokenKind::Operator(op.to_string()),
             };
 
             push(kind, start, i);
