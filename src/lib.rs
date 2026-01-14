@@ -5,6 +5,7 @@ pub mod cli;
 pub mod debug;
 pub mod error;
 pub mod ir;
+pub mod ir_pack;
 pub mod lexer;
 pub mod parser;
 #[cfg(not(feature = "unsafe_bigint"))]

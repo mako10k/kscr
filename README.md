@@ -63,6 +63,17 @@ cargo run -- ir path/to/file.ks
 # Generate LLVM IR (requires --features llvm)
 cargo run --features llvm -- llvm-ir path/to/file.ks
 
+# Compile to a native executable (stage 1: pack IR + thin runner)
+# - Output defaults to `path/to/file` (extension stripped)
+# - The produced executable contains packed IR and runs it via kscr's runtime
+cargo run -- compile path/to/file.ks
+
+# Specify output path
+cargo run -- compile path/to/file.ks -o ./a.out
+
+# Release build of the runner (slower compile, faster startup/runtime)
+cargo run -- compile path/to/file.ks --release -o ./a.out
+
 # Start interactive REPL
 cargo run -- repl
 ```
