@@ -3756,7 +3756,7 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
         env.local_to_module.insert(local, id.module.clone());
     }
 
-    for (_local, module_name) in &env.local_to_module {
+    for module_name in env.local_to_module.values() {
         *module_counts.entry(module_name.clone()).or_insert(0) += 1;
     }
     env.ambiguous_modules = module_counts
@@ -5635,6 +5635,7 @@ fn rewrite_class_dict_passing_in_module(
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rewrite_expr(
         module_snapshot: &ast::Module,
         class_env: &ClassEnv,
