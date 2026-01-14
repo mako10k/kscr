@@ -11,104 +11,11 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 mod stdlib_cache;
+mod toposort;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedModule {
     pub module: ast::Module,
     pub inferred: HashMap<String, Scheme>,
-}
-
-#[cfg(test)]
-mod flake_debug_tests {
-    use super::*;
-
-    fn collect_defined_names(module: &ast::Module) -> std::collections::HashSet<String> {
-        let mut out = std::collections::HashSet::new();
-        for it in &module.items {
-            item_defined_names(it, &mut out);
-        }
-        out
-    }
-
-    #[test]
-    #[ignore]
-    fn debug_flake_import_data_maybe_qualified() {
-        // This test is intentionally ignored. Run manually with:
-        // `cargo test debug_flake_import_data_maybe_qualified -- --ignored --nocapture`
-        //
-        // Goal: capture when `M.fromMaybe` becomes unbound.
-        let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe as M\n  main = do\n    print (show (M.fromMaybe 0 (Just 1)))\n    putStrLn \"maybe ok\"\n";
-
-        let iters: u32 = std::env::var("KSCR_FLAKE_ITERS")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(50);
-
-        for i in 1..=iters {
-            let uniq = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let dir = std::env::temp_dir().join(format!(
-                "kscr_debug_flake_maybe_{}_{}_{}",
-                std::process::id(),
-                i,
-                uniq
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("Main.ks");
-            std::fs::write(&path, src).unwrap();
-
-            let res = typecheck_file(&path);
-            if let Err(e) = &res {
-                let es = e.to_string();
-                if es.contains("unbound variable: M.fromMaybe") {
-                    let flattened = load_module_with_imports(&path).unwrap();
-                    let names = collect_defined_names(&flattened);
-
-                    let mut from_maybe_like: Vec<_> = names
-                        .iter()
-                        .filter(|n| n.ends_with(".fromMaybe"))
-                        .cloned()
-                        .collect();
-                    from_maybe_like.sort();
-
-                    let mut m_qual: Vec<_> = names
-                        .iter()
-                        .filter(|n| n.starts_with("M."))
-                        .cloned()
-                        .collect();
-                    m_qual.sort();
-                    if m_qual.len() > 40 {
-                        m_qual.truncate(40);
-                    }
-
-                    let stdlib_maybe = stdlib_cache::stdlib_root().join("Data/Maybe.ks");
-                    let imported_ast = ModuleLoader {
-                        cache: std::collections::HashMap::new(),
-                        stack: vec![stdlib_maybe.clone()],
-                        emitted_qualified: std::collections::HashSet::new(),
-                        emitted_unqualified: std::collections::HashSet::new(),
-                    }
-                    .load_ast(&stdlib_maybe)
-                    .unwrap();
-                    let exports = module_exported_names(&imported_ast).unwrap();
-
-                    eprintln!("typecheck failed with flake signature at iter {i}: {e}");
-                    eprintln!("  flattened defines M.fromMaybe? {}", names.contains("M.fromMaybe"));
-                    eprintln!("  stdlib/Data/Maybe.ks export has fromMaybe? {}", exports.contains("fromMaybe"));
-                    eprintln!("  names ending with .fromMaybe: {from_maybe_like:?}");
-                    eprintln!("  some names starting with M.: {m_qual:?}");
-                    panic!("reproduced flake: {e}");
-                } else {
-                    // Unexpected failure: surface it.
-                    panic!("typecheck failed at iter {i}: {e}");
-                }
-            }
-
-            let _ = std::fs::remove_dir_all(&dir);
-        }
-    }
 }
 
 // --- Milestone 2.2.1: Unification core (scaffolding) ---
@@ -7422,14 +7329,6 @@ fn infer_module_with_class_env(
         let mut deps = HashSet::new();
         let empty: HashSet<String> = HashSet::new();
         collect_deps_in_expr(&bindings[i].expr, &name_to_binding, &empty, &mut deps);
-        // Ensure direct self-recursion is recorded.
-        for name in &defined_names[i] {
-            if let Some(j) = name_to_binding.get(name) {
-                if *j == i {
-                    // nothing
-                }
-            }
-        }
         let mut dv: Vec<usize> = deps.into_iter().collect();
         dv.sort_unstable();
         graph[i] = dv;
@@ -7461,29 +7360,7 @@ fn infer_module_with_class_env(
         }
     }
 
-    // Kahn topo sort over components (deterministic tie-breaking).
-    // Use a min-heap so runs don't depend on hash iteration order.
-    let mut heap: std::collections::BinaryHeap<std::cmp::Reverse<usize>> = indeg
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &d)| if d == 0 { Some(std::cmp::Reverse(i)) } else { None })
-        .collect();
-    let mut comp_order = Vec::new();
-    while let Some(std::cmp::Reverse(c)) = heap.pop() {
-        comp_order.push(c);
-        let mut tos: Vec<usize> = comp_edges[c].iter().copied().collect();
-        tos.sort_unstable();
-        for to in tos {
-            indeg[to] -= 1;
-            if indeg[to] == 0 {
-                heap.push(std::cmp::Reverse(to));
-            }
-        }
-    }
-
-    if comp_order.len() != comp_n {
-        return Err(Error::msg("internal error: cyclic component graph"));
-    }
+    let comp_order = toposort::kahn_deterministic(&comp_edges, indeg)?;
 
     let mut subst = Subst::new();
     let mut out = HashMap::new();

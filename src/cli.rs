@@ -16,7 +16,6 @@ where
         .next()
         .map(Into::into)
         .unwrap_or_else(|| "help".to_string());
-
     match cmd.as_str() {
         "help" | "-h" | "--help" => {
             print_help();
@@ -181,7 +180,6 @@ fn render_typecheck_report(
         out.push_str(&specs.join(", "));
         out.push('\n');
     }
-
     let mut inferred = if show_all {
         inferred.into_iter().collect()
     } else {

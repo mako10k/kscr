@@ -27,11 +27,7 @@ where
             "--release" => {
                 release = true;
             }
-            _ => {
-                return Err(crate::error::Error::msg(format!(
-                    "unknown arg: {arg}"
-                )))
-            }
+            _ => return Err(crate::error::Error::msg(format!("unknown arg: {arg}"))),
         }
     }
 
@@ -64,10 +60,7 @@ fn compile_rust_runner(
     // Ensure we have a compiled `kscr` library artifact we can link against.
     let profile = if release { "release" } else { "debug" };
     let mut cargo = Command::new("cargo");
-    cargo
-        .arg("build")
-        .arg("-q")
-        .arg("--lib");
+    cargo.arg("build").arg("-q").arg("--lib");
     if release {
         cargo.arg("--release");
     }
@@ -90,11 +83,8 @@ fn compile_rust_runner(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| crate::error::Error::msg(format!("time error: {e}")))?
         .as_nanos();
-    let build_dir = std::env::temp_dir().join(format!(
-        "kscr_compile_{}_{}",
-        std::process::id(),
-        nanos
-    ));
+    let build_dir =
+        std::env::temp_dir().join(format!("kscr_compile_{}_{}", std::process::id(), nanos));
     std::fs::create_dir_all(&build_dir)?;
 
     let packed_path = build_dir.join("packed_ir.bin");

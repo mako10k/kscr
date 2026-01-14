@@ -346,7 +346,11 @@ fn encode_expr(out: &mut Vec<u8>, expr: &IrExpr) {
                 encode_case_arm(out, a);
             }
         }
-        IrExpr::IoBind { action, param, body } => {
+        IrExpr::IoBind {
+            action,
+            param,
+            body,
+        } => {
             write_u8(out, 12);
             encode_expr(out, action);
             write_string(out, param);
