@@ -97,10 +97,32 @@ fn compile_rust_runner(
     {
         let mut f = std::fs::File::create(&main_rs_path)?;
         // Note: keep this runner minimal; it just decodes packed IR and runs main.
-        writeln!(
-            f,
-            "use kscr::ir;\nuse kscr::ir_pack;\n\nfn main() {{\n    let bytes: &[u8] = include_bytes!(\"packed_ir.bin\");\n    let module = match ir_pack::decode_ir_module(bytes) {{\n        Ok(m) => m,\n        Err(e) => {{ eprintln!(\"kscr: failed to decode packed IR: {{}}\", e); std::process::exit(1); }}\n    }};\n\n    match ir::run_main(&module) {{\n        Ok(v) => match v {{\n            ir::Value::Unit => println!(\"()\"),\n            other => println!(\"{{:#?}}\", other),\n        }},\n        Err(e) => {{ eprintln!(\"kscr: runtime error: {{}}\", e); std::process::exit(1); }}\n    }}\n}}\n"
-        )?;
+        let runner_code = r#"use kscr::ir;
+use kscr::ir_pack;
+
+fn main() {
+    let bytes: &[u8] = include_bytes!("packed_ir.bin");
+    let module = match ir_pack::decode_ir_module(bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("kscr: failed to decode packed IR: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    match ir::run_main(&module) {
+        Ok(v) => match v {
+            ir::Value::Unit => println!("()"),
+            other => println!("{:#?}", other),
+        },
+        Err(e) => {
+            eprintln!("kscr: runtime error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+"#;
+        f.write_all(runner_code.as_bytes())?;
     }
 
     let mut rustc = Command::new("rustc");
@@ -130,10 +152,9 @@ fn compile_rust_runner(
 
     // Help users understand what's embedded.
     eprintln!(
-        "compiled {} -> {} (packed IR from {})",
+        "compiled {} -> {} (packed IR)",
         input_path.display(),
-        output_path.display(),
-        input_path.display()
+        output_path.display()
     );
 
     Ok(())

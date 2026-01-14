@@ -19,11 +19,8 @@ if [ -x ./target/release/kscr-lsp ]; then
     echo "  Size: $(du -h ./target/release/kscr-lsp | cut -f1)"
     
     # Test that it can at least start (it will wait for stdin, so we timeout quickly)
-    if timeout 0.5s ./target/release/kscr-lsp < /dev/null 2>&1 | head -1; then
-        echo "✓ LSP server can start (timed out waiting for input as expected)"
-    else
-        echo "✓ LSP server can start (timed out waiting for input as expected)"
-    fi
+    timeout 0.5s ./target/release/kscr-lsp < /dev/null >/dev/null 2>&1 || true
+    echo "✓ LSP server can start (timed out waiting for input as expected)"
 else
     echo "✗ LSP server binary not found or not executable"
     exit 1

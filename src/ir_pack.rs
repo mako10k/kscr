@@ -1,5 +1,19 @@
 use crate::ir::{CastTarget, IrCaseArm, IrExpr, IrItem, IrLiteral, IrModule, IrPattern};
 
+/// Maximum allowed length for collections to prevent excessive memory allocation
+const MAX_COLLECTION_SIZE: u32 = 100_000_000; // 100M elements
+
+/// Safely convert u32 length to usize with validation
+fn validate_length(len: u32) -> Result<usize, String> {
+    if len > MAX_COLLECTION_SIZE {
+        return Err(format!(
+            "collection size {} exceeds maximum allowed size {}",
+            len, MAX_COLLECTION_SIZE
+        ));
+    }
+    Ok(len as usize)
+}
+
 pub fn encode_ir_module(module: &IrModule) -> Vec<u8> {
     let mut out = Vec::new();
     write_u32(&mut out, module.items.len() as u32);
@@ -10,7 +24,7 @@ pub fn encode_ir_module(module: &IrModule) -> Vec<u8> {
 }
 
 pub fn decode_ir_module(mut input: &[u8]) -> Result<IrModule, String> {
-    let len = read_u32(&mut input)? as usize;
+    let len = validate_length(read_u32(&mut input)?)?;
     let mut items = Vec::with_capacity(len);
     for _ in 0..len {
         items.push(decode_item(&mut input)?);
@@ -174,7 +188,7 @@ fn decode_pattern(input: &mut &[u8]) -> Result<IrPattern, String> {
         1 => Ok(IrPattern::Wildcard),
         2 => Ok(IrPattern::Literal(decode_literal(input)?)),
         3 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut ps = Vec::with_capacity(n);
             for _ in 0..n {
                 ps.push(decode_pattern(input)?);
@@ -182,7 +196,7 @@ fn decode_pattern(input: &mut &[u8]) -> Result<IrPattern, String> {
             Ok(IrPattern::Tuple(ps))
         }
         4 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut ps = Vec::with_capacity(n);
             for _ in 0..n {
                 ps.push(decode_pattern(input)?);
@@ -190,7 +204,7 @@ fn decode_pattern(input: &mut &[u8]) -> Result<IrPattern, String> {
             Ok(IrPattern::List(ps))
         }
         5 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut fields = Vec::with_capacity(n);
             for _ in 0..n {
                 let k = read_string(input)?;
@@ -200,7 +214,7 @@ fn decode_pattern(input: &mut &[u8]) -> Result<IrPattern, String> {
             Ok(IrPattern::Record(fields))
         }
         6 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut fields = Vec::with_capacity(n);
             for _ in 0..n {
                 let k = read_string(input)?;
@@ -217,7 +231,7 @@ fn decode_pattern(input: &mut &[u8]) -> Result<IrPattern, String> {
         }
         8 => {
             let name = read_string(input)?;
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut args = Vec::with_capacity(n);
             for _ in 0..n {
                 args.push(decode_pattern(input)?);
@@ -419,7 +433,7 @@ fn decode_expr(input: &mut &[u8]) -> Result<IrExpr, String> {
         }
         6 => Ok(IrExpr::Var(read_string(input)?)),
         7 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut params = Vec::with_capacity(n);
             for _ in 0..n {
                 params.push(read_string(input)?);
@@ -432,7 +446,7 @@ fn decode_expr(input: &mut &[u8]) -> Result<IrExpr, String> {
         }
         8 => {
             let func = decode_expr(input)?;
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut args = Vec::with_capacity(n);
             for _ in 0..n {
                 args.push(decode_expr(input)?);
@@ -453,7 +467,7 @@ fn decode_expr(input: &mut &[u8]) -> Result<IrExpr, String> {
             })
         }
         10 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut bindings = Vec::with_capacity(n);
             for _ in 0..n {
                 let name = read_string(input)?;
@@ -468,7 +482,7 @@ fn decode_expr(input: &mut &[u8]) -> Result<IrExpr, String> {
         }
         11 => {
             let expr = decode_expr(input)?;
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut arms = Vec::with_capacity(n);
             for _ in 0..n {
                 arms.push(decode_case_arm(input)?);
@@ -505,7 +519,7 @@ fn decode_expr(input: &mut &[u8]) -> Result<IrExpr, String> {
             })
         }
         15 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut xs = Vec::with_capacity(n);
             for _ in 0..n {
                 xs.push(decode_expr(input)?);
@@ -513,7 +527,7 @@ fn decode_expr(input: &mut &[u8]) -> Result<IrExpr, String> {
             Ok(IrExpr::List(xs))
         }
         16 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut xs = Vec::with_capacity(n);
             for _ in 0..n {
                 xs.push(decode_expr(input)?);
@@ -521,7 +535,7 @@ fn decode_expr(input: &mut &[u8]) -> Result<IrExpr, String> {
             Ok(IrExpr::Tuple(xs))
         }
         17 => {
-            let n = read_u32(input)? as usize;
+            let n = validate_length(read_u32(input)?)?;
             let mut fields = Vec::with_capacity(n);
             for _ in 0..n {
                 let k = read_string(input)?;
@@ -610,7 +624,7 @@ fn write_string(out: &mut Vec<u8>, s: &str) {
 }
 
 fn read_string(input: &mut &[u8]) -> Result<String, String> {
-    let len = read_u32(input)? as usize;
+    let len = validate_length(read_u32(input)?)?;
     if input.len() < len {
         return Err("unexpected EOF".to_string());
     }

@@ -41,11 +41,31 @@ fn test_lsp_server_can_start() {
     // Give it a moment to start
     std::thread::sleep(std::time::Duration::from_millis(500));
 
+    // Check if the process is still running (LSP server should be waiting for input)
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            panic!(
+                "LSP server exited unexpectedly with status: {:?}",
+                status
+            );
+        }
+        Ok(None) => {
+            // Process is still running, which is expected
+        }
+        Err(e) => {
+            panic!("Failed to check LSP server status: {}", e);
+        }
+    }
+
     // Kill the process
     child.kill().expect("Failed to kill LSP server");
     let output = child.wait_with_output().expect("Failed to wait for LSP server");
 
-    // The process should have been killed (exit code != 0 on Unix)
-    // On Windows, the exit code might be different
-    assert!(output.status.code().is_some(), "LSP server should have exited");
+    // Check that stderr doesn't contain panic or error messages
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panic") && !stderr.contains("error:"),
+        "LSP server produced unexpected errors: {}",
+        stderr
+    );
 }
