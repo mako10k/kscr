@@ -14,6 +14,7 @@ where
 
     let mut output_path: Option<PathBuf> = None;
     let mut release: bool = false;
+    let mut use_llvm: bool = false;
     while let Some(arg) = args.next() {
         let arg: String = arg.into();
         match arg.as_str() {
@@ -27,6 +28,9 @@ where
             "--release" => {
                 release = true;
             }
+            "--llvm" => {
+                use_llvm = true;
+            }
             _ => {
                 return Err(crate::error::Error::msg(format!(
                     "unknown arg: {arg}"
@@ -37,10 +41,25 @@ where
 
     let output_path = output_path.unwrap_or_else(|| default_output_path(&input_path));
 
-    // Thin wrapper (stage 1): typecheck -> lower to IR -> pack IR -> compile a tiny runner
-    // that decodes the IR and feeds it to the existing executor.
     let tm = crate::types::typecheck_file(&input_path)?;
     let irm = crate::ir::lower_to_ir(&tm.module)?;
+
+    if use_llvm {
+        #[cfg(feature = "llvm")]
+        {
+            return compile_via_llvm(&input_path, &output_path, &irm, release);
+        }
+
+        #[cfg(not(feature = "llvm"))]
+        {
+            return Err(crate::error::Error::msg(
+                "compile --llvm requires --features llvm",
+            ));
+        }
+    }
+
+    // Default (stage 1): typecheck -> lower to IR -> pack IR -> compile a tiny Rust runner
+    // that decodes the IR and feeds it to the existing executor.
     let packed = crate::ir_pack::encode_ir_module(&irm);
     compile_rust_runner(&input_path, &output_path, &packed, release)
 }
@@ -141,6 +160,63 @@ fn compile_rust_runner(
     // Help users understand what's embedded.
     eprintln!(
         "compiled {} -> {} (packed IR from {})",
+        input_path.display(),
+        output_path.display(),
+        input_path.display()
+    );
+
+    Ok(())
+}
+
+#[cfg(feature = "llvm")]
+fn compile_via_llvm(
+    input_path: &Path,
+    output_path: &Path,
+    ir_module: &crate::ir::IrModule,
+    release: bool,
+) -> Result<()> {
+    use std::io::Write;
+    use std::process::Command;
+
+    let llvm_ir = crate::llvm_backend::lower_ir_to_llvm_text(ir_module, "main")?;
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| crate::error::Error::msg(format!("time error: {e}")))?
+        .as_nanos();
+    let build_dir = std::env::temp_dir().join(format!(
+        "kscr_compile_llvm_{}_{}",
+        std::process::id(),
+        nanos
+    ));
+    std::fs::create_dir_all(&build_dir)?;
+
+    let ll_path = build_dir.join("module.ll");
+    {
+        let mut f = std::fs::File::create(&ll_path)?;
+        f.write_all(llvm_ir.as_bytes())?;
+    }
+
+    let mut clang = Command::new("clang");
+    clang.arg(&ll_path).arg("-o").arg(output_path);
+    if release {
+        clang.arg("-O3");
+    } else {
+        clang.arg("-O0");
+    }
+
+    let status = clang.status()?;
+    if !status.success() {
+        return Err(crate::error::Error::msg(format!(
+            "clang failed with status: {status}"
+        )));
+    }
+
+    // Best-effort cleanup.
+    let _ = std::fs::remove_dir_all(&build_dir);
+
+    eprintln!(
+        "compiled {} -> {} (LLVM backend, from {})",
         input_path.display(),
         output_path.display(),
         input_path.display()

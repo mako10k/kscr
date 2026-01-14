@@ -12,6 +12,9 @@ pub mod parser;
 mod safe_bigint;
 pub mod types;
 
+#[cfg(feature = "llvm")]
+pub mod llvm_backend;
+
 pub type Result<T> = std::result::Result<T, error::Error>;
 
 #[cfg(test)]
