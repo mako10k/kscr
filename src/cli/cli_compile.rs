@@ -31,11 +31,16 @@ where
             "--llvm" => {
                 use_llvm = true;
             }
-            _ => return Err(crate::error::Error::msg(format!("unknown arg: {arg}"))),
+            _ => {
+                return Err(crate::error::Error::msg(format!(
+                    "unknown arg: {arg}"
+                )))
+            }
         }
     }
 
     let output_path = output_path.unwrap_or_else(|| default_output_path(&input_path));
+
     let tm = crate::types::typecheck_file(&input_path)?;
     let irm = crate::ir::lower_to_ir(&tm.module)?;
 
@@ -78,7 +83,10 @@ fn compile_rust_runner(
     // Ensure we have a compiled `kscr` library artifact we can link against.
     let profile = if release { "release" } else { "debug" };
     let mut cargo = Command::new("cargo");
-    cargo.arg("build").arg("-q").arg("--lib");
+    cargo
+        .arg("build")
+        .arg("-q")
+        .arg("--lib");
     if release {
         cargo.arg("--release");
     }
@@ -101,8 +109,11 @@ fn compile_rust_runner(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| crate::error::Error::msg(format!("time error: {e}")))?
         .as_nanos();
-    let build_dir =
-        std::env::temp_dir().join(format!("kscr_compile_{}_{}", std::process::id(), nanos));
+    let build_dir = std::env::temp_dir().join(format!(
+        "kscr_compile_{}_{}",
+        std::process::id(),
+        nanos
+    ));
     std::fs::create_dir_all(&build_dir)?;
 
     let packed_path = build_dir.join("packed_ir.bin");
@@ -117,7 +128,7 @@ fn compile_rust_runner(
         // Note: keep this runner minimal; it just decodes packed IR and runs main.
         writeln!(
             f,
-            "use kscr::ir;\nuse kscr::ir_pack;\n\nfn main() {{\n    let bytes: &[u8] = include_bytes\n!(\"packed_ir.bin\");\n    let module = match ir_pack::decode_ir_module(bytes) {{\n        Ok(m) => m,\n        Err(e) => {{ eprintln!(\"kscr: failed to decode packed IR: {{}}\", e); std::process::exit(1); }}\n    }};\n\n    match ir::run_main(&module) {{\n        Ok(v) => match v {{\n            ir::Value::Unit => println!(\"()\"),\n            other => println!(\"{{:#?}}\", other),\n        }},\n        Err(e) => {{ eprintln!(\"kscr: runtime error: {{}}\", e); std::process::exit(1); }}\n    }}\n}}\n"
+            "use kscr::ir;\nuse kscr::ir_pack;\n\nfn main() {{\n    let bytes: &[u8] = include_bytes!(\"packed_ir.bin\");\n    let module = match ir_pack::decode_ir_module(bytes) {{\n        Ok(m) => m,\n        Err(e) => {{ eprintln!(\"kscr: failed to decode packed IR: {{}}\", e); std::process::exit(1); }}\n    }};\n\n    match ir::run_main(&module) {{\n        Ok(v) => match v {{\n            ir::Value::Unit => println!(\"()\"),\n            other => println!(\"{{:#?}}\", other),\n        }},\n        Err(e) => {{ eprintln!(\"kscr: runtime error: {{}}\", e); std::process::exit(1); }}\n    }}\n}}\n"
         )?;
     }
 
