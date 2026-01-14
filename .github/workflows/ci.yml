@@ -36,7 +36,9 @@ jobs:
         run: cargo install cargo-geiger --locked --version 0.13.0
 
       - name: cargo geiger
-        run: cargo geiger
+        run: |
+          cargo fetch --locked
+          cargo geiger --locked --offline
 
   nightly_udeps:
     name: nightly udeps (informational)
