@@ -18,6 +18,7 @@ use std::fmt::Write;
 pub struct LLVMIRGenerator {
     module_name: String,
     output: String,
+    #[allow(dead_code)] // Reserved for future IR generation
     counter: usize,
 }
 
@@ -48,6 +49,8 @@ impl LLVMIRGenerator {
     }
 
     /// Generate a new unique label/register
+    /// Reserved for future expression lowering
+    #[allow(dead_code)]
     fn gen_label(&mut self, prefix: &str) -> String {
         let id = self.counter;
         self.counter += 1;
