@@ -3768,7 +3768,7 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
 }
 
 fn desugar_qualified_ref(name: &str, env: &QualEnv) -> Result<String> {
-    let Some((qual, member)) = name.rsplit_once('.') else {
+    let Some((qual, _member)) = name.rsplit_once('.') else {
         return Ok(name.to_string());
     };
 
@@ -3780,14 +3780,6 @@ fn desugar_qualified_ref(name: &str, env: &QualEnv) -> Result<String> {
             allowed.join(", ")
         )));
     };
-
-    // If this qualifier is an alias and the target module is uniquely imported, normalize the
-    // reference to the canonical module qualifier.
-    if let Some(module_name) = env.local_to_module.get(qual) {
-        if !env.ambiguous_modules.contains(module_name) {
-            return Ok(format!("{module_name}.{member}"));
-        }
-    }
 
     Ok(name.to_string())
 }
