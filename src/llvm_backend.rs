@@ -404,12 +404,16 @@ fn eval_const_bool(
                     Ok(eval_const_i64(bindings, visiting, a)?
                         == eval_const_i64(bindings, visiting, b)?)
                 }
-                ("<", [a, b]) => Ok(eval_const_i64(bindings, visiting, a)?
-                    < eval_const_i64(bindings, visiting, b)?),
+                ("<", [a, b]) => {
+                    Ok(eval_const_i64(bindings, visiting, a)?
+                        < eval_const_i64(bindings, visiting, b)?)
+                }
                 ("<=", [a, b]) => Ok(eval_const_i64(bindings, visiting, a)?
                     <= eval_const_i64(bindings, visiting, b)?),
-                (">", [a, b]) => Ok(eval_const_i64(bindings, visiting, a)?
-                    > eval_const_i64(bindings, visiting, b)?),
+                (">", [a, b]) => {
+                    Ok(eval_const_i64(bindings, visiting, a)?
+                        > eval_const_i64(bindings, visiting, b)?)
+                }
                 (">=", [a, b]) => Ok(eval_const_i64(bindings, visiting, a)?
                     >= eval_const_i64(bindings, visiting, b)?),
                 ("not", [a]) => Ok(!eval_const_bool(bindings, visiting, a)?),
@@ -418,9 +422,7 @@ fn eval_const_bool(
                 )),
             }
         }
-        _ => Err(Error::msg(
-            "LLVM backend MVP supports only bool constants",
-        )),
+        _ => Err(Error::msg("LLVM backend MVP supports only bool constants")),
     }
 }
 
@@ -454,7 +456,9 @@ fn append_const_char_list(
             }
             Ok(())
         }
-        ir::IrExpr::Cons { head, tail } => append_const_char_list(bindings, visiting, head, tail, out),
+        ir::IrExpr::Cons { head, tail } => {
+            append_const_char_list(bindings, visiting, head, tail, out)
+        }
         ir::IrExpr::Var(name) => {
             let Some(e) = bindings.get(name) else {
                 return Err(Error::msg(format!(

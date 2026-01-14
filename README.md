@@ -12,6 +12,7 @@ A lazy functional scripting language with strong static typing, Hindley-Milner t
 - **Algebraic Data Types**: `data` declarations with deriving support
 - **Do-notation**: Monadic composition for IO operations
 - **REPL**: Interactive environment with type inspection and module loading
+- **Language Server Protocol (LSP)**: IDE support with diagnostics and symbols
 
 ## Prerequisites
 
@@ -189,6 +190,31 @@ Detailed documentation is available in the `docs/` directory:
 - `IntermediateRepresentation.md`: IR design and lowering
 - `ImplementationPlan.md`: Development roadmap
 - `ToolchainDesign.md`: Compiler architecture
+- `LSPDesign.md`: Language Server Protocol implementation design
+
+## Language Server Protocol (LSP)
+
+The kscr language server provides IDE features for any LSP-compatible editor.
+
+### Building the LSP Server
+
+```bash
+cd crates/kscr_lsp
+cargo build --release
+```
+
+The binary will be at `crates/kscr_lsp/target/release/kscr-lsp`.
+
+### Current LSP Features
+
+- **Real-time Diagnostics**: Parse, import, and type errors
+- **Document Symbols**: Outline view of functions, types, and classes
+- **Hover** (planned): Type information on hover
+- **Go-to-Definition** (planned): Navigate to definitions
+
+### Editor Integration
+
+See `crates/kscr_lsp/README.md` for integration instructions with VS Code, Vim, Emacs, and other editors.
 
 ## Development Status
 
@@ -203,6 +229,7 @@ Current implementation includes:
 - ✅ Do-notation for IO
 - ✅ Interactive REPL
 - ✅ Automatic deriving for typeclasses
+- ✅ LSP server with diagnostics and document symbols
 
 For the latest development status and priorities, see `docs/PriorityChecklist.md`.
 
