@@ -60,6 +60,9 @@ cargo run -- typecheck --all path/to/file.ks
 # Lower to IR and print (debug)
 cargo run -- ir path/to/file.ks
 
+# Generate LLVM IR (requires --features llvm)
+cargo run --features llvm -- llvm-ir path/to/file.ks
+
 # Start interactive REPL
 cargo run -- repl
 ```

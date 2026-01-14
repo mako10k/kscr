@@ -1,4 +1,5 @@
 use crate::{ast, ir, parser, types, Result};
+mod cli_llvm_ir;
 #[cfg(feature = "readline")]
 use rustyline::{error::ReadlineError, DefaultEditor};
 use std::collections::HashSet;
@@ -86,6 +87,7 @@ where
             Ok(())
         }
         "repl" => repl(),
+        "llvm-ir" => cli_llvm_ir::cmd_llvm_ir(args),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
 }
@@ -164,11 +166,9 @@ fn render_typecheck_report(
     show_all: bool,
 ) -> String {
     let mut out = String::new();
-
     if let Some(name) = &module.name {
         out.push_str(&format!("module {name}\n"));
     }
-
     if let Some(specs) = exported_specs(module) {
         let mut specs: Vec<_> = specs
             .into_iter()
@@ -195,7 +195,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :load <path>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :load <path>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
     );
 }
 
