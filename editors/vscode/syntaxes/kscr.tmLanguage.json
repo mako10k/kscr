@@ -1,0 +1,121 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "kscr",
+  "scopeName": "source.kscr",
+  "patterns": [
+    { "include": "#shebang" },
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#numbers" },
+    { "include": "#booleans" },
+    { "include": "#keywords" },
+    { "include": "#typesAndCtors" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "shebang": {
+      "patterns": [
+        {
+          "name": "comment.line.shebang.kscr",
+          "match": "\\A#!.*$"
+        }
+      ]
+    },
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-dash.kscr",
+          "match": "--.*$"
+        },
+        {
+          "name": "comment.block.kscr",
+          "begin": "\\{-(?!#)",
+          "end": "-\\}",
+          "patterns": [
+            {
+              "name": "comment.block.kscr",
+              "begin": "\\{-",
+              "end": "-\\}"
+            }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.kscr",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.kscr",
+              "match": "\\\\(n|r|t|\\\\|\"|')"
+            }
+          ]
+        }
+      ]
+    },
+    "chars": {
+      "patterns": [
+        {
+          "name": "constant.character.kscr",
+          "match": "'(?:[^\\\\'\\n]|\\\\.)'"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.kscr",
+          "match": "\\b[0-9]+\\.[0-9]+(?:[eE][+-]?[0-9]+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.kscr",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "booleans": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.kscr",
+          "match": "\\b(True|False)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.kscr",
+          "match": "\\b(let|in|case|of|do|if|then|else|where)\\b"
+        },
+        {
+          "name": "keyword.declaration.kscr",
+          "match": "\\b(module|import|export|type|data|class|instance|infixl|infixr|infix|deriving|qualified|as)\\b"
+        }
+      ]
+    },
+    "typesAndCtors": {
+      "patterns": [
+        {
+          "name": "entity.name.type.kscr",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.kscr",
+          "match": "(->|<-|=>|::|==|/=|<=|>=|&&|\\\\|\\|\\|\\+\\+|:)"
+        },
+        {
+          "name": "punctuation.definition.operator.backtick.kscr",
+          "match": "`"
+        }
+      ]
+    }
+  }
+}
