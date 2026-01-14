@@ -533,7 +533,10 @@ fn parser_golden_decl() {
             assert_eq!(dd.params, vec!["a".to_string(), "b".to_string()]);
             assert_eq!(dd.ctors.len(), 1);
             assert_eq!(dd.ctors[0].name, ":*:");
-            assert_eq!(dd.ctors[0].args, vec![Type::Var("a".to_string()), Type::Var("b".to_string())]);
+            assert_eq!(
+                dd.ctors[0].args,
+                vec![Type::Var("a".to_string()), Type::Var("b".to_string())]
+            );
         }
         _ => panic!("expected data decl"),
     }

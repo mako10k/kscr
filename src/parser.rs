@@ -769,11 +769,7 @@ fn parse_ctor_name(ts: &mut TokenStream) -> Result<String> {
     match ts.peek_kind() {
         Some(TokenKind::Ident(_)) => {
             let name = ts.expect_ident()?;
-            if name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_uppercase())
-            {
+            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                 Ok(name)
             } else {
                 Err(Error::msg(format!("expected constructor name at {pos}")))
@@ -1870,9 +1866,7 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
 
         match parse_binding_or_fun_clause(ts, Stop::LetBind)? {
             ParsedBind::Binding(b) => bindings.push(b),
-            ParsedBind::FunClause(c) => {
-                push_fun_clause_binding(ts, &mut bindings, &mut pending, c)
-            }
+            ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bindings, &mut pending, c),
         }
         while matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
             ts.bump();
@@ -2550,7 +2544,9 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     {
         let save = (ts.i, ts.last_span_end);
         if let Ok(lhs) = parse_application(ts, Stop::LineEnd) {
-            if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind()) {
+            if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
+                || is_sym_op_token(ts.peek_kind())
+            {
                 let op = if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
                     ts.expect(TokenKind::Backtick)?;
                     let op = ts.expect_ident()?;
