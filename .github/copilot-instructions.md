@@ -55,6 +55,39 @@ cargo +nightly udeps
 
 The codebase enforces `#![forbid(unsafe_code)]` in `src/lib.rs`. Unsafe code is only allowed in optional feature crates (`kscr_unsafe_bigint`, `kscr_unsafe_ffi`) which are disabled by default.
 
+## Source Code Quality Rules (Review-Driven)
+
+kscr is a language implementation. We optimize for readability, debuggability, and clean separations of responsibility over micro-optimizations. The rules below are enforced in code review even when no automatic gate exists.
+
+### Keep cyclomatic complexity low
+
+- **Recommended: ≤ 20 per function**.
+- **21–30: must refactor/split** before merging (extract helpers by responsibility; move “policy” into data tables; separate parsing/typechecking/runtime phases).
+- **> 30: immediate refactor required**. Do not add new features/branches on top of a function already above this threshold.
+- Practical checks (fast, concrete):
+   - Keep functions single-purpose; move large `match` arms into named helpers.
+   - When you add a branch, look for an existing “decision point” you can remove.
+   - Optional heuristic linting (not exact cyclomatic complexity):
+      - `cargo clippy -- -W clippy::cognitive_complexity -W clippy::too_many_lines`
+
+### Limit source length (primarily file length)
+
+- **Recommended: ≤ 800 lines per `.rs` file**.
+- **801–1200: must split** (sub-modules, feature-focused files, or submodule trees).
+- **> 1200: immediate split required** (do the split before adding features).
+- Practical checks:
+   - `find src -name '*.rs' -print0 | xargs -0 wc -l | sort -n`
+   - Prefer splitting by responsibility boundaries that match the compiler pipeline (lexer/parser/types/IR/runtime) rather than arbitrary “part1/part2” files.
+
+### Keep code clones (duplication) at zero
+
+- **Goal: no copy/paste logic**. Similar logic must be shared via helpers, small structs, or traits.
+- If clones already exist, **every change must reduce duplication**. It does not have to reach zero in a single PR, but duplication must not increase.
+- Practical checks:
+   - If you touch two similar blocks, extract a shared helper in the closest reasonable module (or a clearly named shared module) before adding new behavior.
+   - Use `rg`/`git grep` to find repeated error strings, match shapes, or nearly identical helper bodies.
+   - Optional (if you already have Node.js tooling available): run a clone detector such as `jscpd` against `src/` to catch copy/paste regressions.
+
 ## Development Workflow: Execution-First Policy
 
 **Current priority** (see `docs/PriorityChecklist.md` for full context):
