@@ -211,6 +211,20 @@ fn parser_binding_operator_name_parens() {
 }
 
 #[test]
+fn parser_binding_operator_name_dot_parens() {
+    let m = crate::parser::parse_module("(.) = f\n").unwrap();
+    assert_eq!(m.items.len(), 1);
+
+    use crate::ast::{ExprKind, Item, PatternKind};
+
+    let Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+    assert!(matches!(&b.pat.kind, PatternKind::Var(name) if name == "."));
+    assert!(matches!(&b.expr.kind, ExprKind::Var(s) if s == "f"));
+}
+
+#[test]
 fn parser_fun_clause_operator_name_parens() {
     let m = crate::parser::parse_module("(++) a b = concat a b\n").unwrap();
     assert_eq!(m.items.len(), 1);

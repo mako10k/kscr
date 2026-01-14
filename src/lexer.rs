@@ -87,6 +87,9 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
     let bytes = src.as_bytes();
     let mut i = 0usize;
 
+    let is_ident_start_byte = |b: u8| -> bool { b.is_ascii_alphabetic() || b == b'_' };
+    let is_ident_continue_byte = |b: u8| -> bool { is_ident_start_byte(b) || b.is_ascii_digit() };
+
     let is_operator_byte = |b: u8| -> bool {
         matches!(
             b,
@@ -98,6 +101,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 | b'+'
                 | b'-'
                 | b'/'
+                | b'.'
                 | b'<'
                 | b'='
                 | b'>'
@@ -220,6 +224,23 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
         //
         // Note: this runs before punctuation matching so that operators like "+>" are
         // lexed as a single token instead of "+" then ">".
+        //
+        // Special-case '.' so that module qualification like `A.B` still lexes '.' as
+        // `TokenKind::Dot`, while standalone '.' can be an operator token.
+        if bytes[i] == b'.' {
+            let prev = if i > 0 { bytes[i - 1] } else { b' ' };
+            let next = if i + 1 < bytes.len() {
+                bytes[i + 1]
+            } else {
+                b' '
+            };
+            if is_ident_continue_byte(prev) && is_ident_start_byte(next) {
+                let start = i;
+                i += 1;
+                push(TokenKind::Dot, start, i);
+                continue;
+            }
+        }
         if is_operator_byte(bytes[i]) {
             let start = i;
             i += 1;
@@ -243,6 +264,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 "||" => TokenKind::OrOr,
                 "++" => TokenKind::PlusPlus,
                 "::" => TokenKind::ColonColon,
+                "..." => TokenKind::Ellipsis,
                 ":" => TokenKind::Colon,
                 "+" => TokenKind::Plus,
                 "-" => TokenKind::Minus,
@@ -344,12 +366,7 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             push(TokenKind::Semicolon, start, i);
             continue;
         }
-        if bytes[i] == b'.' {
-            let start = i;
-            i += 1;
-            push(TokenKind::Dot, start, i);
-            continue;
-        }
+        // '.' is handled above (either as `Dot` for qualification or as part of an operator).
 
         if bytes[i] == b'=' {
             let start = i;
