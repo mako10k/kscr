@@ -86,6 +86,27 @@ where
             Ok(())
         }
         "repl" => repl(),
+        "llvm-ir" => {
+            #[cfg(feature = "llvm")]
+            {
+                let _path = args
+                    .next()
+                    .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
+                    .into();
+                // For now, generate placeholder LLVM IR
+                // In the future, this will lower the actual IR to LLVM IR
+                let llvm_ir = kscr_llvm::generate_llvm_ir_text("main")
+                    .map_err(|e| crate::error::Error::msg(e))?;
+                println!("{}", llvm_ir);
+                Ok(())
+            }
+            #[cfg(not(feature = "llvm"))]
+            {
+                Err(crate::error::Error::msg(
+                    "llvm-ir command requires --features llvm",
+                ))
+            }
+        }
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
 }
@@ -195,7 +216,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :load <path>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :load <path>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
     );
 }
 

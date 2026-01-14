@@ -1,0 +1,10 @@
+[package]
+name = "kscr_llvm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# No external dependencies needed for MVP - we'll generate LLVM IR as text
+
+[lib]
+path = "src/lib.rs"
