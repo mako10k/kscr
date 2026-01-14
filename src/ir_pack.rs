@@ -290,6 +290,7 @@ fn decode_cast_target(input: &mut &[u8]) -> Result<CastTarget, String> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn encode_expr(out: &mut Vec<u8>, expr: &IrExpr) {
     match expr {
         IrExpr::Unit => write_u8(out, 0),
@@ -410,6 +411,7 @@ fn encode_expr(out: &mut Vec<u8>, expr: &IrExpr) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn decode_expr(input: &mut &[u8]) -> Result<IrExpr, String> {
     let tag = read_u8(input)?;
     match tag {
