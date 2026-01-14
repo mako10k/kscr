@@ -40,6 +40,7 @@ impl Document {
     }
 
     /// Convert LSP position (line, character) to byte offset
+    #[allow(dead_code)] // Used in future hover/goto-definition implementations
     pub fn position_to_offset(&self, line: u32, character: u32) -> Option<usize> {
         let line = line as usize;
         if line >= self.line_starts.len() {
@@ -70,6 +71,7 @@ impl Document {
     }
 
     /// Convert byte offset to LSP position (line, character)
+    #[allow(dead_code)] // Used in future hover/goto-definition implementations
     pub fn offset_to_position(&self, offset: usize) -> Option<(u32, u32)> {
         if offset > self.text.len() {
             return None;
@@ -143,6 +145,7 @@ impl Vfs {
     }
 
     /// Check if a document exists
+    #[allow(dead_code)] // Used in future implementations
     pub fn contains(&self, uri: &Url) -> bool {
         self.documents.contains_key(uri)
     }
