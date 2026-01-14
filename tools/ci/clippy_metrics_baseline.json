@@ -1,0 +1,4 @@
+{
+  "clippy::cognitive_complexity": 11,
+  "clippy::too_many_lines": 64
+}
