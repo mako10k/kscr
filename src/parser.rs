@@ -715,48 +715,114 @@ fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 }
 
 fn parse_fixity_op(ts: &mut TokenStream) -> Result<String> {
-    let pos = ts.pos_str_here();
-    match ts.bump() {
-        Some(TokenKind::Ident(s)) => Ok(s),
-        Some(TokenKind::Operator(s)) => Ok(s),
-        Some(TokenKind::Plus) => Ok("+".to_string()),
-        Some(TokenKind::Minus) => Ok("-".to_string()),
-        Some(TokenKind::Star) => Ok("*".to_string()),
-        Some(TokenKind::Slash) => Ok("/".to_string()),
-        Some(TokenKind::PlusPlus) => Ok("++".to_string()),
-        Some(TokenKind::Colon) => Ok(":".to_string()),
-        Some(TokenKind::EqEq) => Ok("==".to_string()),
-        Some(TokenKind::SlashEq) => Ok("/=".to_string()),
-        Some(TokenKind::Lt) => Ok("<".to_string()),
-        Some(TokenKind::Le) => Ok("<=".to_string()),
-        Some(TokenKind::Gt) => Ok(">".to_string()),
-        Some(TokenKind::Ge) => Ok(">=".to_string()),
-        Some(TokenKind::GtGt) => Ok(">>".to_string()),
-        Some(TokenKind::GtGtEq) => Ok(">>=".to_string()),
-        Some(TokenKind::AndAnd) => Ok("&&".to_string()),
-        Some(TokenKind::OrOr) => Ok("||".to_string()),
-        _ => Err(Error::msg(format!("expected operator name at {pos}"))),
+    match ts.peek_kind() {
+        Some(TokenKind::Ident(_)) => Ok(ts.expect_ident()?),
+        Some(TokenKind::Operator(_)) => match ts.bump() {
+            Some(TokenKind::Operator(s)) => Ok(s),
+            _ => unreachable!(),
+        },
+        Some(TokenKind::Plus) => {
+            ts.bump();
+            Ok("+".to_string())
+        }
+        Some(TokenKind::Minus) => {
+            ts.bump();
+            Ok("-".to_string())
+        }
+        Some(TokenKind::Star) => {
+            ts.bump();
+            Ok("*".to_string())
+        }
+        Some(TokenKind::Slash) => {
+            ts.bump();
+            Ok("/".to_string())
+        }
+        Some(TokenKind::PlusPlus) => {
+            ts.bump();
+            Ok("++".to_string())
+        }
+        Some(TokenKind::Colon) => {
+            ts.bump();
+            Ok(":".to_string())
+        }
+        Some(TokenKind::EqEq) => {
+            ts.bump();
+            Ok("==".to_string())
+        }
+        Some(TokenKind::SlashEq) => {
+            ts.bump();
+            Ok("/=".to_string())
+        }
+        Some(TokenKind::Lt) => {
+            ts.bump();
+            Ok("<".to_string())
+        }
+        Some(TokenKind::Le) => {
+            ts.bump();
+            Ok("<=".to_string())
+        }
+        Some(TokenKind::Gt) => {
+            ts.bump();
+            Ok(">".to_string())
+        }
+        Some(TokenKind::Ge) => {
+            ts.bump();
+            Ok(">=".to_string())
+        }
+        Some(TokenKind::GtGt) => {
+            ts.bump();
+            Ok(">>".to_string())
+        }
+        Some(TokenKind::GtGtEq) => {
+            ts.bump();
+            Ok(">>=".to_string())
+        }
+        Some(TokenKind::AndAnd) => {
+            ts.bump();
+            Ok("&&".to_string())
+        }
+        Some(TokenKind::OrOr) => {
+            ts.bump();
+            Ok("||".to_string())
+        }
+        _ => Err(ts.err_here("expected operator name")),
     }
 }
 
 fn parse_fixity_decl(ts: &mut TokenStream) -> Result<ast::Item> {
-    let kw_pos = ts.pos_str_here();
-    let assoc = match ts.bump() {
-        Some(TokenKind::KwInfix) => ast::FixityAssoc::Infix,
-        Some(TokenKind::KwInfixl) => ast::FixityAssoc::Infixl,
-        Some(TokenKind::KwInfixr) => ast::FixityAssoc::Infixr,
-        _ => return Err(Error::msg(format!("expected fixity keyword at {kw_pos}"))),
+    let assoc = match ts.peek_kind() {
+        Some(TokenKind::KwInfix) => {
+            ts.bump();
+            ast::FixityAssoc::Infix
+        }
+        Some(TokenKind::KwInfixl) => {
+            ts.bump();
+            ast::FixityAssoc::Infixl
+        }
+        Some(TokenKind::KwInfixr) => {
+            ts.bump();
+            ast::FixityAssoc::Infixr
+        }
+        _ => return Err(ts.err_here("expected fixity keyword")),
     };
 
+    let prec_tok_span = ts.peek_span().unwrap_or(lexer::Span {
+        start: ts.last_span_end,
+        end: ts.last_span_end,
+    });
     let prec_pos = ts.pos_str_here();
     let prec = match ts.bump() {
-        Some(TokenKind::Integer(s)) => s
-            .parse::<u8>()
-            .map_err(|_| Error::msg(format!("invalid fixity precedence at {prec_pos}")))?,
+        Some(TokenKind::Integer(s)) => s.parse::<u8>().map_err(|_| {
+            Error::msg_with_span(
+                format!("invalid fixity precedence at {prec_pos}"),
+                prec_tok_span,
+            )
+        })?,
         _ => {
-            return Err(Error::msg(format!(
-                "expected fixity precedence at {prec_pos}"
-            )))
+            return Err(Error::msg_with_span(
+                format!("expected fixity precedence at {prec_pos}"),
+                prec_tok_span,
+            ))
         }
     };
 
@@ -771,47 +837,70 @@ fn parse_fixity_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 }
 
 fn parse_ctor_name(ts: &mut TokenStream) -> Result<String> {
-    let pos = ts.pos_str_here();
-
     match ts.peek_kind() {
         Some(TokenKind::Ident(_)) => {
+            let name_span = ts.peek_span().unwrap_or(lexer::Span {
+                start: ts.last_span_end,
+                end: ts.last_span_end,
+            });
             let name = ts.expect_ident()?;
             if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                 Ok(name)
             } else {
-                Err(Error::msg(format!("expected constructor name at {pos}")))
+                Err(Error::msg_with_span(
+                    format!("expected constructor name at {}", ts.pos_str_at(name_span.start)),
+                    name_span,
+                ))
             }
         }
         Some(TokenKind::Operator(op)) => {
+            let op_span = ts.peek_span().unwrap_or(lexer::Span {
+                start: ts.last_span_end,
+                end: ts.last_span_end,
+            });
             let op = op.clone();
             ts.bump();
             if is_ctor_symbol(&op) {
                 Ok(op)
             } else {
-                Err(Error::msg(format!("expected constructor name at {pos}")))
+                Err(Error::msg_with_span(
+                    format!("expected constructor name at {}", ts.pos_str_at(op_span.start)),
+                    op_span,
+                ))
             }
         }
         Some(TokenKind::LParen) => {
+            let lparen_span = ts.peek_span().unwrap_or(lexer::Span {
+                start: ts.last_span_end,
+                end: ts.last_span_end,
+            });
             // Allow parenthesized operator constructors: (:*:) / (:)
             let save = (ts.i, ts.last_span_end);
             ts.bump();
-            let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick))
-                || is_sym_op_token(ts.peek_kind());
+            let op_ok =
+                matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind());
             if !op_ok {
                 (ts.i, ts.last_span_end) = save;
-                return Err(Error::msg(format!("expected constructor name at {pos}")));
+                return Err(Error::msg_with_span(
+                    format!("expected constructor name at {}", ts.pos_str_at(lparen_span.start)),
+                    lparen_span,
+                ));
             }
             let op = parse_operator_name(ts)?;
             ts.expect(TokenKind::RParen)?;
             if is_ctor_symbol(&op) {
                 Ok(op)
             } else {
-                Err(Error::msg(format!(
-                    "expected ':'-prefixed constructor operator at {pos}"
-                )))
+                Err(Error::msg_with_span(
+                    format!(
+                        "expected ':'-prefixed constructor operator at {}",
+                        ts.pos_str_at(lparen_span.start)
+                    ),
+                    lparen_span,
+                ))
             }
         }
-        _ => Err(Error::msg(format!("expected constructor name at {pos}"))),
+        _ => Err(ts.err_here("expected constructor name")),
     }
 }
 

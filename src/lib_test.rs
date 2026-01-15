@@ -44,6 +44,13 @@ fn parser_import_hierarchical_name() {
 }
 
 #[test]
+fn parser_error_has_span() {
+    let src = "x = )";
+    let e = crate::parser::parse_module(src).unwrap_err();
+    assert_eq!(e.span(), Some(crate::lexer::Span { start: 4, end: 5 }));
+}
+
+#[test]
 fn parser_class_and_instance_basic() {
     let src = r#"
 class C a where
