@@ -43,6 +43,8 @@ pub struct ClassMethodSig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstanceDecl {
+    /// Instance context constraints (Haskell-style): `instance (C a, D a) => E (F a) where ...`.
+    pub preds: Vec<Predicate>,
     pub class: String,
     pub ty: Type,
     /// Method bindings inside the instance.

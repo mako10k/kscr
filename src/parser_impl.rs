@@ -484,6 +484,35 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 
 fn parse_instance_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwInstance)?;
+
+    // Optional instance context (Haskell-style):
+    //   instance (p1, p2) => C t where
+    //   instance p => C t where
+    let mut preds: Vec<ast::Predicate> = Vec::new();
+    if is_class_super_parens(ts) {
+        ts.bump();
+        preds.push(parse_predicate(ts, Stop::LineEnd)?);
+        while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            ts.bump();
+            preds.push(parse_predicate(ts, Stop::LineEnd)?);
+        }
+        ts.expect(TokenKind::RParen)?;
+        ts.expect(TokenKind::FatArrow)?;
+    } else {
+        // Single predicate form, but only if followed by `=>`.
+        let save = ts.i;
+        if let Ok(pred) = parse_predicate(ts, Stop::LineEnd) {
+            if matches!(ts.peek_kind(), Some(TokenKind::FatArrow)) {
+                ts.bump();
+                preds.push(pred);
+            } else {
+                ts.i = save;
+            }
+        } else {
+            ts.i = save;
+        }
+    }
+
     let class = ts.expect_ident()?;
     let ty = parse_type_expr(ts, Stop::LineEnd, is_type_end)?;
     ts.expect(TokenKind::KwWhere)?;
@@ -492,6 +521,7 @@ fn parse_instance_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     if !matches!(ts.peek_kind(), Some(TokenKind::Indent)) {
         // Allow empty instance bodies (useful when all methods have class defaults).
         return Ok(ast::Item::InstanceDecl(ast::InstanceDecl {
+            preds,
             class,
             ty,
             methods: Vec::new(),
@@ -553,6 +583,7 @@ fn parse_instance_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     }
 
     Ok(ast::Item::InstanceDecl(ast::InstanceDecl {
+        preds,
         class,
         ty,
         methods,

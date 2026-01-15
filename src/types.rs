@@ -4070,6 +4070,11 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
                     ast::Item::ClassDecl(c)
                 }
                 ast::Item::InstanceDecl(mut inst) => {
+                    inst.preds = inst
+                        .preds
+                        .into_iter()
+                        .map(|p| desugar_qualified_predicate(p, &env))
+                        .collect::<Result<Vec<_>>>()?;
                     inst.ty = desugar_qualified_type(inst.ty, &env)?;
                     inst.methods = inst
                         .methods
@@ -7877,6 +7882,34 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .collect::<Result<Vec<_>>>()?,
         })),
         ast::Item::InstanceDecl(inst) => Ok(ast::Item::InstanceDecl(ast::InstanceDecl {
+            preds: inst
+                .preds
+                .into_iter()
+                .map(|p| {
+                    Ok(match p {
+                        ast::Predicate::Show(t) => {
+                            ast::Predicate::Show(expand_type(t, aliases, &mut Vec::new())?)
+                        }
+                        ast::Predicate::ShowRow(t) => {
+                            ast::Predicate::ShowRow(expand_type(t, aliases, &mut Vec::new())?)
+                        }
+                        ast::Predicate::Eq(t) => {
+                            ast::Predicate::Eq(expand_type(t, aliases, &mut Vec::new())?)
+                        }
+                        ast::Predicate::EqRow(t) => {
+                            ast::Predicate::EqRow(expand_type(t, aliases, &mut Vec::new())?)
+                        }
+                        ast::Predicate::Class { class, ty } => ast::Predicate::Class {
+                            class,
+                            ty: expand_type(ty, aliases, &mut Vec::new())?,
+                        },
+                        ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
+                            label,
+                            row: expand_type(row, aliases, &mut Vec::new())?,
+                        },
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
             class: inst.class,
             ty: expand_type(inst.ty, aliases, &mut Vec::new())?,
             methods: inst

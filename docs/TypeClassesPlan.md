@@ -150,11 +150,14 @@ Files: `src/lexer.rs`, `src/parser.rs`, `src/ast.rs`, `src/types.rs`
 - Parse:
   - `class Show a where show :: a -> String`
   - `instance Show Integer where show = intToString`
-- Restrict instance heads to `Show <TypeCon>` only (no type variables) for now.
+- Allow non-ground instances with constraints (Haskell-style) as the MVP target, e.g.:
+  - `class C a where m :: a -> String`
+  - `instance C a => C (Maybe a) where m = ...`
+- Restriction (MVP): user-defined `class Show` / `class Eq` are forbidden to avoid clashing with built-in deriving support.
 
 ### 3.2 Instance coherence
 - Disallow duplicates.
-- No overlap.
+- No overlap (if two instances can apply to the same wanted constraint, it is an error).
 
 **Commit checkpoints:**
 - Commit E: parse/AST for class/instance.

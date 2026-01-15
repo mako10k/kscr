@@ -132,6 +132,30 @@ class Eq a => Ord a where
 }
 
 #[test]
+fn parser_instance_context_parens() {
+    let src = r#"
+class C a where
+    f :: a -> a
+
+instance (C a) => C (Maybe a) where
+    f x = x
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let inst = m
+        .items
+        .iter()
+        .find_map(|it| match it {
+            crate::ast::Item::InstanceDecl(i) => Some(i),
+            _ => None,
+        })
+        .expect("expected instance decl");
+
+    assert_eq!(inst.class, "C");
+    assert_eq!(inst.preds.len(), 1);
+}
+
+#[test]
 fn typecheck_rejects_bad_superclass_predicate_shape() {
     let src = r#"
 class Inc a where

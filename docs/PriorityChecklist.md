@@ -96,6 +96,12 @@ Purpose: Implement user-defined classes/instances and constraint-based polymorph
 - IR/Runtime: Dictionary representation (records) and invocation transformation.
 - Compatibility: Deriving from Phases 1/2 should eventually desugar into forms like `instance Show (T a)`.
 
+MVP scope (Phase 3):
+- Allow **non-ground instances** with constraints, e.g. `instance (C a) => C (Maybe a) where ...`.
+- Coherence: **no overlap / no duplicates** (if two instances can apply to the same wanted constraint, it is an error).
+- Defaulting: do not require call sites to be ground; keep dictionary passing as the primary mechanism.
+- Restriction (MVP): user-defined `class Show` / `class Eq` declarations are **forbidden** to avoid clashing with built-in deriving support.
+
 Status:
 - [x] Phase 1: `deriving Show` implementation + tests + gate passing (commit: `e72ce94`)
 - [x] Phase 2: `deriving Eq` implementation + tests (commit: `86066b8`)
