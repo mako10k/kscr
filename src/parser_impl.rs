@@ -72,6 +72,20 @@ fn token_op_name(kind: &TokenKind) -> Option<String> {
     })
 }
 
+fn try_parse_toplevel_sig_line(ts: &mut TokenStream) -> Result<Option<(String, ast::QualType)>> {
+    let save = (ts.i, ts.last_span_end);
+    let Ok(name) = ts.expect_ident() else {
+        return Ok(None);
+    };
+    if !matches!(ts.peek_kind(), Some(TokenKind::ColonColon)) {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+    ts.expect(TokenKind::ColonColon)?;
+    let ty = parse_qual_type(ts, Stop::LineEnd)?;
+    Ok(Some((name, ty)))
+}
+
 fn collect_fixities(tokens: &[lexer::Token]) -> HashMap<String, Fixity> {
     let mut out = HashMap::new();
     let mut i = 0usize;
@@ -147,6 +161,31 @@ enum StopAt {
 fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::Item>> {
     let mut items = Vec::new();
     let mut pending: Option<PendingFun> = None;
+    let mut signature_buf: HashMap<String, ast::QualType> = HashMap::new();
+
+    let flush_pending_fun = |ts: &mut TokenStream,
+                             items: &mut Vec<ast::Item>,
+                             pending: &mut Option<PendingFun>,
+                             signature_buf: &mut HashMap<String, ast::QualType>|
+     -> Result<()> {
+        if let Some(p) = pending.take() {
+            let mut b = desugar_fun(ts, p.name, p.arity, p.clauses);
+            if let ast::PatternKind::Var(def_name) = &b.pat.kind {
+                if let Some(sig_ty) = signature_buf.remove(def_name) {
+                    let span = b.expr.span;
+                    b.expr = ast::Expr::new(
+                        span,
+                        ast::ExprKind::Annot {
+                            expr: Box::new(b.expr),
+                            ty: sig_ty,
+                        },
+                    );
+                }
+            }
+            items.push(ast::Item::Binding(b));
+        }
+        Ok(())
+    };
 
     loop {
         ts.skip_newlines();
@@ -157,34 +196,52 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
             break;
         }
 
+        // Signatures must not cross declaration boundaries.
+        if !signature_buf.is_empty() {
+            match ts.peek_kind() {
+                Some(TokenKind::KwImport)
+                | Some(TokenKind::KwExport)
+                | Some(TokenKind::KwInfix)
+                | Some(TokenKind::KwInfixl)
+                | Some(TokenKind::KwInfixr)
+                | Some(TokenKind::KwData)
+                | Some(TokenKind::KwType)
+                | Some(TokenKind::KwClass)
+                | Some(TokenKind::KwInstance) => {
+                    return Err(ts.err_here("type signature must be followed by a binding"));
+                }
+                _ => {}
+            }
+        }
+
         let tok = ts.peek_kind().cloned();
         match tok {
             Some(TokenKind::KwImport) => {
-                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_import_decl(ts)?);
             }
             Some(TokenKind::KwExport) => {
-                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_export_decl(ts)?);
             }
             Some(TokenKind::KwInfix | TokenKind::KwInfixl | TokenKind::KwInfixr) => {
-                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_fixity_decl(ts)?);
             }
             Some(TokenKind::KwData) => {
-                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_data_decl(ts)?);
             }
             Some(TokenKind::KwType) => {
-                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_type_alias(ts)?);
             }
             Some(TokenKind::KwClass) => {
-                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_class_decl(ts)?);
             }
             Some(TokenKind::KwInstance) => {
-                flush_pending_fun_item(ts, &mut items, pending.take())?;
+                flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_instance_decl(ts)?);
             }
             Some(
@@ -199,15 +256,84 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 | TokenKind::True
                 | TokenKind::False
                 | TokenKind::Question,
-            ) => match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
-                ParsedBind::Binding(b) => {
-                    flush_pending_fun_item(ts, &mut items, pending.take())?;
-                    items.push(ast::Item::Binding(b));
+            ) => {
+                // Signature line at top-level: `name :: <qualtype>`.
+                // We capture it, then in the next iteration we expect a binding for the same name.
+                if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
+                    if let Some((name, ty)) = try_parse_toplevel_sig_line(ts)? {
+                        if signature_buf.insert(name, ty).is_some() {
+                            return Err(ts.err_here("duplicate type signature"));
+                        }
+                        ts.consume_line_end();
+                        continue;
+                    }
                 }
-                ParsedBind::FunClause(c) => {
-                    push_fun_clause_item(ts, &mut items, &mut pending, c)?;
+
+                // If a signature exists for the next definition name, "claim" it now so that
+                // it will attach to the first binding/fun-clause group for that name.
+                let mut claimed_sig: Option<(String, ast::QualType)> = None;
+                if let Some(TokenKind::Ident(_)) = ts.peek_kind() {
+                    let save = (ts.i, ts.last_span_end);
+                    if let Ok(name) = ts.expect_ident() {
+                        (ts.i, ts.last_span_end) = save;
+                        if let Some(sig_ty) = signature_buf.remove(&name) {
+                            claimed_sig = Some((name, sig_ty));
+                        }
+                    } else {
+                        (ts.i, ts.last_span_end) = save;
+                    }
                 }
-            },
+
+                match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
+                    ParsedBind::Binding(mut b) => {
+                        if let Some((sig_name, sig_ty)) = claimed_sig {
+                            let ast::PatternKind::Var(def_name) = &b.pat.kind else {
+                                return Err(ts.err_here("expected binding after type signature"));
+                            };
+                            if def_name != &sig_name {
+                                return Err(
+                                    ts.err_here("type signature name does not match binding")
+                                );
+                            }
+                            let span = b.expr.span;
+                            b.expr = ast::Expr::new(
+                                span,
+                                ast::ExprKind::Annot {
+                                    expr: Box::new(b.expr),
+                                    ty: sig_ty,
+                                },
+                            );
+                        } else if let ast::PatternKind::Var(def_name) = &b.pat.kind {
+                            // (Back-compat) also attach any buffered signature if still present.
+                            if let Some(sig_ty) = signature_buf.remove(def_name) {
+                                let span = b.expr.span;
+                                b.expr = ast::Expr::new(
+                                    span,
+                                    ast::ExprKind::Annot {
+                                        expr: Box::new(b.expr),
+                                        ty: sig_ty,
+                                    },
+                                );
+                            }
+                        }
+                        flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
+                        items.push(ast::Item::Binding(b));
+                    }
+                    ParsedBind::FunClause(c) => {
+                        // If we claimed a signature for this name, stash it back so it will be
+                        // attached when the fun-clause group is flushed.
+                        if let Some((sig_name, sig_ty)) = claimed_sig {
+                            if c.name != sig_name {
+                                return Err(
+                                    ts.err_here("type signature name does not match binding")
+                                );
+                            }
+                            signature_buf.insert(sig_name, sig_ty);
+                        }
+                        push_fun_clause_item(ts, &mut items, &mut pending, c)?;
+                    }
+                }
+            }
             Some(_) => return Err(ts.err_here("unexpected token at top-level")),
             None => break,
         }
@@ -219,7 +345,12 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
         }
     }
 
-    flush_pending_fun_item(ts, &mut items, pending.take())?;
+    // If we have a pending fun clause group, flush it now.
+    flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
+
+    if !signature_buf.is_empty() {
+        return Err(ts.err_here("type signature must be followed by a binding"));
+    }
     Ok(items)
 }
 
@@ -1067,6 +1198,7 @@ fn parse_eq_rhs(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
 
 fn parse_binding_simple(ts: &mut TokenStream, stop: Stop) -> Result<ast::Binding> {
     let pat = parse_pattern(ts)?;
+
     ts.expect(TokenKind::Eq)?;
     let expr = parse_eq_rhs(ts, stop)?;
     Ok(ast::Binding { pat, expr })
@@ -1127,6 +1259,8 @@ fn parse_paren_operator_name(ts: &mut TokenStream) -> Result<String> {
 }
 
 fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<ParsedBind> {
+    // NOTE: signature lines (`name :: T`) are handled in `parse_items_until` so we don't
+    // accidentally consume tokens that should belong to the following binding/clause.
     // `fname pat1 pat2 = body` / guarded: `fname pat1 | guard = body`
     // Operator forms supported:
     // - `(++) a b = ...`

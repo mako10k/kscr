@@ -261,6 +261,7 @@ impl TokenStream {
                 | Some(TokenKind::Arrow)
                 | Some(TokenKind::LeftArrow)
                 | Some(TokenKind::Eq)
+                | Some(TokenKind::ColonColon)
                 | Some(TokenKind::Comma)
                 | Some(TokenKind::Colon)
                 | Some(TokenKind::Pipe)

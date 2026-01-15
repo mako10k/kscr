@@ -358,9 +358,6 @@ pub fn apply(subst: &Subst, t: Ty) -> Ty {
         c @ Ty::Con(_) => c,
     }
 }
-
-// --- Milestone 2.2.1/2.2.2: Schemes + minimal expression inference ---
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Constraint {
     Show(Ty),
@@ -1963,6 +1960,20 @@ struct ClassEnv {
     methods: HashMap<(String, String), ast::QualType>,
     /// (class, instance-head-type-key) -> dictionary binding name
     instances: HashMap<(String, String), String>,
+    /// Non-ground instances (dictionary passing). These are selected by unification on the
+    /// instance head pattern, and require dictionaries for their context predicates.
+    poly_instances: Vec<PolyInstance>,
+}
+
+#[derive(Debug, Clone)]
+struct PolyInstance {
+    class: String,
+    /// Instance head pattern as an internal type (may contain Ty::Var).
+    head_pat: Ty,
+    /// How many context dictionary arguments the instance dictionary expects.
+    ctx_len: usize,
+    /// Dictionary binding name (a value or a function if ctx_len > 0).
+    dict_name: String,
 }
 
 fn instance_head_key_ast(ty: &ast::Type) -> Result<String> {
@@ -1981,9 +1992,7 @@ fn instance_head_key_ast(ty: &ast::Type) -> Result<String> {
         Type::String => "String".to_string(),
         Type::Var(name) => {
             if is_lowercase_ident(name) {
-                return Err(Error::msg(
-                    "MVP: instance head must be a ground (non-variable) type",
-                ));
+                return Err(Error::msg("poly instance head"));
             }
             name.clone()
         }
@@ -2190,17 +2199,38 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         .collect();
 
     // Phase 1: pre-register all instance dictionary names.
+    // We also collect polymorphic instance metadata for later selection.
+    let mut poly_to_register: Vec<PolyInstance> = Vec::new();
     for inst in &instance_decls {
-        let ty_key = instance_head_key_ast(&inst.ty)?;
-        let ty_mangled = mangle_ident(&ty_key);
-        let dict_name = format!("__dict_{}_{}", inst.class, ty_mangled);
+        match instance_head_key_ast(&inst.ty) {
+            Ok(ty_key) => {
+                let ty_mangled = mangle_ident(&ty_key);
+                let dict_name = format!("__dict_{}_{}", inst.class, ty_mangled);
 
-        let key = (inst.class.clone(), ty_key.clone());
-        if env.instances.contains_key(&key) {
-            return Err(Error::msg("duplicate instance"));
+                let key = (inst.class.clone(), ty_key);
+                if env.instances.contains_key(&key) {
+                    return Err(Error::msg("duplicate instance"));
+                }
+                env.instances.insert(key, dict_name);
+            }
+            Err(_) => {
+                // Polymorphic (non-ground) instance: pre-register a stable dictionary name.
+                let dict_name = format!("__dict_{}_poly{}", inst.class, poly_to_register.len());
+
+                // Lower the instance head type into an internal type pattern.
+                let mut cx = InferCtx::default();
+                let head_pat = lower_surface_type(&mut cx, &inst.ty, &mut HashMap::new());
+
+                poly_to_register.push(PolyInstance {
+                    class: inst.class.clone(),
+                    head_pat,
+                    ctx_len: inst.preds.len(),
+                    dict_name,
+                });
+            }
         }
-        env.instances.insert(key, dict_name);
     }
+    env.poly_instances.extend(poly_to_register);
 
     fn super_field_name(class: &str) -> String {
         format!("__super_{}", mangle_ident(class))
@@ -2208,6 +2238,17 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
 
     fn dict_param_name(class: &str) -> String {
         format!("__dict_{class}")
+    }
+
+    fn ctx_param_name(i: usize) -> String {
+        format!("__ctx_dict_{i}")
+    }
+
+    fn class_name_of_pred(p: &ast::Predicate) -> Option<&str> {
+        match p {
+            ast::Predicate::Class { class, .. } => Some(class.as_str()),
+            _ => None,
+        }
     }
 
     fn add_params_to_expr(span: ast::Span, expr: ast::Expr, params: &[String]) -> ast::Expr {
@@ -2239,15 +2280,30 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
     // Phase 2: generate impl bindings + dictionary records.
     let mut extra_items: Vec<ast::Item> = Vec::new();
     for inst in &instance_decls {
-        let ty_key = instance_head_key_ast(&inst.ty)?;
-        let ty_mangled = mangle_ident(&ty_key);
-
-        let dict_key = (inst.class.clone(), ty_key.clone());
-        let dict_name = env
-            .instances
-            .get(&dict_key)
-            .cloned()
-            .ok_or_else(|| Error::msg("internal: missing instance dict name"))?;
+        let (ty_key_opt, ty_mangled, dict_name) = match instance_head_key_ast(&inst.ty) {
+            Ok(ty_key) => {
+                let ty_mangled = mangle_ident(&ty_key);
+                let dict_key = (inst.class.clone(), ty_key.clone());
+                let dict_name = env
+                    .instances
+                    .get(&dict_key)
+                    .cloned()
+                    .ok_or_else(|| Error::msg("internal: missing instance dict name"))?;
+                (Some(ty_key), ty_mangled, dict_name)
+            }
+            Err(_) => {
+                let mut cx = InferCtx::default();
+                let head_pat = lower_surface_type(&mut cx, &inst.ty, &mut HashMap::new());
+                let Some(pi) = env.poly_instances.iter().find(|pi| {
+                    pi.class == inst.class
+                        && pi.head_pat == head_pat
+                        && pi.ctx_len == inst.preds.len()
+                }) else {
+                    return Err(Error::msg("internal: missing poly instance"));
+                };
+                (None, "poly".to_string(), pi.dict_name.clone())
+            }
+        };
 
         let Some(method_names) = class_method_names.get(&inst.class) else {
             return Err(Error::msg("unknown class in instance"));
@@ -2286,10 +2342,42 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         // from within its own record literal, to avoid introducing accidental recursion.
         let self_param_name: String = dict_param_name(&inst.class);
 
-        let extra_param_names: Vec<String> = vec![self_param_name.clone()];
+        // Extra params available inside instance method bodies:
+        // - the instance's own dictionary (self)
+        // - dictionaries for instance context predicates (`instance P => ...`)
+        let mut extra_param_names: Vec<String> = vec![self_param_name.clone()];
+
+        // Collect context dictionaries and map class name -> param var for easy lookup.
+        let mut ctx_dict_by_class: HashMap<String, String> = HashMap::new();
+        for (i, p) in inst.preds.iter().enumerate() {
+            let Some(cls) = class_name_of_pred(p) else {
+                return Err(Error::msg(
+                    "MVP: instance context supports only class predicates (C t)",
+                ));
+            };
+            // Reject duplicates to avoid ambiguity.
+            if ctx_dict_by_class.contains_key(cls) {
+                return Err(Error::msg(
+                    "MVP: duplicate class in instance context is not supported",
+                ));
+            }
+            let pname = ctx_param_name(i);
+            extra_param_names.push(pname.clone());
+            ctx_dict_by_class.insert(cls.to_string(), pname);
+        }
 
         let mut super_dict_names: Vec<String> = Vec::new();
         for sup in &direct_supers {
+            if let Some(pname) = ctx_dict_by_class.get(sup) {
+                super_dict_names.push(pname.clone());
+                continue;
+            }
+
+            let Some(ty_key) = ty_key_opt.clone() else {
+                return Err(Error::msg(
+                    "MVP: superclass resolution for non-ground instance heads is not supported yet",
+                ));
+            };
             let sup_key = (sup.clone(), ty_key.clone());
             let Some(sup_dict_name) = env.instances.get(&sup_key) else {
                 return Err(Error::msg(format!(
@@ -2311,7 +2399,9 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
             } else {
                 return Err(Error::msg(format!(
                     "missing method implementation for `{}` in instance {} {}",
-                    mname, inst.class, ty_key
+                    mname,
+                    inst.class,
+                    ty_key_opt.clone().unwrap_or_else(|| "<poly>".to_string())
                 )));
             };
 
@@ -2345,9 +2435,14 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         }
 
         // Dictionary binding.
+        // If the instance has a context (`instance P => ...`), we represent the dictionary as a
+        // function that takes those context dictionaries as parameters.
+        let ctx_params: Vec<String> = (0..inst.preds.len()).map(ctx_param_name).collect();
+        let dict_expr = ast::Expr::new(ast::dummy_span(), ast::ExprKind::Record(dict_fields));
+        let dict_expr = add_params_to_expr(ast::dummy_span(), dict_expr, &ctx_params);
         extra_items.push(ast::Item::Binding(ast::Binding {
             pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(dict_name)),
-            expr: ast::Expr::new(ast::dummy_span(), ast::ExprKind::Record(dict_fields)),
+            expr: dict_expr,
         }));
     }
 
@@ -4002,10 +4097,6 @@ fn desugar_qualified_type(ty: ast::Type, env: &QualEnv) -> Result<ast::Type> {
                 .map(|t| desugar_qualified_type(t, env))
                 .collect::<Result<Vec<_>>>()?,
         },
-        Type::Func(a, b) => Type::Func(
-            Box::new(desugar_qualified_type(*a, env)?),
-            Box::new(desugar_qualified_type(*b, env)?),
-        ),
         x => x,
     })
 }
@@ -5706,12 +5797,108 @@ fn rewrite_class_dict_passing_in_module(
             })
         }
 
-        fn pick_instance_dict(class_env: &ClassEnv, class: &str, ty: &Ty) -> Option<String> {
-            if !ftv_ty(ty).is_empty() {
-                return None;
+        fn pick_instance_dict_expr_from_scope(
+            span: ast::Span,
+            class_env: &ClassEnv,
+            dicts_in_scope: &HashSet<String>,
+            class: &str,
+            ty: &Ty,
+        ) -> Result<Option<ast::Expr>> {
+            // Fast path: ground instance lookup.
+            if ftv_ty(ty).is_empty() {
+                if let Ok(head) = instance_head_key_ty(ty) {
+                    let key = (class.to_string(), head);
+                    if let Some(d) = class_env.instances.get(&key).cloned() {
+                        return Ok(Some(Expr::new(span, ExprKind::Var(d))));
+                    }
+                }
             }
-            let key = (class.to_string(), instance_head_key_ty(ty).ok()?);
-            class_env.instances.get(&key).cloned()
+
+            // Poly path: unify with non-ground instances.
+            // Assumption (per discussion): required context dictionaries must already be in scope.
+            let mut candidates: Vec<&PolyInstance> = Vec::new();
+            for pi in &class_env.poly_instances {
+                if pi.class != class {
+                    continue;
+                }
+
+                // Rename pattern vars to avoid collisions.
+                let mut map: HashMap<u32, u32> = HashMap::new();
+                let mut next: u32 = 10_000;
+                fn rename_vars(ty: &Ty, map: &mut HashMap<u32, u32>, next: &mut u32) -> Ty {
+                    match ty {
+                        Ty::Var(v) => {
+                            let nv = *map.entry(*v).or_insert_with(|| {
+                                let out = *next;
+                                *next += 1;
+                                out
+                            });
+                            Ty::Var(nv)
+                        }
+                        Ty::Con(c) => Ty::Con(c.clone()),
+                        Ty::App { head, args } => Ty::App {
+                            head: Box::new(rename_vars(head, map, next)),
+                            args: args.iter().map(|a| rename_vars(a, map, next)).collect(),
+                        },
+                        Ty::Func(a, b) => Ty::Func(
+                            Box::new(rename_vars(a, map, next)),
+                            Box::new(rename_vars(b, map, next)),
+                        ),
+                        Ty::Tuple(ts) => {
+                            Ty::Tuple(ts.iter().map(|t| rename_vars(t, map, next)).collect())
+                        }
+                        Ty::List(t) => Ty::List(Box::new(rename_vars(t, map, next))),
+                        Ty::Record(fields) => Ty::Record(
+                            fields
+                                .iter()
+                                .map(|(k, v)| (k.clone(), rename_vars(v, map, next)))
+                                .collect(),
+                        ),
+                        Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
+                            fields
+                                .iter()
+                                .map(|(k, v)| (k.clone(), rename_vars(v, map, next)))
+                                .collect(),
+                            Box::new(rename_vars(rest, map, next)),
+                        ),
+                    }
+                }
+
+                let pat = rename_vars(&pi.head_pat, &mut map, &mut next);
+                if unify(pat, ty.clone()).is_ok() {
+                    candidates.push(pi);
+                }
+            }
+
+            if candidates.is_empty() {
+                return Ok(None);
+            }
+            if candidates.len() > 1 {
+                return Err(Error::msg(format!(
+                    "overlapping instances for `{}`: cannot choose for type {ty}",
+                    class
+                )));
+            }
+
+            let pi = candidates[0];
+            let mut expr = Expr::new(span, ExprKind::Var(pi.dict_name.clone()));
+            for i in 0..pi.ctx_len {
+                let pname = format!("__ctx_dict_{i}");
+                let in_scope = dicts_in_scope.contains(&pname);
+                if !in_scope {
+                    return Err(Error::msg(format!(
+                        "missing instance context dictionary in scope: {pname}"
+                    )));
+                }
+                expr = Expr::new(
+                    span,
+                    ExprKind::Apply {
+                        func: Box::new(expr),
+                        args: vec![Expr::new(span, ExprKind::Var(pname))],
+                    },
+                );
+            }
+            Ok(Some(expr))
         }
 
         Ok(match expr.kind {
@@ -5894,18 +6081,28 @@ fn rewrite_class_dict_passing_in_module(
                                     Ty::Func(dom, _) => dom.as_ref().clone(),
                                     other => other.clone(),
                                 };
-                                if let Some(dict_name) =
-                                    pick_instance_dict(class_env, class, &target_ty)
-                                {
-                                    picked = Some(Expr::new(span, ExprKind::Var(dict_name)));
+                                if let Some(d) = pick_instance_dict_expr_from_scope(
+                                    span,
+                                    class_env,
+                                    dicts_in_scope,
+                                    class,
+                                    &target_ty,
+                                )? {
+                                    picked = Some(d);
                                 }
                             }
                         }
 
                         if picked.is_none() {
                             for t in &callsite_ground_tys {
-                                if let Some(dict_name) = pick_instance_dict(class_env, class, t) {
-                                    picked = Some(Expr::new(span, ExprKind::Var(dict_name)));
+                                if let Some(d) = pick_instance_dict_expr_from_scope(
+                                    span,
+                                    class_env,
+                                    dicts_in_scope,
+                                    class,
+                                    t,
+                                )? {
+                                    picked = Some(d);
                                     break;
                                 }
                             }
@@ -5966,7 +6163,7 @@ fn rewrite_class_dict_passing_in_module(
                             // Prefer call_info (unification against all arguments) when it yields a
                             // ground class argument type. If it's still non-ground (Issue #5),
                             // fall back to any ground value argument type at the call site.
-                            let mut picked: Option<String> = None;
+                            let mut picked: Option<ast::Expr> = None;
 
                             // Only resolve concrete instances from call sites for non-shadowed
                             // (top-level) callees. Local vars/let-bound names may not be
@@ -5974,7 +6171,13 @@ fn rewrite_class_dict_passing_in_module(
                             if !shadowed_in_scope.contains(name) {
                                 if let Some(ci) = call_info.as_ref() {
                                     if let Some(target_ty) = ci.class_tys.get(class) {
-                                        picked = pick_instance_dict(class_env, class, target_ty);
+                                        picked = pick_instance_dict_expr_from_scope(
+                                            span,
+                                            class_env,
+                                            dicts_in_scope,
+                                            class,
+                                            target_ty,
+                                        )?;
                                     }
                                 }
                             }
@@ -5998,40 +6201,35 @@ fn rewrite_class_dict_passing_in_module(
                                         continue;
                                     }
 
-                                    if let Some(dict_name) =
-                                        pick_instance_dict(class_env, class, &a_ty)
-                                    {
-                                        picked = Some(dict_name);
+                                    if let Some(d) = pick_instance_dict_expr_from_scope(
+                                        span,
+                                        class_env,
+                                        dicts_in_scope,
+                                        class,
+                                        &a_ty,
+                                    )? {
+                                        picked = Some(d);
                                         break;
                                     }
                                 }
 
                                 if picked.is_none() {
                                     // If call_info exists and we saw a non-ground target, keep the
-                                    // original (more precise) error.
-                                    if let Some(ci) = call_info.as_ref() {
-                                        if let Some(target_ty) = ci.class_tys.get(class) {
-                                            if !ftv_ty(target_ty).is_empty() {
-                                                return Err(Error::msg(format!(
-                                                    "cannot resolve dictionary for call to `{name}`: cannot infer instance head for {class} (type is not ground: {target_ty})"
-                                                )));
-                                            }
-                                        }
+                                    // original error message for now.
+                                    if let Some(target_ty) = first_non_ground {
+                                        return Err(Error::msg(format!(
+                                            "cannot resolve dictionary for call to `{name}`: cannot infer instance head for {class} (type is not ground: {target_ty})"
+                                        )));
                                     }
 
-                                    let hint = first_non_ground
-                                        .map(|t| format!("{t}"))
-                                        .unwrap_or_else(|| "<unknown>".to_string());
+                                    let hint = "<unknown>".to_string();
                                     return Err(Error::msg(format!(
                                         "cannot resolve dictionary for call to `{name}`: no ground argument type available for {class} (e.g. {hint})"
                                     )));
                                 }
                             }
 
-                            dict_args.push(Expr::new(
-                                span,
-                                ExprKind::Var(picked.expect("picked must be Some")),
-                            ));
+                            dict_args.push(picked.expect("picked must be Some"));
                         }
 
                         if !dict_args.is_empty() {
