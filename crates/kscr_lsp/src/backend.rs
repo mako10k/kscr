@@ -1,14 +1,11 @@
-//! LSP backend implementation
-//!
-//! This module implements the Language Server Protocol for kscr.
-//! It handles document synchronization, diagnostics, hover, and go-to-definition.
+//! LSP backend implementation.
 
+use crate::backend_diagnostics_hover as diag_hover;
+use crate::backend_goto_completion;
+use crate::backend_symbols;
 use crate::vfs::{Document, Vfs};
-use kscr::{error::Error as KscrError, lexer, parser, types};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use kscr::{error::Error as KscrError, lexer, parser};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -44,509 +41,19 @@ impl Backend {
 
     /// Compute diagnostics for a document
     async fn compute_diagnostics(&self, doc: &Document) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-
-        // First, try lexing
-        match lexer::lex(&doc.text) {
-            Err(e) => {
-                // Lexer error
-                diagnostics.push(create_diagnostic(
-                    doc,
-                    &e,
-                    DiagnosticSeverity::ERROR,
-                ));
-                return diagnostics;
-            }
-            Ok(_tokens) => {
-                // Lexing succeeded, try parsing
-                match parser::parse_module(&doc.text) {
-                    Err(e) => {
-                        // Parse error
-                        diagnostics.push(create_diagnostic(
-                            doc,
-                            &e,
-                            DiagnosticSeverity::ERROR,
-                        ));
-                        return diagnostics;
-                    }
-                    Ok(_module) => {
-                        // Parsing succeeded, try typechecking
-                        // For typechecking, we need to write to a temp file
-                        // because typecheck_file reads from disk
-                        if let Err(e) = self.typecheck_document(doc).await {
-                            diagnostics.push(create_diagnostic(
-                                doc,
-                                &e,
-                                DiagnosticSeverity::ERROR,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        diagnostics
+        diag_hover::compute_diagnostics(doc)
     }
 
-    /// Typecheck a document
-    async fn typecheck_document(&self, doc: &Document) -> std::result::Result<(), KscrError> {
-        typecheck_document_text(&doc.uri, &doc.text)
-    }
-}
-
-fn typecheck_document_text(uri: &Url, text: &str) -> std::result::Result<(), KscrError> {
-    typecheck_document_typed(uri, text).map(|_| ())
-}
-
-fn typecheck_document_typed(
-    uri: &Url,
-    text: &str,
-) -> std::result::Result<types::TypedModule, KscrError> {
-    let path = uri
-        .to_file_path()
-        .map_err(|_| KscrError::msg("Cannot convert URI to file path"))?;
-
-    if path.exists() {
-        return types::typecheck_file(&path);
-    }
-
-    // Unsaved file: write to a temp file in the same directory so that
-    // import resolution (relative to importer dir) behaves as expected.
-    let parent = path
-        .parent()
-        .filter(|p| p.exists())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(std::env::temp_dir);
-
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unsaved");
-    let pid = std::process::id();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-
-    let tmp_path = parent.join(format!(".kscr-lsp-{stem}-{pid}-{nanos}.ks"));
-    std::fs::write(&tmp_path, text)?;
-
-    let res = types::typecheck_file(&tmp_path);
-    let _ = std::fs::remove_file(&tmp_path);
-    res
-}
-
-fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
-    let len = doc.text.len();
-    let start_off = span.start.min(len);
-    let mut end_off = span.end.min(len);
-
-    if end_off < start_off {
-        end_off = start_off;
-    }
-    if end_off == start_off && end_off < len {
-        end_off += 1;
-    }
-
-    let (sl, sc) = doc.offset_to_position(start_off)?;
-    let (el, ec) = doc.offset_to_position(end_off)?;
-
-    Some(Range {
-        start: Position {
-            line: sl,
-            character: sc,
-        },
-        end: Position {
-            line: el,
-            character: ec,
-        },
-    })
-}
-
-fn qualified_ident_at_offset(src: &str, offset: usize) -> Option<(String, kscr::lexer::Span)> {
-    use lexer::TokenKind;
-
-    let toks = lexer::lex(src).ok()?;
-    let i = toks
-        .iter()
-        .position(|t| t.span.start <= offset && offset < t.span.end && t.span.end > t.span.start)
-        .or_else(|| {
-            toks.iter().position(|t| t.span.start < offset && offset <= t.span.end && t.span.end > t.span.start)
-        })?;
-
-    let lexer::Token {
-        kind: TokenKind::Ident(_),
-        ..
-    } = &toks[i]
-    else {
-        return None;
-    };
-
-    let mut start = i;
-    while start >= 2 {
-        if toks[start - 1].kind == TokenKind::Dot {
-            if matches!(toks[start - 2].kind, TokenKind::Ident(_)) {
-                start -= 2;
-                continue;
-            }
-        }
-        break;
-    }
-
-    let mut end = i;
-    while end + 2 < toks.len() {
-        if toks[end + 1].kind == TokenKind::Dot {
-            if matches!(toks[end + 2].kind, TokenKind::Ident(_)) {
-                end += 2;
-                continue;
-            }
-        }
-        break;
-    }
-
-    let mut parts = Vec::new();
-    let mut span = toks[start].span;
-    let mut j = start;
-    while j <= end {
-        if let TokenKind::Ident(s) = &toks[j].kind {
-            parts.push(s.clone());
-            span.end = toks[j].span.end;
-        }
-        j += 2;
-    }
-
-    Some((parts.join("."), span))
-}
-
-fn resolve_import_path(module: &str, base_dir: &Path) -> Option<PathBuf> {
-    let rel = module.replace('.', "/");
-    let local = base_dir.join(format!("{rel}.ks"));
-    let stdlib = types::stdlib_root().join(format!("{rel}.ks"));
-
-    std::fs::canonicalize(&local)
-        .or_else(|_| std::fs::canonicalize(&stdlib))
-        .ok()
-}
-
-fn find_toplevel_span_in_doc(doc: &Document, module: &kscr::ast::Module, name: &str) -> Option<kscr::lexer::Span> {
-    let defs = toplevel_binding_spans(module);
-    if let Some(s) = defs.get(name).copied() {
-        return Some(s);
-    }
-
-    match classify_toplevel_symbol(module, name)? {
-        "type" => find_decl_name_span(doc, lexer::TokenKind::KwType, name),
-        "data" => find_decl_name_span(doc, lexer::TokenKind::KwData, name),
-        "class" => find_decl_name_span(doc, lexer::TokenKind::KwClass, name),
-        "ctor" => {
-            // Best-effort: search within the matching data decl region for ctor name.
-            // This is a lexer-based span finder because ctor spans are not stored in the AST yet.
-            let toks = lexer::lex(&doc.text).ok()?;
-            for it in &module.items {
-                let kscr::ast::Item::DataDecl(dd) = it else { continue };
-                if !dd.ctors.iter().any(|c| c.name == name) {
-                    continue;
-                }
-
-                // Locate `data <dd.name>` and then scan forward until the next top-level decl.
-                let mut idx = 0usize;
-                while idx + 1 < toks.len() {
-                    if toks[idx].kind == lexer::TokenKind::KwData {
-                        if let lexer::TokenKind::Ident(n) = &toks[idx + 1].kind {
-                            if n == &dd.name {
-                                break;
-                            }
-                        }
-                    }
-                    idx += 1;
-                }
-                if idx + 1 >= toks.len() {
-                    continue;
-                }
-
-                let mut depth = 0usize;
-                let mut j = idx + 2;
-                while j < toks.len() {
-                    match toks[j].kind {
-                        lexer::TokenKind::Indent => depth += 1,
-                        lexer::TokenKind::Dedent => depth = depth.saturating_sub(1),
-                        lexer::TokenKind::KwData
-                        | lexer::TokenKind::KwType
-                        | lexer::TokenKind::KwClass
-                        | lexer::TokenKind::KwInstance
-                        | lexer::TokenKind::KwLet
-                        | lexer::TokenKind::KwModule
-                            if depth == 0 => {
-                                break;
-                            }
-                        _ => {}
-                    }
-
-                    if let lexer::TokenKind::Ident(n) = &toks[j].kind {
-                        if n == name {
-                            return Some(toks[j].span);
-                        }
-                    }
-                    j += 1;
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn goto_definition_cross_file(doc: &Document, name: &str) -> Option<Location> {
-    let (qual, member) = name.rsplit_once('.')?;
-
-    let this_path = doc.uri.to_file_path().ok()?;
-    let base_dir = this_path
-        .parent()
-        .filter(|p| p.exists())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(std::env::temp_dir);
-
-    let this_module = parser::parse_module(&doc.text).ok()?;
-
-    // Map local qualifier -> canonical module name (same rule as typechecker).
-    let mut qual_to_module: HashMap<String, String> = HashMap::new();
-    for it in &this_module.items {
-        let kscr::ast::Item::Import(id) = it else {
-            continue;
-        };
-        let local = id.as_name.clone().unwrap_or_else(|| id.module.clone());
-        qual_to_module.insert(local, id.module.clone());
-    }
-
-    let target_module = qual_to_module.get(qual)?.clone();
-    let target_path = resolve_import_path(&target_module, &base_dir)?;
-
-    let text = std::fs::read_to_string(&target_path).ok()?;
-    let uri = Url::from_file_path(&target_path).ok()?;
-    let target_doc = Document::new(uri.clone(), text, 0);
-    let target_module_ast = parser::parse_module(&target_doc.text).ok()?;
-
-    let span = find_toplevel_span_in_doc(&target_doc, &target_module_ast, member)?;
-    let range = span_to_range(&target_doc, span)?;
-
-    Some(Location { uri, range })
-}
-
-fn goto_definition_unqualified_import(doc: &Document, name: &str) -> Option<Location> {
-    let this_path = doc.uri.to_file_path().ok()?;
-    let base_dir = this_path
-        .parent()
-        .filter(|p| p.exists())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(std::env::temp_dir);
-
-    let this_module = parser::parse_module(&doc.text).ok()?;
-
-    for it in &this_module.items {
-        let kscr::ast::Item::Import(id) = it else {
-            continue;
-        };
-        if id.qualified {
-            continue;
-        }
-        let target_path = resolve_import_path(&id.module, &base_dir)?;
-        let text = std::fs::read_to_string(&target_path).ok()?;
-        let uri = Url::from_file_path(&target_path).ok()?;
-        let target_doc = Document::new(uri.clone(), text, 0);
-        let target_module_ast = parser::parse_module(&target_doc.text).ok()?;
-
-        if let Some(span) = find_toplevel_span_in_doc(&target_doc, &target_module_ast, name) {
-            let range = span_to_range(&target_doc, span)?;
-            return Some(Location { uri, range });
-        }
-    }
-
-    None
-}
-
-fn toplevel_binding_spans(module: &kscr::ast::Module) -> HashMap<String, kscr::lexer::Span> {
-    use kscr::ast::{Item, PatternKind};
-
-    let mut m = HashMap::new();
-    for item in &module.items {
-        if let Item::Binding(b) = item {
-            if let PatternKind::Var(name) = &b.pat.kind {
-                m.insert(name.clone(), b.pat.span);
-            }
-        }
-    }
-    m
-}
-
-fn classify_toplevel_symbol(module: &kscr::ast::Module, name: &str) -> Option<&'static str> {
-    use kscr::ast::Item;
-
-    for item in &module.items {
-        match item {
-            Item::Binding(b) => {
-                if matches!(&b.pat.kind, kscr::ast::PatternKind::Var(n) if n == name) {
-                    return Some("binding");
-                }
-            }
-            Item::TypeAlias(a) if a.name == name => {
-                return Some("type");
-            }
-            Item::DataDecl(d) => {
-                if d.name == name {
-                    return Some("data");
-                }
-                if d.ctors.iter().any(|c| c.name == name) {
-                    return Some("ctor");
-                }
-            }
-            Item::ClassDecl(c) if c.name == name => {
-                return Some("class");
-            }
-            _ => {}
-        }
-    }
-
-    None
-}
-
-fn goto_definition_in_doc(doc: &Document, pos: Position) -> Option<Location> {
-    let off = doc.position_to_offset(pos.line, pos.character)?;
-
-    let (name, _name_span) = qualified_ident_at_offset(&doc.text, off)?;
-
-    if name.contains('.') {
-        return goto_definition_cross_file(doc, &name);
-    }
-
-    let module = parser::parse_module(&doc.text).ok()?;
-    if let Some(span) = toplevel_binding_spans(&module).get(&name).copied() {
-        let range = span_to_range(doc, span)?;
-        return Some(Location {
-            uri: doc.uri.clone(),
-            range,
-        });
-    }
-
-    goto_definition_unqualified_import(doc, &name)
-}
-
-fn completion_items_in_doc(doc: &Document, pos: Position) -> Option<Vec<CompletionItem>> {
-    let off = doc.position_to_offset(pos.line, pos.character)?;
-
-    let mut start_off = off;
-    while start_off > 0 {
-        let b = doc.text.as_bytes()[start_off - 1];
-        let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b'.';
-        if !ok {
-            break;
-        }
-        start_off -= 1;
-    }
-
-    let prefix = doc.text.get(start_off..off).unwrap_or("");
-
-    let (sl, sc) = doc.offset_to_position(start_off)?;
-    let (el, ec) = doc.offset_to_position(off)?;
-    let range = Range {
-        start: Position {
-            line: sl,
-            character: sc,
-        },
-        end: Position {
-            line: el,
-            character: ec,
-        },
-    };
-
-    let tm = typecheck_document_typed(&doc.uri, &doc.text).ok()?;
-
-    let mut names: Vec<String> = tm
-        .inferred
-        .keys()
-        .filter(|n| n.starts_with(prefix))
-        .take(200)
-        .cloned()
-        .collect();
-    names.sort();
-
-    Some(
-        names
-            .into_iter()
-            .map(|name| CompletionItem {
-                label: name.clone(),
-                kind: Some(if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    CompletionItemKind::CLASS
-                } else {
-                    CompletionItemKind::VARIABLE
-                }),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range,
-                    new_text: name,
-                })),
-                ..Default::default()
-            })
-            .collect(),
-    )
-}
-
-fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
-    let off = doc.position_to_offset(pos.line, pos.character)?;
-    let (name, name_span) = qualified_ident_at_offset(&doc.text, off)?;
-
-    let module = parser::parse_module(&doc.text).ok();
-    let kind = module
-        .as_ref()
-        .and_then(|m| classify_toplevel_symbol(m, &name))
-        .unwrap_or("identifier");
-
-    let ty = typecheck_document_typed(&doc.uri, &doc.text)
-        .ok()
-        .and_then(|tm| tm.inferred.get(&name).map(|s| s.to_string()));
-
-    let range = span_to_range(doc, name_span);
-    let value = match ty {
-        Some(ty) => format!("```kscr\n{name} :: {ty}\n```"),
-        None => format!("```kscr\n{kind} {name}\n```"),
-    };
-
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value,
-        }),
-        range,
-    })
-}
-
-/// Create a diagnostic from an error
-fn create_diagnostic(doc: &Document, err: &KscrError, severity: DiagnosticSeverity) -> Diagnostic {
-    let range = err.span().and_then(|s| span_to_range(doc, s)).unwrap_or(Range {
-        start: Position {
-            line: 0,
-            character: 0,
-        },
-        end: Position {
-            line: 0,
-            character: 0,
-        },
-    });
-
-    Diagnostic {
-        range,
-        severity: Some(severity),
-        code: None,
-        code_description: None,
-        source: Some("kscr".to_string()),
-        message: err.to_string(),
-        related_information: None,
-        tags: None,
-        data: None,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_diagnostics_hover::{hover_in_doc, typecheck_document_text};
+    use crate::backend_goto_completion::goto_definition_in_doc;
+    use crate::backend_helpers::span_to_range;
+    use crate::backend_symbols::item_to_symbol;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn span_to_range_basic() {
@@ -766,7 +273,10 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        Ok(hover_in_doc(doc, params.text_document_position_params.position))
+        Ok(diag_hover::hover_in_doc(
+            doc,
+            params.text_document_position_params.position,
+        ))
     }
 
     async fn goto_definition(
@@ -780,7 +290,10 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let loc = goto_definition_in_doc(doc, params.text_document_position_params.position);
+        let loc = backend_goto_completion::goto_definition_in_doc(
+            doc,
+            params.text_document_position_params.position,
+        );
         Ok(loc.map(GotoDefinitionResponse::Scalar))
     }
 
@@ -792,8 +305,17 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let items = completion_items_in_doc(doc, params.text_document_position.position)
-            .unwrap_or_default();
+        let tm = match diag_hover::typecheck_document_typed(&doc.uri, &doc.text) {
+            Ok(tm) => tm,
+            Err(_) => return Ok(Some(CompletionResponse::Array(Vec::new()))),
+        };
+
+        let items = backend_goto_completion::completion_items_in_doc(
+            doc,
+            params.text_document_position.position,
+            &tm,
+        )
+        .unwrap_or_default();
         Ok(Some(CompletionResponse::Array(items)))
     }
 
@@ -817,7 +339,7 @@ impl LanguageServer for Backend {
 
         // Extract top-level items as symbols
         for item in &module.items {
-            if let Some(symbol) = item_to_symbol(item, doc) {
+            if let Some(symbol) = backend_symbols::item_to_symbol(item, doc) {
                 symbols.push(symbol);
             }
         }
@@ -830,99 +352,3 @@ impl LanguageServer for Backend {
     }
 }
 
-fn find_decl_name_span(doc: &Document, kw: lexer::TokenKind, name: &str) -> Option<kscr::lexer::Span> {
-    let toks = lexer::lex(&doc.text).ok()?;
-    for w in toks.windows(2) {
-        if w[0].kind == kw {
-            if let lexer::TokenKind::Ident(n) = &w[1].kind {
-                if n == name {
-                    return Some(w[1].span);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Convert an AST item to a document symbol
-fn item_to_symbol(item: &kscr::ast::Item, doc: &Document) -> Option<DocumentSymbol> {
-    use kscr::ast::Item;
-
-    match item {
-        Item::Binding(binding) => {
-            // Extract name from pattern
-            let name = match &binding.pat.kind {
-                kscr::ast::PatternKind::Var(name) => name.clone(),
-                _ => return None, // Complex patterns not supported yet
-            };
-            let range = span_to_range(doc, binding.pat.span).unwrap_or_default();
-            #[allow(deprecated)]
-            Some(DocumentSymbol {
-                name,
-                detail: None,
-                kind: SymbolKind::FUNCTION,
-                tags: None,
-                deprecated: None,
-                range,
-                selection_range: range,
-                children: None,
-            })
-        }
-        Item::DataDecl(data) => {
-            let range = find_decl_name_span(doc, lexer::TokenKind::KwData, &data.name)
-                .and_then(|s| span_to_range(doc, s))
-                .unwrap_or_default();
-            #[allow(deprecated)]
-            Some(DocumentSymbol {
-                name: data.name.clone(),
-                detail: None,
-                kind: SymbolKind::STRUCT,
-                tags: None,
-                deprecated: None,
-                range,
-                selection_range: range,
-                children: None,
-            })
-        }
-        Item::TypeAlias(alias) => {
-            let range = find_decl_name_span(doc, lexer::TokenKind::KwType, &alias.name)
-                .and_then(|s| span_to_range(doc, s))
-                .unwrap_or_default();
-            #[allow(deprecated)]
-            Some(DocumentSymbol {
-                name: alias.name.clone(),
-                detail: None,
-                kind: SymbolKind::CLASS,
-                tags: None,
-                deprecated: None,
-                range,
-                selection_range: range,
-                children: None,
-            })
-        }
-        Item::ClassDecl(class) => {
-            let range = find_decl_name_span(doc, lexer::TokenKind::KwClass, &class.name)
-                .and_then(|s| span_to_range(doc, s))
-                .unwrap_or_default();
-            #[allow(deprecated)]
-            Some(DocumentSymbol {
-                name: class.name.clone(),
-                detail: None,
-                kind: SymbolKind::INTERFACE,
-                tags: None,
-                deprecated: None,
-                range,
-                selection_range: range,
-                children: None,
-            })
-        }
-        Item::InstanceDecl(_) => {
-            // Instances don't have a simple name, skip for now
-            None
-        }
-        Item::Fixity(_) | Item::Import(_) | Item::Export(_) => {
-            // These are not symbols we want to show
-            None
-        }
-    }
-}

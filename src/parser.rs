@@ -848,7 +848,10 @@ fn parse_ctor_name(ts: &mut TokenStream) -> Result<String> {
                 Ok(name)
             } else {
                 Err(Error::msg_with_span(
-                    format!("expected constructor name at {}", ts.pos_str_at(name_span.start)),
+                    format!(
+                        "expected constructor name at {}",
+                        ts.pos_str_at(name_span.start)
+                    ),
                     name_span,
                 ))
             }
@@ -864,7 +867,10 @@ fn parse_ctor_name(ts: &mut TokenStream) -> Result<String> {
                 Ok(op)
             } else {
                 Err(Error::msg_with_span(
-                    format!("expected constructor name at {}", ts.pos_str_at(op_span.start)),
+                    format!(
+                        "expected constructor name at {}",
+                        ts.pos_str_at(op_span.start)
+                    ),
                     op_span,
                 ))
             }
@@ -877,12 +883,15 @@ fn parse_ctor_name(ts: &mut TokenStream) -> Result<String> {
             // Allow parenthesized operator constructors: (:*:) / (:)
             let save = (ts.i, ts.last_span_end);
             ts.bump();
-            let op_ok =
-                matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind());
+            let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick))
+                || is_sym_op_token(ts.peek_kind());
             if !op_ok {
                 (ts.i, ts.last_span_end) = save;
                 return Err(Error::msg_with_span(
-                    format!("expected constructor name at {}", ts.pos_str_at(lparen_span.start)),
+                    format!(
+                        "expected constructor name at {}",
+                        ts.pos_str_at(lparen_span.start)
+                    ),
                     lparen_span,
                 ));
             }
@@ -2768,7 +2777,9 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
         ts.expect(TokenKind::RBracket)?;
 
         let kind = ast::ExprKind::Apply {
-            func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("enumFromTo".to_string()))),
+            func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
+                "enumFromTo".to_string(),
+            ))),
             args: vec![first, end],
         };
         return Ok(expr_from(ts, start, kind));

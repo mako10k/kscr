@@ -3144,9 +3144,8 @@ fn infer_expr_in(
                     .map_err(|e| e.with_context(format!("in {ctx_prefix} binding {ctx_name}")))?;
                 s = compose(&s_rhs, &s);
 
-                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty)).map_err(|e| {
-                    e.with_context(format!("in {ctx_prefix} binding {ctx_name}"))
-                })?;
+                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
+                    .map_err(|e| e.with_context(format!("in {ctx_prefix} binding {ctx_name}")))?;
                 s = compose(&s_pat, &s);
 
                 // Connect binder types to their placeholders so recursive references unify.
@@ -3201,9 +3200,9 @@ fn infer_expr_in(
         ExprKind::Char(_) => Ok((Subst::new(), vec![], Ty::Con("Char".to_string()))),
 
         ExprKind::Var(name) => {
-            let s = env.get(&name).ok_or_else(|| {
-                Error::msg_with_span(format!("unbound variable: {name}"), span)
-            })?;
+            let s = env
+                .get(&name)
+                .ok_or_else(|| Error::msg_with_span(format!("unbound variable: {name}"), span))?;
             let (cs, ty) = instantiate_qual(cx, s);
             Ok((Subst::new(), cs, ty))
         }
@@ -3616,8 +3615,8 @@ fn infer_expr_in(
                     }
                 }
             }
-
-            let last_ty = last_ty.ok_or_else(|| Error::msg_with_span("do must end with expression", span))?;
+            let last_ty =
+                last_ty.ok_or_else(|| Error::msg_with_span("do must end with expression", span))?;
             Ok((s.clone(), cs, apply(&s, last_ty)))
         }
     }

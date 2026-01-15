@@ -1,4 +1,8 @@
 mod backend;
+mod backend_diagnostics_hover;
+mod backend_goto_completion;
+mod backend_helpers;
+mod backend_symbols;
 mod vfs;
 
 use tower_lsp::{LspService, Server};

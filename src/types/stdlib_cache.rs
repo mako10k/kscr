@@ -17,7 +17,8 @@ struct CachedModuleTypecheck {
 }
 
 static STDLIB_AST_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedAst>>> = OnceLock::new();
-static MODULE_TYPECHECK_CACHE: OnceLock<Mutex<HashMap<u64, CachedModuleTypecheck>>> = OnceLock::new();
+static MODULE_TYPECHECK_CACHE: OnceLock<Mutex<HashMap<u64, CachedModuleTypecheck>>> =
+    OnceLock::new();
 
 pub(super) fn hash_module_ast(module: &ast::Module) -> u64 {
     use std::collections::hash_map::DefaultHasher;

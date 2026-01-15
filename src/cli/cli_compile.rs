@@ -168,8 +168,8 @@ fn compile_via_llvm(
     use std::io::Write;
     use std::process::Command;
 
-    let llvm_ir = kscr_llvm::lower_ir_to_llvm_text(ir_module, "main")
-        .map_err(crate::error::Error::msg)?;
+    let llvm_ir =
+        kscr_llvm::lower_ir_to_llvm_text(ir_module, "main").map_err(crate::error::Error::msg)?;
 
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

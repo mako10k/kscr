@@ -23,7 +23,7 @@ done < "$baseline_file"
 mapfile -t current < <(
   find src crates -name '*.rs' -print0 \
     | xargs -0 wc -l \
-    | awk 'NF==2 && $2 != "total" { print $2"\t"$1 }' \
+    | awk 'NF==2 && $2 != "total" && $2 != "合計" { print $2"\t"$1 }' \
     | sort
 )
 
