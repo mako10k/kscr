@@ -54,7 +54,10 @@ where
 
             let tm = types::typecheck_file(Path::new(&path))?;
 
-            print!("{}", render_typecheck_report(&tm.module, tm.inferred, show_all));
+            print!(
+                "{}",
+                render_typecheck_report(&tm.module, tm.inferred, show_all)
+            );
             Ok(())
         }
         "ir" => {
@@ -679,7 +682,6 @@ mod tests {
             main.to_string_lossy().to_string(),
         ];
         run(args.into_iter()).unwrap();
-
         let _ = std::fs::remove_dir_all(dir);
     }
 

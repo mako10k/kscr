@@ -10,6 +10,10 @@ pub mod ir;
 pub mod ir_pack;
 pub mod lexer;
 pub mod parser;
+
+// Build `src/parser_impl.rs` as a private module while we split the parser.
+#[path = "parser_impl.rs"]
+mod parser_impl;
 #[cfg(not(feature = "unsafe_bigint"))]
 mod safe_bigint;
 pub mod types;

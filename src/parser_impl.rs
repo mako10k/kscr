@@ -1,26 +1,7 @@
 use crate::{ast, error::Error, lexer, lexer::TokenKind, Result};
 use std::collections::HashMap;
 
-fn compute_line_starts(src: &str) -> Vec<usize> {
-    let mut starts = vec![0];
-    for (i, b) in src.as_bytes().iter().enumerate() {
-        if *b == b'\n' {
-            starts.push(i + 1);
-        }
-    }
-    starts
-}
-
-fn line_col(line_starts: &[usize], offset: usize) -> (usize, usize) {
-    // line_starts contains the byte offset of the first byte of each line.
-    // Line numbers are 1-based.
-    let line_idx = match line_starts.binary_search(&offset) {
-        Ok(i) => i,
-        Err(i) => i.saturating_sub(1),
-    };
-    let line_start = *line_starts.get(line_idx).unwrap_or(&0);
-    (line_idx + 1, offset.saturating_sub(line_start) + 1)
-}
+use crate::parser::token_stream::{self, compute_line_starts, Assoc, Fixity, TokenStream};
 
 fn expr_from(ts: &TokenStream, start: usize, kind: ast::ExprKind) -> ast::Expr {
     ast::Expr::new(ts.span_from(start), kind)
@@ -64,59 +45,6 @@ pub fn parse_module(src: &str) -> Result<ast::Module> {
     } else {
         let items = parse_items_until(&mut ts, StopAt::Eof)?;
         Ok(ast::Module { name: None, items })
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Assoc {
-    Left,
-    Right,
-    Non,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct Fixity {
-    prec: u8,
-    assoc: Assoc,
-}
-
-fn default_fixity(op: &str) -> Fixity {
-    match op {
-        "*" | "/" => Fixity {
-            prec: 70,
-            assoc: Assoc::Left,
-        },
-        "+" | "-" => Fixity {
-            prec: 60,
-            assoc: Assoc::Left,
-        },
-        "++" => Fixity {
-            // Haskell-like: (++) is right associative and slightly lower precedence than (+).
-            prec: 55,
-            assoc: Assoc::Right,
-        },
-        "==" | "/=" | "<" | "<=" | ">" | ">=" => Fixity {
-            prec: 50,
-            assoc: Assoc::Left,
-        },
-        "&&" => Fixity {
-            prec: 40,
-            assoc: Assoc::Left,
-        },
-        "||" => Fixity {
-            prec: 30,
-            assoc: Assoc::Left,
-        },
-        ">>=" | ">>" => Fixity {
-            // Haskell-like: sequencing is very low precedence.
-            prec: 10,
-            assoc: Assoc::Left,
-        },
-        _ => Fixity {
-            // Default used for backtick infix, and for any other operator-like names.
-            prec: 60,
-            assoc: Assoc::Left,
-        },
     }
 }
 
@@ -1301,6 +1229,20 @@ enum Stop {
     SemiOrRBrace,
 }
 
+impl Stop {
+    fn to_token_stream(self) -> token_stream::Stop {
+        match self {
+            Stop::Then => token_stream::Stop::Then,
+            Stop::Else => token_stream::Stop::Else,
+            Stop::Of => token_stream::Stop::Of,
+            Stop::LetBind => token_stream::Stop::LetBind,
+            Stop::SemiOrRBrace => token_stream::Stop::SemiOrRBrace,
+            Stop::Pattern => token_stream::Stop::Pattern,
+            Stop::LineEnd => token_stream::Stop::LineEnd,
+        }
+    }
+}
+
 fn parse_expr(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     let mut expr = match ts.peek_kind() {
         Some(TokenKind::Backslash) => parse_lambda(ts, stop)?,
@@ -2390,7 +2332,7 @@ fn parse_infix_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr
 fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::Expr> {
     let mut lhs = parse_application(ts, stop)?;
 
-    while ts.can_continue_expr(stop) {
+    while ts.can_continue_expr(stop.to_token_stream()) {
         let save = (ts.i, ts.last_span_end);
         let is_cons = matches!(ts.peek_kind(), Some(TokenKind::Colon));
 
@@ -2524,7 +2466,7 @@ fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     let mut exprs = Vec::new();
     exprs.push(parse_atom(ts)?);
 
-    while ts.can_continue_expr(stop) {
+    while ts.can_continue_expr(stop.to_token_stream()) {
         match ts.peek_kind() {
             Some(TokenKind::Backslash)
             | Some(TokenKind::KwIf)
@@ -2970,191 +2912,4 @@ fn parse_record_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
     ts.expect(TokenKind::RBrace)?;
     Ok(expr_from(ts, start, ast::ExprKind::Record(fields)))
-}
-
-struct TokenStream {
-    tokens: Vec<lexer::Token>,
-    i: usize,
-    last_span_end: usize,
-    gensym: u32,
-    fixities: HashMap<String, Fixity>,
-    line_starts: Vec<usize>,
-}
-
-impl TokenStream {
-    fn new(
-        tokens: Vec<lexer::Token>,
-        fixities: HashMap<String, Fixity>,
-        line_starts: Vec<usize>,
-    ) -> Self {
-        Self {
-            tokens,
-            i: 0,
-            last_span_end: 0,
-            gensym: 0,
-            fixities,
-            line_starts,
-        }
-    }
-
-    fn peek_span(&self) -> Option<lexer::Span> {
-        self.tokens.get(self.i).map(|t| t.span)
-    }
-
-    fn span_from(&self, start: usize) -> lexer::Span {
-        lexer::Span {
-            start,
-            end: self.last_span_end.max(start),
-        }
-    }
-
-    fn pos_str_at(&self, offset: usize) -> String {
-        let (line, col) = line_col(&self.line_starts, offset);
-        format!("{line}:{col}")
-    }
-
-    fn pos_str_here(&self) -> String {
-        let offset = self
-            .tokens
-            .get(self.i)
-            .map(|t| t.span.start)
-            .unwrap_or_else(|| self.tokens.last().map(|t| t.span.end).unwrap_or(0));
-        self.pos_str_at(offset)
-    }
-
-    fn err_here(&self, msg: impl std::fmt::Display) -> Error {
-        let span = self.peek_span().unwrap_or(lexer::Span {
-            start: self.last_span_end,
-            end: self.last_span_end,
-        });
-        Error::msg_with_span(format!("{msg} at {}", self.pos_str_here()), span)
-    }
-
-    fn fixity(&self, op: &str) -> Fixity {
-        self.fixities
-            .get(op)
-            .copied()
-            .unwrap_or_else(|| default_fixity(op))
-    }
-
-    fn fresh_name(&mut self, prefix: &str) -> String {
-        let n = self.gensym;
-        self.gensym += 1;
-        format!("{prefix}{n}")
-    }
-
-    fn is_eof(&self) -> bool {
-        self.i >= self.tokens.len()
-    }
-
-    fn peek_kind(&self) -> Option<&TokenKind> {
-        self.tokens.get(self.i).map(|t| &t.kind)
-    }
-
-    fn bump(&mut self) -> Option<TokenKind> {
-        let tok = self.tokens.get(self.i)?;
-        self.last_span_end = tok.span.end;
-        let t = tok.kind.clone();
-        self.i += 1;
-        Some(t)
-    }
-
-    fn expect(&mut self, kind: TokenKind) -> Result<()> {
-        let pos = self.pos_str_here();
-        let span = self.peek_span().unwrap_or(lexer::Span {
-            start: self.last_span_end,
-            end: self.last_span_end,
-        });
-        let got = self.bump().ok_or_else(|| {
-            Error::msg_with_span(
-                format!("unexpected EOF at {pos}, expected {kind:?}"),
-                lexer::Span {
-                    start: self.last_span_end,
-                    end: self.last_span_end,
-                },
-            )
-        })?;
-
-        if got == kind {
-            Ok(())
-        } else {
-            Err(Error::msg_with_span(
-                format!("unexpected token {got:?} at {pos}, expected {kind:?}"),
-                span,
-            ))
-        }
-    }
-
-    fn expect_ident(&mut self) -> Result<String> {
-        let pos = self.pos_str_here();
-        let span = self.peek_span().unwrap_or(lexer::Span {
-            start: self.last_span_end,
-            end: self.last_span_end,
-        });
-        match self.bump() {
-            Some(TokenKind::Ident(s)) => Ok(s),
-            Some(got) => Err(Error::msg_with_span(
-                format!("expected identifier at {pos}, got {got:?}"),
-                span,
-            )),
-            None => Err(Error::msg_with_span(
-                format!("unexpected EOF at {pos}, expected identifier"),
-                lexer::Span {
-                    start: self.last_span_end,
-                    end: self.last_span_end,
-                },
-            )),
-        }
-    }
-
-    fn skip_newlines(&mut self) {
-        while matches!(self.peek_kind(), Some(TokenKind::Newline)) {
-            self.i += 1;
-        }
-    }
-
-    fn consume_line_end(&mut self) {
-        while matches!(self.peek_kind(), Some(TokenKind::Newline)) {
-            self.i += 1;
-        }
-    }
-
-    fn can_continue_expr(&self, stop: Stop) -> bool {
-        match (stop, self.peek_kind()) {
-            (_, None) => false,
-            (_, Some(TokenKind::Newline)) => false,
-            (Stop::Then, Some(TokenKind::KwThen)) => false,
-            (Stop::Else, Some(TokenKind::KwElse)) => false,
-            (Stop::Of, Some(TokenKind::KwOf)) => false,
-            (Stop::LetBind, Some(TokenKind::Semicolon | TokenKind::KwIn)) => false,
-            (Stop::SemiOrRBrace, Some(TokenKind::Semicolon | TokenKind::RBrace)) => false,
-            (Stop::Pattern, Some(TokenKind::Arrow | TokenKind::Eq | TokenKind::Comma)) => false,
-            (Stop::Pattern, Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace)) => {
-                false
-            }
-            (Stop::Pattern, Some(TokenKind::Operator(op))) if op == ".." => false,
-            (Stop::Pattern, Some(TokenKind::Dedent)) => false,
-            (Stop::LineEnd, _) => true,
-            _ => true,
-        }
-    }
-
-    fn can_continue_pattern(&self) -> bool {
-        !matches!(
-            self.peek_kind(),
-            None | Some(TokenKind::Newline)
-                | Some(TokenKind::Dedent)
-                | Some(TokenKind::Arrow)
-                | Some(TokenKind::LeftArrow)
-                | Some(TokenKind::Eq)
-                | Some(TokenKind::Comma)
-                | Some(TokenKind::Colon)
-                | Some(TokenKind::Pipe)
-                | Some(TokenKind::At)
-                | Some(TokenKind::Ellipsis)
-                | Some(TokenKind::RParen)
-                | Some(TokenKind::RBracket)
-                | Some(TokenKind::RBrace)
-        )
-    }
 }
