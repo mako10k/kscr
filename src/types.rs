@@ -7467,6 +7467,11 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
         return Err(Error::msg("imports are not supported yet"));
     }
 
+    // Try to hit the module-level typecheck cache.
+    if let Some(inferred) = stdlib_cache::check_module_typecheck_cache(&module) {
+        return Ok(TypedModule { module, inferred });
+    }
+
     let aliases = collect_type_aliases(&module);
     module.items = module
         .items
@@ -7500,6 +7505,9 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
 
     // MVP: start routing `show`/`toString` calls through an explicit Show dictionary.
     rewrite_show_calls_in_module(&mut module);
+
+    // Store in cache for future lookups.
+    stdlib_cache::store_module_typecheck_cache(&module, &inferred);
 
     Ok(TypedModule { module, inferred })
 }

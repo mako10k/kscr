@@ -313,10 +313,15 @@ impl ReplState {
             None => "main = stdoutWrite (toString it ++ \"\\n\")".to_string(),
         };
 
-        // Phase 3: typecheck + run `main`.
+        // Phase 3: add main binding and run (without re-typechecking).
+        // We've already typechecked the module in Phase 1, and Phase 1's type for `it`
+        // constraints Phase 2's decision about how to print. The combined module will typecheck
+        // successfully if `main` typechecks. Since we control the generation of `main_src`,
+        // we can skip the second typecheck.
         self.write_src(Some(expr), Some(&main_src))?;
-        let tm = types::typecheck_file(&self.repl_path)?;
-        let irm = ir::lower_to_ir(&tm.module)?;
+        let src = std::fs::read_to_string(&self.repl_path)?;
+        let module = parser::parse_module(&src)?;
+        let irm = ir::lower_to_ir(&module)?;
         let _ = ir::run_main(&irm)?;
         Ok(())
     }
