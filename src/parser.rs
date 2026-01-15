@@ -1057,10 +1057,50 @@ fn desugar_fun(
     }
 }
 
+fn parse_expr_after_newline(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
+    if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        return parse_expr(ts, stop);
+    }
+
+    ts.consume_line_end();
+    ts.skip_newlines();
+
+    // Allow an optional indentation wrapper (common after then/else).
+    if matches!(ts.peek_kind(), Some(TokenKind::Indent)) {
+        ts.expect(TokenKind::Indent)?;
+        let expr = parse_expr(ts, stop)?;
+        ts.consume_line_end();
+        ts.expect(TokenKind::Dedent)?;
+        return Ok(expr);
+    }
+
+    parse_expr(ts, stop)
+}
+
+fn parse_eq_rhs(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
+    // Support Haskell-like layout:
+    //   x =
+    //     expr
+    if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        return parse_expr(ts, stop);
+    }
+
+    ts.consume_line_end();
+    ts.skip_newlines();
+    ts.expect(TokenKind::Indent)?;
+
+    let expr = parse_expr(ts, stop)?;
+
+    ts.consume_line_end();
+    ts.expect(TokenKind::Dedent)?;
+
+    Ok(expr)
+}
+
 fn parse_binding_simple(ts: &mut TokenStream, stop: Stop) -> Result<ast::Binding> {
     let pat = parse_pattern(ts)?;
     ts.expect(TokenKind::Eq)?;
-    let expr = parse_expr(ts, stop)?;
+    let expr = parse_eq_rhs(ts, stop)?;
     Ok(ast::Binding { pat, expr })
 }
 
@@ -1147,7 +1187,7 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
                         None
                     };
                     ts.expect(TokenKind::Eq)?;
-                    let body = parse_expr(ts, stop)?;
+                    let body = parse_eq_rhs(ts, stop)?;
                     return Ok(ParsedBind::FunClause(FunClause {
                         name: op,
                         args: vec![lhs, rhs],
@@ -1189,7 +1229,7 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
                             None
                         };
                         ts.expect(TokenKind::Eq)?;
-                        let body = parse_expr(ts, stop)?;
+                        let body = parse_eq_rhs(ts, stop)?;
                         return Ok(ParsedBind::FunClause(FunClause {
                             name,
                             args,
@@ -1225,7 +1265,7 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
                     None
                 };
                 ts.expect(TokenKind::Eq)?;
-                let body = parse_expr(ts, stop)?;
+                let body = parse_eq_rhs(ts, stop)?;
                 return Ok(ParsedBind::FunClause(FunClause {
                     name,
                     args,
@@ -1293,9 +1333,9 @@ fn parse_if(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     ts.expect(TokenKind::KwIf)?;
     let cond = Box::new(parse_expr(ts, Stop::Then)?);
     ts.expect(TokenKind::KwThen)?;
-    let then_branch = Box::new(parse_expr(ts, Stop::Else)?);
+    let then_branch = Box::new(parse_expr_after_newline(ts, Stop::Else)?);
     ts.expect(TokenKind::KwElse)?;
-    let else_branch = Box::new(parse_expr(ts, stop)?);
+    let else_branch = Box::new(parse_expr_after_newline(ts, stop)?);
     Ok(expr_from(
         ts,
         start,
@@ -1363,7 +1403,7 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     };
 
     ts.expect(TokenKind::KwIn)?;
-    let body = Box::new(parse_expr(ts, stop)?);
+    let body = Box::new(parse_expr_after_newline(ts, stop)?);
     Ok(expr_from(ts, start, ast::ExprKind::Let { bindings, body }))
 }
 

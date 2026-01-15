@@ -2700,6 +2700,38 @@ fn parser_let_inline_semicolons() {
 }
 
 #[test]
+fn parser_eq_rhs_indent_block_allows_multiline_let_in() {
+    let src = "x =\n  let step = 2 in\n  step\n";
+    let module = crate::parser::parse_module(src).unwrap();
+
+    use crate::ast::{ExprKind, Item};
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let ExprKind::Let { .. } = &b.expr.kind else {
+        panic!("expected let");
+    };
+}
+
+#[test]
+fn parser_if_then_else_allow_newline_and_indent() {
+    let src = "x = if True then\n  1\nelse\n  2\n";
+    let module = crate::parser::parse_module(src).unwrap();
+
+    use crate::ast::{ExprKind, Item};
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let ExprKind::If { .. } = &b.expr.kind else {
+        panic!("expected if");
+    };
+}
+
+#[test]
 fn parser_where_braces_semicolons() {
     let module = crate::parser::parse_module("x = a where { a = 1; b = 2 }\n").unwrap();
 
