@@ -4,7 +4,14 @@ This document describes the implementation plan for **kscr**, a Rust-based toolc
 
 Scope notes:
 - The language design is described in `docs/LanguageBNF.md`, `docs/TypeSystem.md`, `docs/LanguageSemantics.md`, and `docs/IntermediateRepresentation.md`.
-- The current codebase is a scaffold; it provides a minimal CLI and placeholder modules.
+- The codebase is **end-to-end runnable** (lexer → parser → typechecker → IR → runtime), and includes:
+	- Multi-file module resolution with import/export boundaries and qualified imports
+	- Typeclasses (`Show`/`Eq`) with dictionary passing and `deriving`
+	- REPL (stdio by default; optional readline via `--features readline`)
+	- Optional LLVM IR text generation via `--features llvm` (`crates/kscr_llvm`)
+	- Optional unsafe features isolated into subcrates (e.g. `--features unsafe_ffi/unsafe_bigint`)
+
+For the up-to-date execution-first priorities, see `docs/PriorityChecklist.md`.
 
 ---
 

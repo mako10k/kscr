@@ -38,7 +38,7 @@ jobs:
         run: cargo fmt -- --check
 
       - name: cargo clippy (deny warnings)
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-features -- -D warnings
 
       - name: file size ratchet
         run: bash tools/ci/check_file_size_ratchet.sh
@@ -50,9 +50,7 @@ jobs:
         run: cargo install cargo-geiger --locked --version 0.13.0
 
       - name: cargo geiger
-        run: |
-          cargo fetch --locked
-          cargo geiger --locked --offline
+        run: cargo geiger
 
   nightly_udeps:
     name: nightly udeps (informational)
