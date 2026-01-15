@@ -3684,6 +3684,10 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
     }
 }
 
+pub fn stdlib_root() -> PathBuf {
+    stdlib_cache::stdlib_root()
+}
+
 pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     let module = load_module_with_imports(entry)?;
     typecheck(module)

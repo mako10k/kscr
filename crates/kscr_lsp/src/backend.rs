@@ -6,6 +6,7 @@
 use crate::vfs::{Document, Vfs};
 use kscr::{error::Error as KscrError, lexer, parser, types};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
@@ -162,60 +163,205 @@ fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
     })
 }
 
-fn token_name(kind: &lexer::TokenKind) -> Option<String> {
-    use lexer::TokenKind::*;
+fn qualified_ident_at_offset(src: &str, offset: usize) -> Option<(String, kscr::lexer::Span)> {
+    use lexer::TokenKind;
 
-    Some(match kind {
-        Ident(s) | Operator(s) | Integer(s) | Float(s) | String(s) => s.clone(),
-        Char(c) => c.to_string(),
-        True => "True".to_string(),
-        False => "False".to_string(),
-
-        Plus => "+".to_string(),
-        PlusPlus => "++".to_string(),
-        Minus => "-".to_string(),
-        Star => "*".to_string(),
-        Slash => "/".to_string(),
-        EqEq => "==".to_string(),
-        SlashEq => "/=".to_string(),
-        Lt => "<".to_string(),
-        Le => "<=".to_string(),
-        Gt => ">".to_string(),
-        Ge => ">=".to_string(),
-        GtGt => ">>".to_string(),
-        GtGtEq => ">>=".to_string(),
-        AndAnd => "&&".to_string(),
-        OrOr => "||".to_string(),
-        Colon => ":".to_string(),
-        Dot => ".".to_string(),
-        Pipe => "|".to_string(),
-        At => "@".to_string(),
-        Question => "?".to_string(),
-        Arrow => "->".to_string(),
-        FatArrow => "=>".to_string(),
-        LeftArrow => "<-".to_string(),
-        ColonColon => "::".to_string(),
-
-        _ => return None,
-    })
-}
-
-fn token_at_offset(src: &str, offset: usize) -> Option<lexer::Token> {
-    let tokens = lexer::lex(src).ok()?;
-
-    // Prefer strict [start, end) containment.
-    if let Some(t) = tokens
+    let toks = lexer::lex(src).ok()?;
+    let i = toks
         .iter()
-        .find(|t| t.span.start <= offset && offset < t.span.end && t.span.end > t.span.start)
-    {
-        return Some(t.clone());
+        .position(|t| t.span.start <= offset && offset < t.span.end && t.span.end > t.span.start)
+        .or_else(|| {
+            toks.iter().position(|t| t.span.start < offset && offset <= t.span.end && t.span.end > t.span.start)
+        })?;
+
+    let lexer::Token {
+        kind: TokenKind::Ident(_),
+        ..
+    } = &toks[i]
+    else {
+        return None;
+    };
+
+    let mut start = i;
+    while start >= 2 {
+        if toks[start - 1].kind == TokenKind::Dot {
+            if matches!(toks[start - 2].kind, TokenKind::Ident(_)) {
+                start -= 2;
+                continue;
+            }
+        }
+        break;
     }
 
-    // If the cursor is at the end of an identifier, prefer the token just before it.
-    tokens
-        .iter()
-        .find(|t| t.span.start < offset && offset <= t.span.end && t.span.end > t.span.start)
-        .cloned()
+    let mut end = i;
+    while end + 2 < toks.len() {
+        if toks[end + 1].kind == TokenKind::Dot {
+            if matches!(toks[end + 2].kind, TokenKind::Ident(_)) {
+                end += 2;
+                continue;
+            }
+        }
+        break;
+    }
+
+    let mut parts = Vec::new();
+    let mut span = toks[start].span;
+    let mut j = start;
+    while j <= end {
+        if let TokenKind::Ident(s) = &toks[j].kind {
+            parts.push(s.clone());
+            span.end = toks[j].span.end;
+        }
+        j += 2;
+    }
+
+    Some((parts.join("."), span))
+}
+
+fn resolve_import_path(module: &str, base_dir: &Path) -> Option<PathBuf> {
+    let rel = module.replace('.', "/");
+    let local = base_dir.join(format!("{rel}.ks"));
+    let stdlib = types::stdlib_root().join(format!("{rel}.ks"));
+
+    std::fs::canonicalize(&local)
+        .or_else(|_| std::fs::canonicalize(&stdlib))
+        .ok()
+}
+
+fn find_toplevel_span_in_doc(doc: &Document, module: &kscr::ast::Module, name: &str) -> Option<kscr::lexer::Span> {
+    let defs = toplevel_binding_spans(module);
+    if let Some(s) = defs.get(name).copied() {
+        return Some(s);
+    }
+
+    match classify_toplevel_symbol(module, name)? {
+        "type" => find_decl_name_span(doc, lexer::TokenKind::KwType, name),
+        "data" => find_decl_name_span(doc, lexer::TokenKind::KwData, name),
+        "class" => find_decl_name_span(doc, lexer::TokenKind::KwClass, name),
+        "ctor" => {
+            // Best-effort: search within the matching data decl region for ctor name.
+            // This is a lexer-based span finder because ctor spans are not stored in the AST yet.
+            let toks = lexer::lex(&doc.text).ok()?;
+            for it in &module.items {
+                let kscr::ast::Item::DataDecl(dd) = it else { continue };
+                if !dd.ctors.iter().any(|c| c.name == name) {
+                    continue;
+                }
+
+                // Locate `data <dd.name>` and then scan forward until the next top-level decl.
+                let mut idx = 0usize;
+                while idx + 1 < toks.len() {
+                    if toks[idx].kind == lexer::TokenKind::KwData {
+                        if let lexer::TokenKind::Ident(n) = &toks[idx + 1].kind {
+                            if n == &dd.name {
+                                break;
+                            }
+                        }
+                    }
+                    idx += 1;
+                }
+                if idx + 1 >= toks.len() {
+                    continue;
+                }
+
+                let mut depth = 0usize;
+                let mut j = idx + 2;
+                while j < toks.len() {
+                    match toks[j].kind {
+                        lexer::TokenKind::Indent => depth += 1,
+                        lexer::TokenKind::Dedent => depth = depth.saturating_sub(1),
+                        lexer::TokenKind::KwData
+                        | lexer::TokenKind::KwType
+                        | lexer::TokenKind::KwClass
+                        | lexer::TokenKind::KwInstance
+                        | lexer::TokenKind::KwLet
+                        | lexer::TokenKind::KwModule
+                            if depth == 0 => {
+                                break;
+                            }
+                        _ => {}
+                    }
+
+                    if let lexer::TokenKind::Ident(n) = &toks[j].kind {
+                        if n == name {
+                            return Some(toks[j].span);
+                        }
+                    }
+                    j += 1;
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn goto_definition_cross_file(doc: &Document, name: &str) -> Option<Location> {
+    let (qual, member) = name.rsplit_once('.')?;
+
+    let this_path = doc.uri.to_file_path().ok()?;
+    let base_dir = this_path
+        .parent()
+        .filter(|p| p.exists())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir);
+
+    let this_module = parser::parse_module(&doc.text).ok()?;
+
+    // Map local qualifier -> canonical module name (same rule as typechecker).
+    let mut qual_to_module: HashMap<String, String> = HashMap::new();
+    for it in &this_module.items {
+        let kscr::ast::Item::Import(id) = it else {
+            continue;
+        };
+        let local = id.as_name.clone().unwrap_or_else(|| id.module.clone());
+        qual_to_module.insert(local, id.module.clone());
+    }
+
+    let target_module = qual_to_module.get(qual)?.clone();
+    let target_path = resolve_import_path(&target_module, &base_dir)?;
+
+    let text = std::fs::read_to_string(&target_path).ok()?;
+    let uri = Url::from_file_path(&target_path).ok()?;
+    let target_doc = Document::new(uri.clone(), text, 0);
+    let target_module_ast = parser::parse_module(&target_doc.text).ok()?;
+
+    let span = find_toplevel_span_in_doc(&target_doc, &target_module_ast, member)?;
+    let range = span_to_range(&target_doc, span)?;
+
+    Some(Location { uri, range })
+}
+
+fn goto_definition_unqualified_import(doc: &Document, name: &str) -> Option<Location> {
+    let this_path = doc.uri.to_file_path().ok()?;
+    let base_dir = this_path
+        .parent()
+        .filter(|p| p.exists())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir);
+
+    let this_module = parser::parse_module(&doc.text).ok()?;
+
+    for it in &this_module.items {
+        let kscr::ast::Item::Import(id) = it else {
+            continue;
+        };
+        if id.qualified {
+            continue;
+        }
+        let target_path = resolve_import_path(&id.module, &base_dir)?;
+        let text = std::fs::read_to_string(&target_path).ok()?;
+        let uri = Url::from_file_path(&target_path).ok()?;
+        let target_doc = Document::new(uri.clone(), text, 0);
+        let target_module_ast = parser::parse_module(&target_doc.text).ok()?;
+
+        if let Some(span) = find_toplevel_span_in_doc(&target_doc, &target_module_ast, name) {
+            let range = span_to_range(&target_doc, span)?;
+            return Some(Location { uri, range });
+        }
+    }
+
+    None
 }
 
 fn toplevel_binding_spans(module: &kscr::ast::Module) -> HashMap<String, kscr::lexer::Span> {
@@ -265,24 +411,87 @@ fn classify_toplevel_symbol(module: &kscr::ast::Module, name: &str) -> Option<&'
 
 fn goto_definition_in_doc(doc: &Document, pos: Position) -> Option<Location> {
     let off = doc.position_to_offset(pos.line, pos.character)?;
-    let tok = token_at_offset(&doc.text, off)?;
-    let name = token_name(&tok.kind)?;
+
+    let (name, _name_span) = qualified_ident_at_offset(&doc.text, off)?;
+
+    if name.contains('.') {
+        return goto_definition_cross_file(doc, &name);
+    }
 
     let module = parser::parse_module(&doc.text).ok()?;
-    let defs = toplevel_binding_spans(&module);
-    let span = defs.get(&name).copied()?;
-    let range = span_to_range(doc, span)?;
+    if let Some(span) = toplevel_binding_spans(&module).get(&name).copied() {
+        let range = span_to_range(doc, span)?;
+        return Some(Location {
+            uri: doc.uri.clone(),
+            range,
+        });
+    }
 
-    Some(Location {
-        uri: doc.uri.clone(),
-        range,
-    })
+    goto_definition_unqualified_import(doc, &name)
+}
+
+fn completion_items_in_doc(doc: &Document, pos: Position) -> Option<Vec<CompletionItem>> {
+    let off = doc.position_to_offset(pos.line, pos.character)?;
+
+    let mut start_off = off;
+    while start_off > 0 {
+        let b = doc.text.as_bytes()[start_off - 1];
+        let ok = b.is_ascii_alphanumeric() || b == b'_' || b == b'.';
+        if !ok {
+            break;
+        }
+        start_off -= 1;
+    }
+
+    let prefix = doc.text.get(start_off..off).unwrap_or("");
+
+    let (sl, sc) = doc.offset_to_position(start_off)?;
+    let (el, ec) = doc.offset_to_position(off)?;
+    let range = Range {
+        start: Position {
+            line: sl,
+            character: sc,
+        },
+        end: Position {
+            line: el,
+            character: ec,
+        },
+    };
+
+    let tm = typecheck_document_typed(&doc.uri, &doc.text).ok()?;
+
+    let mut names: Vec<String> = tm
+        .inferred
+        .keys()
+        .filter(|n| n.starts_with(prefix))
+        .take(200)
+        .cloned()
+        .collect();
+    names.sort();
+
+    Some(
+        names
+            .into_iter()
+            .map(|name| CompletionItem {
+                label: name.clone(),
+                kind: Some(if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    CompletionItemKind::CLASS
+                } else {
+                    CompletionItemKind::VARIABLE
+                }),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range,
+                    new_text: name,
+                })),
+                ..Default::default()
+            })
+            .collect(),
+    )
 }
 
 fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
     let off = doc.position_to_offset(pos.line, pos.character)?;
-    let tok = token_at_offset(&doc.text, off)?;
-    let name = token_name(&tok.kind)?;
+    let (name, name_span) = qualified_ident_at_offset(&doc.text, off)?;
 
     let module = parser::parse_module(&doc.text).ok();
     let kind = module
@@ -294,7 +503,7 @@ fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
         .ok()
         .and_then(|tm| tm.inferred.get(&name).map(|s| s.to_string()));
 
-    let range = span_to_range(doc, tok.span);
+    let range = span_to_range(doc, name_span);
     let value = match ty {
         Some(ty) => format!("```kscr\n{name} :: {ty}\n```"),
         None => format!("```kscr\n{kind} {name}\n```"),
@@ -389,6 +598,43 @@ mod tests {
     }
 
     #[test]
+    fn goto_definition_cross_file_qualified_import() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("kscr-lsp-goto-cross-{nanos}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        let main_src = "module Main where\n  import A\n  y = A.x\n";
+        std::fs::write(&main, main_src).unwrap();
+
+        let uri = Url::from_file_path(&main).unwrap();
+        let doc = Document::new(uri, main_src.to_string(), 1);
+
+        // position on the reference "x" in "A.x"
+        let pos = Position {
+            line: 2,
+            character: 8,
+        };
+        let loc = goto_definition_in_doc(&doc, pos).unwrap();
+
+        let a_uri = Url::from_file_path(&a).unwrap();
+        assert_eq!(loc.uri, a_uri);
+        assert_eq!(loc.range.start.line, 1);
+        assert_eq!(loc.range.start.character, 2);
+        assert_eq!(loc.range.end.line, 1);
+        assert_eq!(loc.range.end.character, 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn hover_on_identifier() {
         let uri = Url::parse("file:///test.ks").unwrap();
         let src = "module Main where\n  foo = 1\n".to_string();
@@ -457,6 +703,11 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: Some(vec![".".to_string()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         })
@@ -531,6 +782,19 @@ impl LanguageServer for Backend {
 
         let loc = goto_definition_in_doc(doc, params.text_document_position_params.position);
         Ok(loc.map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let vfs = self.vfs.read().await;
+        let uri = params.text_document_position.text_document.uri;
+        let doc = match vfs.get(&uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let items = completion_items_in_doc(doc, params.text_document_position.position)
+            .unwrap_or_default();
+        Ok(Some(CompletionResponse::Array(items)))
     }
 
     async fn document_symbol(
