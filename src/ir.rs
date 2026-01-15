@@ -685,8 +685,6 @@ pub enum Value {
     BuiltinStdoutWrite,
     BuiltinConcatMap,
     BuiltinConcatMap1(Box<Value>),
-    BuiltinRangeInt,
-    BuiltinRangeInt1(Box<Value>),
     BuiltinAdd,
     BuiltinAdd1(Box<Value>),
     BuiltinSub,
@@ -872,10 +870,6 @@ fn eval_var(
 
     if name == "concatMap" {
         return Ok(Value::BuiltinConcatMap);
-    }
-
-    if name == "__rangeInt" {
-        return Ok(Value::BuiltinRangeInt);
     }
 
     if name == "+" {
@@ -1359,8 +1353,6 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         }
         Value::BuiltinConcatMap => Ok(Value::BuiltinConcatMap1(Box::new(arg))),
         Value::BuiltinConcatMap1(f) => concat_map(g, *f, arg),
-        Value::BuiltinRangeInt => Ok(Value::BuiltinRangeInt1(Box::new(arg))),
-        Value::BuiltinRangeInt1(a) => range_int_from_to(g, *a, arg),
         Value::BuiltinAdd => Ok(Value::BuiltinAdd1(Box::new(arg))),
         Value::BuiltinAdd1(a) => add_int(g, *a, arg),
         Value::BuiltinSub => Ok(Value::BuiltinSub1(Box::new(arg))),
@@ -1683,36 +1675,6 @@ fn concat_map(g: &Globals, f: Value, xs: Value) -> Result<Value> {
     }
 
     Ok(vec_to_list(out))
-}
-
-fn range_int_from_to(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
-
-    let Value::Integer(a) = a else {
-        return Err(Error::msg("__rangeInt expects Integer"));
-    };
-    let Value::Integer(b) = b else {
-        return Err(Error::msg("__rangeInt expects Integer"));
-    };
-
-    if a > b {
-        return Ok(Value::ListNil);
-    }
-
-    let next = a.clone() + int_from_i64(1);
-
-    let tail_expr = IrExpr::Apply {
-        func: Box::new(IrExpr::Var("__rangeInt".to_string())),
-        args: vec![IrExpr::Integer(next.to_string()), IrExpr::Integer(b.to_string())],
-    };
-
-    let tail = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
-        expr: tail_expr,
-        env: std::collections::HashMap::new(),
-    })));
-
-    Ok(Value::ListCons(Box::new(Value::Integer(a)), Box::new(tail)))
 }
 
 fn int_from_i64(n: i64) -> Integer {

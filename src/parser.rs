@@ -2707,14 +2707,14 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
     let first = parse_expr(ts, Stop::Pattern)?;
 
-    // List range: [a..b] (MVP: desugar to __rangeInt a b)
+    // List range: [a..b] (Enum-based desugar)
     if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
         ts.bump();
         let end = parse_expr(ts, Stop::Pattern)?;
         ts.expect(TokenKind::RBracket)?;
 
         let kind = ast::ExprKind::Apply {
-            func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("__rangeInt".to_string()))),
+            func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("enumFromTo".to_string()))),
             args: vec![first, end],
         };
         return Ok(expr_from(ts, start, kind));
