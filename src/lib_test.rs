@@ -1,3 +1,6 @@
+mod typeclass_phase3;
+mod parser_typehole_alias_do;
+
 #[test]
 fn scaffold_parser_accepts_binding() {
     let m = crate::parser::parse_module("x = 1").unwrap();
@@ -177,54 +180,6 @@ instance C a => C (Maybe a) where
 
     assert_eq!(inst.class, "C");
     assert_eq!(inst.preds.len(), 1);
-}
-
-#[test]
-fn typecheck_accepts_instance_context_for_superclass_dicts() {
-    let src = r#"
-module Main where
-
-    class C a where
-        f :: a -> a
-
-    class C a => D a where
-        g :: a -> a
-
-    -- Provide the superclass dictionary via instance context.
-    instance C Integer => D Integer where
-        g x = x
-
-    main :: IO Unit
-    main = IO ()
-"#;
-
-    let ast = crate::parser::parse_module(src).unwrap();
-    crate::types::typecheck(ast).unwrap();
-}
-
-#[test]
-fn typecheck_accepts_non_ground_instance_with_ctx_from_scope() {
-    let src = r#"
-module Main where
-
-    data Maybe a = Nothing | Just a
-
-    class C a where
-        f :: a -> a
-
-    instance C a => C (Maybe a) where
-        f x = x
-
-    -- Here, `C a` is in scope (as a dictionary arg), so `C (Maybe a)` can be built.
-    use :: C a => Maybe a -> Maybe a
-    use x = f x
-
-    main :: IO Unit
-    main = IO ()
-"#;
-
-    let ast = crate::parser::parse_module(src).unwrap();
-    crate::types::typecheck(ast).unwrap();
 }
 
 #[test]
@@ -836,7 +791,9 @@ fn parser_cons_pattern() {
     let m = crate::parser::parse_module("x:xs = ys\n").unwrap();
     use crate::ast::{Item, PatternKind};
     match &m.items[0] {
-        Item::Binding(b) => assert!(matches!(&b.pat.kind, PatternKind::Cons(_, _))),
+        Item::Binding(b) => {
+            assert!(matches!(&b.pat.kind, PatternKind::Cons(_, _)))
+        }
         _ => panic!("expected binding"),
     }
 }
@@ -2641,114 +2598,15 @@ fn parser_type_exprs() {
 
 #[test]
 fn parser_type_holes() {
-    let src = std::fs::read_to_string("tests/parser_type_holes.ks").unwrap();
-    let module = crate::parser::parse_module(&src).unwrap();
-    assert_eq!(module.items.len(), 4);
-
-    use crate::ast::{ExprKind, Item, Type};
-
-    let Item::Binding(b0) = &module.items[0] else {
-        panic!("expected binding");
-    };
-    let ExprKind::Annot { ty, .. } = &b0.expr.kind else {
-        panic!("expected annotation");
-    };
-    assert_eq!(&ty.ty, &Type::Hole(None));
-
-    let Item::Binding(b1) = &module.items[1] else {
-        panic!("expected binding");
-    };
-    let ExprKind::Annot { ty, .. } = &b1.expr.kind else {
-        panic!("expected annotation");
-    };
-    assert_eq!(&ty.ty, &Type::Hole(Some("t".to_string())));
-
-    let Item::Binding(b2) = &module.items[2] else {
-        panic!("expected binding");
-    };
-    let ExprKind::Annot { ty, .. } = &b2.expr.kind else {
-        panic!("expected annotation");
-    };
-    assert_eq!(&ty.ty, &Type::List(Box::new(Type::Hole(None))));
-
-    let Item::Binding(b3) = &module.items[3] else {
-        panic!("expected binding");
-    };
-    let ExprKind::Annot { ty, .. } = &b3.expr.kind else {
-        panic!("expected annotation");
-    };
-    assert_eq!(
-        &ty.ty,
-        &Type::Tuple(vec![Type::Hole(Some("a".to_string())), Type::Hole(None)])
-    );
+    crate::lib_test::parser_typehole_alias_do::parser_type_holes();
 }
 
 #[test]
 fn typecheck_expands_type_aliases() {
-    let src = std::fs::read_to_string("tests/type_alias_expand.ks").unwrap();
-    let module = crate::parser::parse_module(&src).unwrap();
-    let tm = crate::types::typecheck(module).unwrap();
-
-    use crate::ast::{ExprKind, Item, PatternKind, Type};
-
-    let find_binding = |name: &str| -> &crate::ast::Binding {
-        tm.module
-            .items
-            .iter()
-            .find_map(|it| match it {
-                Item::Binding(b) if matches!(&b.pat.kind, PatternKind::Var(n) if n == name) => {
-                    Some(b)
-                }
-                _ => None,
-            })
-            .unwrap()
-    };
-
-    let b0 = find_binding("x");
-    let ExprKind::Annot { ty, .. } = &b0.expr.kind else {
-        panic!("expected annotation");
-    };
-    assert_eq!(&ty.ty, &Type::List(Box::new(Type::Char)));
-
-    let b1 = find_binding("z");
-    let ExprKind::Annot { ty, .. } = &b1.expr.kind else {
-        panic!("expected annotation");
-    };
-    assert_eq!(&ty.ty, &Type::Tuple(vec![Type::Integer, Type::Bool]));
-
-    use crate::types::{Scheme, Ty};
-    assert_eq!(
-        tm.inferred.get("x").unwrap(),
-        &Scheme::mono(Ty::List(Box::new(Ty::Con("Char".to_string()))))
-    );
-    assert_eq!(
-        tm.inferred.get("z").unwrap(),
-        &Scheme::mono(Ty::Tuple(vec![
-            Ty::Con("Integer".to_string()),
-            Ty::Con("Bool".to_string())
-        ]))
-    );
+    crate::lib_test::parser_typehole_alias_do::typecheck_expands_type_aliases();
 }
 
 #[test]
 fn parser_do_blocks() {
-    let src = std::fs::read_to_string("tests/parser_do.ks").unwrap();
-    let module = crate::parser::parse_module(&src).unwrap();
-    assert_eq!(module.items.len(), 1);
-
-    use crate::ast::{DoStmt, ExprKind, Item, PatternKind};
-
-    let Item::Binding(b) = &module.items[0] else {
-        panic!("expected binding");
-    };
-    assert!(matches!(&b.pat.kind, PatternKind::Var(s) if s == "main"));
-
-    let ExprKind::Do(stmts) = &b.expr.kind else {
-        panic!("expected do");
-    };
-
-    assert_eq!(stmts.len(), 3);
-    assert!(matches!(stmts[0], DoStmt::Bind { .. }));
-    assert!(matches!(stmts[1], DoStmt::Bind { .. }));
-    assert!(matches!(stmts[2], DoStmt::Expr(_)));
+    crate::lib_test::parser_typehole_alias_do::parser_do_blocks();
 }

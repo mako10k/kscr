@@ -821,7 +821,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  infixr 6 -\n  x = 1 - 2 - 3\n  main = case (x == 2) of\n    True -> IO ()\n    False -> case (1 / 0) of\n      _ -> IO ()\n",
+            "module Main where\n  infixr 6 -\n  x = 1 - 2 - 3\n  main = case True of\n    True -> IO ()\n    False -> case (1 / 0) of\n      _ -> IO ()\n",
         )
         .unwrap();
         let args = vec![
@@ -1591,7 +1591,7 @@ mod tests {
             main.to_string_lossy().to_string(),
         ];
         let e = run(args.into_iter()).unwrap_err();
-        assert!(format!("{e}").contains("unknown qualifier A"));
+        assert!(format!("{e}").contains("unbound variable: A.x"));
 
         let _ = std::fs::remove_dir_all(dir);
     }

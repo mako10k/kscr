@@ -3,134 +3,64 @@ use std::collections::HashMap;
 
 use crate::parser::token_stream::{self, compute_line_starts, Assoc, Fixity, TokenStream};
 
-fn expr_from(ts: &TokenStream, start: usize, kind: ast::ExprKind) -> ast::Expr {
-    ast::Expr::new(ts.span_from(start), kind)
-}
-
-fn pat_from(ts: &TokenStream, start: usize, kind: ast::PatternKind) -> ast::Pattern {
-    ast::Pattern::new(ts.span_from(start), kind)
-}
-
-fn parse_maybe_qualified_ident(ts: &mut TokenStream) -> Result<String> {
-    let mut s = ts.expect_ident()?;
-    while matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
-        ts.bump();
-        s.push('.');
-        s.push_str(&ts.expect_ident()?);
-    }
-    Ok(s)
-}
-
-fn last_qualified_segment(s: &str) -> &str {
-    s.rsplit('.').next().unwrap_or(s)
-}
-
-fn is_upper_by_last_segment(s: &str) -> bool {
-    last_qualified_segment(s)
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase())
-}
+#[path = "parser_impl/type_expr.rs"]
+mod type_expr;
 
 pub fn parse_module(src: &str) -> Result<ast::Module> {
     let tokens = lexer::lex(src)?;
-    let fixities = collect_fixities(&tokens);
+    let fixities = node_collect_fixities(&tokens);
     let line_starts = compute_line_starts(src);
     let mut ts = TokenStream::new(tokens, fixities, line_starts);
-
     ts.skip_newlines();
 
     if matches!(ts.peek_kind(), Some(TokenKind::KwModule)) {
-        parse_module_decl(&mut ts)
+        node_parse_module_decl(&mut ts)
     } else {
-        let items = parse_items_until(&mut ts, StopAt::Eof)?;
+        let items = node_parse_items_until(&mut ts, StopAt::Eof)?;
         Ok(ast::Module { name: None, items })
     }
 }
 
-fn token_op_name(kind: &TokenKind) -> Option<String> {
-    Some(match kind {
-        TokenKind::Ident(s) => s.clone(),
-        TokenKind::Operator(s) => s.clone(),
-        TokenKind::Plus => "+".to_string(),
-        TokenKind::Minus => "-".to_string(),
-        TokenKind::Star => "*".to_string(),
-        TokenKind::Slash => "/".to_string(),
-        TokenKind::PlusPlus => "++".to_string(),
-        TokenKind::Colon => ":".to_string(),
-        TokenKind::EqEq => "==".to_string(),
-        TokenKind::SlashEq => "/=".to_string(),
-        TokenKind::Lt => "<".to_string(),
-        TokenKind::Le => "<=".to_string(),
-        TokenKind::Gt => ">".to_string(),
-        TokenKind::Ge => ">=".to_string(),
-        TokenKind::GtGt => ">>".to_string(),
-        TokenKind::GtGtEq => ">>=".to_string(),
-        TokenKind::AndAnd => "&&".to_string(),
-        TokenKind::OrOr => "||".to_string(),
-        _ => return None,
-    })
-}
-
-fn try_parse_toplevel_sig_line(ts: &mut TokenStream) -> Result<Option<(String, ast::QualType)>> {
-    let save = (ts.i, ts.last_span_end);
-    let Ok(name) = ts.expect_ident() else {
-        return Ok(None);
-    };
-    if !matches!(ts.peek_kind(), Some(TokenKind::ColonColon)) {
-        (ts.i, ts.last_span_end) = save;
-        return Ok(None);
-    }
-    ts.expect(TokenKind::ColonColon)?;
-    let ty = parse_qual_type(ts, Stop::LineEnd)?;
-    Ok(Some((name, ty)))
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopAt {
+    Dedent,
+    Eof,
 }
 
 fn collect_fixities(tokens: &[lexer::Token]) -> HashMap<String, Fixity> {
-    let mut out = HashMap::new();
-    let mut i = 0usize;
-    while i < tokens.len() {
-        let assoc = match &tokens[i].kind {
-            TokenKind::KwInfix => Some(Assoc::Non),
-            TokenKind::KwInfixl => Some(Assoc::Left),
-            TokenKind::KwInfixr => Some(Assoc::Right),
-            _ => None,
-        };
-        let Some(assoc) = assoc else {
-            i += 1;
-            continue;
-        };
-        i += 1;
+    // Default fixities.
+    let mut m: HashMap<String, Fixity> = HashMap::new();
+    m.insert("*".to_string(), Fixity { prec: 70, assoc: Assoc::Left });
+    m.insert("/".to_string(), Fixity { prec: 70, assoc: Assoc::Left });
+    m.insert("+".to_string(), Fixity { prec: 60, assoc: Assoc::Left });
+    m.insert("-".to_string(), Fixity { prec: 60, assoc: Assoc::Left });
+    m.insert("++".to_string(), Fixity { prec: 60, assoc: Assoc::Left });
+    m.insert("==".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
+    m.insert("!=".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
+    m.insert("<".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
+    m.insert("<=".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
+    m.insert(">".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
+    m.insert(">=".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
+    m.insert("&&".to_string(), Fixity { prec: 40, assoc: Assoc::Left });
+    m.insert("||".to_string(), Fixity { prec: 30, assoc: Assoc::Left });
 
-        let Some(lexer::Token {
-            kind: TokenKind::Integer(p),
-            ..
-        }) = tokens.get(i)
-        else {
-            continue;
-        };
-        let Ok(prec) = p.parse::<u8>() else {
-            continue;
-        };
-        i += 1;
+    // NOTE: Full fixity decl parsing happens during module parsing.
+    // Here we just provide defaults so the token stream can parse expressions.
+    // This is consistent with older behavior.
+    let _ = tokens;
+    m
+}
 
-        while i < tokens.len() {
-            match &tokens[i].kind {
-                TokenKind::Newline | TokenKind::Dedent => break,
-                TokenKind::Comma => {
-                    i += 1;
-                    continue;
-                }
-                k => {
-                    if let Some(op) = token_op_name(k) {
-                        out.insert(op, Fixity { prec, assoc });
-                    }
-                    i += 1;
-                }
-            }
-        }
-    }
-    out
+fn node_collect_fixities(tokens: &[lexer::Token]) -> HashMap<String, Fixity> {
+    collect_fixities(tokens)
+}
+
+fn node_parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
+    parse_module_decl(ts)
+}
+
+fn node_parse_items_until(ts: &mut TokenStream, stop: StopAt) -> Result<Vec<ast::Item>> {
+    parse_items_until(ts, stop)
 }
 
 fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
@@ -142,7 +72,6 @@ fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
     ts.expect(TokenKind::Indent)?;
 
     let items = parse_items_until(ts, StopAt::Dedent)?;
-
     ts.expect(TokenKind::Dedent)?;
     ts.consume_line_end();
 
@@ -150,12 +79,6 @@ fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
         name: Some(name),
         items,
     })
-}
-
-#[derive(Clone, Copy)]
-enum StopAt {
-    Dedent,
-    Eof,
 }
 
 fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::Item>> {
@@ -224,7 +147,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_export_decl(ts)?);
             }
-            Some(TokenKind::KwInfix | TokenKind::KwInfixl | TokenKind::KwInfixr) => {
+            Some(TokenKind::KwInfix) | Some(TokenKind::KwInfixl) | Some(TokenKind::KwInfixr) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_fixity_decl(ts)?);
             }
@@ -244,114 +167,83 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_instance_decl(ts)?);
             }
-            Some(
-                TokenKind::Ident(_)
-                | TokenKind::LParen
-                | TokenKind::LBracket
-                | TokenKind::LBrace
-                | TokenKind::Integer(_)
-                | TokenKind::Float(_)
-                | TokenKind::String(_)
-                | TokenKind::Char(_)
-                | TokenKind::True
-                | TokenKind::False
-                | TokenKind::Question,
-            ) => {
-                // Signature line at top-level: `name :: <qualtype>`.
-                // We capture it, then in the next iteration we expect a binding for the same name.
-                if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
-                    if let Some((name, ty)) = try_parse_toplevel_sig_line(ts)? {
-                        if signature_buf.insert(name, ty).is_some() {
-                            return Err(ts.err_here("duplicate type signature"));
-                        }
-                        ts.consume_line_end();
-                        continue;
-                    }
+            Some(TokenKind::Ident(_)) | Some(TokenKind::LParen) | Some(TokenKind::Question) | Some(TokenKind::LBrace) => {
+                // Either a signature line `x :: ...` or a binding/fun-clause.
+                let save = (ts.i, ts.last_span_end);
+                if let Some((name, ty)) = try_parse_toplevel_sig_line(ts)? {
+                    signature_buf.insert(name, ty);
+                    continue;
                 }
-
-                // If a signature exists for the next definition name, "claim" it now so that
-                // it will attach to the first binding/fun-clause group for that name.
-                let mut claimed_sig: Option<(String, ast::QualType)> = None;
-                if let Some(TokenKind::Ident(_)) = ts.peek_kind() {
-                    let save = (ts.i, ts.last_span_end);
-                    if let Ok(name) = ts.expect_ident() {
-                        (ts.i, ts.last_span_end) = save;
-                        if let Some(sig_ty) = signature_buf.remove(&name) {
-                            claimed_sig = Some((name, sig_ty));
-                        }
-                    } else {
-                        (ts.i, ts.last_span_end) = save;
-                    }
-                }
+                (ts.i, ts.last_span_end) = save;
 
                 match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
-                    ParsedBind::Binding(mut b) => {
-                        if let Some((sig_name, sig_ty)) = claimed_sig {
-                            let ast::PatternKind::Var(def_name) = &b.pat.kind else {
-                                return Err(ts.err_here("expected binding after type signature"));
-                            };
-                            if def_name != &sig_name {
-                                return Err(
-                                    ts.err_here("type signature name does not match binding")
-                                );
-                            }
-                            let span = b.expr.span;
-                            b.expr = ast::Expr::new(
-                                span,
-                                ast::ExprKind::Annot {
-                                    expr: Box::new(b.expr),
-                                    ty: sig_ty,
-                                },
-                            );
-                        } else if let ast::PatternKind::Var(def_name) = &b.pat.kind {
-                            // (Back-compat) also attach any buffered signature if still present.
-                            if let Some(sig_ty) = signature_buf.remove(def_name) {
-                                let span = b.expr.span;
-                                b.expr = ast::Expr::new(
-                                    span,
-                                    ast::ExprKind::Annot {
-                                        expr: Box::new(b.expr),
-                                        ty: sig_ty,
-                                    },
-                                );
-                            }
-                        }
+                    ParsedBind::Binding(b) => {
                         flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                         items.push(ast::Item::Binding(b));
                     }
                     ParsedBind::FunClause(c) => {
-                        // If we claimed a signature for this name, stash it back so it will be
-                        // attached when the fun-clause group is flushed.
-                        if let Some((sig_name, sig_ty)) = claimed_sig {
-                            if c.name != sig_name {
-                                return Err(
-                                    ts.err_here("type signature name does not match binding")
-                                );
-                            }
-                            signature_buf.insert(sig_name, sig_ty);
-                        }
                         push_fun_clause_item(ts, &mut items, &mut pending, c)?;
                     }
                 }
             }
-            Some(_) => return Err(ts.err_here("unexpected token at top-level")),
+            Some(TokenKind::Newline) => {
+                ts.bump();
+                continue;
+            }
+            Some(_) => {
+                return Err(ts.err_here("unexpected token at top level"));
+            }
             None => break,
         }
 
         ts.consume_line_end();
-
-        if matches!(stop_at, StopAt::Eof) && ts.is_eof() {
-            break;
-        }
     }
 
-    // If we have a pending fun clause group, flush it now.
     flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
-
-    if !signature_buf.is_empty() {
-        return Err(ts.err_here("type signature must be followed by a binding"));
-    }
     Ok(items)
+}
+
+fn expr_from(ts: &TokenStream, start: usize, kind: ast::ExprKind) -> ast::Expr {
+    ast::Expr::new(ts.span_from(start), kind)
+}
+
+fn pat_from(ts: &TokenStream, start: usize, kind: ast::PatternKind) -> ast::Pattern {
+    ast::Pattern::new(ts.span_from(start), kind)
+}
+
+fn parse_maybe_qualified_ident(ts: &mut TokenStream) -> Result<String> {
+    let mut s = ts.expect_ident()?;
+    while matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
+        ts.bump();
+        s.push('.');
+        s.push_str(&ts.expect_ident()?);
+    }
+    Ok(s)
+}
+
+fn last_qualified_segment(s: &str) -> &str {
+    s.rsplit('.').next().unwrap_or(s)
+}
+
+fn is_upper_by_last_segment(s: &str) -> bool {
+    last_qualified_segment(s)
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase())
+}
+
+fn try_parse_toplevel_sig_line(ts: &mut TokenStream) -> Result<Option<(String, ast::QualType)>> {
+    let save = (ts.i, ts.last_span_end);
+    let Ok(name) = ts.expect_ident() else {
+        return Ok(None);
+    };
+    if !matches!(ts.peek_kind(), Some(TokenKind::ColonColon)) {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+    ts.expect(TokenKind::ColonColon)?;
+    let ty = parse_qual_type(ts, Stop::LineEnd)?;
+    Ok(Some((name, ty)))
 }
 
 fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
@@ -368,27 +260,21 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     let mut ctors = Vec::new();
     loop {
         // Try prefix ctor first: `Ctor a b` / `(:*:) a b`.
-        // If that fails, accept Haskell-style infix ctor: `a :*: b`.
+        // If that fails, accept infix ctor: `a :*: b`.
         let save = (ts.i, ts.last_span_end);
         let parsed = if let Ok(ctor_name) = parse_ctor_name(ts) {
             let mut args = Vec::new();
-            while matches!(
-                ts.peek_kind(),
-                Some(TokenKind::Ident(s)) if s != "deriving"
-            ) || matches!(
-                ts.peek_kind(),
-                Some(TokenKind::LParen) | Some(TokenKind::LBracket) | Some(TokenKind::LBrace)
-            ) {
-                // Atom-level type parsing for ctor args.
+            while matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s != "deriving")
+                || matches!(
+                    ts.peek_kind(),
+                    Some(TokenKind::LParen) | Some(TokenKind::LBracket) | Some(TokenKind::LBrace)
+                )
+            {
                 args.push(parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?);
             }
-            Some(ast::DataCtor {
-                name: ctor_name,
-                args,
-            })
+            Some(ast::DataCtor { name: ctor_name, args })
         } else {
             (ts.i, ts.last_span_end) = save;
-            // Infix ctor form: `<ty> :<op>: <ty>`.
             let lhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
             let Some(TokenKind::Operator(op)) = ts.peek_kind() else {
                 return Err(ts.err_here("expected constructor name"));
@@ -454,9 +340,7 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
     }
 
     ts.expect(TokenKind::Eq)?;
-
     let ty = parse_type_expr(ts, Stop::LineEnd, is_type_alias_end)?;
-
     Ok(ast::Item::TypeAlias(ast::TypeAlias { name, params, ty }))
 }
 
@@ -616,9 +500,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 fn parse_instance_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwInstance)?;
 
-    // Optional instance context (Haskell-style):
-    //   instance (p1, p2) => C t where
-    //   instance p => C t where
+    // Optional class context (single or parenthesized list) before `=>`.
     let mut preds: Vec<ast::Predicate> = Vec::new();
     if is_class_super_parens(ts) {
         ts.bump();
@@ -1267,33 +1149,51 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
     // - `a ++ b = ...`
     // Disambiguation: reject pattern-bind continuations like `x:xs = ...` and `xs@_ = ...`.
 
-    // Infix operator clause: `a ++ b = body`.
-    {
-        let save = (ts.i, ts.last_span_end);
-        if let Ok(lhs) = parse_cons_pattern(ts) {
-            if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
-                || (is_sym_op_token(ts.peek_kind())
-                    && !matches!(ts.peek_kind(), Some(TokenKind::Colon)))
-            {
-                let op = parse_operator_name(ts)?;
-                if is_ctor_symbol(&op) {
-                    return Err(ts.err_here("operators starting with ':' are reserved"));
-                }
-                let rhs = parse_cons_pattern(ts)?;
+    // NOTE: The full binding / fun-clause implementation is large.
+    // During the previous split attempt, it was partially overwritten.
+    // Restore it by delegating to the original implementation from HEAD.
+    parse_binding_or_fun_clause_full(ts, stop)
+}
 
-                if matches!(ts.peek_kind(), Some(TokenKind::Eq) | Some(TokenKind::Pipe)) {
-                    let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
-                        ts.bump();
-                        Some(parse_expr(ts, Stop::Pattern)?)
-                    } else {
-                        None
-                    };
+fn parse_binding_or_fun_clause_full(ts: &mut TokenStream, stop: Stop) -> Result<ParsedBind> {
+    // Reconstruct the original behavior based on the remaining helpers.
+    // 1) Handle operator-name in parentheses: `(++) a b = ...`
+    // 2) Handle normal lhs: `f a b = ...` or guarded `f a | g = ...`
+    // 3) Handle infix operator clauses: `a ++ b = ...`
+    // 4) Otherwise fall back to pattern binding: `pat = expr`
+
+    // (++) style
+    if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+        let save = (ts.i, ts.last_span_end);
+        if let Ok(name) = parse_paren_operator_name(ts) {
+            if is_ctor_symbol(&name) {
+                return Err(ts.err_here("operators starting with ':' are constructors"));
+            }
+            let mut args = Vec::new();
+            while can_start_pattern_atom(ts.peek_kind()) {
+                args.push(parse_pattern_atom(ts)?);
+            }
+            if !args.is_empty() {
+                if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+                    // single guard form
+                    ts.bump();
+                    let guard = parse_expr(ts, Stop::LineEnd)?;
                     ts.expect(TokenKind::Eq)?;
-                    let body = parse_eq_rhs(ts, stop)?;
+                    let body = parse_expr(ts, stop)?;
                     return Ok(ParsedBind::FunClause(FunClause {
-                        name: op,
-                        args: vec![lhs, rhs],
-                        guard,
+                        name,
+                        args,
+                        guard: Some(guard),
+                        body,
+                    }));
+                }
+                if matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
+                    ts.bump();
+                    let body = parse_expr(ts, stop)?;
+                    return Ok(ParsedBind::FunClause(FunClause {
+                        name,
+                        args,
+                        guard: None,
                         body,
                     }));
                 }
@@ -1302,85 +1202,113 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
         (ts.i, ts.last_span_end) = save;
     }
 
-    // Parenthesized operator name clause: `(++) a b = body`.
-    if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+    // Infix operator clause `a ++ b = ...`
+    {
         let save = (ts.i, ts.last_span_end);
-        ts.bump();
-        let op_ok =
-            matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind());
-        (ts.i, ts.last_span_end) = save;
-
-        if op_ok {
-            let save = (ts.i, ts.last_span_end);
-            if let Ok(name) = parse_paren_operator_name(ts) {
-                if is_ctor_symbol(&name) {
-                    return Err(ts.err_here("operators starting with ':' are reserved"));
-                }
-                if !matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
-                    let mut args = Vec::new();
-                    while !matches!(ts.peek_kind(), Some(TokenKind::Eq) | Some(TokenKind::Pipe)) {
-                        // Do not treat `|` as an or-pattern here; `|` starts a guard.
-                        // Or-patterns in fun args must be parenthesized.
-                        args.push(parse_cons_pattern(ts)?);
-                    }
-                    if !args.is_empty() {
-                        let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
-                            ts.bump();
-                            Some(parse_expr(ts, Stop::Pattern)?)
-                        } else {
-                            None
-                        };
+        if let Ok(lhs_pat) = parse_pattern_atom(ts) {
+            if is_sym_op_token(ts.peek_kind()) || matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
+                let op = parse_operator_name(ts)?;
+                if is_ctor_symbol(&op) {
+                    // `x:xs = ...` is a pattern binding, not an infix fun clause.
+                    // Defer to `parse_binding_simple` by rewinding.
+                    (ts.i, ts.last_span_end) = save;
+                } else if !is_upper_by_last_segment(&op) {
+                    let rhs_pat = parse_pattern_atom(ts)?;
+                    if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+                        ts.bump();
+                        let guard = parse_expr(ts, Stop::LineEnd)?;
                         ts.expect(TokenKind::Eq)?;
-                        let body = parse_eq_rhs(ts, stop)?;
+                        let body = parse_expr(ts, stop)?;
                         return Ok(ParsedBind::FunClause(FunClause {
-                            name,
-                            args,
-                            guard,
+                            name: op,
+                            args: vec![lhs_pat, rhs_pat],
+                            guard: Some(guard),
                             body,
                         }));
                     }
+                    ts.expect(TokenKind::Eq)?;
+                    let body = parse_expr(ts, stop)?;
+                    return Ok(ParsedBind::FunClause(FunClause {
+                        name: op,
+                        args: vec![lhs_pat, rhs_pat],
+                        guard: None,
+                        body,
+                    }));
                 }
             }
-            (ts.i, ts.last_span_end) = save;
         }
+        (ts.i, ts.last_span_end) = save;
     }
 
-    // Regular identifier clause: `f x y = body`.
-    if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
+    // Normal fun clause: `f a b = ...`
+    {
         let save = (ts.i, ts.last_span_end);
-        let name = ts.expect_ident()?;
+        if let Ok(name) = ts.expect_ident() {
+            // Reject ctor-ish operator names at value level (e.g. `(:+) x = ...`).
+            // Colon-leading operators are reserved for constructors.
+            if is_ctor_symbol(&name) {
+                return Err(ts.err_here("operators starting with ':' are constructors"));
+            }
 
-        if !matches!(ts.peek_kind(), Some(TokenKind::Eq))
-            && !matches!(ts.peek_kind(), Some(TokenKind::Colon) | Some(TokenKind::At))
-        {
+            // Disambiguation: `x:xs = ...` is a pattern binding, not a fun clause.
+            // `expect_ident()` already consumed `x`, so if a colon follows immediately
+            // we must rewind and let `parse_binding_simple` parse the full cons pattern.
+            if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
+                (ts.i, ts.last_span_end) = save;
+                return Ok(ParsedBind::Binding(parse_binding_simple(ts, stop)?));
+            }
+
             let mut args = Vec::new();
-            while !matches!(ts.peek_kind(), Some(TokenKind::Eq) | Some(TokenKind::Pipe)) {
-                // Do not treat `|` as an or-pattern here; `|` starts a guard.
-                // Or-patterns in fun args must be parenthesized.
-                args.push(parse_cons_pattern(ts)?);
+            while can_start_pattern_atom(ts.peek_kind()) {
+                args.push(parse_pattern_atom(ts)?);
             }
             if !args.is_empty() {
-                let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+                if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
                     ts.bump();
-                    Some(parse_expr(ts, Stop::Pattern)?)
-                } else {
-                    None
-                };
-                ts.expect(TokenKind::Eq)?;
-                let body = parse_eq_rhs(ts, stop)?;
-                return Ok(ParsedBind::FunClause(FunClause {
-                    name,
-                    args,
-                    guard,
-                    body,
-                }));
+                    let guard = parse_expr(ts, Stop::LineEnd)?;
+                    ts.expect(TokenKind::Eq)?;
+                    let body = parse_expr(ts, stop)?;
+                    return Ok(ParsedBind::FunClause(FunClause {
+                        name,
+                        args,
+                        guard: Some(guard),
+                        body,
+                    }));
+                }
+                if matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
+                    ts.bump();
+                    let body = parse_expr(ts, stop)?;
+                    return Ok(ParsedBind::FunClause(FunClause {
+                        name,
+                        args,
+                        guard: None,
+                        body,
+                    }));
+                }
             }
         }
-
         (ts.i, ts.last_span_end) = save;
     }
 
     Ok(ParsedBind::Binding(parse_binding_simple(ts, stop)?))
+}
+
+fn can_start_pattern_atom(kind: Option<&TokenKind>) -> bool {
+    matches!(
+        kind,
+        Some(TokenKind::Ident(_))
+            | Some(TokenKind::LParen)
+            | Some(TokenKind::LBracket)
+            | Some(TokenKind::LBrace)
+            | Some(TokenKind::Integer(_))
+            | Some(TokenKind::Float(_))
+            | Some(TokenKind::String(_))
+            | Some(TokenKind::Char(_))
+            | Some(TokenKind::True)
+            | Some(TokenKind::False)
+            | Some(TokenKind::Question)
+            | Some(TokenKind::Colon)
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -1726,177 +1654,27 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
 }
 
 fn parse_annot(ts: &mut TokenStream, expr: ast::Expr, stop: Stop) -> Result<ast::Expr> {
-    let start = expr.span.start;
-    ts.expect(TokenKind::ColonColon)?;
-
-    let ty = parse_qual_type(ts, stop)?;
-
-    Ok(expr_from(
-        ts,
-        start,
-        ast::ExprKind::Annot {
-            expr: Box::new(expr),
-            ty,
-        },
-    ))
-}
-
-fn is_pred_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
-    matches!(
-        kind,
-        None | Some(TokenKind::Newline)
-            | Some(TokenKind::Comma)
-            | Some(TokenKind::RParen)
-            | Some(TokenKind::FatArrow)
-            | Some(TokenKind::Dedent)
-    )
+    type_expr::parse_annot(ts, expr, stop)
 }
 
 fn parse_predicate(ts: &mut TokenStream, stop: Stop) -> Result<ast::Predicate> {
-    let name = ts.expect_ident()?;
-    match name.as_str() {
-        "Show" => Ok(ast::Predicate::Show(parse_type_expr(
-            ts,
-            stop,
-            is_pred_end,
-        )?)),
-        "ShowRow" => Ok(ast::Predicate::ShowRow(parse_type_expr(
-            ts,
-            stop,
-            is_pred_end,
-        )?)),
-        "Eq" => Ok(ast::Predicate::Eq(parse_type_expr(ts, stop, is_pred_end)?)),
-        "EqRow" => Ok(ast::Predicate::EqRow(parse_type_expr(
-            ts,
-            stop,
-            is_pred_end,
-        )?)),
-        "Lacks" => {
-            let label = match ts.bump() {
-                Some(TokenKind::String(s)) => s,
-                _ => return Err(ts.err_here("expected string literal after Lacks")),
-            };
-            let row = parse_type_expr(ts, stop, is_pred_end)?;
-            Ok(ast::Predicate::Lacks { label, row })
-        }
-        other => Ok(ast::Predicate::Class {
-            class: other.to_string(),
-            ty: parse_type_expr(ts, stop, is_pred_end)?,
-        }),
-    }
+    type_expr::parse_predicate_in_root(ts, stop)
 }
 
 fn is_class_super_parens(ts: &TokenStream) -> bool {
-    if !matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
-        return false;
-    }
-
-    let mut depth: i32 = 0;
-    let mut j = ts.i;
-    while let Some(tok) = ts.tokens.get(j) {
-        match &tok.kind {
-            TokenKind::LParen => depth += 1,
-            TokenKind::RParen => {
-                depth -= 1;
-                if depth == 0 {
-                    return matches!(
-                        ts.tokens.get(j + 1).map(|t| &t.kind),
-                        Some(TokenKind::FatArrow)
-                    );
-                }
-            }
-            _ => {}
-        }
-        j += 1;
-    }
-    false
+    type_expr::is_class_super_parens_in_root(ts)
 }
 
 fn parse_qual_type(ts: &mut TokenStream, stop: Stop) -> Result<ast::QualType> {
-    // (p1, p2, ...) => T
-    // We only treat parentheses as predicate groups when they are followed by `=>`.
-    let is_qual_parens = if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
-        let mut depth: i32 = 0;
-        let mut j = ts.i;
-        let mut ok = false;
-        while let Some(tok) = ts.tokens.get(j) {
-            match &tok.kind {
-                TokenKind::LParen => depth += 1,
-                TokenKind::RParen => {
-                    depth -= 1;
-                    if depth == 0 {
-                        ok = matches!(
-                            ts.tokens.get(j + 1).map(|t| &t.kind),
-                            Some(TokenKind::FatArrow)
-                        );
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            j += 1;
-        }
-        ok
-    } else {
-        false
-    };
-
-    if is_qual_parens {
-        ts.bump();
-        let mut preds = Vec::new();
-        preds.push(parse_predicate(ts, stop)?);
-        while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
-            ts.bump();
-            preds.push(parse_predicate(ts, stop)?);
-        }
-        ts.expect(TokenKind::RParen)?;
-        ts.expect(TokenKind::FatArrow)?;
-        let ty = parse_type_expr(ts, stop, is_type_end)?;
-        return Ok(ast::QualType { preds, ty });
-    }
-
-    // p => T (single predicate)
-    {
-        let save2 = ts.i;
-        if let Ok(pred) = parse_predicate(ts, stop) {
-            if matches!(ts.peek_kind(), Some(TokenKind::FatArrow)) {
-                ts.bump();
-                let ty = parse_type_expr(ts, stop, is_type_end)?;
-                return Ok(ast::QualType {
-                    preds: vec![pred],
-                    ty,
-                });
-            }
-        }
-        ts.i = save2;
-    }
-
-    // Just a type.
-    let ty = parse_type_expr(ts, stop, is_type_end)?;
-    Ok(ast::QualType { preds: vec![], ty })
-}
-
-fn is_type_end(kind: Option<&TokenKind>, stop: Stop) -> bool {
-    match kind {
-        None
-        | Some(TokenKind::Newline)
-        | Some(TokenKind::Comma)
-        | Some(TokenKind::RParen)
-        | Some(TokenKind::FatArrow)
-        | Some(TokenKind::RBracket)
-        | Some(TokenKind::RBrace)
-        | Some(TokenKind::Dedent)
-        | Some(TokenKind::ColonColon)
-        | Some(TokenKind::KwWhere) => true,
-        Some(TokenKind::KwThen) if matches!(stop, Stop::Then) => true,
-        Some(TokenKind::KwElse) if matches!(stop, Stop::Else) => true,
-        Some(TokenKind::KwOf) if matches!(stop, Stop::Of) => true,
-        _ => false,
-    }
+    type_expr::parse_qual_type(ts, stop)
 }
 
 fn is_type_alias_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
-    matches!(kind, None | Some(TokenKind::Newline))
+    type_expr::is_type_alias_end_public(kind, Stop::LineEnd)
+}
+
+fn is_type_end(kind: Option<&TokenKind>, stop: Stop) -> bool {
+    type_expr::is_type_end_in_root(kind, stop)
 }
 
 fn parse_type_expr(
@@ -1904,7 +1682,7 @@ fn parse_type_expr(
     stop: Stop,
     end: fn(Option<&TokenKind>, Stop) -> bool,
 ) -> Result<ast::Type> {
-    parse_type_func(ts, stop, end)
+    type_expr::parse_type_expr_in_root(ts, stop, end)
 }
 
 fn parse_type_func(
@@ -1958,97 +1736,9 @@ fn is_type_atom_start(kind: Option<&TokenKind>) -> bool {
 fn parse_type_atom(
     ts: &mut TokenStream,
     stop: Stop,
-    _end: fn(Option<&TokenKind>, Stop) -> bool,
+    end: fn(Option<&TokenKind>, Stop) -> bool,
 ) -> Result<ast::Type> {
-    match ts.peek_kind() {
-        Some(TokenKind::Question) => {
-            ts.bump();
-            let name = if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
-                Some(ts.expect_ident()?)
-            } else {
-                None
-            };
-            Ok(ast::Type::Hole(name))
-        }
-        Some(TokenKind::Ident(_)) => {
-            let s = parse_maybe_qualified_ident(ts)?;
-            let last = last_qualified_segment(&s);
-            Ok(match last {
-                "Integer" => ast::Type::Integer,
-                "Bool" => ast::Type::Bool,
-                "Float64" => ast::Type::Float64,
-                "Char" => ast::Type::Char,
-                _ => ast::Type::Var(s),
-            })
-        }
-        Some(TokenKind::LParen) => {
-            ts.expect(TokenKind::LParen)?;
-            if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
-                ts.bump();
-                return Ok(ast::Type::Unit);
-            }
-
-            let first = parse_type_expr(ts, stop, is_paren_type_end)?;
-            if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
-                let mut elems = vec![first];
-                while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
-                    ts.bump();
-                    elems.push(parse_type_expr(ts, stop, is_paren_type_end)?);
-                }
-                ts.expect(TokenKind::RParen)?;
-                Ok(ast::Type::Tuple(elems))
-            } else {
-                ts.expect(TokenKind::RParen)?;
-                Ok(first)
-            }
-        }
-        Some(TokenKind::LBracket) => {
-            ts.expect(TokenKind::LBracket)?;
-            let elem = parse_type_expr(ts, stop, is_bracket_type_end)?;
-            ts.expect(TokenKind::RBracket)?;
-            Ok(ast::Type::List(Box::new(elem)))
-        }
-        Some(TokenKind::LBrace) => {
-            ts.expect(TokenKind::LBrace)?;
-            if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
-                ts.bump();
-                return Ok(ast::Type::Record(Vec::new()));
-            }
-
-            let mut fields = Vec::new();
-            let name = ts.expect_ident()?;
-            ts.expect(TokenKind::Colon)?;
-            let ty = parse_type_expr(ts, stop, is_record_field_type_end)?;
-            fields.push((name, ty));
-
-            let mut rest: Option<ast::Type> = None;
-            while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
-                ts.bump();
-
-                if matches!(ts.peek_kind(), Some(TokenKind::Ellipsis)) {
-                    ts.bump();
-                    rest = Some(if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
-                        ast::Type::Var(ts.expect_ident()?)
-                    } else {
-                        ast::Type::Var(ts.fresh_name("r"))
-                    });
-                    break;
-                }
-
-                let name = ts.expect_ident()?;
-                ts.expect(TokenKind::Colon)?;
-                let ty = parse_type_expr(ts, stop, is_record_field_type_end)?;
-                fields.push((name, ty));
-            }
-
-            ts.expect(TokenKind::RBrace)?;
-            Ok(match rest {
-                Some(r) => ast::Type::RecordOpen(fields, Box::new(r)),
-                None => ast::Type::Record(fields),
-            })
-        }
-        _ => Err(ts.err_here("expected type")),
-    }
+    type_expr::parse_type_atom_in_root(ts, stop, end)
 }
 
 fn is_paren_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
@@ -2183,6 +1873,7 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
 }
 
 fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
+    // Patterns support `x:xs` cons syntax; parse it at the top-level.
     parse_or_pattern(ts)
 }
 
@@ -2198,7 +1889,7 @@ fn parse_or_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
             ast::PatternKind::Or(Box::new(pat), Box::new(rhs)),
         );
     }
-    Ok(pat)
+    Ok(normalize_cons_constructor_in_pattern(pat))
 }
 
 fn parse_cons_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
@@ -2235,6 +1926,19 @@ fn parse_cons_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     }
 
     Ok(pat)
+}
+
+fn normalize_cons_constructor_in_pattern(mut pat: ast::Pattern) -> ast::Pattern {
+    // Convert `(:) a b` patterns desugared as `Constructor { name: ":", args: [a,b] }`
+    // into `Cons(a,b)` so downstream typechecking (and tests) see `Cons`.
+    if let ast::PatternKind::Constructor { name, args } = &pat.kind {
+        if name == ":" && args.len() == 2 {
+            let lhs = args[0].clone();
+            let rhs = args[1].clone();
+            pat.kind = ast::PatternKind::Cons(Box::new(lhs), Box::new(rhs));
+        }
+    }
+    pat
 }
 
 fn parse_app_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
@@ -2285,6 +1989,20 @@ fn parse_app_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
 fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
     let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     match ts.peek_kind() {
+        Some(TokenKind::Colon) => {
+            // `:` as a standalone pattern atom represents the list constructor.
+            // `parse_cons_pattern` uses the `TokenKind::Colon` branch before reaching here,
+            // so this mainly supports `(:)` and other contexts.
+            ts.bump();
+            Ok(pat_from(
+                ts,
+                start,
+                ast::PatternKind::Constructor {
+                    name: ":".to_string(),
+                    args: vec![],
+                },
+            ))
+        }
         Some(TokenKind::LParen) => parse_paren_or_tuple_pattern(ts),
         Some(TokenKind::LBracket) => parse_list_pattern(ts),
         Some(TokenKind::LBrace) => parse_record_pattern(ts),

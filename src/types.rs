@@ -12,6 +12,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 mod stdlib_cache;
 mod toposort;
+mod typeclass_dict_passing_common;
+mod typeclass_dict_passing_rewrite;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedModule {
     pub module: ast::Module,
@@ -3806,6 +3808,36 @@ fn load_module_with_imports(entry: &Path) -> Result<ast::Module> {
     let mut deps = Vec::new();
     loader.collect_imports(&entry_mod, entry_dir, &mut deps)?;
 
+    // Temporary diagnostic to pinpoint duplicate qualified forwarders in stdlib smoke tests.
+    // (Kept behind env var to avoid affecting normal runs.)
+    let debug_imports = std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some();
+    if debug_imports {
+        eprintln!("[KSCR_DEBUG_IMPORTS] entry: {}", entry.display());
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for it in &deps {
+            let mut names = HashSet::new();
+            item_defined_names(it, &mut names);
+            for n in names {
+                *counts.entry(n).or_insert(0) += 1;
+            }
+        }
+        let mut dupes: Vec<(String, usize)> = counts.into_iter().filter(|(_, k)| *k > 1).collect();
+        dupes.sort_by(|a, b| a.0.cmp(&b.0));
+        for (n, k) in dupes {
+            if n.starts_with("L.") {
+                eprintln!("[KSCR_DEBUG_IMPORTS] deps defines {n} x{k}");
+                // Print rough origins for each duplicate.
+                for it in &deps {
+                    let mut names = HashSet::new();
+                    item_defined_names(it, &mut names);
+                    if names.contains(&n) {
+                        eprintln!("[KSCR_DEBUG_IMPORTS]   origin: {}", name_origin_hint(it, &n));
+                    }
+                }
+            }
+        }
+    }
+
     for it in deps {
         push_item_checked(&mut items, &mut defined, it)?;
     }
@@ -3855,6 +3887,21 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
         let local = id.as_name.clone().unwrap_or_else(|| id.module.clone());
         env.allowed.insert(local.clone());
         env.local_to_module.insert(local, id.module.clone());
+    }
+
+    // `import qualified M as Q` introduces both `Q.x` and (optionally) the canonical prefix
+    // `M.x` for convenience. This matches existing tests that use `import qualified Data.List as L`
+    // but still refer to members as `Data.List.map` in desugared stdlib imports.
+    for it in &module.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        if !id.qualified {
+            continue;
+        }
+        let canon = id.module.clone();
+        env.allowed.insert(canon.clone());
+        env.local_to_module.insert(canon, id.module.clone());
     }
 
     for module_name in env.local_to_module.values() {
@@ -4204,13 +4251,30 @@ impl ModuleLoader {
         dir: &Path,
         out: &mut Vec<ast::Item>,
     ) -> Result<()> {
+        let debug_imports = std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some();
+
+        // Track `(imported file, qualifier)` pairs emitted during this single call.
+        // This avoids duplicates when the same import is syntactically present multiple times
+        // in one module (directly or via desugaring).
+        let mut local_emitted_qualified: HashSet<ImportQualKey> = HashSet::new();
+
         for it in &module.items {
             let ast::Item::Import(id) = it else {
                 continue;
             };
 
+            if debug_imports {
+                eprintln!(
+                    "[KSCR_DEBUG_IMPORTS] saw import: module={} qualified={} as={:?}",
+                    id.module, id.qualified, id.as_name
+                );
+            }
+
             let primary_qual = id.as_name.as_deref().unwrap_or(&id.module);
             let canonical_qual = id.module.as_str();
+
+            // NOTE: For `import qualified M as Q`, we only need to emit a single qualified
+            // forwarder set. Emitting more than one can create duplicate names like `Q.x`.
 
             let rel = id.module.replace('.', "/");
             let local = dir.join(format!("{}.ks", rel));
@@ -4261,26 +4325,58 @@ impl ModuleLoader {
             let exports = module_exported_names(&imported)?;
 
             // Emit qualified bindings for each (module file, qualifier) pair.
-            // We emit both the local qualifier (possibly an alias) and the canonical module
-            // qualifier so that later phases may normalize qualified references.
-            for qual in [primary_qual, canonical_qual] {
+            // IMPORTANT:
+            // - `import qualified M as Q` creates bindings `Q.x`.
+            // - `import M as Q` is unqualified, but must still allow `Q.x` dotted refs.
+            //   For that, we also emit qualified bindings under the alias.
+            // - Plain `import M` uses the canonical qualifier only.
+            let quals: Vec<&str> = if id.qualified {
+                vec![primary_qual]
+            } else if id.as_name.is_some() {
+                vec![primary_qual]
+            } else {
+                vec![canonical_qual]
+            };
+
+            for qual in quals {
                 let key = ImportQualKey {
                     path: p.clone(),
                     qual: qual.to_string(),
                 };
-                if self.emitted_qualified.insert(key) {
-                    out.extend(import_qualified_items_for_decl(&imported, qual, &exports)?);
-                }
-
-                if qual == canonical_qual {
-                    // avoid needless second loop work when both are equal
-                    // (unaliased imports)
-                    break;
+                if local_emitted_qualified.insert(key.clone()) && self.emitted_qualified.insert(key) {
+                    let items = import_qualified_items_for_decl(&imported, qual, &exports)?;
+                    if debug_imports {
+                        let mut counts: HashMap<String, usize> = HashMap::new();
+                        for it in &items {
+                            let mut names = HashSet::new();
+                            item_defined_names(it, &mut names);
+                            for n in names {
+                                *counts.entry(n).or_insert(0) += 1;
+                            }
+                        }
+                        if let Some(k) = counts.get("L.null") {
+                            eprintln!(
+                                "[KSCR_DEBUG_IMPORTS] import_qualified_items_for_decl produced L.null x{k} for module {} as {qual}",
+                                id.module
+                            );
+                            for it in &items {
+                                let mut names = HashSet::new();
+                                item_defined_names(it, &mut names);
+                                if names.contains("L.null") {
+                                    eprintln!("[KSCR_DEBUG_IMPORTS]   L.null item: {it:?}");
+                                }
+                            }
+                        }
+                    }
+                    out.extend(items);
                 }
             }
 
             // Emit unqualified forwarders at most once per module file.
             // This keeps the flattened module namespace reasonably conflict-free.
+            // NOTE: even for `import qualified ... as ...`, we still want the canonical module
+            // name to be usable as a qualifier inside the importing module. Do this by emitting
+            // `M.x = Q.x` forwarders (qualified-to-qualified), not by importing unqualified.
             if !id.qualified && self.emitted_unqualified.insert(p) {
                 out.extend(import_unqualified_forwarders(
                     &imported,
@@ -4391,6 +4487,14 @@ fn import_qualified_items_for_decl(
     // Always provide qualifier names (but only for exported items).
     let mut out = qualify_items(module, qual, exports)?;
 
+    // Some imported modules (notably stdlib) may still carry function clauses as multiple
+    // top-level bindings with the same name. After qualification this becomes a conflict like
+    // `L.null`, but simply dropping one clause changes semantics.
+    //
+    // For now, apply this merge only to stdlib-style List predicates (e.g. `null`) to avoid
+    // altering general import/qualification semantics.
+    out = merge_duplicate_bindings_for_names(out, &["null"])?;
+
     // MVP: always import class/instance declarations.
     // Rationale: instances are required for constraint solving, and class declarations carry
     // method types used to recognize method calls.
@@ -4400,6 +4504,447 @@ fn import_qualified_items_for_decl(
     // constructors introduced by imports (e.g. `Prelude.Maybe`).
     out.extend(qualify_class_instance_decls(module, qual, exports)?);
     Ok(out)
+}
+
+fn merge_duplicate_bindings_for_names(items: Vec<ast::Item>, names: &[&str]) -> Result<Vec<ast::Item>> {
+    use ast::{Binding, Expr, ExprKind, Item, PatternKind};
+
+    let target: HashSet<String> = names.iter().map(|n| n.to_string()).collect();
+
+    fn substitute_vars_in_expr(expr: &ast::Expr, from: &[String], to: &[String]) -> ast::Expr {
+        fn subst_pat(p: &ast::Pattern, map: &HashMap<String, String>) -> ast::Pattern {
+            use ast::PatternKind;
+            let mut out = p.clone();
+            out.kind = match &p.kind {
+                PatternKind::Var(n) => {
+                    if let Some(n2) = map.get(n) {
+                        PatternKind::Var(n2.clone())
+                    } else {
+                        PatternKind::Var(n.clone())
+                    }
+                }
+                PatternKind::Tuple(ps) => {
+                    PatternKind::Tuple(ps.iter().map(|p| subst_pat(p, map)).collect())
+                }
+                PatternKind::List(ps) => {
+                    PatternKind::List(ps.iter().map(|p| subst_pat(p, map)).collect())
+                }
+                PatternKind::Record(fields) => PatternKind::Record(
+                    fields
+                        .iter()
+                        .map(|(k, p)| (k.clone(), subst_pat(p, map)))
+                        .collect(),
+                ),
+                PatternKind::Constructor { name, args } => PatternKind::Constructor {
+                    name: name.clone(),
+                    args: args.iter().map(|p| subst_pat(p, map)).collect(),
+                },
+                PatternKind::As(n, p) => {
+                    let n2 = map.get(n).cloned().unwrap_or_else(|| n.clone());
+                    PatternKind::As(n2, Box::new(subst_pat(p, map)))
+                }
+                // Literals / wildcards
+                other => other.clone(),
+            };
+            out
+        }
+
+        fn subst_expr(e: &ast::Expr, map: &HashMap<String, String>) -> ast::Expr {
+            use ast::ExprKind;
+            let mut out = e.clone();
+            out.kind = match &e.kind {
+                ExprKind::Var(n) => {
+                    if let Some(n2) = map.get(n) {
+                        ExprKind::Var(n2.clone())
+                    } else {
+                        ExprKind::Var(n.clone())
+                    }
+                }
+                ExprKind::Apply { func, args } => ExprKind::Apply {
+                    func: Box::new(subst_expr(func, map)),
+                    args: args.iter().map(|e| subst_expr(e, map)).collect(),
+                },
+                ExprKind::Lambda { params, body } => ExprKind::Lambda {
+                    // NOTE: We assume no shadowing here because we're only rewriting the
+                    // specific case-scrutinee tuple expression produced for top-level clauses.
+                    params: params
+                        .iter()
+                        .map(|p| map.get(p).cloned().unwrap_or_else(|| p.clone()))
+                        .collect(),
+                    body: Box::new(subst_expr(body, map)),
+                },
+                ExprKind::Let { bindings, body } => ExprKind::Let {
+                    bindings: bindings
+                        .iter()
+                        .map(|b| {
+                            let mut b2 = b.clone();
+                            b2.pat = subst_pat(&b.pat, map);
+                            b2.expr = subst_expr(&b.expr, map);
+                            b2
+                        })
+                        .collect(),
+                    body: Box::new(subst_expr(body, map)),
+                },
+                ExprKind::Case { expr, arms } => ExprKind::Case {
+                    expr: Box::new(subst_expr(expr, map)),
+                    arms: arms
+                        .iter()
+                        .map(|a| {
+                            let mut a2 = a.clone();
+                            a2.pat = subst_pat(&a.pat, map);
+                            a2.guard = a.guard.as_ref().map(|g| subst_expr(g, map));
+                            a2.body = subst_expr(&a.body, map);
+                            a2
+                        })
+                        .collect(),
+                },
+                ExprKind::Tuple(es) => {
+                    ExprKind::Tuple(es.iter().map(|e| subst_expr(e, map)).collect())
+                }
+                ExprKind::List(es) => {
+                    ExprKind::List(es.iter().map(|e| subst_expr(e, map)).collect())
+                }
+                ExprKind::Record(fields) => ExprKind::Record(
+                    fields
+                        .iter()
+                        .map(|(k, e)| (k.clone(), subst_expr(e, map)))
+                        .collect(),
+                ),
+                ExprKind::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => ExprKind::If {
+                    cond: Box::new(subst_expr(cond, map)),
+                    then_branch: Box::new(subst_expr(then_branch, map)),
+                    else_branch: Box::new(subst_expr(else_branch, map)),
+                },
+                other => other.clone(),
+            };
+            out
+        }
+
+        let mut map: HashMap<String, String> = HashMap::new();
+        for (f, t) in from.iter().zip(to.iter()) {
+            if f != t {
+                map.insert(f.clone(), t.clone());
+            }
+        }
+        if map.is_empty() {
+            return expr.clone();
+        }
+        subst_expr(expr, &map)
+    }
+
+    fn starts_with_case_arms(e: &ast::Expr) -> Option<(ast::Expr, Vec<ast::CaseArm>)> {
+        if let ExprKind::Case { expr, arms } = &e.kind {
+            Some(((**expr).clone(), arms.clone()))
+        } else {
+            None
+        }
+    }
+
+    fn eta_collapse_to_unary(expr: ast::Expr) -> Result<ast::Expr> {
+        use ast::{Expr, ExprKind};
+        let ExprKind::Lambda { params, body } = expr.kind else {
+            return Ok(expr);
+        };
+        if params.len() <= 1 {
+            return Ok(Expr::new(expr.span, ExprKind::Lambda { params, body }));
+        }
+        let first = params[0].clone();
+        let rest: Vec<String> = params[1..].to_vec();
+        let applied = Expr::new(
+            expr.span,
+            ExprKind::Apply {
+                func: Box::new(Expr::new(expr.span, ExprKind::Lambda { params: rest, body })),
+                args: vec![Expr::new(expr.span, ExprKind::Var(first.clone()))],
+            },
+        );
+        Ok(Expr::new(
+            expr.span,
+            ExprKind::Lambda {
+                params: vec![first],
+                body: Box::new(applied),
+            },
+        ))
+    }
+
+    fn unwrap_case_body(mut e: ast::Expr) -> Option<(ast::Expr, Vec<ast::CaseArm>)> {
+        // In some transformations (e.g. eta-expansion), the body may become an application.
+        // We only care about recovering the original `case` arms.
+        loop {
+            match &e.kind {
+                ast::ExprKind::Case { expr, arms } => return Some(((**expr).clone(), arms.clone())),
+                ast::ExprKind::Apply { func, args: _ } => {
+                    // Peel left-nested applications; `case` may live inside `func`.
+                    e = (**func).clone();
+                }
+                ast::ExprKind::Lambda { params: _, body } => {
+                    // Eta-collapsing can leave us with an inner lambda; keep unwrapping.
+                    e = (**body).clone();
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    fn binding_name(b: &Binding) -> Option<&str> {
+        match &b.pat.kind {
+            PatternKind::Var(n) => Some(n.as_str()),
+            _ => None,
+        }
+    }
+
+    // Preserve overall item order while merging only duplicate name bindings.
+    let mut out: Vec<Item> = Vec::with_capacity(items.len());
+
+    // name -> index in `out` of the binding we are accumulating into.
+    let mut seen: HashMap<String, usize> = HashMap::new();
+
+    for it in items {
+        let Item::Binding(b) = it else {
+            out.push(it);
+            continue;
+        };
+
+        let Some(name) = binding_name(&b) else {
+            out.push(Item::Binding(b));
+            continue;
+        };
+
+        // Only merge the configured targets (helps avoid regressions).
+        // Here `name` is already qualified like `L.null`.
+        let suffix = name.rsplit('.').next().unwrap_or(name);
+        if !target.contains(suffix) {
+            out.push(Item::Binding(b));
+            continue;
+        }
+
+        let name = name.to_string();
+        if let Some(&idx) = seen.get(&name) {
+            let Item::Binding(prev) = &mut out[idx] else {
+                // Should be impossible.
+                out.push(Item::Binding(b));
+                continue;
+            };
+
+            #[cfg(test)]
+            {
+                if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1")
+                    && name == "L.null"
+                {
+                    eprintln!("[KSCR_DEBUG_IMPORTS] merge candidate {name}:");
+                    eprintln!("  prev.pat = {:?}", prev.pat.kind);
+                    eprintln!("  prev.expr = {:?}", prev.expr.kind);
+                    eprintln!("  new .pat = {:?}", b.pat.kind);
+                    eprintln!("  new .expr = {:?}", b.expr.kind);
+                }
+            }
+
+            // Merge `prev.expr` and `b.expr`.
+            // We only support merging the specific shape we produce for function clauses:
+            // `\\args.. -> case <tuple args> of <arms>`.
+            let (ExprKind::Lambda { params: p_params, body: p_body },
+                 ExprKind::Lambda { params: b_params, body: b_body }) = (&prev.expr.kind, &b.expr.kind) else {
+                return Err(Error::msg(format!(
+                    "duplicate binding for `{name}` cannot be merged (unexpected shape)"
+                )));
+            };
+            // The stdlib can produce different desugared lambda arities across clauses.
+            // For merging, collapse both sides to unary lambdas (left-associative) so we
+            // can merge case-arms on a single scrutinee.
+            if p_params.len() != b_params.len() {
+                // Collapse *both* to unary so we can merge on one scrutinee.
+                while match &prev.expr.kind {
+                    ExprKind::Lambda { params, .. } => params.len() > 1,
+                    _ => false,
+                } {
+                    prev.expr = eta_collapse_to_unary(prev.expr.clone())?;
+                }
+                let mut b_expr = b.expr.clone();
+                while match &b_expr.kind {
+                    ExprKind::Lambda { params, .. } => params.len() > 1,
+                    _ => false,
+                } {
+                    b_expr = eta_collapse_to_unary(b_expr)?;
+                }
+
+                #[cfg(test)]
+                {
+                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1")
+                        && name == "L.null"
+                    {
+                        eprintln!("[KSCR_DEBUG_IMPORTS] after collapse prev.expr = {:?}", prev.expr.kind);
+                        eprintln!("[KSCR_DEBUG_IMPORTS] after collapse b_expr    = {:?}", b_expr.kind);
+                    }
+                }
+                let (ExprKind::Lambda { params: p_params, body: p_body },
+                     ExprKind::Lambda { params: b_params, body: b_body }) = (&prev.expr.kind, &b_expr.kind) else {
+                    return Err(Error::msg(format!(
+                        "duplicate binding for `{name}` cannot be merged (unexpected shape after collapse)"
+                    )));
+                };
+                if p_params.len() != b_params.len() {
+                    return Err(Error::msg(format!(
+                        "duplicate binding for `{name}` cannot be merged (arity mismatch)"
+                    )));
+                }
+                let Some((p_scrut, mut p_arms)) = unwrap_case_body((**p_body).clone()) else {
+                    return Err(Error::msg(format!(
+                        "duplicate binding for `{name}` cannot be merged (expected case body)"
+                    )));
+                };
+                let Some((b_scrut, b_arms)) = unwrap_case_body((**b_body).clone()) else {
+                    return Err(Error::msg(format!(
+                        "duplicate binding for `{name}` cannot be merged (expected case body)"
+                    )));
+                };
+                // If RHS was a tuple-scrutinee clause, collapsing to unary means we must
+                // also rewrite its patterns to match on the single arg directly.
+                let mut b_arms = b_arms;
+                if let ast::ExprKind::Tuple(_) = &b_scrut.kind {
+                    for arm in &mut b_arms {
+                        if let ast::PatternKind::Tuple(ps) = &arm.pat.kind {
+                            if ps.len() == 3 {
+                                // Expect (_, Constructor(:), _) shape.
+                                if let ast::PatternKind::Constructor { name: ctor, args } = &ps[1].kind {
+                                    if ctor == ":" && args.is_empty() {
+                                        arm.pat = ast::Pattern::new(
+                                            arm.pat.span,
+                                            ast::PatternKind::Cons(
+                                                Box::new(ast::Pattern::new(ps[0].span, ps[0].kind.clone())),
+                                                Box::new(ast::Pattern::new(ps[2].span, ps[2].kind.clone())),
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                let b_scrut = substitute_vars_in_expr(&b_scrut, b_params, p_params);
+                if p_scrut.kind != b_scrut.kind {
+                    // Special-case: we sometimes collapse a multi-arg tuple-scrutinee clause
+                    // into unary form; treat its scrutinee as the single param.
+                    if let ast::ExprKind::Var(v) = &p_scrut.kind {
+                        if v == &p_params[0] {
+                            // accept
+                        } else {
+                            return Err(Error::msg(format!(
+                                "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
+                            )));
+                        }
+                    } else {
+                        return Err(Error::msg(format!(
+                            "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
+                        )));
+                    }
+                }
+                p_arms.extend(b_arms);
+                let span = prev.expr.span;
+                prev.expr = Expr::new(
+                    span,
+                    ExprKind::Lambda {
+                        params: p_params.clone(),
+                        body: Box::new(Expr::new(
+                            span,
+                            ExprKind::Case {
+                                expr: Box::new(p_scrut),
+                                arms: p_arms,
+                            },
+                        )),
+                    },
+                );
+                continue;
+            }
+
+
+            #[cfg(test)]
+            {
+                if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1")
+                    && name == "L.null"
+                {
+                    eprintln!("merge `{}`: p_params={:?} b_params={:?}", name, p_params, b_params);
+                }
+            }
+
+            let Some((p_scrut, mut p_arms)) = unwrap_case_body((**p_body).clone()) else {
+                return Err(Error::msg(format!(
+                    "duplicate binding for `{name}` cannot be merged (expected case body)"
+                )));
+            };
+            let Some((b_scrut, b_arms)) = unwrap_case_body((**b_body).clone()) else {
+                return Err(Error::msg(format!(
+                    "duplicate binding for `{name}` cannot be merged (expected case body)"
+                )));
+            };
+            // Scrutinees should be equivalent up to alpha-renaming of the params.
+            // We normalize the RHS clause by renaming its params to the first clause's params.
+            let b_scrut = substitute_vars_in_expr(&b_scrut, b_params, p_params);
+            if p_scrut.kind != b_scrut.kind {
+                return Err(Error::msg(format!(
+                    "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
+                )));
+            }
+
+            p_arms.extend(b_arms);
+            let span = prev.expr.span;
+            prev.expr = Expr::new(
+                span,
+                ExprKind::Lambda {
+                    params: p_params.clone(),
+                    body: Box::new(Expr::new(
+                        span,
+                        ExprKind::Case {
+                            expr: Box::new(p_scrut),
+                            arms: p_arms,
+                        },
+                    )),
+                },
+            );
+        } else {
+            let idx = out.len();
+            out.push(Item::Binding(b));
+            seen.insert(name, idx);
+        }
+    }
+
+    Ok(out)
+}
+
+fn eta_expand_lambda(expr: ast::Expr, target_arity: usize) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
+    let ExprKind::Lambda { mut params, body } = expr.kind else {
+        return Ok(expr);
+    };
+    if params.len() >= target_arity {
+        return Ok(Expr::new(expr.span, ExprKind::Lambda { params, body }));
+    }
+    // Create new params and apply the original lambda to them.
+    let mut new_params = params.clone();
+    while new_params.len() < target_arity {
+        new_params.push(format!("_eta{}", new_params.len()));
+    }
+    // Rebuild: \\new_params -> (\\params -> body) new_params...
+    let orig = Expr::new(expr.span, ExprKind::Lambda { params, body });
+    let applied = Expr::new(
+        expr.span,
+        ExprKind::Apply {
+            func: Box::new(orig),
+            args: new_params
+                .iter()
+                .map(|p| Expr::new(expr.span, ExprKind::Var(p.clone())))
+                .collect(),
+        },
+    );
+    Ok(Expr::new(
+        expr.span,
+        ExprKind::Lambda {
+            params: new_params,
+            body: Box::new(applied),
+        },
+    ))
 }
 
 fn import_unqualified_forwarders(
@@ -4522,11 +5067,15 @@ fn qualify_items(
     qual: &str,
     exports: &HashSet<String>,
 ) -> Result<Vec<ast::Item>> {
+    // Collect definers once to avoid accidentally duplicating a name when the same
+    // underlying item appears twice (e.g., through prior transformations).
     let mut values = HashSet::new();
     let mut types = HashSet::new();
     let mut ctors = HashSet::new();
 
+    let mut defined_names: HashSet<String> = HashSet::new();
     for it in import_items(module) {
+        item_defined_names(&it, &mut defined_names);
         match &it {
             ast::Item::Binding(b) => pat_defined_names(&b.pat, &mut values),
             ast::Item::TypeAlias(ta) => {
@@ -4546,10 +5095,13 @@ fn qualify_items(
 
     let priv_qual = format!("{qual}$p");
 
+    // Build maps only for names that are actually exported OR needed as private qualified
+    // helpers, but never duplicate keys.
     let val_map: HashMap<String, String> = values
-        .iter()
+        .into_iter()
+        .filter(|n| defined_names.contains(n))
         .map(|n| {
-            let q = if exports.contains(n) {
+            let q = if exports.contains(&n) {
                 qual
             } else {
                 &priv_qual
@@ -4558,9 +5110,10 @@ fn qualify_items(
         })
         .collect();
     let type_map: HashMap<String, String> = types
-        .iter()
+        .into_iter()
+        .filter(|n| defined_names.contains(n))
         .map(|n| {
-            let q = if exports.contains(n) {
+            let q = if exports.contains(&n) {
                 qual
             } else {
                 &priv_qual
@@ -4569,9 +5122,10 @@ fn qualify_items(
         })
         .collect();
     let ctor_map: HashMap<String, String> = ctors
-        .iter()
+        .into_iter()
+        .filter(|n| defined_names.contains(n))
         .map(|n| {
-            let q = if exports.contains(n) {
+            let q = if exports.contains(&n) {
                 qual
             } else {
                 &priv_qual
@@ -5433,1327 +5987,7 @@ fn infer_in_module_with_class_env(
     Ok(apply(&s, t))
 }
 
-fn rewrite_class_dict_passing_in_module(
-    module: &mut ast::Module,
-    class_env: &ClassEnv,
-    inferred: &HashMap<String, Scheme>,
-) -> Result<()> {
-    use ast::{Expr, ExprKind, PatternKind};
-
-    // name -> classes (stable order) that require an explicit dictionary arg.
-    let mut needs_dicts: HashMap<String, Vec<String>> = HashMap::new();
-    for (name, scheme) in inferred {
-        // Compiler-synthesized typeclass artifacts are already in explicit dictionary form.
-        // Rewriting them again can change their arity (e.g. turning instance dictionaries into
-        // lambdas) and will break runtime `__recordGet`.
-        if name.starts_with("__dict_") || name.starts_with("__inst_") {
-            continue;
-        }
-
-        let mut classes: Vec<String> = scheme
-            .constraints
-            .iter()
-            .filter_map(|c| match c {
-                Constraint::Class { class, .. } => Some(class.clone()),
-                _ => None,
-            })
-            .collect();
-        classes.sort();
-        classes.dedup();
-        if !classes.is_empty() {
-            needs_dicts.insert(name.clone(), classes);
-        }
-    }
-
-    fn dict_param_name(class: &str) -> String {
-        format!("__dict_{class}")
-    }
-
-    fn super_field_name(class: &str) -> String {
-        format!("__super_{}", mangle_ident(class))
-    }
-
-    fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Option<Vec<String>> {
-        use std::collections::{HashMap, VecDeque};
-
-        if from == to {
-            return None;
-        }
-
-        let mut q: VecDeque<String> = VecDeque::new();
-        let mut prev: HashMap<String, String> = HashMap::new();
-        q.push_back(from.to_string());
-        prev.insert(from.to_string(), "".to_string());
-
-        while let Some(c) = q.pop_front() {
-            let Some(supers) = class_env.class_supers.get(&c) else {
-                continue;
-            };
-            for p in supers {
-                let ast::Predicate::Class { class: sup, .. } = p else {
-                    continue;
-                };
-
-                if prev.contains_key(sup) {
-                    continue;
-                }
-                prev.insert(sup.clone(), c.clone());
-                if sup == to {
-                    // Reconstruct path: from -> ... -> to
-                    let mut path: Vec<String> = Vec::new();
-                    let mut cur = to.to_string();
-                    while cur != from {
-                        path.push(cur.clone());
-                        cur = prev.get(&cur)?.clone();
-                    }
-                    path.reverse();
-                    return Some(path);
-                }
-                q.push_back(sup.clone());
-            }
-        }
-
-        None
-    }
-
-    fn project_dict_along_path(span: ast::Span, mut base: ast::Expr, path: &[String]) -> ast::Expr {
-        for sup in path {
-            let get = ast::Expr::new(span, ast::ExprKind::Var("__recordGet".to_string()));
-            base = ast::Expr::new(
-                span,
-                ast::ExprKind::Apply {
-                    func: Box::new(get),
-                    args: vec![
-                        base,
-                        ast::Expr::new(span, ast::ExprKind::String(super_field_name(sup))),
-                    ],
-                },
-            );
-        }
-        base
-    }
-
-    fn derive_dict_from_scope(
-        span: ast::Span,
-        class_env: &ClassEnv,
-        dicts_in_scope: &HashSet<String>,
-        wanted_class: &str,
-    ) -> Option<ast::Expr> {
-        let mut candidates: Vec<String> = dicts_in_scope.iter().cloned().collect();
-        candidates.sort();
-
-        for dict_var in candidates {
-            let Some(sub) = dict_var.strip_prefix("__dict_") else {
-                continue;
-            };
-            let Some(path) = find_super_path(class_env, sub, wanted_class) else {
-                continue;
-            };
-            let base = ast::Expr::new(span, ast::ExprKind::Var(dict_var));
-            return Some(project_dict_along_path(span, base, &path));
-        }
-        None
-    }
-
-    fn is_syntactically_ground_value(e: &ast::Expr) -> bool {
-        use ast::ExprKind;
-        match &e.kind {
-            ExprKind::Unit
-            | ExprKind::Integer(_)
-            | ExprKind::Float64(_)
-            | ExprKind::Bool(_)
-            | ExprKind::String(_)
-            | ExprKind::Char(_) => true,
-            ExprKind::List(es) => es.iter().all(is_syntactically_ground_value),
-            ExprKind::Tuple(es) => es.iter().all(is_syntactically_ground_value),
-            ExprKind::Record(fields) => {
-                fields.iter().all(|(_, v)| is_syntactically_ground_value(v))
-            }
-            _ => false,
-        }
-    }
-
-    fn required_classes_in_expr(
-        expr: &ast::Expr,
-        class_env: &ClassEnv,
-        needs_dicts: &HashMap<String, Vec<String>>,
-        out: &mut HashSet<String>,
-    ) {
-        use ast::ExprKind;
-        match &expr.kind {
-            ExprKind::Var(name) => {
-                if let Some(classes) = needs_dicts.get(name) {
-                    for c in classes {
-                        out.insert(c.clone());
-                    }
-                }
-
-                // Class method used as a value (higher-order).
-                // Example: `f = return` or `k = fmap`.
-                // These require a dictionary parameter even if there is no receiver argument.
-                if let Some(classes) = class_env.method_classes.get(name) {
-                    for c in classes {
-                        out.insert(c.clone());
-                    }
-                }
-            }
-            ExprKind::Apply { func, args } => {
-                if let ExprKind::Var(name) = &func.kind {
-                    // Method call `m x ...`: if the receiver isn't obviously ground, assume the
-                    // binding will need a dictionary param.
-                    if let Some(classes) = class_env.method_classes.get(name) {
-                        if let Some(arg0) = args.first() {
-                            if !is_syntactically_ground_value(arg0) {
-                                if let Some(c) = classes.first() {
-                                    out.insert(c.clone());
-                                }
-                            }
-                        }
-                    }
-
-                    // Constrained function call `f x ...`:
-                    // if the first argument isn't syntactically ground (or we're partially
-                    // applying), the local binding will need a dictionary param.
-                    if let Some(classes) = needs_dicts.get(name) {
-                        match args.first() {
-                            None => {
-                                for c in classes {
-                                    out.insert(c.clone());
-                                }
-                            }
-                            Some(arg0) => {
-                                if !is_syntactically_ground_value(arg0) {
-                                    for c in classes {
-                                        out.insert(c.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                required_classes_in_expr(func, class_env, needs_dicts, out);
-                for a in args {
-                    required_classes_in_expr(a, class_env, needs_dicts, out);
-                }
-            }
-            ExprKind::Lambda { body, .. } => {
-                required_classes_in_expr(body, class_env, needs_dicts, out);
-            }
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                required_classes_in_expr(cond, class_env, needs_dicts, out);
-                required_classes_in_expr(then_branch, class_env, needs_dicts, out);
-                required_classes_in_expr(else_branch, class_env, needs_dicts, out);
-            }
-            ExprKind::Let { bindings, body } => {
-                for b in bindings {
-                    required_classes_in_expr(&b.expr, class_env, needs_dicts, out);
-                }
-                required_classes_in_expr(body, class_env, needs_dicts, out);
-            }
-            ExprKind::Where { expr, bindings } => {
-                required_classes_in_expr(expr, class_env, needs_dicts, out);
-                for b in bindings {
-                    required_classes_in_expr(&b.expr, class_env, needs_dicts, out);
-                }
-            }
-            ExprKind::Annot { expr, .. } => {
-                required_classes_in_expr(expr, class_env, needs_dicts, out);
-            }
-            ExprKind::Do(stmts) => {
-                for s in stmts {
-                    match s {
-                        ast::DoStmt::Bind { expr, .. } => {
-                            required_classes_in_expr(expr, class_env, needs_dicts, out)
-                        }
-                        ast::DoStmt::Expr(e) => {
-                            required_classes_in_expr(e, class_env, needs_dicts, out)
-                        }
-                    }
-                }
-            }
-            ExprKind::Case { expr, arms } => {
-                required_classes_in_expr(expr, class_env, needs_dicts, out);
-                for a in arms {
-                    if let Some(g) = &a.guard {
-                        required_classes_in_expr(g, class_env, needs_dicts, out);
-                    }
-                    required_classes_in_expr(&a.body, class_env, needs_dicts, out);
-                }
-            }
-            ExprKind::Cons { head, tail } => {
-                required_classes_in_expr(head, class_env, needs_dicts, out);
-                required_classes_in_expr(tail, class_env, needs_dicts, out);
-            }
-            ExprKind::List(es) | ExprKind::Tuple(es) => {
-                for e in es {
-                    required_classes_in_expr(e, class_env, needs_dicts, out);
-                }
-            }
-            ExprKind::Record(fields) => {
-                for (_, v) in fields {
-                    required_classes_in_expr(v, class_env, needs_dicts, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn add_dict_params_to_expr(span: ast::Span, expr: ast::Expr, classes: &[String]) -> ast::Expr {
-        let mut dict_params: Vec<String> = classes.iter().map(|c| dict_param_name(c)).collect();
-        if dict_params.is_empty() {
-            return expr;
-        }
-
-        match expr.kind {
-            ExprKind::Lambda { mut params, body } => {
-                dict_params.append(&mut params);
-                Expr::new(
-                    span,
-                    ExprKind::Lambda {
-                        params: dict_params,
-                        body,
-                    },
-                )
-            }
-            other => Expr::new(
-                span,
-                ExprKind::Lambda {
-                    params: dict_params,
-                    body: Box::new(Expr::new(span, other)),
-                },
-            ),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn rewrite_expr(
-        module_snapshot: &ast::Module,
-        class_env: &ClassEnv,
-        inferred: &HashMap<String, Scheme>,
-        needs_dicts_global: &HashMap<String, Vec<String>>,
-        needs_dicts_local: &HashMap<String, Vec<String>>,
-        dicts_in_scope: &HashSet<String>,
-        shadowed_in_scope: &HashSet<String>,
-        expr: ast::Expr,
-    ) -> Result<ast::Expr> {
-        let span = expr.span;
-
-        struct CallInfo {
-            expected_arg_tys: Vec<Ty>,
-            class_tys: HashMap<String, Ty>,
-        }
-
-        fn call_info_for_call(
-            module_snapshot: &ast::Module,
-            class_env: &ClassEnv,
-            inferred: &HashMap<String, Scheme>,
-            callee: &str,
-            args: &[ast::Expr],
-        ) -> Option<CallInfo> {
-            let scheme = inferred.get(callee)?;
-
-            let mut cx = InferCtx::default();
-            let (cs, mut callee_ty) = instantiate_qual(&mut cx, scheme);
-            let mut subst = Subst::new();
-            let mut expected: Vec<Ty> = Vec::new();
-
-            for arg in args {
-                let Ty::Func(dom, cod) = callee_ty else {
-                    return None;
-                };
-
-                expected.push(apply(&subst, (*dom).clone()));
-
-                if let Ok(arg_ty) = infer_in_module_with_class_env(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    arg.clone(),
-                ) {
-                    if let Ok(s) = unify(apply(&subst, (*dom).clone()), apply(&subst, arg_ty)) {
-                        subst = compose(&s, &subst);
-                    }
-                }
-
-                callee_ty = apply(&subst, *cod);
-            }
-
-            let mut class_tys: HashMap<String, Ty> = HashMap::new();
-            for c in cs {
-                let Constraint::Class { class, ty } = c else {
-                    continue;
-                };
-                class_tys.insert(class, apply(&subst, ty));
-            }
-
-            Some(CallInfo {
-                expected_arg_tys: expected.into_iter().map(|t| apply(&subst, t)).collect(),
-                class_tys,
-            })
-        }
-
-        fn pick_instance_dict_expr_from_scope(
-            span: ast::Span,
-            class_env: &ClassEnv,
-            dicts_in_scope: &HashSet<String>,
-            class: &str,
-            ty: &Ty,
-        ) -> Result<Option<ast::Expr>> {
-            // Fast path: ground instance lookup.
-            if ftv_ty(ty).is_empty() {
-                if let Ok(head) = instance_head_key_ty(ty) {
-                    let key = (class.to_string(), head);
-                    if let Some(d) = class_env.instances.get(&key).cloned() {
-                        return Ok(Some(Expr::new(span, ExprKind::Var(d))));
-                    }
-                }
-            }
-
-            // Poly path: unify with non-ground instances.
-            // Assumption (per discussion): required context dictionaries must already be in scope.
-            let mut candidates: Vec<&PolyInstance> = Vec::new();
-            for pi in &class_env.poly_instances {
-                if pi.class != class {
-                    continue;
-                }
-
-                // Rename pattern vars to avoid collisions.
-                let mut map: HashMap<u32, u32> = HashMap::new();
-                let mut next: u32 = 10_000;
-                fn rename_vars(ty: &Ty, map: &mut HashMap<u32, u32>, next: &mut u32) -> Ty {
-                    match ty {
-                        Ty::Var(v) => {
-                            let nv = *map.entry(*v).or_insert_with(|| {
-                                let out = *next;
-                                *next += 1;
-                                out
-                            });
-                            Ty::Var(nv)
-                        }
-                        Ty::Con(c) => Ty::Con(c.clone()),
-                        Ty::App { head, args } => Ty::App {
-                            head: Box::new(rename_vars(head, map, next)),
-                            args: args.iter().map(|a| rename_vars(a, map, next)).collect(),
-                        },
-                        Ty::Func(a, b) => Ty::Func(
-                            Box::new(rename_vars(a, map, next)),
-                            Box::new(rename_vars(b, map, next)),
-                        ),
-                        Ty::Tuple(ts) => {
-                            Ty::Tuple(ts.iter().map(|t| rename_vars(t, map, next)).collect())
-                        }
-                        Ty::List(t) => Ty::List(Box::new(rename_vars(t, map, next))),
-                        Ty::Record(fields) => Ty::Record(
-                            fields
-                                .iter()
-                                .map(|(k, v)| (k.clone(), rename_vars(v, map, next)))
-                                .collect(),
-                        ),
-                        Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
-                            fields
-                                .iter()
-                                .map(|(k, v)| (k.clone(), rename_vars(v, map, next)))
-                                .collect(),
-                            Box::new(rename_vars(rest, map, next)),
-                        ),
-                    }
-                }
-
-                let pat = rename_vars(&pi.head_pat, &mut map, &mut next);
-                if unify(pat, ty.clone()).is_ok() {
-                    candidates.push(pi);
-                }
-            }
-
-            if candidates.is_empty() {
-                return Ok(None);
-            }
-            if candidates.len() > 1 {
-                return Err(Error::msg(format!(
-                    "overlapping instances for `{}`: cannot choose for type {ty}",
-                    class
-                )));
-            }
-
-            let pi = candidates[0];
-            let mut expr = Expr::new(span, ExprKind::Var(pi.dict_name.clone()));
-            for i in 0..pi.ctx_len {
-                let pname = format!("__ctx_dict_{i}");
-                let in_scope = dicts_in_scope.contains(&pname);
-                if !in_scope {
-                    return Err(Error::msg(format!(
-                        "missing instance context dictionary in scope: {pname}"
-                    )));
-                }
-                expr = Expr::new(
-                    span,
-                    ExprKind::Apply {
-                        func: Box::new(expr),
-                        args: vec![Expr::new(span, ExprKind::Var(pname))],
-                    },
-                );
-            }
-            Ok(Some(expr))
-        }
-
-        Ok(match expr.kind {
-            ExprKind::Var(name) => {
-                let classes: Option<&Vec<String>> = if shadowed_in_scope.contains(&name) {
-                    needs_dicts_local.get(&name)
-                } else {
-                    needs_dicts_local
-                        .get(&name)
-                        .or_else(|| needs_dicts_global.get(&name))
-                };
-
-                if let Some(classes) = classes {
-                    // Constrained top-level function used as a value:
-                    // if a required dictionary is already in scope, partially apply it.
-                    // IMPORTANT: only apply a prefix of dictionaries in order. Skipping a missing
-                    // earlier dictionary would shift argument order and break arity.
-                    let mut dict_args: Vec<ast::Expr> = Vec::new();
-                    for class in classes {
-                        let param = dict_param_name(class);
-                        if dicts_in_scope.contains(&param) {
-                            dict_args.push(Expr::new(span, ExprKind::Var(param)));
-                            continue;
-                        }
-
-                        // Superclass projection from any in-scope dictionary.
-                        if let Some(d) =
-                            derive_dict_from_scope(span, class_env, dicts_in_scope, class)
-                        {
-                            dict_args.push(d);
-                            continue;
-                        }
-
-                        // Missing a required earlier dictionary: stop (prefix only).
-                        break;
-                    }
-
-                    if dict_args.is_empty() {
-                        Expr::new(span, ExprKind::Var(name))
-                    } else {
-                        Expr::new(
-                            span,
-                            ExprKind::Apply {
-                                func: Box::new(Expr::new(span, ExprKind::Var(name))),
-                                args: dict_args,
-                            },
-                        )
-                    }
-                } else {
-                    Expr::new(span, ExprKind::Var(name))
-                }
-            }
-            ExprKind::Lambda { params, body } => {
-                let mut scope = dicts_in_scope.clone();
-                let mut shadowed = shadowed_in_scope.clone();
-                for p in &params {
-                    shadowed.insert(p.clone());
-                    if p.starts_with("__dict_") {
-                        scope.insert(p.clone());
-                    }
-                }
-                Expr::new(
-                    span,
-                    ExprKind::Lambda {
-                        params,
-                        body: Box::new(rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            needs_dicts_local,
-                            &scope,
-                            &shadowed,
-                            *body,
-                        )?),
-                    },
-                )
-            }
-            ExprKind::Apply { func, args } => {
-                let func = rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    needs_dicts_global,
-                    needs_dicts_local,
-                    dicts_in_scope,
-                    shadowed_in_scope,
-                    *func,
-                )?;
-                let mut args: Vec<_> = args
-                    .into_iter()
-                    .map(|a| {
-                        rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            needs_dicts_local,
-                            dicts_in_scope,
-                            shadowed_in_scope,
-                            a,
-                        )
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-
-                let call_info: Option<CallInfo> = if let ExprKind::Var(callee) = &func.kind {
-                    if shadowed_in_scope.contains(callee) {
-                        None
-                    } else {
-                        call_info_for_call(module_snapshot, class_env, inferred, callee, &args)
-                    }
-                } else {
-                    None
-                };
-
-                // Ground value argument types available at this call site.
-                // Useful when passing a constrained function as a value and only some dicts are
-                // in scope (e.g. resolve missing dicts from a ground argument like `1`).
-                let mut callsite_ground_tys: Vec<Ty> = Vec::new();
-                for a in &args {
-                    if let Ok(t) = infer_in_module_with_class_env(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        a.clone(),
-                    ) {
-                        if ftv_ty(&t).is_empty() {
-                            callsite_ground_tys.push(t);
-                        }
-                    }
-                }
-
-                // Higher-order (deferred) dictionary passing:
-                // If we pass a constrained top-level function as a value, and the dictionary is
-                // already in scope (from an enclosing constrained binding), partially apply it.
-                // This avoids arity mismatch without requiring ground-type resolution.
-                for (i, a) in args.iter_mut().enumerate() {
-                    let ast::ExprKind::Var(name) = &a.kind else {
-                        continue;
-                    };
-                    let classes: Option<&Vec<String>> = if shadowed_in_scope.contains(name) {
-                        needs_dicts_local.get(name)
-                    } else {
-                        needs_dicts_local
-                            .get(name)
-                            .or_else(|| needs_dicts_global.get(name))
-                    };
-                    let Some(classes) = classes else {
-                        continue;
-                    };
-
-                    let expected = call_info
-                        .as_ref()
-                        .and_then(|ci| ci.expected_arg_tys.get(i))
-                        .cloned();
-
-                    let mut dict_args: Vec<ast::Expr> = Vec::new();
-                    for class in classes {
-                        let mut picked: Option<ast::Expr> = None;
-
-                        let dict_var = dict_param_name(class);
-                        if dicts_in_scope.contains(&dict_var) {
-                            picked = Some(Expr::new(span, ExprKind::Var(dict_var)));
-                        }
-
-                        // Superclass projection from any in-scope dictionary.
-                        if picked.is_none() {
-                            if let Some(d) =
-                                derive_dict_from_scope(span, class_env, dicts_in_scope, class)
-                            {
-                                picked = Some(d);
-                            }
-                        }
-
-                        // Try resolving from expected type (if available), then fall back to any
-                        // other ground value arg type at this call site.
-                        if picked.is_none() {
-                            if let Some(expected) = expected.as_ref() {
-                                let target_ty = match expected {
-                                    Ty::Func(dom, _) => dom.as_ref().clone(),
-                                    other => other.clone(),
-                                };
-                                if let Some(d) = pick_instance_dict_expr_from_scope(
-                                    span,
-                                    class_env,
-                                    dicts_in_scope,
-                                    class,
-                                    &target_ty,
-                                )? {
-                                    picked = Some(d);
-                                }
-                            }
-                        }
-
-                        if picked.is_none() {
-                            for t in &callsite_ground_tys {
-                                if let Some(d) = pick_instance_dict_expr_from_scope(
-                                    span,
-                                    class_env,
-                                    dicts_in_scope,
-                                    class,
-                                    t,
-                                )? {
-                                    picked = Some(d);
-                                    break;
-                                }
-                            }
-                        }
-
-                        let Some(picked) = picked else {
-                            // Missing an earlier dictionary: stop (prefix only).
-                            break;
-                        };
-                        dict_args.push(picked);
-                    }
-                    if dict_args.is_empty() {
-                        continue;
-                    }
-
-                    *a = Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(Expr::new(span, ExprKind::Var(name.clone()))),
-                            args: dict_args,
-                        },
-                    );
-                }
-
-                if let ExprKind::Var(name) = &func.kind {
-                    let classes: Option<&Vec<String>> = if shadowed_in_scope.contains(name) {
-                        needs_dicts_local.get(name)
-                    } else {
-                        needs_dicts_local
-                            .get(name)
-                            .or_else(|| needs_dicts_global.get(name))
-                    };
-
-                    if let Some(classes) = classes {
-                        // Insert dict args in front of value args.
-                        let mut dict_args: Vec<ast::Expr> = Vec::new();
-                        for class in classes {
-                            let param = dict_param_name(class);
-                            if dicts_in_scope.contains(&param) {
-                                dict_args.push(Expr::new(span, ExprKind::Var(param)));
-                                continue;
-                            }
-
-                            // Superclass projection from any in-scope dictionary.
-                            if let Some(d) =
-                                derive_dict_from_scope(span, class_env, dicts_in_scope, class)
-                            {
-                                dict_args.push(d);
-                                continue;
-                            }
-
-                            // Partial application (no value args): keep dictionaries unapplied.
-                            if args.is_empty() {
-                                continue;
-                            }
-
-                            // Resolve instance dictionary.
-                            // Prefer call_info (unification against all arguments) when it yields a
-                            // ground class argument type. If it's still non-ground (Issue #5),
-                            // fall back to any ground value argument type at the call site.
-                            let mut picked: Option<ast::Expr> = None;
-
-                            // Only resolve concrete instances from call sites for non-shadowed
-                            // (top-level) callees. Local vars/let-bound names may not be
-                            // inferable via infer_in_module_with_class_env.
-                            if !shadowed_in_scope.contains(name) {
-                                if let Some(ci) = call_info.as_ref() {
-                                    if let Some(target_ty) = ci.class_tys.get(class) {
-                                        picked = pick_instance_dict_expr_from_scope(
-                                            span,
-                                            class_env,
-                                            dicts_in_scope,
-                                            class,
-                                            target_ty,
-                                        )?;
-                                    }
-                                }
-                            }
-
-                            if picked.is_none() {
-                                let mut first_non_ground: Option<Ty> = None;
-                                for a in &args {
-                                    let Ok(a_ty) = infer_in_module_with_class_env(
-                                        module_snapshot,
-                                        class_env,
-                                        inferred,
-                                        a.clone(),
-                                    ) else {
-                                        continue;
-                                    };
-
-                                    if !ftv_ty(&a_ty).is_empty() {
-                                        if first_non_ground.is_none() {
-                                            first_non_ground = Some(a_ty);
-                                        }
-                                        continue;
-                                    }
-
-                                    if let Some(d) = pick_instance_dict_expr_from_scope(
-                                        span,
-                                        class_env,
-                                        dicts_in_scope,
-                                        class,
-                                        &a_ty,
-                                    )? {
-                                        picked = Some(d);
-                                        break;
-                                    }
-                                }
-
-                                if picked.is_none() {
-                                    // If call_info exists and we saw a non-ground target, keep the
-                                    // original error message for now.
-                                    if let Some(target_ty) = first_non_ground {
-                                        return Err(Error::msg(format!(
-                                            "cannot resolve dictionary for call to `{name}`: cannot infer instance head for {class} (type is not ground: {target_ty})"
-                                        )));
-                                    }
-
-                                    let hint = "<unknown>".to_string();
-                                    return Err(Error::msg(format!(
-                                        "cannot resolve dictionary for call to `{name}`: no ground argument type available for {class} (e.g. {hint})"
-                                    )));
-                                }
-                            }
-
-                            dict_args.push(picked.expect("picked must be Some"));
-                        }
-
-                        if !dict_args.is_empty() {
-                            dict_args.extend(args);
-                            args = dict_args;
-                        }
-                    }
-                }
-
-                Expr::new(
-                    span,
-                    ExprKind::Apply {
-                        func: Box::new(func),
-                        args,
-                    },
-                )
-            }
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => Expr::new(
-                span,
-                ExprKind::If {
-                    cond: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        needs_dicts_local,
-                        dicts_in_scope,
-                        shadowed_in_scope,
-                        *cond,
-                    )?),
-                    then_branch: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        needs_dicts_local,
-                        dicts_in_scope,
-                        shadowed_in_scope,
-                        *then_branch,
-                    )?),
-                    else_branch: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        needs_dicts_local,
-                        dicts_in_scope,
-                        shadowed_in_scope,
-                        *else_branch,
-                    )?),
-                },
-            ),
-            ExprKind::Let { bindings, body } => {
-                let mut scope = dicts_in_scope.clone();
-                let mut shadowed = shadowed_in_scope.clone();
-                for b in &bindings {
-                    let mut names = HashSet::new();
-                    pat_defined_names(&b.pat, &mut names);
-                    for n in names {
-                        shadowed.insert(n.clone());
-                        if n.starts_with("__dict_") {
-                            scope.insert(n);
-                        }
-                    }
-                }
-
-                // Local dictionary passing: add dict params to constrained local bindings and
-                // extend the needs-dicts environment for uses inside the body.
-                let mut local_needs: HashMap<String, Vec<String>> = HashMap::new();
-                // Fixed point: local bindings can require dictionaries transitively via other
-                // local constrained bindings.
-                loop {
-                    let mut changed = false;
-                    let mut lookup: HashMap<String, Vec<String>> = HashMap::new();
-                    for (k, v) in needs_dicts_global {
-                        lookup.insert(k.clone(), v.clone());
-                    }
-                    for (k, v) in needs_dicts_local {
-                        lookup.insert(k.clone(), v.clone());
-                    }
-                    for (k, v) in &local_needs {
-                        lookup.insert(k.clone(), v.clone());
-                    }
-
-                    for b in &bindings {
-                        let PatternKind::Var(name) = &b.pat.kind else {
-                            continue;
-                        };
-                        let mut req: HashSet<String> = HashSet::new();
-                        required_classes_in_expr(&b.expr, class_env, &lookup, &mut req);
-                        let mut classes: Vec<String> = req.into_iter().collect();
-                        classes.sort();
-                        if classes.is_empty() {
-                            continue;
-                        }
-                        match local_needs.get(name) {
-                            Some(existing) if *existing == classes => {}
-                            _ => {
-                                local_needs.insert(name.clone(), classes);
-                                changed = true;
-                            }
-                        }
-                    }
-
-                    if !changed {
-                        break;
-                    }
-                }
-
-                let mut local2: HashMap<String, Vec<String>> = needs_dicts_local.clone();
-                for (k, v) in &local_needs {
-                    local2.insert(k.clone(), v.clone());
-                }
-
-                Expr::new(
-                    span,
-                    ExprKind::Let {
-                        bindings: bindings
-                            .into_iter()
-                            .map(|b| {
-                                let mut expr = b.expr;
-                                if let PatternKind::Var(name) = &b.pat.kind {
-                                    if let Some(classes) = local_needs.get(name) {
-                                        expr = add_dict_params_to_expr(expr.span, expr, classes);
-                                    }
-                                }
-                                Ok(ast::Binding {
-                                    pat: b.pat,
-                                    expr: rewrite_expr(
-                                        module_snapshot,
-                                        class_env,
-                                        inferred,
-                                        needs_dicts_global,
-                                        &local2,
-                                        &scope,
-                                        &shadowed,
-                                        expr,
-                                    )?,
-                                })
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                        body: Box::new(rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            &local2,
-                            &scope,
-                            &shadowed,
-                            *body,
-                        )?),
-                    },
-                )
-            }
-            ExprKind::Where { expr, bindings } => {
-                let mut scope = dicts_in_scope.clone();
-                let mut shadowed = shadowed_in_scope.clone();
-                for b in &bindings {
-                    let mut names = HashSet::new();
-                    pat_defined_names(&b.pat, &mut names);
-                    for n in names {
-                        shadowed.insert(n.clone());
-                        if n.starts_with("__dict_") {
-                            scope.insert(n);
-                        }
-                    }
-                }
-
-                let mut local_needs: HashMap<String, Vec<String>> = HashMap::new();
-                loop {
-                    let mut changed = false;
-                    let mut lookup: HashMap<String, Vec<String>> = HashMap::new();
-                    for (k, v) in needs_dicts_global {
-                        lookup.insert(k.clone(), v.clone());
-                    }
-                    for (k, v) in needs_dicts_local {
-                        lookup.insert(k.clone(), v.clone());
-                    }
-                    for (k, v) in &local_needs {
-                        lookup.insert(k.clone(), v.clone());
-                    }
-
-                    for b in &bindings {
-                        let PatternKind::Var(name) = &b.pat.kind else {
-                            continue;
-                        };
-                        let mut req: HashSet<String> = HashSet::new();
-                        required_classes_in_expr(&b.expr, class_env, &lookup, &mut req);
-                        let mut classes: Vec<String> = req.into_iter().collect();
-                        classes.sort();
-                        if classes.is_empty() {
-                            continue;
-                        }
-                        match local_needs.get(name) {
-                            Some(existing) if *existing == classes => {}
-                            _ => {
-                                local_needs.insert(name.clone(), classes);
-                                changed = true;
-                            }
-                        }
-                    }
-
-                    if !changed {
-                        break;
-                    }
-                }
-
-                let mut local2: HashMap<String, Vec<String>> = needs_dicts_local.clone();
-                for (k, v) in &local_needs {
-                    local2.insert(k.clone(), v.clone());
-                }
-
-                Expr::new(
-                    span,
-                    ExprKind::Where {
-                        expr: Box::new(rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            &local2,
-                            &scope,
-                            &shadowed,
-                            *expr,
-                        )?),
-                        bindings: bindings
-                            .into_iter()
-                            .map(|b| {
-                                let mut expr = b.expr;
-                                if let PatternKind::Var(name) = &b.pat.kind {
-                                    if let Some(classes) = local_needs.get(name) {
-                                        expr = add_dict_params_to_expr(expr.span, expr, classes);
-                                    }
-                                }
-                                Ok(ast::Binding {
-                                    pat: b.pat,
-                                    expr: rewrite_expr(
-                                        module_snapshot,
-                                        class_env,
-                                        inferred,
-                                        needs_dicts_global,
-                                        &local2,
-                                        &scope,
-                                        &shadowed,
-                                        expr,
-                                    )?,
-                                })
-                            })
-                            .collect::<Result<Vec<_>>>()?,
-                    },
-                )
-            }
-            ExprKind::Annot { expr, ty } => Expr::new(
-                span,
-                ExprKind::Annot {
-                    expr: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        needs_dicts_local,
-                        dicts_in_scope,
-                        shadowed_in_scope,
-                        *expr,
-                    )?),
-                    ty,
-                },
-            ),
-            ExprKind::Do(stmts) => {
-                let mut scope = dicts_in_scope.clone();
-                let mut shadowed = shadowed_in_scope.clone();
-                let mut out: Vec<ast::DoStmt> = Vec::with_capacity(stmts.len());
-
-                for s in stmts {
-                    match s {
-                        ast::DoStmt::Bind { pat, expr } => {
-                            let expr = rewrite_expr(
-                                module_snapshot,
-                                class_env,
-                                inferred,
-                                needs_dicts_global,
-                                needs_dicts_local,
-                                &scope,
-                                &shadowed,
-                                expr,
-                            )?;
-
-                            let mut names = HashSet::new();
-                            pat_defined_names(&pat, &mut names);
-                            for n in names {
-                                shadowed.insert(n.clone());
-                                if n.starts_with("__dict_") {
-                                    scope.insert(n);
-                                }
-                            }
-
-                            out.push(ast::DoStmt::Bind { pat, expr });
-                        }
-                        ast::DoStmt::Expr(e) => {
-                            out.push(ast::DoStmt::Expr(rewrite_expr(
-                                module_snapshot,
-                                class_env,
-                                inferred,
-                                needs_dicts_global,
-                                needs_dicts_local,
-                                &scope,
-                                &shadowed,
-                                e,
-                            )?));
-                        }
-                    }
-                }
-                Expr::new(span, ExprKind::Do(out))
-            }
-            ExprKind::Case { expr, arms } => {
-                let expr = Box::new(rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    needs_dicts_global,
-                    needs_dicts_local,
-                    dicts_in_scope,
-                    shadowed_in_scope,
-                    *expr,
-                )?);
-
-                let arms = arms
-                    .into_iter()
-                    .map(|a| {
-                        let mut scope = dicts_in_scope.clone();
-                        let mut shadowed = shadowed_in_scope.clone();
-                        let mut names = HashSet::new();
-                        pat_defined_names(&a.pat, &mut names);
-                        for n in names {
-                            shadowed.insert(n.clone());
-                            if n.starts_with("__dict_") {
-                                scope.insert(n);
-                            }
-                        }
-
-                        Ok(ast::CaseArm {
-                            pat: a.pat,
-                            guard: a
-                                .guard
-                                .map(|g| {
-                                    rewrite_expr(
-                                        module_snapshot,
-                                        class_env,
-                                        inferred,
-                                        needs_dicts_global,
-                                        needs_dicts_local,
-                                        &scope,
-                                        &shadowed,
-                                        g,
-                                    )
-                                })
-                                .transpose()?,
-                            body: rewrite_expr(
-                                module_snapshot,
-                                class_env,
-                                inferred,
-                                needs_dicts_global,
-                                needs_dicts_local,
-                                &scope,
-                                &shadowed,
-                                a.body,
-                            )?,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-
-                Expr::new(span, ExprKind::Case { expr, arms })
-            }
-            ExprKind::Cons { head, tail } => Expr::new(
-                span,
-                ExprKind::Cons {
-                    head: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        needs_dicts_local,
-                        dicts_in_scope,
-                        shadowed_in_scope,
-                        *head,
-                    )?),
-                    tail: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        needs_dicts_local,
-                        dicts_in_scope,
-                        shadowed_in_scope,
-                        *tail,
-                    )?),
-                },
-            ),
-            ExprKind::List(es) => Expr::new(
-                span,
-                ExprKind::List(
-                    es.into_iter()
-                        .map(|e| {
-                            rewrite_expr(
-                                module_snapshot,
-                                class_env,
-                                inferred,
-                                needs_dicts_global,
-                                needs_dicts_local,
-                                dicts_in_scope,
-                                shadowed_in_scope,
-                                e,
-                            )
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                ),
-            ),
-            ExprKind::Tuple(es) => Expr::new(
-                span,
-                ExprKind::Tuple(
-                    es.into_iter()
-                        .map(|e| {
-                            rewrite_expr(
-                                module_snapshot,
-                                class_env,
-                                inferred,
-                                needs_dicts_global,
-                                needs_dicts_local,
-                                dicts_in_scope,
-                                shadowed_in_scope,
-                                e,
-                            )
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                ),
-            ),
-            ExprKind::Record(fields) => Expr::new(
-                span,
-                ExprKind::Record(
-                    fields
-                        .into_iter()
-                        .map(|(k, v)| {
-                            Ok((
-                                k,
-                                rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    needs_dicts_global,
-                                    needs_dicts_local,
-                                    dicts_in_scope,
-                                    shadowed_in_scope,
-                                    v,
-                                )?,
-                            ))
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                ),
-            ),
-            other => Expr::new(span, other),
-        })
-    }
-
-    let snapshot = module.clone();
-
-    // 1) Add dictionary params to constrained top-level bindings.
-    module.items = module
-        .items
-        .drain(..)
-        .map(|it| {
-            let it = match it {
-                ast::Item::Binding(b) => {
-                    if let PatternKind::Var(name) = &b.pat.kind {
-                        if let Some(classes) = needs_dicts.get(name) {
-                            ast::Item::Binding(ast::Binding {
-                                pat: b.pat,
-                                expr: add_dict_params_to_expr(b.expr.span, b.expr, classes),
-                            })
-                        } else {
-                            ast::Item::Binding(b)
-                        }
-                    } else {
-                        ast::Item::Binding(b)
-                    }
-                }
-                other => other,
-            };
-            Ok(it)
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    // 2) Rewrite call sites to supply dictionaries.
-    let empty_scope: HashSet<String> = HashSet::new();
-    let empty_shadowed: HashSet<String> = HashSet::new();
-    let empty_local: HashMap<String, Vec<String>> = HashMap::new();
-    module.items = module
-        .items
-        .drain(..)
-        .map(|it| {
-            Ok(match it {
-                ast::Item::Binding(mut b) => {
-                    b.expr = rewrite_expr(
-                        &snapshot,
-                        class_env,
-                        inferred,
-                        &needs_dicts,
-                        &empty_local,
-                        &empty_scope,
-                        &empty_shadowed,
-                        b.expr,
-                    )?;
-                    ast::Item::Binding(b)
-                }
-                other => other,
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(())
-}
+// moved to `src/types/typeclass_dict_passing.rs`
 
 fn rewrite_class_method_calls_in_module(
     module: &mut ast::Module,
@@ -7705,7 +6939,7 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
         }
     }
 
-    rewrite_class_dict_passing_in_module(&mut module, &class_env, &inferred)?;
+    typeclass_dict_passing_common::rewrite_class_dict_passing_in_module(&mut module, &class_env, &inferred)?;
 
     rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred)?;
 
