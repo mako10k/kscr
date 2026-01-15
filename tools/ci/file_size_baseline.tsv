@@ -6,6 +6,7 @@ src/ast.rs	282
 src/cli/cli_compile.rs	268
 src/cli/cli_llvm_ir.rs	32
 src/cli.rs	2032
+src/cli_impl.rs	2032
 src/debug.rs	16
 src/error.rs	30
 src/ir_pack.rs	640

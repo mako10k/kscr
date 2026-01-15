@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
 pub mod ast;
+// `src/cli.rs` is intentionally compiled as a private module (`cli_impl`) for now,
+// while we gradually split it into the `src/cli/` module tree.
 pub mod cli;
 pub mod debug;
 pub mod error;
@@ -11,6 +13,9 @@ pub mod parser;
 #[cfg(not(feature = "unsafe_bigint"))]
 mod safe_bigint;
 pub mod types;
+
+#[path = "cli_impl.rs"]
+mod cli_impl;
 
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;

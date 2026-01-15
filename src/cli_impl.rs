@@ -1,6 +1,4 @@
 use crate::{ast, ir, parser, types, Result};
-mod cli_compile;
-mod cli_llvm_ir;
 #[cfg(feature = "readline")]
 use rustyline::{error::ReadlineError, DefaultEditor};
 use std::collections::HashSet;
@@ -56,10 +54,7 @@ where
 
             let tm = types::typecheck_file(Path::new(&path))?;
 
-            print!(
-                "{}",
-                render_typecheck_report(&tm.module, tm.inferred, show_all)
-            );
+            print!("{}", render_typecheck_report(&tm.module, tm.inferred, show_all));
             Ok(())
         }
         "ir" => {
@@ -87,8 +82,8 @@ where
             Ok(())
         }
         "repl" => repl(),
-        "llvm-ir" => cli_llvm_ir::cmd_llvm_ir(args),
-        "compile" => cli_compile::cmd_compile(args),
+        "llvm-ir" => crate::cli::cli_llvm_ir::cmd_llvm_ir(args),
+        "compile" => crate::cli::cli_compile::cmd_compile(args),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
 }

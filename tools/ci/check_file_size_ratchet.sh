@@ -50,7 +50,9 @@ for entry in "${current[@]}"; do
     continue
   fi
 
-  if (( base > warn_threshold_lines && lines > base )); then
+  # Ratchet policy (per repo guidance): only enforce the "must not grow" rule
+  # once the file is already larger than warn_threshold_lines.
+  if (( base > warn_threshold_lines && lines > warn_threshold_lines && lines > base )); then
     echo "ERROR: large file grew: $path ($base -> $lines lines; threshold=$warn_threshold_lines)." >&2
     echo "       Please refactor/split while making changes." >&2
     fail=1
