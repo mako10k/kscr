@@ -557,7 +557,7 @@ impl LLVMIRGenerator {
 
 /// Generate LLVM IR text for a module (simplified version)
 /// This generates a placeholder main function as a proof of concept
-pub fn generate_llvm_ir_text(module_name: &str) -> Result<String, String> {
+pub fn generate_llvm_ir_text(module_name: &str) -> Result<String> {
     let mut gen = LLVMIRGenerator::new(module_name);
     gen.generate_placeholder_main();
     gen.generate_integer_add_function();

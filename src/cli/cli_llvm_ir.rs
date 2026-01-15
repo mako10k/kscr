@@ -18,7 +18,8 @@ where
         let irm = crate::ir::lower_to_ir(&tm.module)?;
 
         // MVP: lower a small subset of IR to LLVM IR text.
-        let llvm_ir = kscr_llvm::lower_ir_to_llvm_text(&irm, "main")?;
+        let llvm_ir = kscr_llvm::lower_ir_to_llvm_text(&irm, "main")
+            .map_err(crate::error::Error::msg)?;
         print!("{}", llvm_ir);
         Ok(())
     }
