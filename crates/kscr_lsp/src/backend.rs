@@ -48,8 +48,8 @@ impl Backend {
             Err(e) => {
                 // Lexer error
                 diagnostics.push(create_diagnostic(
-                    &doc.text,
-                    &e.to_string(),
+                    doc,
+                    &e,
                     DiagnosticSeverity::ERROR,
                 ));
                 return diagnostics;
@@ -60,8 +60,8 @@ impl Backend {
                     Err(e) => {
                         // Parse error
                         diagnostics.push(create_diagnostic(
-                            &doc.text,
-                            &e.to_string(),
+                            doc,
+                            &e,
                             DiagnosticSeverity::ERROR,
                         ));
                         return diagnostics;
@@ -72,8 +72,8 @@ impl Backend {
                         // because typecheck_file reads from disk
                         if let Err(e) = self.typecheck_document(doc).await {
                             diagnostics.push(create_diagnostic(
-                                &doc.text,
-                                &e.to_string(),
+                                doc,
+                                &e,
                                 DiagnosticSeverity::ERROR,
                             ));
                         }
@@ -89,9 +89,10 @@ impl Backend {
     async fn typecheck_document(&self, doc: &Document) -> std::result::Result<(), KscrError> {
         // For now, we use the file path if it exists
         // In the future, we should handle VFS-only documents
-        let path = doc.uri.to_file_path().map_err(|_| {
-            KscrError::msg("Cannot convert URI to file path")
-        })?;
+        let path = doc
+            .uri
+            .to_file_path()
+            .map_err(|_| KscrError::msg("Cannot convert URI to file path"))?;
 
         if !path.exists() {
             // Document is not saved yet, skip typechecking for now
@@ -104,13 +105,36 @@ impl Backend {
     }
 }
 
-/// Create a diagnostic from an error message
-fn create_diagnostic(_source: &str, message: &str, severity: DiagnosticSeverity) -> Diagnostic {
-    // Try to extract position information from error message
-    // For now, we'll just report at the start of the file
-    // TODO: Parse error messages to extract actual positions
-    
-    let range = Range {
+fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
+    let len = doc.text.len();
+    let start_off = span.start.min(len);
+    let mut end_off = span.end.min(len);
+
+    if end_off < start_off {
+        end_off = start_off;
+    }
+    if end_off == start_off && end_off < len {
+        end_off += 1;
+    }
+
+    let (sl, sc) = doc.offset_to_position(start_off)?;
+    let (el, ec) = doc.offset_to_position(end_off)?;
+
+    Some(Range {
+        start: Position {
+            line: sl,
+            character: sc,
+        },
+        end: Position {
+            line: el,
+            character: ec,
+        },
+    })
+}
+
+/// Create a diagnostic from an error
+fn create_diagnostic(doc: &Document, err: &KscrError, severity: DiagnosticSeverity) -> Diagnostic {
+    let range = err.span().and_then(|s| span_to_range(doc, s)).unwrap_or(Range {
         start: Position {
             line: 0,
             character: 0,
@@ -119,7 +143,7 @@ fn create_diagnostic(_source: &str, message: &str, severity: DiagnosticSeverity)
             line: 0,
             character: 0,
         },
-    };
+    });
 
     Diagnostic {
         range,
@@ -127,10 +151,26 @@ fn create_diagnostic(_source: &str, message: &str, severity: DiagnosticSeverity)
         code: None,
         code_description: None,
         source: Some("kscr".to_string()),
-        message: message.to_string(),
+        message: err.to_string(),
         related_information: None,
         tags: None,
         data: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn span_to_range_basic() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let doc = Document::new(uri, "abc\ndef".to_string(), 1);
+        let r = span_to_range(&doc, kscr::lexer::Span { start: 4, end: 6 }).unwrap();
+        assert_eq!(r.start.line, 1);
+        assert_eq!(r.start.character, 0);
+        assert_eq!(r.end.line, 1);
+        assert_eq!(r.end.character, 2);
     }
 }
 

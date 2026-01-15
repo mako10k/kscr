@@ -2822,7 +2822,11 @@ impl TokenStream {
     }
 
     fn err_here(&self, msg: impl std::fmt::Display) -> Error {
-        Error::msg(format!("{msg} at {}", self.pos_str_here()))
+        let span = self.peek_span().unwrap_or(lexer::Span {
+            start: self.last_span_end,
+            end: self.last_span_end,
+        });
+        Error::msg_with_span(format!("{msg} at {}", self.pos_str_here()), span)
     }
 
     fn fixity(&self, op: &str) -> Fixity {
@@ -2856,29 +2860,49 @@ impl TokenStream {
 
     fn expect(&mut self, kind: TokenKind) -> Result<()> {
         let pos = self.pos_str_here();
-        let got = self
-            .bump()
-            .ok_or_else(|| Error::msg(format!("unexpected EOF at {pos}, expected {kind:?}")))?;
+        let span = self.peek_span().unwrap_or(lexer::Span {
+            start: self.last_span_end,
+            end: self.last_span_end,
+        });
+        let got = self.bump().ok_or_else(|| {
+            Error::msg_with_span(
+                format!("unexpected EOF at {pos}, expected {kind:?}"),
+                lexer::Span {
+                    start: self.last_span_end,
+                    end: self.last_span_end,
+                },
+            )
+        })?;
 
         if got == kind {
             Ok(())
         } else {
-            Err(Error::msg(format!(
-                "unexpected token {got:?} at {pos}, expected {kind:?}"
-            )))
+            Err(Error::msg_with_span(
+                format!("unexpected token {got:?} at {pos}, expected {kind:?}"),
+                span,
+            ))
         }
     }
 
     fn expect_ident(&mut self) -> Result<String> {
         let pos = self.pos_str_here();
+        let span = self.peek_span().unwrap_or(lexer::Span {
+            start: self.last_span_end,
+            end: self.last_span_end,
+        });
         match self.bump() {
             Some(TokenKind::Ident(s)) => Ok(s),
-            Some(got) => Err(Error::msg(format!(
-                "expected identifier at {pos}, got {got:?}"
-            ))),
-            None => Err(Error::msg(format!(
-                "unexpected EOF at {pos}, expected identifier"
-            ))),
+            Some(got) => Err(Error::msg_with_span(
+                format!("expected identifier at {pos}, got {got:?}"),
+                span,
+            )),
+            None => Err(Error::msg_with_span(
+                format!("unexpected EOF at {pos}, expected identifier"),
+                lexer::Span {
+                    start: self.last_span_end,
+                    end: self.last_span_end,
+                },
+            )),
         }
     }
 

@@ -169,7 +169,10 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                             push(TokenKind::Dedent, i, i);
                         }
                         if col != *indent_stack.last().unwrap() {
-                            return Err(crate::error::Error::msg("inconsistent indentation"));
+                            return Err(crate::error::Error::msg_with_span(
+                                "inconsistent indentation",
+                                Span { start: i, end: i },
+                            ));
                         }
                     }
                     std::cmp::Ordering::Equal => {}
@@ -500,13 +503,19 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             let start = i;
             i += 1;
             if i >= bytes.len() {
-                return Err(crate::error::Error::msg("unterminated char literal"));
+                return Err(crate::error::Error::msg_with_span(
+                    "unterminated char literal",
+                    Span { start, end: i },
+                ));
             }
 
             let ch = if bytes[i] == b'\\' {
                 i += 1;
                 if i >= bytes.len() {
-                    return Err(crate::error::Error::msg("unterminated char literal"));
+                    return Err(crate::error::Error::msg_with_span(
+                        "unterminated char literal",
+                        Span { start, end: i },
+                    ));
                 }
                 let ch = match bytes[i] {
                     b'n' => '\n',
@@ -520,16 +529,21 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
                 ch
             } else {
                 let s = &src[i..];
-                let ch = s
-                    .chars()
-                    .next()
-                    .ok_or_else(|| crate::error::Error::msg("unterminated char literal"))?;
+                let ch = s.chars().next().ok_or_else(|| {
+                    crate::error::Error::msg_with_span(
+                        "unterminated char literal",
+                        Span { start, end: i },
+                    )
+                })?;
                 i += ch.len_utf8();
                 ch
             };
 
             if i >= bytes.len() || bytes[i] != b'\'' {
-                return Err(crate::error::Error::msg("unterminated char literal"));
+                return Err(crate::error::Error::msg_with_span(
+                    "unterminated char literal",
+                    Span { start, end: i },
+                ));
             }
             i += 1;
 

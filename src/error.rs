@@ -1,14 +1,31 @@
 use std::fmt;
 
+use crate::lexer::Span;
+
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
     Msg(String),
+    MsgWithSpan { msg: String, span: Span },
 }
 
 impl Error {
     pub fn msg(s: impl Into<String>) -> Self {
         Self::Msg(s.into())
+    }
+
+    pub fn msg_with_span(s: impl Into<String>, span: Span) -> Self {
+        Self::MsgWithSpan {
+            msg: s.into(),
+            span,
+        }
+    }
+
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            Error::MsgWithSpan { span, .. } => Some(*span),
+            _ => None,
+        }
     }
 }
 
@@ -17,6 +34,7 @@ impl fmt::Display for Error {
         match self {
             Error::Io(e) => write!(f, "{e}"),
             Error::Msg(s) => write!(f, "{s}"),
+            Error::MsgWithSpan { msg, .. } => write!(f, "{msg}"),
         }
     }
 }
