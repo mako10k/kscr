@@ -2707,6 +2707,19 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
     let first = parse_expr(ts, Stop::Pattern)?;
 
+    // List range: [a..b] (MVP: desugar to __rangeInt a b)
+    if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
+        ts.bump();
+        let end = parse_expr(ts, Stop::Pattern)?;
+        ts.expect(TokenKind::RBracket)?;
+
+        let kind = ast::ExprKind::Apply {
+            func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("__rangeInt".to_string()))),
+            args: vec![first, end],
+        };
+        return Ok(expr_from(ts, start, kind));
+    }
+
     // List comprehension: [ expr | generator_list ]
     if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
         ts.bump();
@@ -3020,6 +3033,7 @@ impl TokenStream {
             (Stop::Pattern, Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace)) => {
                 false
             }
+            (Stop::Pattern, Some(TokenKind::Operator(op))) if op == ".." => false,
             (Stop::Pattern, Some(TokenKind::Dedent)) => false,
             (Stop::LineEnd, _) => true,
             _ => true,

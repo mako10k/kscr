@@ -151,6 +151,22 @@ class (Inc Integer) => C a where
 }
 
 #[test]
+fn parser_list_range_sugar_desugars_to_builtin() {
+    let m = crate::parser::parse_module("xs = [1..3]\n").unwrap();
+    let crate::ast::Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+
+    match &b.expr.kind {
+        crate::ast::ExprKind::Apply { func, args } => {
+            assert!(matches!(&func.kind, crate::ast::ExprKind::Var(s) if s == "__rangeInt"));
+            assert_eq!(args.len(), 2);
+        }
+        other => panic!("expected apply, got {other:?}"),
+    }
+}
+
+#[test]
 fn parser_binding_patterns() {
     let src = std::fs::read_to_string("tests/parser_binding_patterns.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
@@ -872,6 +888,16 @@ fn typecheck_list_comprehension_simple() {
 fn ir_run_main_list_comprehension() {
     let src =
         "main = case [x | x <- [1, 2]] of\n  [1, 2] -> IO ()\n  _ -> throw \"assert failed\"\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    let tm = crate::types::typecheck(m).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
+fn ir_run_main_list_range_sugar() {
+    let src = "main = case [1..3] of\n  1:2:3:[] -> IO ()\n  _ -> throw \"assert failed\"\n";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
