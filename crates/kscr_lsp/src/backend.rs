@@ -5,6 +5,7 @@
 
 use crate::vfs::{Document, Vfs};
 use kscr::{error::Error as KscrError, lexer, parser, types};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
@@ -155,6 +156,146 @@ fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
     })
 }
 
+fn token_name(kind: &lexer::TokenKind) -> Option<String> {
+    use lexer::TokenKind::*;
+
+    Some(match kind {
+        Ident(s) | Operator(s) | Integer(s) | Float(s) | String(s) => s.clone(),
+        Char(c) => c.to_string(),
+        True => "True".to_string(),
+        False => "False".to_string(),
+
+        Plus => "+".to_string(),
+        PlusPlus => "++".to_string(),
+        Minus => "-".to_string(),
+        Star => "*".to_string(),
+        Slash => "/".to_string(),
+        EqEq => "==".to_string(),
+        SlashEq => "/=".to_string(),
+        Lt => "<".to_string(),
+        Le => "<=".to_string(),
+        Gt => ">".to_string(),
+        Ge => ">=".to_string(),
+        GtGt => ">>".to_string(),
+        GtGtEq => ">>=".to_string(),
+        AndAnd => "&&".to_string(),
+        OrOr => "||".to_string(),
+        Colon => ":".to_string(),
+        Dot => ".".to_string(),
+        Pipe => "|".to_string(),
+        At => "@".to_string(),
+        Question => "?".to_string(),
+        Arrow => "->".to_string(),
+        FatArrow => "=>".to_string(),
+        LeftArrow => "<-".to_string(),
+        ColonColon => "::".to_string(),
+
+        _ => return None,
+    })
+}
+
+fn token_at_offset(src: &str, offset: usize) -> Option<lexer::Token> {
+    let tokens = lexer::lex(src).ok()?;
+
+    // Prefer strict [start, end) containment.
+    if let Some(t) = tokens
+        .iter()
+        .find(|t| t.span.start <= offset && offset < t.span.end && t.span.end > t.span.start)
+    {
+        return Some(t.clone());
+    }
+
+    // If the cursor is at the end of an identifier, prefer the token just before it.
+    tokens
+        .iter()
+        .find(|t| t.span.start < offset && offset <= t.span.end && t.span.end > t.span.start)
+        .cloned()
+}
+
+fn toplevel_binding_spans(module: &kscr::ast::Module) -> HashMap<String, kscr::lexer::Span> {
+    use kscr::ast::{Item, PatternKind};
+
+    let mut m = HashMap::new();
+    for item in &module.items {
+        if let Item::Binding(b) = item {
+            if let PatternKind::Var(name) = &b.pat.kind {
+                m.insert(name.clone(), b.pat.span);
+            }
+        }
+    }
+    m
+}
+
+fn classify_toplevel_symbol(module: &kscr::ast::Module, name: &str) -> Option<&'static str> {
+    use kscr::ast::Item;
+
+    for item in &module.items {
+        match item {
+            Item::Binding(b) => {
+                if matches!(&b.pat.kind, kscr::ast::PatternKind::Var(n) if n == name) {
+                    return Some("binding");
+                }
+            }
+            Item::TypeAlias(a) if a.name == name => {
+                return Some("type");
+            }
+            Item::DataDecl(d) => {
+                if d.name == name {
+                    return Some("data");
+                }
+                if d.ctors.iter().any(|c| c.name == name) {
+                    return Some("ctor");
+                }
+            }
+            Item::ClassDecl(c) if c.name == name => {
+                return Some("class");
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn goto_definition_in_doc(doc: &Document, pos: Position) -> Option<Location> {
+    let off = doc.position_to_offset(pos.line, pos.character)?;
+    let tok = token_at_offset(&doc.text, off)?;
+    let name = token_name(&tok.kind)?;
+
+    let module = parser::parse_module(&doc.text).ok()?;
+    let defs = toplevel_binding_spans(&module);
+    let span = defs.get(&name).copied()?;
+    let range = span_to_range(doc, span)?;
+
+    Some(Location {
+        uri: doc.uri.clone(),
+        range,
+    })
+}
+
+fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
+    let off = doc.position_to_offset(pos.line, pos.character)?;
+    let tok = token_at_offset(&doc.text, off)?;
+    let name = token_name(&tok.kind)?;
+
+    let module = parser::parse_module(&doc.text).ok();
+    let kind = module
+        .as_ref()
+        .and_then(|m| classify_toplevel_symbol(m, &name))
+        .unwrap_or("identifier");
+
+    let range = span_to_range(doc, tok.span);
+    let value = format!("```kscr\n{kind} {name}\n```");
+
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range,
+    })
+}
+
 /// Create a diagnostic from an error
 fn create_diagnostic(doc: &Document, err: &KscrError, severity: DiagnosticSeverity) -> Diagnostic {
     let range = err.span().and_then(|s| span_to_range(doc, s)).unwrap_or(Range {
@@ -213,6 +354,43 @@ mod tests {
         typecheck_document_text(&uri, src).unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn goto_definition_toplevel_binding() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let src = "module Main where\n  foo = 1\n  bar = foo\n".to_string();
+        let doc = Document::new(uri.clone(), src, 1);
+
+        // position on the reference "foo" in "bar = foo"
+        let pos = Position {
+            line: 2,
+            character: 8,
+        };
+        let loc = goto_definition_in_doc(&doc, pos).unwrap();
+        assert_eq!(loc.uri, uri);
+        assert_eq!(loc.range.start.line, 1);
+        assert_eq!(loc.range.start.character, 2);
+        assert_eq!(loc.range.end.line, 1);
+        assert_eq!(loc.range.end.character, 5);
+    }
+
+    #[test]
+    fn hover_on_identifier() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let src = "module Main where\n  foo = 1\n".to_string();
+        let doc = Document::new(uri, src, 1);
+
+        let pos = Position {
+            line: 1,
+            character: 3,
+        };
+        let h = hover_in_doc(&doc, pos).unwrap();
+        let s = match h.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(s.contains("foo"));
     }
 }
 
@@ -289,19 +467,30 @@ impl LanguageServer for Backend {
         vfs.remove(&params.text_document.uri);
     }
 
-    async fn hover(&self, _params: HoverParams) -> Result<Option<Hover>> {
-        // TODO: Implement hover to show type information
-        // This requires integrating with the type checker to get inferred types
-        Ok(None)
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let vfs = self.vfs.read().await;
+        let uri = params.text_document_position_params.text_document.uri;
+        let doc = match vfs.get(&uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        Ok(hover_in_doc(doc, params.text_document_position_params.position))
     }
 
     async fn goto_definition(
         &self,
-        _params: GotoDefinitionParams,
+        params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        // TODO: Implement go-to-definition
-        // This requires building a symbol table and tracking definitions
-        Ok(None)
+        let vfs = self.vfs.read().await;
+        let uri = params.text_document_position_params.text_document.uri;
+        let doc = match vfs.get(&uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let loc = goto_definition_in_doc(doc, params.text_document_position_params.position);
+        Ok(loc.map(GotoDefinitionResponse::Scalar))
     }
 
     async fn document_symbol(
