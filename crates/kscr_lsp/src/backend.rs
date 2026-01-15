@@ -94,13 +94,19 @@ impl Backend {
 }
 
 fn typecheck_document_text(uri: &Url, text: &str) -> std::result::Result<(), KscrError> {
+    typecheck_document_typed(uri, text).map(|_| ())
+}
+
+fn typecheck_document_typed(
+    uri: &Url,
+    text: &str,
+) -> std::result::Result<types::TypedModule, KscrError> {
     let path = uri
         .to_file_path()
         .map_err(|_| KscrError::msg("Cannot convert URI to file path"))?;
 
     if path.exists() {
-        types::typecheck_file(&path)?;
-        return Ok(());
+        return types::typecheck_file(&path);
     }
 
     // Unsaved file: write to a temp file in the same directory so that
@@ -124,7 +130,7 @@ fn typecheck_document_text(uri: &Url, text: &str) -> std::result::Result<(), Ksc
     let tmp_path = parent.join(format!(".kscr-lsp-{stem}-{pid}-{nanos}.ks"));
     std::fs::write(&tmp_path, text)?;
 
-    let res = types::typecheck_file(&tmp_path).map(|_| ());
+    let res = types::typecheck_file(&tmp_path);
     let _ = std::fs::remove_file(&tmp_path);
     res
 }
@@ -284,8 +290,15 @@ fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
         .and_then(|m| classify_toplevel_symbol(m, &name))
         .unwrap_or("identifier");
 
+    let ty = typecheck_document_typed(&doc.uri, &doc.text)
+        .ok()
+        .and_then(|tm| tm.inferred.get(&name).map(|s| s.to_string()));
+
     let range = span_to_range(doc, tok.span);
-    let value = format!("```kscr\n{kind} {name}\n```");
+    let value = match ty {
+        Some(ty) => format!("```kscr\n{name} :: {ty}\n```"),
+        None => format!("```kscr\n{kind} {name}\n```"),
+    };
 
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
@@ -391,6 +404,33 @@ mod tests {
             _ => panic!("unexpected hover contents"),
         };
         assert!(s.contains("foo"));
+    }
+
+    #[test]
+    fn document_symbols_have_reasonable_ranges() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let src = "module M where\n  x = 1\n  data Foo = Bar\n".to_string();
+        let doc = Document::new(uri, src, 1);
+
+        let module = kscr::parser::parse_module(&doc.text).unwrap();
+        let mut symbols = Vec::new();
+        for item in &module.items {
+            if let Some(s) = item_to_symbol(item, &doc) {
+                symbols.push(s);
+            }
+        }
+
+        let x = symbols.iter().find(|s| s.name == "x").unwrap();
+        assert_eq!(x.range.start.line, 1);
+        assert_eq!(x.range.start.character, 2);
+        assert_eq!(x.range.end.line, 1);
+        assert_eq!(x.range.end.character, 3);
+
+        let foo = symbols.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(foo.range.start.line, 2);
+        assert_eq!(foo.range.start.character, 7);
+        assert_eq!(foo.range.end.line, 2);
+        assert_eq!(foo.range.end.character, 10);
     }
 }
 
@@ -526,8 +566,22 @@ impl LanguageServer for Backend {
     }
 }
 
+fn find_decl_name_span(doc: &Document, kw: lexer::TokenKind, name: &str) -> Option<kscr::lexer::Span> {
+    let toks = lexer::lex(&doc.text).ok()?;
+    for w in toks.windows(2) {
+        if w[0].kind == kw {
+            if let lexer::TokenKind::Ident(n) = &w[1].kind {
+                if n == name {
+                    return Some(w[1].span);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Convert an AST item to a document symbol
-fn item_to_symbol(item: &kscr::ast::Item, _doc: &Document) -> Option<DocumentSymbol> {
+fn item_to_symbol(item: &kscr::ast::Item, doc: &Document) -> Option<DocumentSymbol> {
     use kscr::ast::Item;
 
     match item {
@@ -537,7 +591,7 @@ fn item_to_symbol(item: &kscr::ast::Item, _doc: &Document) -> Option<DocumentSym
                 kscr::ast::PatternKind::Var(name) => name.clone(),
                 _ => return None, // Complex patterns not supported yet
             };
-            let range = Range::default(); // TODO: Extract actual range from span
+            let range = span_to_range(doc, binding.pat.span).unwrap_or_default();
             #[allow(deprecated)]
             Some(DocumentSymbol {
                 name,
@@ -551,7 +605,9 @@ fn item_to_symbol(item: &kscr::ast::Item, _doc: &Document) -> Option<DocumentSym
             })
         }
         Item::DataDecl(data) => {
-            let range = Range::default();
+            let range = find_decl_name_span(doc, lexer::TokenKind::KwData, &data.name)
+                .and_then(|s| span_to_range(doc, s))
+                .unwrap_or_default();
             #[allow(deprecated)]
             Some(DocumentSymbol {
                 name: data.name.clone(),
@@ -565,7 +621,9 @@ fn item_to_symbol(item: &kscr::ast::Item, _doc: &Document) -> Option<DocumentSym
             })
         }
         Item::TypeAlias(alias) => {
-            let range = Range::default();
+            let range = find_decl_name_span(doc, lexer::TokenKind::KwType, &alias.name)
+                .and_then(|s| span_to_range(doc, s))
+                .unwrap_or_default();
             #[allow(deprecated)]
             Some(DocumentSymbol {
                 name: alias.name.clone(),
@@ -579,7 +637,9 @@ fn item_to_symbol(item: &kscr::ast::Item, _doc: &Document) -> Option<DocumentSym
             })
         }
         Item::ClassDecl(class) => {
-            let range = Range::default();
+            let range = find_decl_name_span(doc, lexer::TokenKind::KwClass, &class.name)
+                .and_then(|s| span_to_range(doc, s))
+                .unwrap_or_default();
             #[allow(deprecated)]
             Some(DocumentSymbol {
                 name: class.name.clone(),

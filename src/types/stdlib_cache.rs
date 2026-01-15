@@ -12,28 +12,19 @@ struct CachedAst {
 }
 
 #[derive(Clone)]
-struct CachedScheme {
-    modified: Option<SystemTime>,
-    len: u64,
-    schemes: HashMap<String, super::Scheme>,
-}
-
-#[derive(Clone)]
 struct CachedModuleTypecheck {
-    ast_hash: u64,
     schemes: HashMap<String, super::Scheme>,
 }
 
 static STDLIB_AST_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedAst>>> = OnceLock::new();
-static STDLIB_SCHEME_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedScheme>>> = OnceLock::new();
 static MODULE_TYPECHECK_CACHE: OnceLock<Mutex<HashMap<u64, CachedModuleTypecheck>>> = OnceLock::new();
 
 pub(super) fn hash_module_ast(module: &ast::Module) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    
+
     let mut hasher = DefaultHasher::new();
-    
+
     // Hash the complete module source representation
     let module_str = format!("{:?}", module);
     module_str.hash(&mut hasher);
@@ -61,7 +52,6 @@ pub(super) fn store_module_typecheck_cache(
         cache.insert(
             hash,
             CachedModuleTypecheck {
-                ast_hash: hash,
                 schemes: schemes.clone(),
             },
         );
@@ -70,10 +60,6 @@ pub(super) fn store_module_typecheck_cache(
 
 fn stdlib_ast_cache() -> &'static Mutex<HashMap<PathBuf, CachedAst>> {
     STDLIB_AST_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn stdlib_scheme_cache() -> &'static Mutex<HashMap<PathBuf, CachedScheme>> {
-    STDLIB_SCHEME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn module_typecheck_cache() -> &'static Mutex<HashMap<u64, CachedModuleTypecheck>> {
@@ -122,41 +108,4 @@ pub(super) fn load_ast_stdlib_cached(path: &Path) -> Result<Option<ast::Module>>
     }
 
     Ok(Some(m))
-}
-
-pub(super) fn load_schemes_stdlib_cached(
-    path: &Path,
-    compute_schemes: impl FnOnce() -> Result<HashMap<String, super::Scheme>>,
-) -> Result<Option<HashMap<String, super::Scheme>>> {
-    if !is_stdlib_path(path) {
-        return Ok(None);
-    }
-
-    let meta = std::fs::metadata(path)?;
-    let fingerprint_modified = meta.modified().ok();
-    let fingerprint_len = meta.len();
-
-    if let Ok(cache) = stdlib_scheme_cache().lock() {
-        if let Some(cached) = cache.get(path) {
-            if cached.len == fingerprint_len && cached.modified == fingerprint_modified {
-                return Ok(Some(cached.schemes.clone()));
-            }
-        }
-    }
-
-    // Compute schemes outside the lock.
-    let schemes = compute_schemes()?;
-
-    if let Ok(mut cache) = stdlib_scheme_cache().lock() {
-        cache.insert(
-            path.to_path_buf(),
-            CachedScheme {
-                modified: fingerprint_modified,
-                len: fingerprint_len,
-                schemes: schemes.clone(),
-            },
-        );
-    }
-
-    Ok(Some(schemes))
 }
