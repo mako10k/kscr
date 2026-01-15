@@ -1584,6 +1584,14 @@ fn ir_run_main_rational_smoke() {
 }
 
 #[test]
+fn ir_run_main_p0_import_data_case_do_smoke() {
+    let tm = crate::types::typecheck_file(std::path::Path::new("tests/P0/Main.ks")).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+}
+
+#[test]
 fn typecheck_file_do_generalizes_to_monad() {
     let _tm = crate::types::typecheck_file(std::path::Path::new("tests/do_monad.ks")).unwrap();
 }

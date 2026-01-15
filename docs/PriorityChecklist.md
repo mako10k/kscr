@@ -1,104 +1,104 @@
 # Priority Checklist (Agent Memory)
 
-このファイルは、このリポジトリにおける **優先度(P0〜)** の定義と進捗を固定し、以後の会話/セッションでAIが番号を取り違えないための“記憶”として使う。
+This file serves as a **priority definition (P0 and beyond)** and progress tracker for this repository, ensuring that AI does not misinterpret or mix up priority numbers in future conversations/sessions.
 
-- ルール: ここに書かれていない「P番号」は使わない。
-- ルール: 仕様がHaskellと異なる可能性がある項目は **P3(スキップ可)** に入れ、ユーザー指示がない限り実装しない。
+- Rule: Do not use "P numbers" that are not listed here.
+- Rule: Items that may differ from Haskell specifications should be categorized as **P3 (skippable)** and not implemented unless explicitly instructed by the user.
 
 Last updated: 2026-01-09
 
 ---
 
 ## P0 — End-to-end smoke tests (import traversal)
-目的: 実行系が「複数ファイル」「import traversal」「export/import境界」「qualified ref」まで end-to-end で動くことを最優先で担保。
+Purpose: Ensure that the execution system works end-to-end for "multi-file", "import traversal", "export/import boundaries", and "qualified references" as the highest priority.
 
-Status: 進行中（継続追加OK / ただし“実装済みを再実装”しないよう、下記の完了項目を基準にする）
+Status: In progress (continuous additions allowed, but avoid re-implementing completed items listed below).
 
 ### Done
-- [x] run: import traversal（A→B→Main）を跨いで実行できる（commit: `34c439d`）
-- [x] run: transitive import + qualified ref（`import A as OM; OM.x`）が動く（commit: `34c439d`）
-- [x] run: `import A` が unqualified 参照（`x`）と module qualifier（`A.x`）の両方を許す（commit: `4904ba6`）
-- [x] typecheck: export/import 境界が効き、未exportは入らない（commit: `4904ba6`）
-- [x] run: `import A as A1` / `import B as B1` で同名の衝突を qualified で解消できる（commit: `f276e02`）
-- [x] typecheck: cyclic imports を検出し、エラー文に `cyclic imports` が含まれる（commit: `f276e02`）
+- [x] run: Successfully execute across import traversal (A→B→Main) (commit: `34c439d`)
+- [x] run: Transitive import + qualified reference (`import A as OM; OM.x`) works (commit: `34c439d`)
+- [x] run: `import A` allows both unqualified references (`x`) and module qualifiers (`A.x`) (commit: `4904ba6`)
+- [x] typecheck: Export/import boundaries are enforced, and non-exported items are inaccessible (commit: `4904ba6`)
+- [x] run: Resolve name conflicts using qualified imports (`import A as A1` / `import B as B1`) (commit: `f276e02`)
+- [x] typecheck: Detect cyclic imports, and the error message includes `cyclic imports` (commit: `f276e02`)
 
 ### Next
-- [ ] import traversal: data/constructors + case + do を跨いだより実戦的なスモークを追加（必要になったら）
+- [x] import traversal: Add more realistic smoke tests spanning data/constructors + case + do (tests/P0/Main.ks)
 
 ## P1 — Exceptions via IO (throw/catch/try)
-目的: `throw/catch/try` をIOレイヤで実装し、伝播/捕捉/try(Either化)をスモークで保証。
-- [x] 実装・テスト完了（commit: `4d0c477`）
+Purpose: Implement `throw/catch/try` in the IO layer, ensuring propagation, catching, and try (conversion to Either) through smoke tests.
+- [x] Implementation and testing complete (commit: `4d0c477`)
 
 ## P2 — Braces / Semicolons surface syntax
-目的: 既存インデントブロックに加えて、最低限の brace/`;` 形式を受理。
-対象:
+Purpose: Accept minimal brace/semicolon syntax in addition to existing indentation blocks.
+Targets:
 - `do { ...; ... }`
 - `let a = ...; b = ... in ...`
 - `where { a = ...; b = ... }`
-- [x] 実装・テスト完了（commit: `4d0c477` + 追加テスト/修正）
+- [x] Implementation and testing complete (commit: `4d0c477` + additional tests/fixes)
 
-## P12 — Haskell風の関数clause/ガード (parser desugar)
-目的: Haskell風の書き味（複数clause、ガード、let/where内clause）を AST 拡張せずにパーサで desugar して、既存の型推論/IR/ランタイム変更を最小化する。
+## P12 — Haskell-style function clauses/guards (parser desugar)
+Purpose: Introduce Haskell-style syntax (multiple clauses, guards, clauses in let/where) by desugaring in the parser without extending the AST, minimizing changes to type inference/IR/runtime.
 
-Status: 完了（MVP）
-- [x] top-level: 同名の関数clauseを集約し、単一binding（lambda + case）へdesugar（commit: `71c33a7`）
-- [x] guard付き関数clause（`f x | guard = body`）を受理し `CaseArm.guard` に載せる（commit: `5bf35e1`）
-- [x] let/where内でも同様に clause を集約して desugar（commit: `5bf35e1`）
-- [x] `|` の曖昧性回避: 関数引数の or-pattern は括弧必須（例: `f (0 | 1) = ...`）（commit: `5bf35e1`）
+Status: Complete (MVP)
+- [x] top-level: Aggregate function clauses with the same name into a single binding (lambda + case) (commit: `71c33a7`)
+- [x] Accept guarded function clauses (`f x | guard = body`) and map them to `CaseArm.guard` (commit: `5bf35e1`)
+- [x] Similarly aggregate clauses in let/where and desugar (commit: `5bf35e1`)
+- [x] Resolve ambiguity of `|`: Or-patterns in function arguments require parentheses (e.g., `f (0 | 1) = ...`) (commit: `5bf35e1`)
 
 ## P14 — Interactive REPL (MVP)
-目的: `kscr repl` で対話的に式/定義を評価できるようにし、言語の試行錯誤を速くする。
+Purpose: Enable interactive evaluation of expressions/definitions via `kscr repl`, speeding up language experimentation.
 
-範囲(MVP):
-- 単行入力（式 or `name = expr`）
-- コマンド: `:type <expr>`, `:quit`
-- 実装は既存パイプライン（parse→typecheck→IR→run）を再利用し、毎回フルtypecheckでもOK
+Scope (MVP):
+- Single-line input (expression or `name = expr`)
+- Commands: `:type <expr>`, `:quit`
+- Reuse the existing pipeline (parse→typecheck→IR→run), even if full typechecking is performed each time.
 
 Status: Done
-- [x] 実装 + 最小テスト（REPLコアを関数化してユニットテスト）（commit: `acd80da`）
+- [x] Implementation + minimal tests (REPL core refactored for unit testing) (commit: `acd80da`)
 
 ## P15 — REPL: Readline + module loading
-目的: 対話性の改善（行編集/履歴）と、既存の import 規則に従ったモジュール読み込みを REPL で使えるようにする。
+Purpose: Improve interactivity (line editing/history) and enable module loading in the REPL following existing import rules.
 
-範囲(MVP):
-- Readline: ヒストリ付きの行編集（rustyline）
-  - NOTE: `rustyline` は依存に unsafe を含むため、`--features readline` のときのみ有効（デフォルトは stdio REPL）
-- `:load <path>`: 指定ファイルのディレクトリを基準に import 解決して評価（Main overlayを生成）
-- `:modules`: ロード中モジュール表示
+Scope (MVP):
+- Readline: Line editing with history (via `rustyline`)
+  - NOTE: `rustyline` includes unsafe dependencies, so it is only enabled with `--features readline` (default is stdio REPL).
+- `:load <path>`: Resolve imports relative to the specified file's directory and evaluate (generate Main overlay).
+- `:modules`: Display currently loaded modules.
 
 Status: Done
-- [x] 実装 + テスト + ゲート通過（commit: `29cb45f`）
+- [x] Implementation + tests + gate passing (commit: `29cb45f`)
 
 ## P16 — Typeclasses roadmap (Deriving → Class/Instance)
-目的: 最終的に Haskell 風の `class` / `instance` を実装する。その前提として、まずは "deriving できるクラス" を段階的に導入し、言語/実装の足場を固める。
+Purpose: Gradually introduce Haskell-style `class` / `instance` by first implementing "derivable classes" to establish a foundation for the language/implementation.
 
-### Phase 0 (現状)
-- 制約は内部固定（`Show` / `ShowRow` / `Lacks`）のみで、ユーザ定義クラス/インスタンスは書けない。
-- `Show` は構造的に解決（data宣言を見てフィールドの `Show` を要求）し、実行時の表示は builtin に依存。
+### Phase 0 (Current)
+- Constraints are internally fixed (`Show` / `ShowRow` / `Lacks`), and user-defined classes/instances cannot be written.
+- `Show` is resolved structurally (requires `Show` for fields in data declarations), and runtime display depends on built-ins.
 
-### Phase 1 (MVP): `deriving Show` を明示化
-目的: data型が "勝手に Show 可能" ではなく、明示的に `deriving Show` されたものだけが `Show` 制約を満たすようにする（Haskell 寄せ）。
-- 構文: `data T a = ... deriving (Show)` / `deriving Show`
-- 実装: AST/パーサで deriving リストを保持し、型検査側の `Show` 解決は `deriving Show` を前提にする。
-- 前提条件:
-  - data宣言が import traversal で一貫して収集できること（P0/P13D で担保済み）
-  - デフォルトビルドで unsafe 依存が入らないこと（ゲート維持）
+### Phase 1 (MVP): Explicit `deriving Show`
+Purpose: Only data types explicitly marked with `deriving Show` satisfy the `Show` constraint (aligning with Haskell).
+- Syntax: `data T a = ... deriving (Show)` / `deriving Show`
+- Implementation: Parser retains deriving lists, and typechecking resolves `Show` based on `deriving Show`.
+- Prerequisites:
+  - Data declarations are consistently collected during import traversal (ensured by P0/P13D).
+  - Default builds do not introduce unsafe dependencies (gate maintained).
 
-### Phase 2: `deriving Eq`（まだ class/instance 無し）
-目的: `Eq` を "構造的に" 解決できる範囲で導入し、`(==)` を data 型にも拡張する。
-- まずは deriving がある data のみに限定
-- 制約/推論/実行時の整合（Eq辞書はまだ導入せず builtin でOK）
+### Phase 2: `deriving Eq` (no class/instance yet)
+Purpose: Introduce `Eq` for data types in a "structural" manner, extending `(==)` to data types.
+- Initially limited to data types with deriving.
+- Ensure consistency in constraints/inference/runtime (Eq dictionaries are not yet introduced; built-ins suffice).
 
-### Phase 3: `class`/`instance` (最終ゴール)
-目的: ユーザ定義クラス/インスタンス・制約付き多相（dictionary passing を含む）を実装。
-- 構文: `class C a where ...` / `instance C T where ...`
-- 型検査: インスタンス環境 + 解決（候補探索、曖昧性/重複、スコープ）
-- IR/ランタイム: 辞書表現（レコード）と呼び出し変換
-- 互換: Phase 1/2 の deriving は、最終的には `instance Show (T a)` などへ desugar できる形にする
+### Phase 3: `class`/`instance` (Final Goal)
+Purpose: Implement user-defined classes/instances and constraint-based polymorphism (including dictionary passing).
+- Syntax: `class C a where ...` / `instance C T where ...`
+- Typechecking: Instance environment + resolution (candidate search, ambiguity/duplication, scoping).
+- IR/Runtime: Dictionary representation (records) and invocation transformation.
+- Compatibility: Deriving from Phases 1/2 should eventually desugar into forms like `instance Show (T a)`.
 
 Status:
-- [x] Phase 1: deriving Show の実装 + テスト + ゲート通過（commit: `e72ce94`）
-- [x] Phase 2: deriving Eq implementation + tests (commit: `86066b8`)
+- [x] Phase 1: `deriving Show` implementation + tests + gate passing (commit: `e72ce94`)
+- [x] Phase 2: `deriving Eq` implementation + tests (commit: `86066b8`)
   - ✅ `deriving Eq` and `deriving (Eq, Show)` syntax support
   - ✅ Eq constraint resolution and dictionary passing
   - ✅ `(==)` and `(/=)` implementation
@@ -107,133 +107,133 @@ Status:
 
 **Current status**: Phase 2 complete. Both Show and Eq implemented with dictionary passing.
 
-## P13 — Imports/Exports を Haskell 寄せ（おすすめ順で実施）
-目的: import/export まわりのHaskell的な「書き味」「名前解決の分かりやすさ」「仕様固定」を段階的に改善する。
+## P13 — Align imports/exports with Haskell (recommended order)
+Purpose: Gradually improve the "feel", clarity of name resolution, and specification of imports/exports to align with Haskell.
 
 Recommended order:
-1) P13C（診断強化） → 2) P13D（探索/仕様固定） → 3) P13A（表面構文） → 4) P13B（export粒度）
+1) P13C (diagnostic improvements) → 2) P13D (resolution/specification) → 3) P13A (surface syntax) → 4) P13B (export granularity)
 
-- [x] **P13C: import名前解決の診断強化**（同名衝突の説明、候補提示、unknown qualifier で許容qualifier表示 など）
-  - done: better conflict/qualifier errors + tests (commit: `bac0b11`)
-- [x] **P13D: import探索の仕様固定**（探索順/モジュール名↔パスのルール化 + スモーク）
-  - rule: try `<importer_dir>/<Module>.ks` then `<repo>/stdlib/<Module>.ks`; on miss, error shows tried paths
-  - rule: imported module must declare `module <Module> where` (mismatch is error)
-  - tests: local-over-stdlib shadowing, tried-paths in error, module name mismatch (commit: `7985565`)
-- [x] **P13A: import文の表面構文をHaskell寄せ**（`import qualified A as OM` 等）
-  - behavior: `import qualified` is qualified-only; `import A as OM` is unqualified+OM qualifier
-  - tests: updated existing smokes + added unqualified+qualifier smoke (commit: `2699f9e`)
-- [x] **P13B: exportの粒度強化**（`export T(..)` / `export T(C1, C2)`）
-  - done: export spec parsing + ctor subset + qualified import cannot bypass (commit: `c11239d`)
+- [x] **P13C: Diagnostic improvements for import name resolution** (e.g., explain conflicts, suggest qualifiers, show allowed qualifiers for unknown qualifiers).
+  - Done: Better conflict/qualifier errors + tests (commit: `bac0b11`)
+- [x] **P13D: Fix import resolution rules/specification** (e.g., resolution order, module name ↔ path rules + smoke tests).
+  - Rule: Try `<importer_dir>/<Module>.ks` then `<repo>/stdlib/<Module>.ks`; on miss, error shows tried paths.
+  - Rule: Imported module must declare `module <Module> where` (mismatch is an error).
+  - Tests: Local-over-stdlib shadowing, tried-paths in error, module name mismatch (commit: `7985565`)
+- [x] **P13A: Align import syntax with Haskell** (e.g., `import qualified A as OM`).
+  - Behavior: `import qualified` is qualified-only; `import A as OM` is unqualified + OM qualifier.
+  - Tests: Updated existing smokes + added unqualified + qualifier smoke (commit: `2699f9e`)
+- [x] **P13B: Strengthen export granularity** (e.g., `export T(..)` / `export T(C1, C2)`).
+  - Done: Export spec parsing + constructor subset + qualified import cannot bypass (commit: `c11239d`)
 
-## P3 — Haskellと違う可能性がある仕様 (スキップ可)
-目的: 仕様書に書いてあっても、Haskellと差が出そう/設計が曖昧なら勝手に実装しない。
-候補(例):
-- その他、文法・意味論でHaskellと差がありうるもの
-- [ ] 原則スキップ（※誤って実装した分は revert 済: `4996536`）
+## P3 — Specifications that may differ from Haskell (skippable)
+Purpose: Even if documented, items that may differ from Haskell or have ambiguous designs should not be implemented without explicit instructions.
+Candidates (examples):
+- Other syntax/semantics that may differ from Haskell.
+- [ ] Skip by default (mistakenly implemented items have been reverted: `4996536`).
 
 ## P4 — Numeric/Doc consistency (MVP)
-目的: 現状実装(ランタイム/stdlib)とdocsの齟齬を無くし、危険な挙動(オーバーフロー等)をMVPとして安全側へ。
-内容:
-- Integer演算を checked 化し overflow をランタイムエラーに
-- docsの String/Integer のMVP仕様を現実装に合わせて整合
-- [x] 完了（commit: `94a57f5`）
+Purpose: Eliminate discrepancies between current implementation (runtime/stdlib) and documentation, ensuring safe behavior (e.g., overflow handling) as an MVP.
+Contents:
+- Make Integer operations checked to raise runtime errors on overflow.
+- Align String/Integer MVP specifications in docs with the current implementation.
+- [x] Complete (commit: `94a57f5`)
 
-## P5 — Backend numeric types + checked casts at boundaries (次の実装対象)
-目的: docs(ImplementationPlan/TypeSystem/IR)にある「LLVM-aligned backend numeric types」と「境界でのchecked cast」を、MVPとして実装可能な範囲で入れる。
-範囲(案):
-- 型表現に `i32/i64` や `f32/f64` 相当(内部用)を導入（表面構文は最小限でも良い）
-- リテラル/FFI境界（※FFI自体は後続でも可）での checked cast をIR/ランタイムで表現し、失敗時は実行時エラー
-- テスト: cast成功/失敗(overflow/invalid)のスモーク
+## P5 — Backend numeric types + checked casts at boundaries (next target)
+Purpose: Implement "LLVM-aligned backend numeric types" and "checked casts at boundaries" as described in docs (ImplementationPlan/TypeSystem/IR) within an MVP scope.
+Scope (proposal):
+- Introduce `i32/i64` and `f32/f64` equivalents (internal use) in type representation (minimal surface syntax is acceptable).
+- Represent checked casts at literal/FFI boundaries (FFI itself can be deferred) in IR/runtime, raising runtime errors on failure.
+- Tests: Smoke tests for successful/failed casts (overflow/invalid).
 
-Status: 完了（MVP）
-- [x] ランタイム値: `Integer`/`Float64` を `i64`/`f64` として保持（リテラル境界でparse、失敗は実行時エラー）
-- [x] 注釈境界: `(:: i32/i64/f32/f64)` を checked cast としてIRに残し、失敗は実行時エラー
-- [ ] 追加の境界(FFIなど)は後続
+Status: Complete (MVP)
+- [x] Runtime values: Store `Integer`/`Float64` as `i64`/`f64` (parse at literal boundaries, raise runtime errors on failure).
+- [x] Annotation boundaries: Represent `(:: i32/i64/f32/f64)` as checked casts in IR, raising runtime errors on failure.
+- [ ] Additional boundaries (e.g., FFI) deferred.
 
 ## P6 — Minimal FFI boundary (unsafe-free scaffold)
-目的: 本物のC ABI呼び出しは `unsafe` を要求しうるため、まずは **FFI境界の振る舞い（引数/戻りのchecked cast）** を builtin でスモークできる形にする。
-範囲:
-- `ffiAddI32 :: i32 -> i32 -> i32` など、backend numeric types を要求する builtin を追加
-- 呼び出し境界で range/overflow を検査し、失敗時は runtime error
-- テスト: 正常系・引数out-of-range・演算overflow
+Purpose: Since real C ABI calls may require `unsafe`, first implement **FFI boundary behavior (checked casts for arguments/returns)** in a form that can be smoked with built-ins.
+Scope:
+- Add built-ins like `ffiAddI32 :: i32 -> i32 -> i32` requiring backend numeric types.
+- Check range/overflow at call boundaries, raising runtime errors on failure.
+- Tests: Normal cases, out-of-range arguments, overflow.
 
-Status: 完了（MVP）
-- [x] `ffiAddI32`/`ffiAddF32` builtin を追加
-- [x] 呼び出し境界で checked range/overflow
-- [x] スモークテスト追加
+Status: Complete (MVP)
+- [x] Added `ffiAddI32`/`ffiAddF32` built-ins.
+- [x] Checked range/overflow at call boundaries.
+- [x] Added smoke tests.
 
 ---
 
 ## P7 — Unsafe boundary isolation + tracing
-目的: 必要最小限の `unsafe`（FFI/特殊最適化/BigInt等）を **feature flag配下に隔離**し、デバッグ時に「unsafeが使われた」ことを追えるようにする。
-- 実装: `--features unsafe_ffi/unsafe_bigint` 等で有効化（通常ビルドはoff）
-- 観測: `KSCR_DEBUG_UNSAFE=1` で実行すると unsafe 境界通過を stderr に出す
+Purpose: Isolate the minimal `unsafe` (FFI/special optimizations/BigInt, etc.) under **feature flags** and enable tracing to observe when `unsafe` is used during debugging.
+- Implementation: Enable with `--features unsafe_ffi/unsafe_bigint`, etc. (default build is off).
+- Observation: When executed with `KSCR_DEBUG_UNSAFE=1`, output `unsafe` boundary crossings to stderr.
 
-Status: 完了（MVP）
-- [x] feature flag を追加（unsafe_ffi / unsafe_bigint）
-- [x] `KSCR_DEBUG_UNSAFE=1` で 1回だけタグ出力
+Status: Complete (MVP)
+- [x] Added feature flags (`unsafe_ffi` / `unsafe_bigint`).
+- [x] Output tags once per execution with `KSCR_DEBUG_UNSAFE=1`.
 
 ## P8 — Optional BigInt Integer backend
-目的: `Integer` のセマンティクスは常に任意精度（自作safe backend）で揃えつつ、必要なら `num-bigint` を **feature flag配下** で使えるようにする（性能/検証用途）。
-範囲:
-- デフォルト: 自作の可変長Integer backend（unsafe無し）
-- `--features unsafe_bigint`: `num-bigint` backend（optional dep / 別crate隔離）
-- 既存の境界（`:: i32/i64` や ffiAddI32 等）で range check が効くこと
+Purpose: Ensure `Integer` semantics are always arbitrary precision (custom safe backend) while optionally enabling `num-bigint` under **feature flags** for performance/testing purposes.
+Scope:
+- Default: Custom variable-length Integer backend (no unsafe).
+- `--features unsafe_bigint`: `num-bigint` backend (optional dependency / isolated crate).
+- Ensure range checks work at existing boundaries (`:: i32/i64`, `ffiAddI32`, etc.).
 
-Status: 完了（MVP）
+Status: Complete (MVP)
 
 ## P9 — Real C ABI FFI (unsafe isolated)
-目的: 本物のC ABI呼び出しを **feature flag配下でunsafe隔離** しつつ、境界の振る舞い（String→C string、戻り値の型/範囲）をMVPとして確認できるようにする。
+Purpose: Implement real C ABI calls under **feature flags with unsafe isolation**, verifying boundary behavior (e.g., String → C string, return type/range) as an MVP.
 
-範囲(MVP):
-- `--features unsafe_ffi` のときのみ有効な builtin を追加
-  - 例: `ffiPuts :: String -> IO i32`（C標準ライブラリの `puts` を呼ぶ）
-- 文字列境界: interior NUL はエラー
-- `KSCR_DEBUG_UNSAFE=1` で `unsafe used: ffiPuts` を観測可能に
-- テスト: feature付きで `ffiPuts` が実行できるスモーク
+Scope (MVP):
+- Add built-ins only enabled with `--features unsafe_ffi`.
+  - Example: `ffiPuts :: String -> IO i32` (calls C standard library `puts`).
+- String boundary: Interior NUL is an error.
+- Observe `unsafe used: ffiPuts` with `KSCR_DEBUG_UNSAFE=1`.
+- Tests: Smoke tests with the feature enabled.
 
-注意:
-- `cfg(feature = "unsafe_ffi")` だけだと `cargo geiger` が unsafe 構文を検出してしまうため、**unsafeは別crate（optional dep）に隔離する** 方針で進める。
-- これにより、デフォルトビルドの必須ゲート（`cargo geiger`）は維持しつつ、`--features unsafe_ffi` 時だけ unsafe を含む依存を有効化できる。
+Notes:
+- Since `cfg(feature = "unsafe_ffi")` alone causes `cargo geiger` to detect unsafe code, **isolate unsafe into a separate crate (optional dependency)**.
+- This ensures that default builds pass mandatory gates (`cargo geiger`) while enabling unsafe only with `--features unsafe_ffi`.
 
-Status: 完了（MVP）
-- [x] `ffiPuts` を `--features unsafe_ffi` のときのみ有効な builtin として追加
-- [x] unsafe は別crate（optional dep） `kscr_unsafe_ffi` に隔離
-- [x] feature付きスモークテスト追加
+Status: Complete (MVP)
+- [x] Added `ffiPuts` as a built-in enabled only with `--features unsafe_ffi`.
+- [x] Isolated unsafe into a separate crate (optional dependency) `kscr_unsafe_ffi`.
+- [x] Added smoke tests with the feature enabled.
 
-運用（ゲート）:
-- デフォルト必須: `cargo test && cargo clippy -- -D warnings && cargo geiger && cargo +nightly udeps`
-- 任意（unsafe_ffi有効時）: `cargo test --features unsafe_ffi` / `cargo geiger --features unsafe_ffi`
+Operation (gates):
+- Default mandatory: `cargo test && cargo clippy -- -D warnings && cargo geiger && cargo +nightly udeps`.
+- Optional (with unsafe_ffi enabled): `cargo test --features unsafe_ffi` / `cargo geiger --features unsafe_ffi`.
 
 ## P10 — Unsafe features gate policy
-目的: `unsafe_ffi` / `unsafe_bigint` など **unsafeを含みうるfeature** を、CI/運用でどう検証するかを固定し、破綻しないルールにする。
+Purpose: Establish CI/operational rules for verifying **unsafe features** like `unsafe_ffi` / `unsafe_bigint`, ensuring no breakage.
 
-方針(MVP):
-- デフォルトビルド（feature無し）:
-  - `kscr` 本体は `#![forbid(unsafe_code)]` を付与し、unsafeはそもそも書けない
-  - 必須ゲート: `cargo test && cargo clippy -- -D warnings && cargo geiger && cargo +nightly udeps`
-- unsafe feature（例: `unsafe_ffi` / `unsafe_bigint`）:
-  - unsafeは別crate（optional dep）に隔離
-  - 別ジョブで `cargo test --features ...` を回す
-  - `cargo geiger --features ...` は「許容（ただし対象crateが増えない/件数が増えない）」を監視
+Policy (MVP):
+- Default build (no features):
+  - `kscr` main crate is marked with `#![forbid(unsafe_code)]`, prohibiting unsafe code entirely.
+  - Mandatory gates: `cargo test && cargo clippy -- -D warnings && cargo geiger && cargo +nightly udeps`.
+- Unsafe features (e.g., `unsafe_ffi` / `unsafe_bigint`):
+  - Isolate unsafe into separate crates (optional dependencies).
+  - Run separate jobs for `cargo test --features ...`.
+  - Monitor `cargo geiger --features ...` to ensure no new unsafe code or dependencies are introduced.
 
-Status: 完了（MVP）
-- [x] 方針決定（上記）
-- [ ] CI反映（このリポジトリのCI導入/更新が必要なら別タスク）
+Status: Complete (MVP)
+- [x] Policy established (as above).
+- [ ] CI integration (requires separate task if CI needs to be introduced/updated for this repository).
 
 ## P11 — Isolate BigInt backend into subcrate
-目的: `unsafe_bigint`（任意精度Integer）を別crate（optional dep）に隔離し、`kscr` 本体から `num-bigint` 依存を排除してデフォルトゲートを安定させる。
+Purpose: Isolate `unsafe_bigint` (arbitrary precision Integer) into a separate crate (optional dependency), removing `num-bigint` dependency from the `kscr` main crate to stabilize default gates.
 
-範囲(MVP):
-- `crates/kscr_unsafe_bigint` を追加（`num-bigint` 依存をここに閉じ込める）
-- `--features unsafe_bigint` は `dep:kscr_unsafe_bigint` を有効化する
-- `src/ir.rs` から `num_bigint::...` 参照を削除し、subcrate API 経由にする
+Scope (MVP):
+- Add `crates/kscr_unsafe_bigint` (encapsulate `num-bigint` dependency here).
+- `--features unsafe_bigint` enables `dep:kscr_unsafe_bigint`.
+- Remove `num_bigint::...` references from `src/ir.rs`, using the subcrate API instead.
 
-Status: 完了（MVP）
-- [x] subcrate 追加
-- [x] feature配線
-- [x] 既存テストが `--features unsafe_bigint` で通る
+Status: Complete (MVP)
+- [x] Added subcrate.
+- [x] Feature wiring.
+- [x] Existing tests pass with `--features unsafe_bigint`.
 
 ## Notes
-- 以後「P5を実装」と言われたら **このファイルのP5** を実装する。
-- 新しい優先度が必要になったら、このファイルを更新してから着手する。
+- From now on, if asked to "implement P5", refer to **P5 in this file**.
+- If a new priority is needed, update this file before starting work.
