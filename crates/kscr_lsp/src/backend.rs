@@ -6,6 +6,7 @@
 use crate::vfs::{Document, Vfs};
 use kscr::{error::Error as KscrError, lexer, parser, types};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -87,22 +88,44 @@ impl Backend {
 
     /// Typecheck a document
     async fn typecheck_document(&self, doc: &Document) -> std::result::Result<(), KscrError> {
-        // For now, we use the file path if it exists
-        // In the future, we should handle VFS-only documents
-        let path = doc
-            .uri
-            .to_file_path()
-            .map_err(|_| KscrError::msg("Cannot convert URI to file path"))?;
-
-        if !path.exists() {
-            // Document is not saved yet, skip typechecking for now
-            // TODO: Write to temp file and typecheck
-            return Ok(());
-        }
-
-        types::typecheck_file(&path)?;
-        Ok(())
+        typecheck_document_text(&doc.uri, &doc.text)
     }
+}
+
+fn typecheck_document_text(uri: &Url, text: &str) -> std::result::Result<(), KscrError> {
+    let path = uri
+        .to_file_path()
+        .map_err(|_| KscrError::msg("Cannot convert URI to file path"))?;
+
+    if path.exists() {
+        types::typecheck_file(&path)?;
+        return Ok(());
+    }
+
+    // Unsaved file: write to a temp file in the same directory so that
+    // import resolution (relative to importer dir) behaves as expected.
+    let parent = path
+        .parent()
+        .filter(|p| p.exists())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir);
+
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unsaved");
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+
+    let tmp_path = parent.join(format!(".kscr-lsp-{stem}-{pid}-{nanos}.ks"));
+    std::fs::write(&tmp_path, text)?;
+
+    let res = types::typecheck_file(&tmp_path).map(|_| ());
+    let _ = std::fs::remove_file(&tmp_path);
+    res
 }
 
 fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
@@ -171,6 +194,25 @@ mod tests {
         assert_eq!(r.start.character, 0);
         assert_eq!(r.end.line, 1);
         assert_eq!(r.end.character, 2);
+    }
+
+    #[test]
+    fn typecheck_unsaved_document_uses_tempfile() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("kscr-lsp-unsaved-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("Main.ks");
+        assert!(!path.exists());
+
+        let uri = Url::from_file_path(&path).unwrap();
+        let src = "module Main where\n  main = IO ()\n";
+        typecheck_document_text(&uri, src).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
