@@ -2,4 +2,4 @@
 .vscode/**
 **/*.ts
 **/*.map
-node_modules/**
+*.vsix

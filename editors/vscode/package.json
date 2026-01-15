@@ -1,8 +1,8 @@
 {
   "name": "kscr-vscode",
   "displayName": "kscr",
-  "description": "Syntax highlighting and basic editing support for kscr (.ks).",
-  "version": "0.0.1",
+  "description": "Syntax highlighting and LSP support for kscr (.ks).",
+  "version": "0.0.2",
   "publisher": "mako10k",
   "repository": {
     "type": "git",
@@ -16,6 +16,8 @@
   "categories": [
     "Programming Languages"
   ],
+  "main": "./extension.js",
+  "activationEvents": [],
   "contributes": {
     "languages": [
       {
@@ -36,6 +38,30 @@
         "scopeName": "source.kscr",
         "path": "./syntaxes/kscr.tmLanguage.json"
       }
+    ],
+    "configuration": {
+      "title": "kscr",
+      "properties": {
+        "kscr.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the kscr Language Server (kscr-lsp)."
+        },
+        "kscr.lsp.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the kscr-lsp binary. If empty, the extension will try to run 'kscr-lsp' from PATH."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "kscr.lsp.restart",
+        "title": "kscr: Restart Language Server"
+      }
     ]
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
   }
 }

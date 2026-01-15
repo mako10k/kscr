@@ -17,7 +17,7 @@ The binary will be at: `crates/kscr_lsp/target/release/kscr-lsp`
 
 ### Option 1: Use the kscr Extension (Recommended)
 
-The VS Code extension in `editors/vscode` will be updated to automatically use the LSP server.
+The VS Code extension in `editors/vscode` includes an LSP client. Build `kscr-lsp` and set `kscr.lsp.serverPath`.
 
 ### Option 2: Manual Configuration
 
