@@ -2707,9 +2707,23 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
     let first = parse_expr(ts, Stop::Pattern)?;
 
-    // List range: [a..b] (Enum-based desugar)
+    // List ranges (Enum-based desugar)
+    // - [a..b]      => enumFromTo a b
+    // - [a..]       => enumFrom a
+    // - [a,b..c]    => enumFromThenTo a b c
+    // - [a,b..]     => enumFromThen a b
     if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
         ts.bump();
+
+        if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
+            ts.bump();
+            let kind = ast::ExprKind::Apply {
+                func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("enumFrom".to_string()))),
+                args: vec![first],
+            };
+            return Ok(expr_from(ts, start, kind));
+        }
+
         let end = parse_expr(ts, Stop::Pattern)?;
         ts.expect(TokenKind::RBracket)?;
 
@@ -2718,6 +2732,40 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
             args: vec![first, end],
         };
         return Ok(expr_from(ts, start, kind));
+    }
+
+    // Step ranges start with a comma.
+    if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        let save = (ts.i, ts.last_span_end);
+        ts.bump();
+        let second = parse_expr(ts, Stop::Pattern)?;
+        if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
+            ts.bump();
+
+            if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
+                ts.bump();
+                let kind = ast::ExprKind::Apply {
+                    func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
+                        "enumFromThen".to_string(),
+                    ))),
+                    args: vec![first, second],
+                };
+                return Ok(expr_from(ts, start, kind));
+            }
+
+            let end = parse_expr(ts, Stop::Pattern)?;
+            ts.expect(TokenKind::RBracket)?;
+            let kind = ast::ExprKind::Apply {
+                func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
+                    "enumFromThenTo".to_string(),
+                ))),
+                args: vec![first, second, end],
+            };
+            return Ok(expr_from(ts, start, kind));
+        }
+
+        // Not a step range; rewind and parse as a normal list literal.
+        (ts.i, ts.last_span_end) = save;
     }
 
     // List comprehension: [ expr | generator_list ]

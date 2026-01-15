@@ -1,5 +1,5 @@
 module Prelude where
-  export String, print, readLine, getLine, putStr, putStrLn, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Rational(..), numerator, denominator, toPair, Enum(..), enumFromTo, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export String, print, readLine, getLine, putStr, putStrLn, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Rational(..), numerator, denominator, toPair, Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   import Prelude.Functor
   import Prelude.Applicative
@@ -16,10 +16,19 @@ module Prelude where
   type String = [Char]
 
   class Enum a where
+    enumFrom :: a -> [a]
+    enumFromThen :: a -> a -> [a]
     enumFromTo :: a -> a -> [a]
+    enumFromThenTo :: a -> a -> a -> [a]
 
   instance Enum Integer where
+    enumFrom a = a : enumFrom (a + 1)
+
+    enumFromThen a b = let step = b - a in a : enumFromThen (a + step) (a + step + step)
+
     enumFromTo a b = if a > b then [] else a : enumFromTo (a + 1) b
+
+    enumFromThenTo a b c = let step = b - a in if step > 0 then (if a > c then [] else a : enumFromThenTo (a + step) (a + step + step) c) else (if a < c then [] else a : enumFromThenTo (a + step) (a + step + step) c)
 
   instance Functor IO where
     fmap f ma = __ioBind ma (\a -> IO (f a))

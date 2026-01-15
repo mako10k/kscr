@@ -167,6 +167,54 @@ fn parser_list_range_sugar_desugars_to_enum_from_to() {
 }
 
 #[test]
+fn parser_list_range_sugar_desugars_to_enum_from() {
+    let m = crate::parser::parse_module("xs = [1..]\n").unwrap();
+    let crate::ast::Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+
+    match &b.expr.kind {
+        crate::ast::ExprKind::Apply { func, args } => {
+            assert!(matches!(&func.kind, crate::ast::ExprKind::Var(s) if s == "enumFrom"));
+            assert_eq!(args.len(), 1);
+        }
+        other => panic!("expected apply, got {other:?}"),
+    }
+}
+
+#[test]
+fn parser_list_range_sugar_desugars_to_enum_from_then_to() {
+    let m = crate::parser::parse_module("xs = [1,3..10]\n").unwrap();
+    let crate::ast::Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+
+    match &b.expr.kind {
+        crate::ast::ExprKind::Apply { func, args } => {
+            assert!(matches!(&func.kind, crate::ast::ExprKind::Var(s) if s == "enumFromThenTo"));
+            assert_eq!(args.len(), 3);
+        }
+        other => panic!("expected apply, got {other:?}"),
+    }
+}
+
+#[test]
+fn parser_list_range_sugar_desugars_to_enum_from_then() {
+    let m = crate::parser::parse_module("xs = [1,3..]\n").unwrap();
+    let crate::ast::Item::Binding(b) = &m.items[0] else {
+        panic!("expected binding");
+    };
+
+    match &b.expr.kind {
+        crate::ast::ExprKind::Apply { func, args } => {
+            assert!(matches!(&func.kind, crate::ast::ExprKind::Var(s) if s == "enumFromThen"));
+            assert_eq!(args.len(), 2);
+        }
+        other => panic!("expected apply, got {other:?}"),
+    }
+}
+
+#[test]
 fn parser_binding_patterns() {
     let src = std::fs::read_to_string("tests/parser_binding_patterns.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
@@ -908,6 +956,75 @@ fn ir_run_main_list_range_sugar() {
 
     let main_path = dir.join("Main.ks");
     let src = "module Main where\n  import Prelude\n  main = case [1..3] of\n    1:2:3:[] -> IO ()\n    _ -> throw \"assert failed\"\n";
+    std::fs::write(&main_path, src).unwrap();
+
+    let tm = crate::types::typecheck_file(&main_path).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ir_run_main_list_range_sugar_infinite() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("kscr-enum-range-inf-{nanos}"));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let main_path = dir.join("Main.ks");
+    let src = "module Main where\n  import Prelude\n  main = case [1..] of\n    1:2:3:_ -> IO ()\n    _ -> throw \"assert failed\"\n";
+    std::fs::write(&main_path, src).unwrap();
+
+    let tm = crate::types::typecheck_file(&main_path).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ir_run_main_list_range_sugar_step_finite() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("kscr-enum-range-step-{nanos}"));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let main_path = dir.join("Main.ks");
+    let src = "module Main where\n  import Prelude\n  main = case [1,3..10] of\n    1:3:5:7:9:[] -> IO ()\n    _ -> throw \"assert failed\"\n";
+    std::fs::write(&main_path, src).unwrap();
+
+    let tm = crate::types::typecheck_file(&main_path).unwrap();
+    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ir_run_main_list_range_sugar_step_infinite() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("kscr-enum-range-stepinf-{nanos}"));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let main_path = dir.join("Main.ks");
+    let src = "module Main where\n  import Prelude\n  main = case [1,3..] of\n    1:3:5:_ -> IO ()\n    _ -> throw \"assert failed\"\n";
     std::fs::write(&main_path, src).unwrap();
 
     let tm = crate::types::typecheck_file(&main_path).unwrap();
