@@ -27,6 +27,15 @@ impl Error {
             _ => None,
         }
     }
+
+    pub fn with_context(self, ctx: impl fmt::Display) -> Self {
+        let old = self.to_string();
+        let msg = format!("{ctx}: {old}");
+        match self {
+            Error::MsgWithSpan { span, .. } => Error::msg_with_span(msg, span),
+            _ => Error::msg(msg),
+        }
+    }
 }
 
 impl fmt::Display for Error {

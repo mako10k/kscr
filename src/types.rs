@@ -699,7 +699,7 @@ fn infer_pat_in(
     match &pat.kind {
         PatternKind::Var(name) => {
             if !seen.insert(name.clone()) {
-                return Err(Error::msg("duplicate pattern variable"));
+                return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
             }
             let t = cx.fresh();
             binds.push((name.clone(), t.clone()));
@@ -772,7 +772,7 @@ fn infer_pat_in(
 
             if let Some(name) = rest_name {
                 if !seen.insert(name.clone()) {
-                    return Err(Error::msg("duplicate pattern variable"));
+                    return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
                 }
                 binds.push((name.clone(), rest_ty.clone()));
             }
@@ -870,7 +870,7 @@ fn infer_pat_in(
         }
         PatternKind::As(name, p) => {
             if !seen.insert(name.clone()) {
-                return Err(Error::msg("duplicate pattern variable"));
+                return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
             }
             let t = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
             binds.push((name.clone(), apply(subst, t.clone())));
@@ -3012,6 +3012,8 @@ fn infer_expr_in(
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
     use ast::ExprKind;
 
+    let span = expr.span;
+
     fn infer_local_letrec_bindings(
         cx: &mut InferCtx,
         data_env: &DataEnv,
@@ -3135,22 +3137,23 @@ fn infer_expr_in(
                     &mut seen,
                     &mut cs_pat,
                 )
-                .map_err(|e| Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}")))?;
+                .map_err(|e| e.with_context(format!("in {ctx_prefix} binding {ctx_name}")))?;
 
                 let env_in = apply_env(&s, &env_scc);
                 let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cx, data_env, &env_in, b.expr)
-                    .map_err(|e| Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}")))?;
+                    .map_err(|e| e.with_context(format!("in {ctx_prefix} binding {ctx_name}")))?;
                 s = compose(&s_rhs, &s);
 
-                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
-                    .map_err(|e| Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}")))?;
+                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty)).map_err(|e| {
+                    e.with_context(format!("in {ctx_prefix} binding {ctx_name}"))
+                })?;
                 s = compose(&s_pat, &s);
 
                 // Connect binder types to their placeholders so recursive references unify.
                 for (name, t) in &binds {
                     if let Some(ph) = placeholders.get(name).cloned() {
                         let su = unify(apply(&s, t.clone()), apply(&s, ph)).map_err(|e| {
-                            Error::msg(format!("in {ctx_prefix} binding {ctx_name}: {e}"))
+                            e.with_context(format!("in {ctx_prefix} binding {ctx_name}"))
                         })?;
                         s = compose(&su, &s);
                     }
@@ -3198,9 +3201,9 @@ fn infer_expr_in(
         ExprKind::Char(_) => Ok((Subst::new(), vec![], Ty::Con("Char".to_string()))),
 
         ExprKind::Var(name) => {
-            let s = env
-                .get(&name)
-                .ok_or_else(|| Error::msg(format!("unbound variable: {name}")))?;
+            let s = env.get(&name).ok_or_else(|| {
+                Error::msg_with_span(format!("unbound variable: {name}"), span)
+            })?;
             let (cs, ty) = instantiate_qual(cx, s);
             Ok((Subst::new(), cs, ty))
         }
@@ -3208,14 +3211,14 @@ fn infer_expr_in(
         ExprKind::Ctor(name) => {
             let s = env
                 .get(&name)
-                .ok_or_else(|| Error::msg("unknown constructor"))?;
+                .ok_or_else(|| Error::msg_with_span("unknown constructor", span))?;
             let (cs, ty) = instantiate_qual(cx, s);
             Ok((Subst::new(), cs, ty))
         }
 
         ExprKind::Lambda { params, body } => {
             if params.is_empty() {
-                return Err(Error::msg("expected lambda parameter"));
+                return Err(Error::msg_with_span("expected lambda parameter", span));
             }
 
             let mut env2 = env.clone();
@@ -3313,28 +3316,28 @@ fn infer_expr_in(
             else_branch,
         } => {
             let (s_cond, cs_cond, t_cond) = infer_expr_in(cx, data_env, env, *cond)
-                .map_err(|e| Error::msg(format!("in if cond: {e}")))?;
+                .map_err(|e| e.with_context("in if cond"))?;
             let s_bool = unify(apply(&s_cond, t_cond), Ty::Con("Bool".to_string()))
-                .map_err(|e| Error::msg(format!("in if cond: {e}")))?;
+                .map_err(|e| e.with_context("in if cond"))?;
             let mut s = compose(&s_bool, &s_cond);
             let mut cs = apply_constraints(&s, cs_cond);
 
             let env2 = apply_env(&s, env);
             let (s_then, cs_then, t_then) = infer_expr_in(cx, data_env, &env2, *then_branch)
-                .map_err(|e| Error::msg(format!("in if then: {e}")))?;
+                .map_err(|e| e.with_context("in if then"))?;
             s = compose(&s_then, &s);
             cs = apply_constraints(&s, cs);
             cs.extend(apply_constraints(&s, cs_then));
 
             let env3 = apply_env(&s, env);
             let (s_else, cs_else, t_else) = infer_expr_in(cx, data_env, &env3, *else_branch)
-                .map_err(|e| Error::msg(format!("in if else: {e}")))?;
+                .map_err(|e| e.with_context("in if else"))?;
             s = compose(&s_else, &s);
             cs = apply_constraints(&s, cs);
             cs.extend(apply_constraints(&s, cs_else));
 
             let s_res = unify(apply(&s, t_then.clone()), apply(&s, t_else))
-                .map_err(|e| Error::msg(format!("in if branches: {e}")))?;
+                .map_err(|e| e.with_context("in if branches"))?;
             s = compose(&s_res, &s);
             cs = apply_constraints(&s, cs);
             Ok((s.clone(), cs, apply(&s, apply(&s, t_then))))
@@ -3419,7 +3422,7 @@ fn infer_expr_in(
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "let")?;
             let env_body = apply_env(&s_bind, &env2);
             let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *body)
-                .map_err(|e| Error::msg(format!("in let body: {e}")))?;
+                .map_err(|e| e.with_context("in let body"))?;
             let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
@@ -3428,18 +3431,18 @@ fn infer_expr_in(
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "where")?;
             let env_body = apply_env(&s_bind, &env2);
             let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *expr)
-                .map_err(|e| Error::msg(format!("in where body: {e}")))?;
+                .map_err(|e| e.with_context("in where body"))?;
             let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
 
         ExprKind::Case { expr, arms } => {
             if arms.is_empty() {
-                return Err(Error::msg("empty case"));
+                return Err(Error::msg_with_span("empty case", span));
             }
 
             let (mut s, mut cs, scrut_ty) = infer_expr_in(cx, data_env, env, *expr)
-                .map_err(|e| Error::msg(format!("in case scrutinee: {e}")))?;
+                .map_err(|e| e.with_context("in case scrutinee"))?;
             let mut out_ty = cx.fresh();
 
             let mut pats_for_exhaustive_check: Vec<(ast::Pattern, bool)> = Vec::new();
@@ -3463,10 +3466,10 @@ fn infer_expr_in(
                     &mut seen,
                     &mut cs_pat,
                 )
-                .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
+                .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
 
                 let su_pat = unify(apply(&s, pat_ty), apply(&s, scrut_ty.clone()))
-                    .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
+                    .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
                 s = compose(&su_pat, &s);
                 cs = apply_constraints(&s, cs);
                 cs.extend(apply_constraints(&s, cs_pat));
@@ -3478,26 +3481,26 @@ fn infer_expr_in(
 
                 if let Some(g) = guard {
                     let (s_g, cs_g, t_g) = infer_expr_in(cx, data_env, &env_arm, g)
-                        .map_err(|e| Error::msg(format!("in case arm {arm_no} guard: {e}")))?;
+                        .map_err(|e| e.with_context(format!("in case arm {arm_no} guard")))?;
                     s = compose(&s_g, &s);
                     cs = apply_constraints(&s, cs);
                     cs.extend(apply_constraints(&s, cs_g));
 
                     let su_g = unify(apply(&s, t_g), Ty::Con("Bool".to_string()))
-                        .map_err(|e| Error::msg(format!("in case arm {arm_no} guard: {e}")))?;
+                        .map_err(|e| e.with_context(format!("in case arm {arm_no} guard")))?;
                     s = compose(&su_g, &s);
                     cs = apply_constraints(&s, cs);
                     env_arm = apply_env(&s, &env_arm);
                 }
 
                 let (s_arm, cs_arm, arm_ty) = infer_expr_in(cx, data_env, &env_arm, body)
-                    .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
+                    .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
                 s = compose(&s_arm, &s);
                 cs = apply_constraints(&s, cs);
                 cs.extend(apply_constraints(&s, cs_arm));
 
                 let su_out = unify(apply(&s, out_ty.clone()), apply(&s, arm_ty))
-                    .map_err(|e| Error::msg(format!("in case arm {arm_no}: {e}")))?;
+                    .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
                 s = compose(&su_out, &s);
                 cs = apply_constraints(&s, cs);
                 out_ty = apply(&s, out_ty);
@@ -3505,14 +3508,14 @@ fn infer_expr_in(
 
             let scrut_ty = apply(&s, scrut_ty);
             check_case_exhaustive(data_env, &scrut_ty, &pats_for_exhaustive_check)
-                .map_err(|e| Error::msg(format!("in case: {e}")))?;
+                .map_err(|e| e.with_context("in case"))?;
 
             Ok((s.clone(), cs, apply(&s, out_ty)))
         }
 
         ExprKind::Do(stmts) => {
             if stmts.is_empty() {
-                return Err(Error::msg("empty do"));
+                return Err(Error::msg_with_span("empty do", span));
             }
 
             let n = stmts.len();
@@ -3541,11 +3544,11 @@ fn infer_expr_in(
                             &mut seen,
                             &mut cs_pat,
                         )
-                        .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
+                        .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
 
                         let env_in = apply_env(&s, &env2);
                         let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, expr)
-                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
+                            .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
                         s = compose(&s_e, &s);
                         cs = apply_constraints(&s, cs);
                         cs.extend(apply_constraints(&s, cs_e));
@@ -3558,12 +3561,12 @@ fn infer_expr_in(
                                 args: vec![io_r.clone()],
                             },
                         )
-                        .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
+                        .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
                         s = compose(&su, &s);
                         cs = apply_constraints(&s, cs);
 
                         let su_pat = unify(apply(&s, pat_ty), apply(&s, io_r.clone()))
-                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no} (<-): {e}")))?;
+                            .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
                         s = compose(&su_pat, &s);
                         cs = apply_constraints(&s, cs);
                         cs.extend(apply_constraints(&s, cs_pat));
@@ -3585,7 +3588,7 @@ fn infer_expr_in(
                     ast::DoStmt::Expr(e) => {
                         let env_in = apply_env(&s, &env2);
                         let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, e)
-                            .map_err(|e| Error::msg(format!("in do stmt {stmt_no}: {e}")))?;
+                            .map_err(|e| e.with_context(format!("in do stmt {stmt_no}")))?;
                         s = compose(&s_e, &s);
                         cs = apply_constraints(&s, cs);
                         cs.extend(apply_constraints(&s, cs_e));
@@ -3598,7 +3601,7 @@ fn infer_expr_in(
                                 args: vec![io_r.clone()],
                             },
                         )
-                        .map_err(|e| Error::msg(format!("in do stmt {stmt_no}: {e}")))?;
+                        .map_err(|e| e.with_context(format!("in do stmt {stmt_no}")))?;
                         s = compose(&su, &s);
                         cs = apply_constraints(&s, cs);
 
@@ -3614,7 +3617,7 @@ fn infer_expr_in(
                 }
             }
 
-            let last_ty = last_ty.ok_or_else(|| Error::msg("do must end with expression"))?;
+            let last_ty = last_ty.ok_or_else(|| Error::msg_with_span("do must end with expression", span))?;
             Ok((s.clone(), cs, apply(&s, last_ty)))
         }
     }
@@ -7415,15 +7418,15 @@ fn infer_module_with_class_env(
                 &mut seen,
                 &mut cs_pat,
             )
-            .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+            .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
             let env_in = apply_env(&subst, &env_scc);
             let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &data_env, &env_in, b.expr.clone())
-                .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+                .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
             subst = compose(&s_rhs, &subst);
 
             let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))
-                .map_err(|e| Error::msg(format!("in binding {ctx_name}: {e}")))?;
+                .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
             subst = compose(&s_pat, &subst);
 
             let mut cs = cs_rhs;

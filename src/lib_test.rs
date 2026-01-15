@@ -51,6 +51,14 @@ fn parser_error_has_span() {
 }
 
 #[test]
+fn type_error_has_span() {
+    let src = "module Main where\n  x = zzz\n  main = IO ()\n";
+    let ast = crate::parser::parse_module(src).unwrap();
+    let e = crate::types::typecheck(ast).unwrap_err();
+    assert_eq!(e.span(), Some(crate::lexer::Span { start: 24, end: 27 }));
+}
+
+#[test]
 fn parser_class_and_instance_basic() {
     let src = r#"
 class C a where
