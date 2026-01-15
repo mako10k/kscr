@@ -9,6 +9,7 @@ pub(crate) enum Stop {
     LetBind,
     SemiOrRBrace,
     Pattern,
+    Arrow,
     LineEnd,
 }
 
@@ -242,7 +243,11 @@ impl TokenStream {
             (Stop::Of, Some(TokenKind::KwOf)) => false,
             (Stop::LetBind, Some(TokenKind::Semicolon | TokenKind::KwIn)) => false,
             (Stop::SemiOrRBrace, Some(TokenKind::Semicolon | TokenKind::RBrace)) => false,
-            (Stop::Pattern, Some(TokenKind::Arrow | TokenKind::Eq | TokenKind::Comma)) => false,
+            (Stop::Arrow, Some(TokenKind::Arrow)) => false,
+            (Stop::Pattern, Some(TokenKind::Arrow | TokenKind::Eq | TokenKind::Comma | TokenKind::Pipe)) => false,
+            // Case guards should accept normal operators like `==`. Do not treat `==` as a pattern
+            // terminator; it's part of the guard expression.
+            (Stop::Pattern, Some(TokenKind::EqEq)) => true,
             (Stop::Pattern, Some(TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace)) => {
                 false
             }
