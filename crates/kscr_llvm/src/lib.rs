@@ -12,7 +12,410 @@
 //! println!("{}", gen.to_string());
 //! ```
 
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
+
+use kscr_ir::ir;
+
+type Result<T> = std::result::Result<T, String>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Action {
+    StdoutWrite(String),
+}
+
+struct LlvmTextGen {
+    module_name: String,
+    out: String,
+    str_pool: BTreeMap<String, String>,
+    next_str_id: usize,
+    next_tmp_id: usize,
+}
+
+impl LlvmTextGen {
+    fn new(module_name: &str) -> Self {
+        let mut this = Self {
+            module_name: module_name.to_string(),
+            out: String::new(),
+            str_pool: BTreeMap::new(),
+            next_str_id: 0,
+            next_tmp_id: 0,
+        };
+        this.emit_header();
+        this
+    }
+
+    fn emit_header(&mut self) {
+        writeln!(&mut self.out, "; ModuleID = '{}'", self.module_name).unwrap();
+        writeln!(&mut self.out, "source_filename = \"{}\"", self.module_name).unwrap();
+        writeln!(
+            &mut self.out,
+            "target triple = \"x86_64-unknown-linux-gnu\""
+        )
+        .unwrap();
+        writeln!(&mut self.out).unwrap();
+    }
+
+    fn declare_runtime(&mut self) {
+        writeln!(&mut self.out, "; External declarations").unwrap();
+        writeln!(&mut self.out, "declare i32 @printf(i8*, ...)").unwrap();
+        writeln!(&mut self.out).unwrap();
+    }
+
+    fn intern_string(&mut self, s: &str) -> String {
+        if let Some(name) = self.str_pool.get(s) {
+            return name.clone();
+        }
+        let name = format!("@.str{}", self.next_str_id);
+        self.next_str_id += 1;
+        self.str_pool.insert(s.to_string(), name.clone());
+        name
+    }
+
+    fn emit_string_constants(&mut self) {
+        writeln!(
+            &mut self.out,
+            "@.fmt = private unnamed_addr constant [3 x i8] c\"%s\\00\", align 1"
+        )
+        .unwrap();
+
+        for (s, name) in &self.str_pool {
+            let bytes = escape_llvm_bytes(s);
+            let len = s.len() + 1;
+            writeln!(
+                &mut self.out,
+                "{name} = private unnamed_addr constant [{len} x i8] c\"{bytes}\\00\", align 1"
+            )
+            .unwrap();
+        }
+
+        writeln!(&mut self.out).unwrap();
+    }
+
+    fn emit_main(&mut self, actions: Vec<Action>) {
+        writeln!(&mut self.out, "define i32 @main() {{").unwrap();
+        writeln!(&mut self.out, "entry:").unwrap();
+        writeln!(
+            &mut self.out,
+            "  %fmt = getelementptr inbounds [3 x i8], [3 x i8]* @.fmt, i64 0, i64 0"
+        )
+        .unwrap();
+
+        for action in actions {
+            match action {
+                Action::StdoutWrite(s) => {
+                    let g = self.intern_string(&s);
+                    let len = s.len() + 1;
+                    let tmp = self.next_tmp_id;
+                    self.next_tmp_id += 1;
+                    writeln!(
+                        &mut self.out,
+                        "  %s{tmp} = getelementptr inbounds [{len} x i8], [{len} x i8]* {g}, i64 0, i64 0"
+                    )
+                    .unwrap();
+                    writeln!(
+                        &mut self.out,
+                        "  call i32 (i8*, ...) @printf(i8* %fmt, i8* %s{tmp})"
+                    )
+                    .unwrap();
+                }
+            }
+        }
+
+        writeln!(&mut self.out, "  ret i32 0").unwrap();
+        writeln!(&mut self.out, "}}").unwrap();
+        writeln!(&mut self.out).unwrap();
+    }
+}
+
+/// IR -> LLVM IR text (MVP)
+///
+/// Supported subset:
+/// - `main` binding exists.
+/// - `IrExpr::IoThen` sequencing.
+/// - `stdoutWrite <string-constant>` and `print <string-constant>`.
+/// - terminal `IO ()` (treated as no-op).
+///
+/// Anything else returns an error.
+pub fn lower_ir_to_llvm_text(module: &ir::IrModule, module_name: &str) -> Result<String> {
+    let main = find_main_expr(module)?;
+    let bindings = collect_bindings(module);
+
+    let mut actions = Vec::new();
+    collect_io(&bindings, &mut HashMap::new(), main, &mut actions)?;
+
+    let mut gen = LlvmTextGen::new(module_name);
+    gen.declare_runtime();
+
+    for a in &actions {
+        let Action::StdoutWrite(s) = a;
+        gen.intern_string(s);
+    }
+
+    gen.emit_string_constants();
+    gen.emit_main(actions);
+
+    Ok(gen.out)
+}
+
+fn collect_bindings(module: &ir::IrModule) -> HashMap<String, ir::IrExpr> {
+    let mut out = HashMap::new();
+    for it in &module.items {
+        match it {
+            ir::IrItem::Binding { name, expr } => {
+                out.insert(name.clone(), expr.clone());
+            }
+        }
+    }
+    out
+}
+
+fn find_main_expr(module: &ir::IrModule) -> Result<&ir::IrExpr> {
+    for it in &module.items {
+        match it {
+            ir::IrItem::Binding { name, expr } if name == "main" => return Ok(expr),
+            _ => {}
+        }
+    }
+    Err("no `main` binding found".to_string())
+}
+
+fn collect_io(
+    bindings: &HashMap<String, ir::IrExpr>,
+    visiting: &mut HashMap<String, bool>,
+    expr: &ir::IrExpr,
+    out: &mut Vec<Action>,
+) -> Result<()> {
+    match expr {
+        ir::IrExpr::IoThen { first, then_expr } => {
+            collect_io(bindings, visiting, first, out)?;
+            collect_io(bindings, visiting, then_expr, out)
+        }
+        ir::IrExpr::Apply { func, args } => {
+            let ir::IrExpr::Var(name) = &**func else {
+                return Err(
+                    "LLVM backend MVP supports only calls to IO/stdoutWrite/print".to_string(),
+                );
+            };
+
+            if name == "IO" {
+                if args.len() == 1 {
+                    return Ok(());
+                }
+                return Err("LLVM backend: IO expects 1 arg".to_string());
+            }
+
+            if name == "stdoutWrite" || name == "print" {
+                if args.len() != 1 {
+                    return Err("LLVM backend: stdoutWrite expects 1 arg".to_string());
+                }
+                let s = eval_const_string(bindings, visiting, &args[0])?;
+                out.push(Action::StdoutWrite(s));
+                return Ok(());
+            }
+
+            Err(
+                "LLVM backend MVP supports only IO (), stdoutWrite/print <string>, and IoThen"
+                    .to_string(),
+            )
+        }
+        _ => Err("LLVM backend MVP expects main to be an IO expression".to_string()),
+    }
+}
+
+fn eval_const_string(
+    bindings: &HashMap<String, ir::IrExpr>,
+    visiting: &mut HashMap<String, bool>,
+    expr: &ir::IrExpr,
+) -> Result<String> {
+    match expr {
+        ir::IrExpr::String(s) => Ok(s.clone()),
+        ir::IrExpr::List(es) => {
+            let mut out = String::new();
+            for e in es {
+                match e {
+                    ir::IrExpr::Char(c) => out.push(*c),
+                    _ => {
+                        return Err(
+                            "LLVM backend: list literal must be a [Char] constant".to_string(),
+                        )
+                    }
+                }
+            }
+            Ok(out)
+        }
+        ir::IrExpr::Cons { head, tail } => {
+            let mut out = String::new();
+            append_const_char_list(bindings, visiting, head, tail, &mut out)?;
+            Ok(out)
+        }
+        ir::IrExpr::Apply { .. } => {
+            let (head, args) = collect_apply(expr);
+            let ir::IrExpr::Var(name) = head else {
+                return Err(
+                    "LLVM backend MVP supports only calls to built-in conversion functions"
+                        .to_string(),
+                );
+            };
+
+            match (name.as_str(), args.as_slice()) {
+                ("intToString", [a]) => {
+                    let v = eval_const_i64(bindings, visiting, a)?;
+                    Ok(v.to_string())
+                }
+                ("boolToString", [a]) => {
+                    let v = eval_const_bool(bindings, visiting, a)?;
+                    Ok(if v { "True" } else { "False" }.to_string())
+                }
+                _ => Err(
+                    "LLVM backend MVP supports only intToString/boolToString on constants"
+                        .to_string(),
+                ),
+            }
+        }
+        ir::IrExpr::Var(name) => {
+            let Some(e) = bindings.get(name) else {
+                return Err(format!("LLVM backend: unknown variable in const string: {name}"));
+            };
+            if visiting.get(name).copied().unwrap_or(false) {
+                return Err("LLVM backend: cyclic const string".to_string());
+            }
+            visiting.insert(name.clone(), true);
+            let v = eval_const_string(bindings, visiting, e);
+            visiting.insert(name.clone(), false);
+            v
+        }
+        _ => Err("LLVM backend MVP expects string argument to be a constant".to_string()),
+    }
+}
+
+fn append_const_char_list(
+    bindings: &HashMap<String, ir::IrExpr>,
+    visiting: &mut HashMap<String, bool>,
+    head: &ir::IrExpr,
+    tail: &ir::IrExpr,
+    out: &mut String,
+) -> Result<()> {
+    match head {
+        ir::IrExpr::Char(c) => out.push(*c),
+        _ => {
+            return Err("LLVM backend: cons head must be a Char constant".to_string())
+        }
+    }
+    match tail {
+        ir::IrExpr::List(es) => {
+            for e in es {
+                match e {
+                    ir::IrExpr::Char(c) => out.push(*c),
+                    _ => {
+                        return Err(
+                            "LLVM backend: list literal must be a [Char] constant".to_string(),
+                        )
+                    }
+                }
+            }
+            Ok(())
+        }
+        ir::IrExpr::Cons {
+            head: h,
+            tail: t,
+        } => append_const_char_list(bindings, visiting, h, t, out),
+        ir::IrExpr::Var(_) => {
+            let s = eval_const_string(bindings, visiting, tail)?;
+            out.push_str(&s);
+            Ok(())
+        }
+        _ => Err("LLVM backend: cons tail must be a [Char] constant".to_string()),
+    }
+}
+
+fn collect_apply(expr: &ir::IrExpr) -> (&ir::IrExpr, Vec<&ir::IrExpr>) {
+    let mut head = expr;
+    let mut args_acc: Vec<&ir::IrExpr> = Vec::new();
+    loop {
+        match head {
+            ir::IrExpr::Apply { func, args } => {
+                for a in args.iter().rev() {
+                    args_acc.push(a);
+                }
+                head = func;
+            }
+            _ => break,
+        }
+    }
+    args_acc.reverse();
+    (head, args_acc)
+}
+
+fn eval_const_i64(
+    bindings: &HashMap<String, ir::IrExpr>,
+    visiting: &mut HashMap<String, bool>,
+    expr: &ir::IrExpr,
+) -> Result<i64> {
+    match expr {
+        ir::IrExpr::Integer(s) => s
+            .parse::<i64>()
+            .map_err(|e| format!("LLVM backend: invalid i64 literal: {e}")),
+        ir::IrExpr::Var(name) => {
+            let Some(e) = bindings.get(name) else {
+                return Err(format!("LLVM backend: unknown variable in const int: {name}"));
+            };
+            if visiting.get(name).copied().unwrap_or(false) {
+                return Err("LLVM backend: cyclic const int".to_string());
+            }
+            visiting.insert(name.clone(), true);
+            let v = eval_const_i64(bindings, visiting, e);
+            visiting.insert(name.clone(), false);
+            v
+        }
+        _ => Err(
+            "LLVM backend MVP expects intToString argument to be an Integer constant".to_string(),
+        ),
+    }
+}
+
+fn eval_const_bool(
+    bindings: &HashMap<String, ir::IrExpr>,
+    visiting: &mut HashMap<String, bool>,
+    expr: &ir::IrExpr,
+) -> Result<bool> {
+    match expr {
+        ir::IrExpr::Bool(b) => Ok(*b),
+        ir::IrExpr::Var(name) => {
+            let Some(e) = bindings.get(name) else {
+                return Err(format!("LLVM backend: unknown variable in const bool: {name}"));
+            };
+            if visiting.get(name).copied().unwrap_or(false) {
+                return Err("LLVM backend: cyclic const bool".to_string());
+            }
+            visiting.insert(name.clone(), true);
+            let v = eval_const_bool(bindings, visiting, e);
+            visiting.insert(name.clone(), false);
+            v
+        }
+        _ => Err(
+            "LLVM backend MVP expects boolToString argument to be a Bool constant".to_string(),
+        ),
+    }
+}
+
+fn escape_llvm_bytes(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        match *b {
+            b'\\' => out.push_str("\\5C"),
+            b'\n' => out.push_str("\\0A"),
+            b'\r' => out.push_str("\\0D"),
+            b'\t' => out.push_str("\\09"),
+            b'\"' => out.push_str("\\22"),
+            0x20..=0x7E => out.push(*b as char),
+            _ => {
+                write!(&mut out, "\\{:02X}", b).unwrap();
+            }
+        }
+    }
+    out
+}
 
 /// LLVM IR generator that produces textual LLVM IR
 pub struct LLVMIRGenerator {
@@ -203,5 +606,30 @@ mod tests {
         
         assert!(ir.contains("define i64 @kscr_add_i64(i64 %a, i64 %b)"));
         assert!(ir.contains("add i64 %a, %b"));
+    }
+
+    #[test]
+    fn test_lower_ir_to_llvm_text_mvp_print() {
+        let module = ir::IrModule {
+            items: vec![ir::IrItem::Binding {
+                name: "main".to_string(),
+                expr: ir::IrExpr::IoThen {
+                    first: Box::new(ir::IrExpr::Apply {
+                        func: Box::new(ir::IrExpr::Var("print".to_string())),
+                        args: vec![ir::IrExpr::String("hello".to_string())],
+                    }),
+                    then_expr: Box::new(ir::IrExpr::Apply {
+                        func: Box::new(ir::IrExpr::Var("IO".to_string())),
+                        args: vec![ir::IrExpr::Unit],
+                    }),
+                },
+            }],
+        };
+
+        let text = lower_ir_to_llvm_text(&module, "test").unwrap();
+        assert!(text.contains("define i32 @main()"));
+        assert!(text.contains("declare i32 @printf(i8*, ...)"));
+        assert!(text.contains("@.fmt"));
+        assert!(text.contains("hello"));
     }
 }
