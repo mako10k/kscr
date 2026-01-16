@@ -7059,78 +7059,8 @@ fn infer_module_with_class_env(
     let data_env = collect_data_env(module);
     let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
 
-    // Collect top-level bindings as nodes.
-    let mut bindings: Vec<ast::Binding> = Vec::new();
-    let mut ctx_names: Vec<String> = Vec::new();
-    let mut defined_names: Vec<HashSet<String>> = Vec::new();
-
-    for it in &module.items {
-        let ast::Item::Binding(b) = it else {
-            continue;
-        };
-
-        let ctx = match &b.pat.kind {
-            ast::PatternKind::Var(n) => n.clone(),
-            _ => "<pattern>".to_string(),
-        };
-
-        let mut names = HashSet::new();
-        pat_defined_names(&b.pat, &mut names);
-
-        bindings.push(b.clone());
-        ctx_names.push(ctx);
-        defined_names.push(names);
-    }
-
-    let n = bindings.len();
-    let mut name_to_binding: HashMap<String, usize> = HashMap::new();
-    for (i, names) in defined_names.iter().enumerate() {
-        let mut ns: Vec<&String> = names.iter().collect();
-        ns.sort();
-        for name in ns {
-            // If there are duplicates, let the later phase produce a readable error.
-            name_to_binding.insert(name.clone(), i);
-        }
-    }
-
-    // Build dependency graph between binding-nodes.
-    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for i in 0..n {
-        let mut deps = HashSet::new();
-        let empty: HashSet<String> = HashSet::new();
-        collect_deps_in_expr(&bindings[i].expr, &name_to_binding, &empty, &mut deps);
-        let mut dv: Vec<usize> = deps.into_iter().collect();
-        dv.sort_unstable();
-        graph[i] = dv;
-    }
-
-    let comps = tarjan_scc(&graph);
-    let mut node_to_comp = vec![0usize; n];
-    for (ci, comp) in comps.iter().enumerate() {
-        for &v in comp {
-            node_to_comp[v] = ci;
-        }
-    }
-
-    // Build component graph with edges dependency -> dependent.
-    let comp_n = comps.len();
-    let mut comp_edges: Vec<HashSet<usize>> = vec![HashSet::new(); comp_n];
-    let mut indeg = vec![0usize; comp_n];
-    for u in 0..n {
-        let cu = node_to_comp[u];
-        for &v in &graph[u] {
-            let cv = node_to_comp[v];
-            if cu == cv {
-                continue;
-            }
-            // u depends on v, so cv -> cu
-            if comp_edges[cv].insert(cu) {
-                indeg[cu] += 1;
-            }
-        }
-    }
-
-    let comp_order = toposort::kahn_deterministic(&comp_edges, indeg)?;
+    let (bindings, ctx_names, defined_names, comps, comp_order) =
+        infer_module_binding_scc_order(module)?;
 
     let mut subst = Subst::new();
     let mut out = HashMap::new();
@@ -7223,6 +7153,92 @@ fn infer_module_with_class_env(
     }
 
     Ok(out)
+}
+
+type InferModuleBindingSccOrder = (
+    Vec<ast::Binding>,
+    Vec<String>,
+    Vec<HashSet<String>>,
+    Vec<Vec<usize>>,
+    Vec<usize>,
+);
+
+fn infer_module_binding_scc_order(
+    module: &ast::Module,
+) -> Result<InferModuleBindingSccOrder> {
+    // Collect top-level bindings as nodes.
+    let mut bindings: Vec<ast::Binding> = Vec::new();
+    let mut ctx_names: Vec<String> = Vec::new();
+    let mut defined_names: Vec<HashSet<String>> = Vec::new();
+
+    for it in &module.items {
+        let ast::Item::Binding(b) = it else {
+            continue;
+        };
+
+        let ctx = match &b.pat.kind {
+            ast::PatternKind::Var(n) => n.clone(),
+            _ => "<pattern>".to_string(),
+        };
+
+        let mut names = HashSet::new();
+        pat_defined_names(&b.pat, &mut names);
+
+        bindings.push(b.clone());
+        ctx_names.push(ctx);
+        defined_names.push(names);
+    }
+
+    let n = bindings.len();
+    let mut name_to_binding: HashMap<String, usize> = HashMap::new();
+    for (i, names) in defined_names.iter().enumerate() {
+        let mut ns: Vec<&String> = names.iter().collect();
+        ns.sort();
+        for name in ns {
+            // If there are duplicates, let the later phase produce a readable error.
+            name_to_binding.insert(name.clone(), i);
+        }
+    }
+
+    // Build dependency graph between binding-nodes.
+    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for i in 0..n {
+        let mut deps = HashSet::new();
+        let empty: HashSet<String> = HashSet::new();
+        collect_deps_in_expr(&bindings[i].expr, &name_to_binding, &empty, &mut deps);
+        let mut dv: Vec<usize> = deps.into_iter().collect();
+        dv.sort_unstable();
+        graph[i] = dv;
+    }
+
+    let comps = tarjan_scc(&graph);
+    let mut node_to_comp = vec![0usize; n];
+    for (ci, comp) in comps.iter().enumerate() {
+        for &v in comp {
+            node_to_comp[v] = ci;
+        }
+    }
+
+    // Build component graph with edges dependency -> dependent.
+    let comp_n = comps.len();
+    let mut comp_edges: Vec<HashSet<usize>> = vec![HashSet::new(); comp_n];
+    let mut indeg = vec![0usize; comp_n];
+    for u in 0..n {
+        let cu = node_to_comp[u];
+        for &v in &graph[u] {
+            let cv = node_to_comp[v];
+            if cu == cv {
+                continue;
+            }
+            // u depends on v, so cv -> cu
+            if comp_edges[cv].insert(cu) {
+                indeg[cu] += 1;
+            }
+        }
+    }
+
+    let comp_order = toposort::kahn_deterministic(&comp_edges, indeg)?;
+    Ok((bindings, ctx_names, defined_names, comps, comp_order))
 }
 
 pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
