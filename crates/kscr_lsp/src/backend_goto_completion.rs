@@ -1,4 +1,4 @@
-use crate::backend_helpers::{qualified_ident_at_offset, span_to_range};
+use crate::backend_helpers::{find_decl_name_span, qualified_ident_at_offset, span_to_range};
 use crate::vfs::Document;
 use kscr::{lexer, parser, types};
 use std::collections::HashMap;
@@ -63,23 +63,6 @@ pub(super) fn super_classify_toplevel_symbol(
     None
 }
 
-fn find_decl_name_span(
-    doc: &Document,
-    kw: lexer::TokenKind,
-    name: &str,
-) -> Option<kscr::lexer::Span> {
-    let toks = lexer::lex(&doc.text).ok()?;
-    for w in toks.windows(2) {
-        if w[0].kind == kw {
-            if let lexer::TokenKind::Ident(n) = &w[1].kind {
-                if n == name {
-                    return Some(w[1].span);
-                }
-            }
-        }
-    }
-    None
-}
 
 fn find_toplevel_span_in_doc(
     doc: &Document,

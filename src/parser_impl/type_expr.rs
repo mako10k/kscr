@@ -22,10 +22,22 @@ pub(crate) fn parse_predicate_in_root(ts: &mut TokenStream, stop: Stop) -> Resul
 fn parse_predicate(ts: &mut TokenStream, stop: Stop) -> Result<ast::Predicate> {
     let name = ts.expect_ident()?;
     match name.as_str() {
-        "Show" => Ok(ast::Predicate::Show(parse_type_expr(ts, stop, is_pred_end)?)),
-        "ShowRow" => Ok(ast::Predicate::ShowRow(parse_type_expr(ts, stop, is_pred_end)?)),
+        "Show" => Ok(ast::Predicate::Show(parse_type_expr(
+            ts,
+            stop,
+            is_pred_end,
+        )?)),
+        "ShowRow" => Ok(ast::Predicate::ShowRow(parse_type_expr(
+            ts,
+            stop,
+            is_pred_end,
+        )?)),
         "Eq" => Ok(ast::Predicate::Eq(parse_type_expr(ts, stop, is_pred_end)?)),
-        "EqRow" => Ok(ast::Predicate::EqRow(parse_type_expr(ts, stop, is_pred_end)?)),
+        "EqRow" => Ok(ast::Predicate::EqRow(parse_type_expr(
+            ts,
+            stop,
+            is_pred_end,
+        )?)),
         "Lacks" => {
             let label = match ts.bump() {
                 Some(TokenKind::String(s)) => s,

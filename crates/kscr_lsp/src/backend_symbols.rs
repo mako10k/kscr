@@ -1,25 +1,7 @@
-use crate::backend_helpers::span_to_range;
+use crate::backend_helpers::{find_decl_name_span, span_to_range};
 use crate::vfs::Document;
 use kscr::lexer;
 use tower_lsp::lsp_types::*;
-
-fn find_decl_name_span(
-    doc: &Document,
-    kw: lexer::TokenKind,
-    name: &str,
-) -> Option<kscr::lexer::Span> {
-    let toks = lexer::lex(&doc.text).ok()?;
-    for w in toks.windows(2) {
-        if w[0].kind == kw {
-            if let lexer::TokenKind::Ident(n) = &w[1].kind {
-                if n == name {
-                    return Some(w[1].span);
-                }
-            }
-        }
-    }
-    None
-}
 
 pub(super) fn item_to_symbol(
     item: &kscr::ast::Item,

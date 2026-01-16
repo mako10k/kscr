@@ -33,7 +33,9 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
     let classes: Option<&Vec<String>> = if shadowed_in_scope.contains(&name) {
         needs_dicts_local.get(&name)
     } else {
-        needs_dicts_local.get(&name).or_else(|| needs_dicts_global.get(&name))
+        needs_dicts_local
+            .get(&name)
+            .or_else(|| needs_dicts_global.get(&name))
     };
 
     let Some(classes) = classes else {
@@ -125,15 +127,15 @@ fn rewrite_apply_arg_vars(
         let classes: Option<&Vec<String>> = if shadowed_in_scope.contains(name) {
             needs_dicts_local.get(name)
         } else {
-            needs_dicts_local.get(name).or_else(|| needs_dicts_global.get(name))
+            needs_dicts_local
+                .get(name)
+                .or_else(|| needs_dicts_global.get(name))
         };
         let Some(classes) = classes else {
             continue;
         };
 
-        let expected = call_info
-            .and_then(|ci| ci.expected_arg_tys.get(i))
-            .cloned();
+        let expected = call_info.and_then(|ci| ci.expected_arg_tys.get(i)).cloned();
 
         let mut dict_args: Vec<ast::Expr> = Vec::new();
         for class in classes {
@@ -145,7 +147,9 @@ fn rewrite_apply_arg_vars(
             }
 
             if picked.is_none() {
-                if let Some(d) = common::derive_dict_from_scope(span, class_env, dicts_in_scope, class) {
+                if let Some(d) =
+                    common::derive_dict_from_scope(span, class_env, dicts_in_scope, class)
+                {
                     picked = Some(d);
                 }
             }
@@ -270,7 +274,8 @@ fn rewrite_apply_func_var(
         if picked.is_none() {
             let mut first_non_ground: Option<Ty> = None;
             for a in args.iter() {
-                let Ok(a_ty) = infer_in_module_with_class_env(module_snapshot, class_env, inferred, a.clone())
+                let Ok(a_ty) =
+                    infer_in_module_with_class_env(module_snapshot, class_env, inferred, a.clone())
                 else {
                     continue;
                 };
@@ -319,7 +324,12 @@ fn rewrite_apply_func_var(
     Ok(())
 }
 
-fn rewrite_apply(cx: RewriteCx<'_>, span: ast::Span, func: ast::Expr, args: Vec<ast::Expr>) -> Result<ast::Expr> {
+fn rewrite_apply(
+    cx: RewriteCx<'_>,
+    span: ast::Span,
+    func: ast::Expr,
+    args: Vec<ast::Expr>,
+) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
 
     let module_snapshot = cx.module_snapshot;
@@ -347,14 +357,22 @@ fn rewrite_apply(cx: RewriteCx<'_>, span: ast::Span, func: ast::Expr, args: Vec<
 
     let mut callsite_ground_tys: Vec<Ty> = Vec::new();
     for a in &args {
-        if let Ok(t) = infer_in_module_with_class_env(module_snapshot, class_env, inferred, a.clone()) {
+        if let Ok(t) =
+            infer_in_module_with_class_env(module_snapshot, class_env, inferred, a.clone())
+        {
             if ftv_ty(&t).is_empty() {
                 callsite_ground_tys.push(t);
             }
         }
     }
 
-    rewrite_apply_arg_vars(cx, span, call_info.as_ref(), &callsite_ground_tys, &mut args)?;
+    rewrite_apply_arg_vars(
+        cx,
+        span,
+        call_info.as_ref(),
+        &callsite_ground_tys,
+        &mut args,
+    )?;
 
     if let ExprKind::Var(name) = &func.kind {
         rewrite_apply_func_var(cx, span, call_info.as_ref(), name, &mut args)?;
@@ -466,7 +484,8 @@ fn rewrite_let(
         }
     }
 
-    let local_needs = compute_local_needs(class_env, needs_dicts_global, needs_dicts_local, &bindings);
+    let local_needs =
+        compute_local_needs(class_env, needs_dicts_global, needs_dicts_local, &bindings);
 
     let mut local2: HashMap<String, Vec<String>> = needs_dicts_local.clone();
     for (k, v) in &local_needs {
@@ -530,7 +549,8 @@ fn rewrite_where(
         }
     }
 
-    let local_needs = compute_local_needs(class_env, needs_dicts_global, needs_dicts_local, &bindings);
+    let local_needs =
+        compute_local_needs(class_env, needs_dicts_global, needs_dicts_local, &bindings);
 
     let mut local2: HashMap<String, Vec<String>> = needs_dicts_local.clone();
     for (k, v) in &local_needs {
@@ -691,7 +711,6 @@ pub(super) fn rewrite_expr(
     rewrite_expr_impl(cx, expr)
 }
 
-
 fn rewrite_expr_impl(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
 
@@ -709,7 +728,11 @@ fn rewrite_expr_impl(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
         ExprKind::Var(name) => rewrite_var(cx, span, name)?,
         ExprKind::Lambda { params, body } => rewrite_lambda(cx, span, params, *body)?,
         ExprKind::Apply { func, args } => rewrite_apply(cx, span, *func, args)?,
-        ExprKind::If { cond, then_branch, else_branch } => rewrite_if(cx, span, *cond, *then_branch, *else_branch)?,
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => rewrite_if(cx, span, *cond, *then_branch, *else_branch)?,
         ExprKind::Let { bindings, body } => rewrite_let(cx, span, bindings, *body)?,
         ExprKind::Where { expr, bindings } => rewrite_where(cx, span, *expr, bindings)?,
         ExprKind::Annot { expr, ty } => Expr::new(
@@ -749,12 +772,7 @@ fn rewrite_expr_impl(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
             ExprKind::Record(
                 fields
                     .into_iter()
-                    .map(|(k, v)| {
-                        Ok((
-                            k,
-                            rewrite_expr_cx(cx, v)?,
-                        ))
-                    })
+                    .map(|(k, v)| Ok((k, rewrite_expr_cx(cx, v)?)))
                     .collect::<Result<Vec<_>>>()?,
             ),
         ),

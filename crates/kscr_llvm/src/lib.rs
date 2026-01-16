@@ -6,7 +6,7 @@
 //! Usage:
 //! ```ignore
 //! use kscr_llvm::LLVMIRGenerator;
-//! 
+//!
 //! let mut gen = LLVMIRGenerator::new("my_module");
 //! gen.generate_placeholder_main();
 //! println!("{}", gen.to_string());
@@ -237,7 +237,7 @@ fn eval_const_string(
                     ir::IrExpr::Char(c) => out.push(*c),
                     _ => {
                         return Err(
-                            "LLVM backend: list literal must be a [Char] constant".to_string(),
+                            "LLVM backend: list literal must be a [Char] constant".to_string()
                         )
                     }
                 }
@@ -275,7 +275,9 @@ fn eval_const_string(
         }
         ir::IrExpr::Var(name) => {
             let Some(e) = bindings.get(name) else {
-                return Err(format!("LLVM backend: unknown variable in const string: {name}"));
+                return Err(format!(
+                    "LLVM backend: unknown variable in const string: {name}"
+                ));
             };
             if visiting.get(name).copied().unwrap_or(false) {
                 return Err("LLVM backend: cyclic const string".to_string());
@@ -298,9 +300,7 @@ fn append_const_char_list(
 ) -> Result<()> {
     match head {
         ir::IrExpr::Char(c) => out.push(*c),
-        _ => {
-            return Err("LLVM backend: cons head must be a Char constant".to_string())
-        }
+        _ => return Err("LLVM backend: cons head must be a Char constant".to_string()),
     }
     match tail {
         ir::IrExpr::List(es) => {
@@ -309,17 +309,16 @@ fn append_const_char_list(
                     ir::IrExpr::Char(c) => out.push(*c),
                     _ => {
                         return Err(
-                            "LLVM backend: list literal must be a [Char] constant".to_string(),
+                            "LLVM backend: list literal must be a [Char] constant".to_string()
                         )
                     }
                 }
             }
             Ok(())
         }
-        ir::IrExpr::Cons {
-            head: h,
-            tail: t,
-        } => append_const_char_list(bindings, visiting, h, t, out),
+        ir::IrExpr::Cons { head: h, tail: t } => {
+            append_const_char_list(bindings, visiting, h, t, out)
+        }
         ir::IrExpr::Var(_) => {
             let s = eval_const_string(bindings, visiting, tail)?;
             out.push_str(&s);
@@ -358,7 +357,9 @@ fn eval_const_i64(
             .map_err(|e| format!("LLVM backend: invalid i64 literal: {e}")),
         ir::IrExpr::Var(name) => {
             let Some(e) = bindings.get(name) else {
-                return Err(format!("LLVM backend: unknown variable in const int: {name}"));
+                return Err(format!(
+                    "LLVM backend: unknown variable in const int: {name}"
+                ));
             };
             if visiting.get(name).copied().unwrap_or(false) {
                 return Err("LLVM backend: cyclic const int".to_string());
@@ -383,7 +384,9 @@ fn eval_const_bool(
         ir::IrExpr::Bool(b) => Ok(*b),
         ir::IrExpr::Var(name) => {
             let Some(e) = bindings.get(name) else {
-                return Err(format!("LLVM backend: unknown variable in const bool: {name}"));
+                return Err(format!(
+                    "LLVM backend: unknown variable in const bool: {name}"
+                ));
             };
             if visiting.get(name).copied().unwrap_or(false) {
                 return Err("LLVM backend: cyclic const bool".to_string());
@@ -393,9 +396,9 @@ fn eval_const_bool(
             visiting.insert(name.clone(), false);
             v
         }
-        _ => Err(
-            "LLVM backend MVP expects boolToString argument to be a Bool constant".to_string(),
-        ),
+        _ => {
+            Err("LLVM backend MVP expects boolToString argument to be a Bool constant".to_string())
+        }
     }
 }
 
@@ -439,15 +442,19 @@ impl LLVMIRGenerator {
 
     /// Emit LLVM IR module header
     fn emit_header(&mut self) {
+        writeln!(&mut self.output, "; ModuleID = '{}'", self.module_name).unwrap();
         writeln!(
             &mut self.output,
-            "; ModuleID = '{}'",
+            "source_filename = \"{}\"",
             self.module_name
         )
         .unwrap();
-        writeln!(&mut self.output, "source_filename = \"{}\"", self.module_name).unwrap();
         writeln!(&mut self.output, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"").unwrap();
-        writeln!(&mut self.output, "target triple = \"x86_64-unknown-linux-gnu\"").unwrap();
+        writeln!(
+            &mut self.output,
+            "target triple = \"x86_64-unknown-linux-gnu\""
+        )
+        .unwrap();
         writeln!(&mut self.output).unwrap();
     }
 
@@ -581,7 +588,7 @@ mod tests {
         let mut gen = LLVMIRGenerator::new("test");
         gen.emit_runtime_declarations();
         let ir = gen.to_string();
-        
+
         assert!(ir.contains("kscr_force_thunk"));
         assert!(ir.contains("kscr_execute_io"));
         assert!(ir.contains("malloc"));
@@ -593,7 +600,7 @@ mod tests {
         let mut gen = LLVMIRGenerator::new("test");
         gen.emit_runtime_declarations();
         let ir = gen.to_string();
-        
+
         assert!(ir.contains("%struct.kscr_thunk"));
         assert!(ir.contains("%struct.kscr_value"));
     }
@@ -603,7 +610,7 @@ mod tests {
         let mut gen = LLVMIRGenerator::new("test");
         gen.generate_integer_add_function();
         let ir = gen.to_string();
-        
+
         assert!(ir.contains("define i64 @kscr_add_i64(i64 %a, i64 %b)"));
         assert!(ir.contains("add i64 %a, %b"));
     }

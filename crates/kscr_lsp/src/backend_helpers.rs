@@ -117,3 +117,21 @@ pub(super) fn qualified_ident_at_offset(
 
     Some((parts.join("."), span))
 }
+
+pub(super) fn find_decl_name_span(
+    doc: &Document,
+    kw: lexer::TokenKind,
+    name: &str,
+) -> Option<kscr::lexer::Span> {
+    let toks = lexer::lex(&doc.text).ok()?;
+    for w in toks.windows(2) {
+        if w[0].kind == kw {
+            if let lexer::TokenKind::Ident(n) = &w[1].kind {
+                if n == name {
+                    return Some(w[1].span);
+                }
+            }
+        }
+    }
+    None
+}

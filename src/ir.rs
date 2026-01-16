@@ -953,7 +953,10 @@ fn eval_tuple(env: &std::collections::HashMap<String, Value>, es: &[IrExpr]) -> 
     Value::Tuple(es.iter().map(|e| mk_thunk(env, e.clone())).collect())
 }
 
-fn eval_record(env: &std::collections::HashMap<String, Value>, fields: &[(String, IrExpr)]) -> Value {
+fn eval_record(
+    env: &std::collections::HashMap<String, Value>,
+    fields: &[(String, IrExpr)],
+) -> Value {
     Value::Record(
         fields
             .iter()
@@ -1073,8 +1076,8 @@ fn run_io_stdin_readline() -> Result<IoOutcome> {
 #[cfg(feature = "unsafe_ffi")]
 fn run_io_ffi_puts(s: &str) -> Result<IoOutcome> {
     crate::debug::unsafe_used("ffiPuts");
-    let rc = kscr_unsafe_ffi::puts_checked(s)
-        .map_err(|_| Error::msg("ffiPuts: string contains NUL"))?;
+    let rc =
+        kscr_unsafe_ffi::puts_checked(s).map_err(|_| Error::msg("ffiPuts: string contains NUL"))?;
     Ok(IoOutcome::Value(Value::Integer(int_from_i64(rc as i64))))
 }
 
@@ -1100,7 +1103,11 @@ fn run_io_try(g: &Globals, action: IoAction) -> Result<IoOutcome> {
         }
         IoOutcome::Thrown(e) => {
             let ctor = eval_var(g, &std::collections::HashMap::new(), "Left")?;
-            Ok(IoOutcome::Value(apply_one(g, ctor, string_to_char_list(&e))?))
+            Ok(IoOutcome::Value(apply_one(
+                g,
+                ctor,
+                string_to_char_list(&e),
+            )?))
         }
     }
 }
@@ -1113,7 +1120,9 @@ fn run_io_bind_value(g: &Globals, action: IoAction, func: Value) -> Result<IoOut
     let func = force_value(g, func)?;
     let act = apply_one(g, func, v)?;
     let Value::IoAction(act) = act else {
-        return Err(Error::msg("__ioBind: body did not evaluate to an IO action"));
+        return Err(Error::msg(
+            "__ioBind: body did not evaluate to an IO action",
+        ));
     };
     run_io(g, *act)
 }

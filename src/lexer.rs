@@ -152,7 +152,11 @@ fn handle_bol_indentation(
     }
 
     // Do not change indentation on blank/comment-only lines.
-    if *i >= bytes.len() || bytes[*i] == b'\n' || bytes[*i..].starts_with(b"--") || bytes[*i..].starts_with(b"{-") {
+    if *i >= bytes.len()
+        || bytes[*i] == b'\n'
+        || bytes[*i..].starts_with(b"--")
+        || bytes[*i..].starts_with(b"{-")
+    {
         return Ok(false);
     }
 
@@ -207,7 +211,11 @@ fn dot_is_qualification(bytes: &[u8], i: usize) -> bool {
         return false;
     }
     let prev = if i > 0 { bytes[i - 1] } else { b' ' };
-    let next = if i + 1 < bytes.len() { bytes[i + 1] } else { b' ' };
+    let next = if i + 1 < bytes.len() {
+        bytes[i + 1]
+    } else {
+        b' '
+    };
     is_ident_continue_byte(prev) && is_ident_start_byte(next)
 }
 
@@ -262,7 +270,11 @@ fn lex_operator_run(src: &str, bytes: &[u8], i: &mut usize) -> Option<(TokenKind
     Some((operator_token_kind(op), start, *i))
 }
 
-fn lex_char_literal(src: &str, bytes: &[u8], i: &mut usize) -> crate::Result<Option<(TokenKind, usize, usize)>> {
+fn lex_char_literal(
+    src: &str,
+    bytes: &[u8],
+    i: &mut usize,
+) -> crate::Result<Option<(TokenKind, usize, usize)>> {
     if *i >= bytes.len() || bytes[*i] != b'\'' {
         return Ok(None);
     }
@@ -296,10 +308,7 @@ fn lex_char_literal(src: &str, bytes: &[u8], i: &mut usize) -> crate::Result<Opt
     } else {
         let s = &src[*i..];
         let ch = s.chars().next().ok_or_else(|| {
-            crate::error::Error::msg_with_span(
-                "unterminated char literal",
-                Span { start, end: *i },
-            )
+            crate::error::Error::msg_with_span("unterminated char literal", Span { start, end: *i })
         })?;
         *i += ch.len_utf8();
         ch
@@ -424,7 +433,11 @@ fn keyword_or_ident(word: &str) -> TokenKind {
     }
 }
 
-fn lex_ident_or_keyword(src: &str, bytes: &[u8], i: &mut usize) -> Option<(TokenKind, usize, usize)> {
+fn lex_ident_or_keyword(
+    src: &str,
+    bytes: &[u8],
+    i: &mut usize,
+) -> Option<(TokenKind, usize, usize)> {
     if *i >= bytes.len() {
         return None;
     }

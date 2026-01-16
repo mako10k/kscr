@@ -1042,7 +1042,9 @@ fn infer_pat_in(
         PatternKind::Var(name) => infer_pat_var(cx, pat, name, binds, seen),
         PatternKind::Wildcard | PatternKind::Hole(_) => Ok(cx.fresh()),
         PatternKind::Literal(e) => infer_pat_literal(e),
-        PatternKind::Tuple(ps) => infer_pat_tuple(cx, data_env, subst, env, ps, binds, seen, cs_out),
+        PatternKind::Tuple(ps) => {
+            infer_pat_tuple(cx, data_env, subst, env, ps, binds, seen, cs_out)
+        }
         PatternKind::List(ps) => infer_pat_list(cx, data_env, subst, env, ps, binds, seen, cs_out),
         PatternKind::Record(fields) => {
             infer_pat_record(cx, data_env, subst, env, fields, binds, seen, cs_out)
@@ -1050,10 +1052,16 @@ fn infer_pat_in(
         PatternKind::RecordLoose(fields, rest_name) => infer_pat_record_loose(
             cx, data_env, subst, env, fields, rest_name, pat, binds, seen, cs_out,
         ),
-        PatternKind::Cons(hd, tl) => infer_pat_cons(cx, data_env, subst, env, hd, tl, binds, seen, cs_out),
+        PatternKind::Cons(hd, tl) => {
+            infer_pat_cons(cx, data_env, subst, env, hd, tl, binds, seen, cs_out)
+        }
         PatternKind::Or(a, b) => infer_pat_or(cx, data_env, subst, env, a, b, binds, seen, cs_out),
-        PatternKind::As(name, p) => infer_pat_as(cx, data_env, subst, env, name, p, pat, binds, seen, cs_out),
-        PatternKind::View(p, e) => infer_pat_view(cx, data_env, subst, env, p, e, binds, seen, cs_out),
+        PatternKind::As(name, p) => {
+            infer_pat_as(cx, data_env, subst, env, name, p, pat, binds, seen, cs_out)
+        }
+        PatternKind::View(p, e) => {
+            infer_pat_view(cx, data_env, subst, env, p, e, binds, seen, cs_out)
+        }
         PatternKind::Constructor { name, args } => {
             infer_pat_constructor(cx, data_env, subst, env, name, args, binds, seen, cs_out)
         }
@@ -1653,7 +1661,10 @@ fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
         Scheme {
             vars: vec![],
             constraints: vec![],
-            ty: Ty::Func(Box::new(Ty::Con("Bool".to_string())), Box::new(char_list.clone())),
+            ty: Ty::Func(
+                Box::new(Ty::Con("Bool".to_string())),
+                Box::new(char_list.clone()),
+            ),
         },
     );
 
@@ -2024,14 +2035,15 @@ fn add_class_methods_into_env(
     Ok(())
 }
 
-fn build_class_method_scheme_index(cx: &mut InferCtx, class_env: &ClassEnv) -> Result<ClassEnvIndex> {
+fn build_class_method_scheme_index(
+    cx: &mut InferCtx,
+    class_env: &ClassEnv,
+) -> Result<ClassEnvIndex> {
     let mut idx = ClassEnvIndex::default();
     for ((class, method), qt) in &class_env.methods {
         if idx.methods_by_name.contains_key(method) {
             // Ambiguous method name across multiple classes is currently unsupported.
-            return Err(Error::msg(format!(
-                "ambiguous class method name: {method}"
-            )));
+            return Err(Error::msg(format!("ambiguous class method name: {method}")));
         }
         let scheme = lower_class_method_scheme(cx, class_env, class, qt)?;
         idx.methods_by_name.insert(method.clone(), scheme);
@@ -2261,10 +2273,7 @@ type ClassDeclInfo = (
     HashMap<(String, String), ast::Expr>,
 );
 
-fn collect_class_decls(
-    module: &ast::Module,
-    env: &mut ClassEnv,
-) -> Result<ClassDeclInfo> {
+fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<ClassDeclInfo> {
     // class name -> method names (declaration order)
     let mut class_method_names: HashMap<String, Vec<String>> = HashMap::new();
     // (class, method) -> default implementation expression
@@ -2429,7 +2438,10 @@ fn collect_instance_decls(module: &ast::Module) -> Vec<ast::InstanceDecl> {
         .collect()
 }
 
-fn preregister_instance_dicts(env: &mut ClassEnv, instance_decls: &[ast::InstanceDecl]) -> Result<()> {
+fn preregister_instance_dicts(
+    env: &mut ClassEnv,
+    instance_decls: &[ast::InstanceDecl],
+) -> Result<()> {
     // Phase 1: pre-register all instance dictionary names.
     // We also collect polymorphic instance metadata for later selection.
     let mut poly_to_register: Vec<PolyInstance> = Vec::new();
@@ -2550,7 +2562,8 @@ fn append_instance_items(
     let inst_methods = collect_instance_methods(inst)?;
     let direct_supers = collect_direct_supers(env, inst);
     let extra_param_names = build_extra_param_names(inst)?;
-    let super_dict_names = resolve_super_dict_names(env, inst, ty_key_opt.as_ref(), &direct_supers)?;
+    let super_dict_names =
+        resolve_super_dict_names(env, inst, ty_key_opt.as_ref(), &direct_supers)?;
 
     // Method impl bindings (instance overrides or class defaults).
     let mut dict_fields: Vec<(String, ast::Expr)> = Vec::new();
@@ -2981,9 +2994,9 @@ fn lower_super_predicate_for_constraints(p: &ast::Predicate, ty: &Ty) -> Constra
             class: class.clone(),
             ty: ty.clone(),
         },
-        ast::Predicate::Lacks { .. } => unreachable!(
-            "internal error: Lacks predicate is not allowed in superclass constraints"
-        ),
+        ast::Predicate::Lacks { .. } => {
+            unreachable!("internal error: Lacks predicate is not allowed in superclass constraints")
+        }
     }
 }
 
@@ -3017,7 +3030,9 @@ fn simplify_process_constraint(
             } else {
                 let key = (class.clone(), instance_head_key_ty(&ty)?);
                 if !class_env.instances.contains_key(&key) {
-                    return Err(Error::msg(format!("cannot satisfy constraint: {class} {ty}")));
+                    return Err(Error::msg(format!(
+                        "cannot satisfy constraint: {class} {ty}"
+                    )));
                 }
             }
         }
@@ -3057,7 +3072,10 @@ fn is_superclass_of_class_env(class_env: &ClassEnv, sub: &str, sup: &str) -> boo
     false
 }
 
-fn simplify_context_reduce_user_classes(class_env: &ClassEnv, cs: Vec<Constraint>) -> Vec<Constraint> {
+fn simplify_context_reduce_user_classes(
+    class_env: &ClassEnv,
+    cs: Vec<Constraint>,
+) -> Vec<Constraint> {
     let mut keep: Vec<bool> = vec![true; cs.len()];
     for (i, ci_constraint) in cs.iter().enumerate() {
         let Constraint::Class { class: ci, ty: ti } = ci_constraint else {
@@ -3438,11 +3456,7 @@ fn simplify_constraints(
 
 fn build_letrec_binding_metadata(
     bindings: &[ast::Binding],
-) -> (
-    Vec<String>,
-    Vec<HashSet<String>>,
-    HashMap<String, usize>,
-) {
+) -> (Vec<String>, Vec<HashSet<String>>, HashMap<String, usize>) {
     let n = bindings.len();
     let mut ctx_names: Vec<String> = Vec::with_capacity(n);
     let mut defined_names: Vec<HashSet<String>> = Vec::with_capacity(n);
@@ -3541,7 +3555,10 @@ struct LetrecInferCx<'a> {
     ctx_name: &'a str,
 }
 
-fn infer_one_letrec_binding(cxi: &mut LetrecInferCx<'_>, b: ast::Binding) -> Result<LetrecBindingInfer> {
+fn infer_one_letrec_binding(
+    cxi: &mut LetrecInferCx<'_>,
+    b: ast::Binding,
+) -> Result<LetrecBindingInfer> {
     let mut binds = Vec::new();
     let mut seen = HashSet::new();
     let mut cs_pat = Vec::new();
@@ -3569,8 +3586,9 @@ fn infer_one_letrec_binding(cxi: &mut LetrecInferCx<'_>, b: ast::Binding) -> Res
     // Connect binder types to their placeholders so recursive references unify.
     for (name, t) in &binds {
         if let Some(ph) = cxi.placeholders.get(name).cloned() {
-            let su = unify(apply(cxi.subst, t.clone()), apply(cxi.subst, ph))
-                .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
+            let su = unify(apply(cxi.subst, t.clone()), apply(cxi.subst, ph)).map_err(|e| {
+                e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name))
+            })?;
             *cxi.subst = compose(&su, cxi.subst);
         }
     }
@@ -3597,8 +3615,7 @@ fn infer_local_letrec_bindings(
         return Ok((s, env_global));
     }
 
-    let (ctx_names, defined_names, name_to_binding) =
-        build_letrec_binding_metadata(&bindings);
+    let (ctx_names, defined_names, name_to_binding) = build_letrec_binding_metadata(&bindings);
     let graph = build_letrec_dep_graph(&bindings, &name_to_binding);
 
     let comps = tarjan_scc(&graph);
@@ -3718,37 +3735,23 @@ fn infer_expr_in(
             infer_expr_lambda(cx, data_env, env, span, params, *body)
         }
 
-        ExprKind::Apply { func, args } => {
-            infer_expr_apply(cx, data_env, env, *func, args)
-        }
+        ExprKind::Apply { func, args } => infer_expr_apply(cx, data_env, env, *func, args),
 
-        ExprKind::Annot { expr, ty } => {
-            infer_expr_annot(cx, data_env, env, *expr, ty)
-        }
+        ExprKind::Annot { expr, ty } => infer_expr_annot(cx, data_env, env, *expr, ty),
 
         ExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => {
-            infer_expr_if(cx, data_env, env, *cond, *then_branch, *else_branch)
-        }
+        } => infer_expr_if(cx, data_env, env, *cond, *then_branch, *else_branch),
 
-        ExprKind::Tuple(elems) => {
-            infer_expr_tuple(cx, data_env, env, elems)
-        }
+        ExprKind::Tuple(elems) => infer_expr_tuple(cx, data_env, env, elems),
 
-        ExprKind::Cons { head, tail } => {
-            infer_expr_cons(cx, data_env, env, *head, *tail)
-        }
+        ExprKind::Cons { head, tail } => infer_expr_cons(cx, data_env, env, *head, *tail),
 
-        ExprKind::List(elems) => {
-            infer_expr_list(cx, data_env, env, elems)
-        }
+        ExprKind::List(elems) => infer_expr_list(cx, data_env, env, elems),
 
-        ExprKind::Record(fields) => {
-            infer_expr_record(cx, data_env, env, fields)
-        }
+        ExprKind::Record(fields) => infer_expr_record(cx, data_env, env, fields),
 
         ExprKind::Let { bindings, body } => {
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "let")?;
@@ -3768,13 +3771,9 @@ fn infer_expr_in(
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
 
-        ExprKind::Case { expr, arms } => {
-            infer_expr_case(cx, data_env, env, span, *expr, arms)
-        }
+        ExprKind::Case { expr, arms } => infer_expr_case(cx, data_env, env, span, *expr, arms),
 
-        ExprKind::Do(stmts) => {
-            infer_expr_do(cx, data_env, env, span, stmts)
-        }
+        ExprKind::Do(stmts) => infer_expr_do(cx, data_env, env, span, stmts),
     }
 }
 
@@ -3899,8 +3898,8 @@ fn infer_expr_if(
     then_branch: ast::Expr,
     else_branch: ast::Expr,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
-    let (s_cond, cs_cond, t_cond) = infer_expr_in(cx, data_env, env, cond)
-        .map_err(|e| e.with_context("in if cond"))?;
+    let (s_cond, cs_cond, t_cond) =
+        infer_expr_in(cx, data_env, env, cond).map_err(|e| e.with_context("in if cond"))?;
     let s_bool = unify(apply(&s_cond, t_cond), Ty::Con("Bool".to_string()))
         .map_err(|e| e.with_context("in if cond"))?;
     let mut s = compose(&s_bool, &s_cond);
@@ -4035,8 +4034,8 @@ fn infer_expr_case(
         return Err(Error::msg_with_span("empty case", span));
     }
 
-    let (mut s, mut cs, scrut_ty) = infer_expr_in(cx, data_env, env, expr)
-        .map_err(|e| e.with_context("in case scrutinee"))?;
+    let (mut s, mut cs, scrut_ty) =
+        infer_expr_in(cx, data_env, env, expr).map_err(|e| e.with_context("in case scrutinee"))?;
     let mut out_ty = cx.fresh();
 
     let mut pats_for_exhaustive_check: Vec<(ast::Pattern, bool)> = Vec::new();
@@ -4050,8 +4049,17 @@ fn infer_expr_case(
         let mut binds = Vec::new();
         let mut seen = HashSet::new();
         let mut cs_pat = Vec::new();
-        let pat_ty = infer_pat_in(cx, data_env, &mut s, env, &pat, &mut binds, &mut seen, &mut cs_pat)
-            .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
+        let pat_ty = infer_pat_in(
+            cx,
+            data_env,
+            &mut s,
+            env,
+            &pat,
+            &mut binds,
+            &mut seen,
+            &mut cs_pat,
+        )
+        .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
 
         let su_pat = unify(apply(&s, pat_ty), apply(&s, scrut_ty.clone()))
             .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
@@ -4125,8 +4133,17 @@ fn infer_expr_do(
                 let mut binds = Vec::new();
                 let mut seen = HashSet::new();
                 let mut cs_pat = Vec::new();
-                let pat_ty = infer_pat_in(cx, data_env, &mut s, &env2, &pat, &mut binds, &mut seen, &mut cs_pat)
-                    .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
+                let pat_ty = infer_pat_in(
+                    cx,
+                    data_env,
+                    &mut s,
+                    &env2,
+                    &pat,
+                    &mut binds,
+                    &mut seen,
+                    &mut cs_pat,
+                )
+                .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
 
                 let env_in = apply_env(&s, &env2);
                 let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, expr)
@@ -4198,7 +4215,8 @@ fn infer_expr_do(
             }
         }
     }
-    let last_ty = last_ty.ok_or_else(|| Error::msg_with_span("do must end with expression", span))?;
+    let last_ty =
+        last_ty.ok_or_else(|| Error::msg_with_span("do must end with expression", span))?;
     Ok((s.clone(), cs, apply(&s, last_ty)))
 }
 
@@ -4284,7 +4302,8 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     let mut entry_mod = loader.load_ast(&entry)?;
     entry_mod = ensure_implicit_prelude_import(entry_mod);
 
-    let module = load_module_with_imports_ast_with_loader(&mut loader, &entry, entry_dir, &entry_mod)?;
+    let module =
+        load_module_with_imports_ast_with_loader(&mut loader, &entry, entry_dir, &entry_mod)?;
     typecheck_with_stdlib_class_env(module)
 }
 
@@ -4323,7 +4342,10 @@ fn load_module_with_imports_ast_with_loader(
 }
 
 fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
-    let has_any_import = module.items.iter().any(|it| matches!(it, ast::Item::Import(_)));
+    let has_any_import = module
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Import(_)));
     if has_any_import {
         return module;
     }
@@ -4438,8 +4460,15 @@ pub fn typecheck(module: ast::Module) -> Result<TypedModule> {
     typecheck_internal(module, None)
 }
 
-fn typecheck_internal(mut module: ast::Module, stdlib_class_env: Option<&ClassEnv>) -> Result<TypedModule> {
-    if module.items.iter().any(|it| matches!(it, ast::Item::Import(_))) {
+fn typecheck_internal(
+    mut module: ast::Module,
+    stdlib_class_env: Option<&ClassEnv>,
+) -> Result<TypedModule> {
+    if module
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Import(_)))
+    {
         return Err(Error::msg("imports are not supported yet"));
     }
 
@@ -4464,7 +4493,10 @@ fn typecheck_internal(mut module: ast::Module, stdlib_class_env: Option<&ClassEn
     if std::env::var("KSCR_DEBUG_CLASS_ENV").ok().as_deref() == Some("1") {
         let monad_io = ("Monad".to_string(), "IO".to_string());
         let ring_int = ("Ring".to_string(), "Integer".to_string());
-        eprintln!("[KSCR_DEBUG_CLASS_ENV] instances keys count = {}", class_env.instances.len());
+        eprintln!(
+            "[KSCR_DEBUG_CLASS_ENV] instances keys count = {}",
+            class_env.instances.len()
+        );
         eprintln!(
             "[KSCR_DEBUG_CLASS_ENV] has instances: Monad IO={} Ring Integer={}",
             class_env.instances.contains_key(&monad_io),
@@ -4538,7 +4570,11 @@ fn typecheck_internal(mut module: ast::Module, stdlib_class_env: Option<&ClassEn
     // (e.g. `enumFromTo` becomes a function expecting `__dict_Enum`.)
     inject_class_method_value_bindings(&mut module, &class_env, &inferred);
 
-    typeclass_dict_passing_common::rewrite_class_dict_passing_in_module(&mut module, &class_env, &inferred)?;
+    typeclass_dict_passing_common::rewrite_class_dict_passing_in_module(
+        &mut module,
+        &class_env,
+        &inferred,
+    )?;
 
     // Rewrite method calls/vars while dictionary bindings still exist.
     // This must happen before `rewrite_show_calls_in_module`, which replaces
@@ -4612,7 +4648,9 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
     }
 
     for (class, supers) in &src.class_supers {
-        dst.class_supers.entry(class.clone()).or_insert_with(|| supers.clone());
+        dst.class_supers
+            .entry(class.clone())
+            .or_insert_with(|| supers.clone());
     }
 
     for (m, classes) in &src.method_classes {
@@ -4669,7 +4707,6 @@ struct QualEnv {
     /// canonical module names that have multiple local qualifiers
     ambiguous_modules: HashSet<String>,
 }
-
 
 fn module_qual_env(module: &ast::Module) -> QualEnv {
     let mut env = QualEnv::default();
@@ -5141,7 +5178,10 @@ impl ModuleLoader {
                 );
                 if !has_from_to || !has_from_then_to {
                     // Print a small prefix to avoid spamming.
-                    eprintln!("[KSCR_DEBUG_IMPORTS]   first exports: {:?}", xs.into_iter().take(40).collect::<Vec<_>>());
+                    eprintln!(
+                        "[KSCR_DEBUG_IMPORTS]   first exports: {:?}",
+                        xs.into_iter().take(40).collect::<Vec<_>>()
+                    );
                 }
             }
 
@@ -5162,7 +5202,8 @@ impl ModuleLoader {
                     path: p.clone(),
                     qual: qual.to_string(),
                 };
-                if local_emitted_qualified.insert(key.clone()) && self.emitted_qualified.insert(key) {
+                if local_emitted_qualified.insert(key.clone()) && self.emitted_qualified.insert(key)
+                {
                     let items = import_qualified_items_for_decl(&imported, qual, &exports)?;
                     if debug_imports {
                         let mut counts: HashMap<String, usize> = HashMap::new();
@@ -5368,8 +5409,12 @@ fn merge_subst_pat(p: &ast::Pattern, map: &HashMap<String, String>) -> ast::Patt
                 PatternKind::Var(n.clone())
             }
         }
-        PatternKind::Tuple(ps) => PatternKind::Tuple(ps.iter().map(|p| merge_subst_pat(p, map)).collect()),
-        PatternKind::List(ps) => PatternKind::List(ps.iter().map(|p| merge_subst_pat(p, map)).collect()),
+        PatternKind::Tuple(ps) => {
+            PatternKind::Tuple(ps.iter().map(|p| merge_subst_pat(p, map)).collect())
+        }
+        PatternKind::List(ps) => {
+            PatternKind::List(ps.iter().map(|p| merge_subst_pat(p, map)).collect())
+        }
         PatternKind::Record(fields) => PatternKind::Record(
             fields
                 .iter()
@@ -5439,7 +5484,9 @@ fn merge_subst_expr(e: &ast::Expr, map: &HashMap<String, String>) -> ast::Expr {
                 })
                 .collect(),
         },
-        ExprKind::Tuple(es) => ExprKind::Tuple(es.iter().map(|e| merge_subst_expr(e, map)).collect()),
+        ExprKind::Tuple(es) => {
+            ExprKind::Tuple(es.iter().map(|e| merge_subst_expr(e, map)).collect())
+        }
         ExprKind::List(es) => ExprKind::List(es.iter().map(|e| merge_subst_expr(e, map)).collect()),
         ExprKind::Record(fields) => ExprKind::Record(
             fields
@@ -5482,7 +5529,10 @@ fn merge_eta_collapse_to_unary(expr: ast::Expr) -> Result<ast::Expr> {
     let applied = Expr::new(
         expr.span,
         ExprKind::Apply {
-            func: Box::new(Expr::new(expr.span, ExprKind::Lambda { params: rest, body })),
+            func: Box::new(Expr::new(
+                expr.span,
+                ExprKind::Lambda { params: rest, body },
+            )),
             args: vec![Expr::new(expr.span, ExprKind::Var(first.clone()))],
         },
     );
@@ -5553,7 +5603,12 @@ fn merge_is_collapse_needed(expr: &ast::Expr) -> bool {
     }
 }
 
-fn merge_rebuild_lambda_case(span: ast::Span, params: Vec<String>, scrut: ast::Expr, arms: Vec<ast::CaseArm>) -> ast::Expr {
+fn merge_rebuild_lambda_case(
+    span: ast::Span,
+    params: Vec<String>,
+    scrut: ast::Expr,
+    arms: Vec<ast::CaseArm>,
+) -> ast::Expr {
     ast::Expr::new(
         span,
         ast::ExprKind::Lambda {
@@ -5569,9 +5624,21 @@ fn merge_rebuild_lambda_case(span: ast::Span, params: Vec<String>, scrut: ast::E
     )
 }
 
-fn merge_try_merge_lambda_clauses(prev: &mut ast::Binding, b: &ast::Binding, name: &str) -> Result<bool> {
-    let (ast::ExprKind::Lambda { params: p_params, body: p_body }, ast::ExprKind::Lambda { params: b_params, body: b_body }) =
-        (&prev.expr.kind, &b.expr.kind)
+fn merge_try_merge_lambda_clauses(
+    prev: &mut ast::Binding,
+    b: &ast::Binding,
+    name: &str,
+) -> Result<bool> {
+    let (
+        ast::ExprKind::Lambda {
+            params: p_params,
+            body: p_body,
+        },
+        ast::ExprKind::Lambda {
+            params: b_params,
+            body: b_body,
+        },
+    ) = (&prev.expr.kind, &b.expr.kind)
     else {
         return Err(Error::msg(format!(
             "duplicate binding for `{name}` cannot be merged (unexpected shape)"
@@ -5589,8 +5656,16 @@ fn merge_try_merge_lambda_clauses(prev: &mut ast::Binding, b: &ast::Binding, nam
             b_expr = merge_eta_collapse_to_unary(b_expr)?;
         }
 
-        let (ast::ExprKind::Lambda { params: p_params, body: p_body }, ast::ExprKind::Lambda { params: b_params, body: b_body }) =
-            (&prev.expr.kind, &b_expr.kind)
+        let (
+            ast::ExprKind::Lambda {
+                params: p_params,
+                body: p_body,
+            },
+            ast::ExprKind::Lambda {
+                params: b_params,
+                body: b_body,
+            },
+        ) = (&prev.expr.kind, &b_expr.kind)
         else {
             return Err(Error::msg(format!(
                 "duplicate binding for `{name}` cannot be merged (unexpected shape after collapse)"
@@ -5661,7 +5736,10 @@ fn merge_try_merge_lambda_clauses(prev: &mut ast::Binding, b: &ast::Binding, nam
     Ok(true)
 }
 
-fn merge_duplicate_bindings_for_names(items: Vec<ast::Item>, names: &[&str]) -> Result<Vec<ast::Item>> {
+fn merge_duplicate_bindings_for_names(
+    items: Vec<ast::Item>,
+    names: &[&str],
+) -> Result<Vec<ast::Item>> {
     use ast::Item;
 
     let target: HashSet<String> = names.iter().map(|n| n.to_string()).collect();
@@ -5767,7 +5845,6 @@ fn import_unqualified_forwarders(
                 expr: ast::Expr::dummy(ast::ExprKind::Var(format!("{qual}.{n}"))),
             }));
         }
-
 
         if let Some(ta) = type_aliases.get(n) {
             let head = ast::Type::Var(format!("{qual}.{}", ta.name));
@@ -5973,7 +6050,12 @@ fn qualify_expr_boxed(
     type_map: &HashMap<String, String>,
     ctor_map: &HashMap<String, String>,
 ) -> Result<Box<ast::Expr>> {
-    Ok(Box::new(qualify_expr(expr.clone(), val_map, type_map, ctor_map)?))
+    Ok(Box::new(qualify_expr(
+        expr.clone(),
+        val_map,
+        type_map,
+        ctor_map,
+    )?))
 }
 
 fn qualify_expr_vec(
@@ -6097,8 +6179,14 @@ fn qualify_expr(
                 tail: qualify_expr_boxed(&tail, val_map, type_map, ctor_map)?,
             },
         ),
-        ExprKind::List(es) => Expr::new(span, ExprKind::List(qualify_expr_vec(es, val_map, type_map, ctor_map)?)),
-        ExprKind::Tuple(es) => Expr::new(span, ExprKind::Tuple(qualify_expr_vec(es, val_map, type_map, ctor_map)?)),
+        ExprKind::List(es) => Expr::new(
+            span,
+            ExprKind::List(qualify_expr_vec(es, val_map, type_map, ctor_map)?),
+        ),
+        ExprKind::Tuple(es) => Expr::new(
+            span,
+            ExprKind::Tuple(qualify_expr_vec(es, val_map, type_map, ctor_map)?),
+        ),
         ExprKind::Record(fs) => Expr::new(
             span,
             ExprKind::Record(qualify_record_fields(fs, val_map, type_map, ctor_map)?),
@@ -6519,7 +6607,10 @@ fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
     }
 }
 
-fn rewrite_show_apply_builtin_show(span: ast::Span, args: &mut Vec<ast::Expr>) -> Option<ast::Expr> {
+fn rewrite_show_apply_builtin_show(
+    span: ast::Span,
+    args: &mut Vec<ast::Expr>,
+) -> Option<ast::Expr> {
     use ast::ExprKind;
     if args.len() != 1 {
         return None;
@@ -6538,7 +6629,10 @@ fn rewrite_show_apply_builtin_show(span: ast::Span, args: &mut Vec<ast::Expr>) -
     ))
 }
 
-fn rewrite_show_apply_builtin_to_string(span: ast::Span, args: &mut Vec<ast::Expr>) -> Option<ast::Expr> {
+fn rewrite_show_apply_builtin_to_string(
+    span: ast::Span,
+    args: &mut Vec<ast::Expr>,
+) -> Option<ast::Expr> {
     use ast::ExprKind;
     if args.len() != 1 {
         return None;
@@ -6548,7 +6642,10 @@ fn rewrite_show_apply_builtin_to_string(span: ast::Span, args: &mut Vec<ast::Exp
     Some(ast::Expr::new(
         span,
         ExprKind::Apply {
-            func: Box::new(ast::Expr::new(span, ExprKind::Var("__toString".to_string()))),
+            func: Box::new(ast::Expr::new(
+                span,
+                ExprKind::Var("__toString".to_string()),
+            )),
             args: vec![
                 ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
                 a0,
@@ -6610,9 +6707,15 @@ fn rewrite_show_apply_builtin_neq(span: ast::Span, args: &mut Vec<ast::Expr>) ->
                             args: vec![ast::Expr::new(
                                 span,
                                 ExprKind::Apply {
-                                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__eq".to_string()))),
+                                    func: Box::new(ast::Expr::new(
+                                        span,
+                                        ExprKind::Var("__eq".to_string()),
+                                    )),
                                     args: vec![
-                                        ast::Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
+                                        ast::Expr::new(
+                                            span,
+                                            ExprKind::Var("__builtinEqDict".to_string()),
+                                        ),
                                         a,
                                         ast::Expr::new(span, ExprKind::Var(bname)),
                                     ],
@@ -6648,7 +6751,11 @@ fn rewrite_show_apply_builtin_neq(span: ast::Span, args: &mut Vec<ast::Expr>) ->
     }
 }
 
-fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<ast::Expr>) -> Option<ast::Expr> {
+fn rewrite_show_apply_special(
+    span: ast::Span,
+    func: &ast::Expr,
+    mut args: Vec<ast::Expr>,
+) -> Option<ast::Expr> {
     use ast::ExprKind;
     let ExprKind::Var(n) = &func.kind else {
         return None;
@@ -6663,7 +6770,11 @@ fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<a
     }
 }
 
-fn rewrite_show_calls_in_apply(span: ast::Span, func: ast::Expr, args: Vec<ast::Expr>) -> ast::Expr {
+fn rewrite_show_calls_in_apply(
+    span: ast::Span,
+    func: ast::Expr,
+    args: Vec<ast::Expr>,
+) -> ast::Expr {
     use ast::{Expr, ExprKind};
 
     let func = rewrite_show_calls_in_expr(func);
@@ -6682,7 +6793,11 @@ fn rewrite_show_calls_in_apply(span: ast::Span, func: ast::Expr, args: Vec<ast::
     )
 }
 
-fn rewrite_show_calls_in_lambda(span: ast::Span, params: Vec<String>, body: ast::Expr) -> ast::Expr {
+fn rewrite_show_calls_in_lambda(
+    span: ast::Span,
+    params: Vec<String>,
+    body: ast::Expr,
+) -> ast::Expr {
     use ast::{Expr, ExprKind};
     Expr::new(
         span,
@@ -6710,7 +6825,11 @@ fn rewrite_show_calls_in_if(
     )
 }
 
-fn rewrite_show_calls_in_let(span: ast::Span, bindings: Vec<ast::Binding>, body: ast::Expr) -> ast::Expr {
+fn rewrite_show_calls_in_let(
+    span: ast::Span,
+    bindings: Vec<ast::Binding>,
+    body: ast::Expr,
+) -> ast::Expr {
     use ast::{Expr, ExprKind};
     Expr::new(
         span,
@@ -6772,7 +6891,11 @@ fn rewrite_show_calls_in_do(span: ast::Span, stmts: Vec<ast::DoStmt>) -> ast::Ex
     )
 }
 
-fn rewrite_show_calls_in_case(span: ast::Span, expr: ast::Expr, arms: Vec<ast::CaseArm>) -> ast::Expr {
+fn rewrite_show_calls_in_case(
+    span: ast::Span,
+    expr: ast::Expr,
+    arms: Vec<ast::CaseArm>,
+) -> ast::Expr {
     use ast::{Expr, ExprKind};
     Expr::new(
         span,
@@ -6912,28 +7035,28 @@ impl<'a> RewriteClassMethodCallsCtx<'a> {
 }
 
 fn instance_head_key_ty_for_class(class: &str, ty: &Ty) -> Result<String> {
-        // MVP: higher-kinded classes select instances by the type constructor head.
-        // e.g. `Functor` instance is declared for `Maybe`, but call sites see `Maybe a`.
-        if class == "Monad" || class == "Applicative" || class == "Functor" {
-            return Ok(match ty {
+    // MVP: higher-kinded classes select instances by the type constructor head.
+    // e.g. `Functor` instance is declared for `Maybe`, but call sites see `Maybe a`.
+    if class == "Monad" || class == "Applicative" || class == "Functor" {
+        return Ok(match ty {
+            Ty::Con(name) => name.clone(),
+            Ty::App { head, .. } => match head.as_ref() {
                 Ty::Con(name) => name.clone(),
-                Ty::App { head, .. } => {
-                    match head.as_ref() {
-                        Ty::Con(name) => name.clone(),
-                        _ => return Err(Error::msg(
-                            "MVP: class constraints support only constructor/app instance heads",
-                        )),
-                    }
-                }
                 _ => {
                     return Err(Error::msg(
                         "MVP: class constraints support only constructor/app instance heads",
                     ))
                 }
-            });
-        }
-        instance_head_key_ty(ty)
+            },
+            _ => {
+                return Err(Error::msg(
+                    "MVP: class constraints support only constructor/app instance heads",
+                ))
+            }
+        });
     }
+    instance_head_key_ty(ty)
+}
 
 struct ApplyRewriteCtx<'a> {
     module_snapshot: &'a ast::Module,
@@ -6958,586 +7081,607 @@ impl<'a> ApplyRewriteCtx<'a> {
 }
 
 fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Option<Vec<String>> {
-        use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, VecDeque};
 
-        if from == to {
-            return None;
-        }
+    if from == to {
+        return None;
+    }
 
-        let mut q: VecDeque<String> = VecDeque::new();
-        let mut prev: HashMap<String, String> = HashMap::new();
-        q.push_back(from.to_string());
-        prev.insert(from.to_string(), "".to_string());
+    let mut q: VecDeque<String> = VecDeque::new();
+    let mut prev: HashMap<String, String> = HashMap::new();
+    q.push_back(from.to_string());
+    prev.insert(from.to_string(), "".to_string());
 
-        while let Some(c) = q.pop_front() {
-            let Some(supers) = class_env.class_supers.get(&c) else {
+    while let Some(c) = q.pop_front() {
+        let Some(supers) = class_env.class_supers.get(&c) else {
+            continue;
+        };
+        for p in supers {
+            let ast::Predicate::Class { class: sup, .. } = p else {
                 continue;
             };
-            for p in supers {
-                let ast::Predicate::Class { class: sup, .. } = p else {
-                    continue;
-                };
-                if prev.contains_key(sup) {
-                    continue;
-                }
-                prev.insert(sup.clone(), c.clone());
-                if sup == to {
-                    let mut path: Vec<String> = Vec::new();
-                    let mut cur = to.to_string();
-                    while cur != from {
-                        path.push(cur.clone());
-                        cur = prev.get(&cur)?.clone();
-                    }
-                    path.reverse();
-                    return Some(path);
-                }
-                q.push_back(sup.clone());
+            if prev.contains_key(sup) {
+                continue;
             }
+            prev.insert(sup.clone(), c.clone());
+            if sup == to {
+                let mut path: Vec<String> = Vec::new();
+                let mut cur = to.to_string();
+                while cur != from {
+                    path.push(cur.clone());
+                    cur = prev.get(&cur)?.clone();
+                }
+                path.reverse();
+                return Some(path);
+            }
+            q.push_back(sup.clone());
         }
-
-        None
     }
+
+    None
+}
 
 fn project_dict_along_path(span: ast::Span, mut base: ast::Expr, path: &[String]) -> ast::Expr {
-        for sup in path {
-            let get = ast::Expr::new(span, ast::ExprKind::Var("__recordGet".to_string()));
-            base = ast::Expr::new(
-                span,
-                ast::ExprKind::Apply {
-                    func: Box::new(get),
-                    args: vec![
-                        base,
-                        ast::Expr::new(span, ast::ExprKind::String(super_field_name(sup))),
-                    ],
-                },
-            );
-        }
-        base
+    for sup in path {
+        let get = ast::Expr::new(span, ast::ExprKind::Var("__recordGet".to_string()));
+        base = ast::Expr::new(
+            span,
+            ast::ExprKind::Apply {
+                func: Box::new(get),
+                args: vec![
+                    base,
+                    ast::Expr::new(span, ast::ExprKind::String(super_field_name(sup))),
+                ],
+            },
+        );
     }
+    base
+}
 
 fn derive_dict_expr_from_candidates(
-        span: ast::Span,
-        class_env: &ClassEnv,
-        wanted_class: &str,
-        dicts_in_scope: &HashSet<String>,
-        known_dicts_in_scope: &HashMap<String, String>,
-    ) -> Option<ast::Expr> {
-        // Candidates from in-scope dictionary parameters.
-        let mut param_candidates: Vec<(String, ast::Expr)> = dicts_in_scope
-            .iter()
-            .filter_map(|name| {
-                let c = name.strip_prefix("__dict_")?.to_string();
-                Some((c, ast::Expr::new(span, ast::ExprKind::Var(name.clone()))))
-            })
-            .collect();
-        param_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
+    span: ast::Span,
+    class_env: &ClassEnv,
+    wanted_class: &str,
+    dicts_in_scope: &HashSet<String>,
+    known_dicts_in_scope: &HashMap<String, String>,
+) -> Option<ast::Expr> {
+    // Candidates from in-scope dictionary parameters.
+    let mut param_candidates: Vec<(String, ast::Expr)> = dicts_in_scope
+        .iter()
+        .filter_map(|name| {
+            let c = name.strip_prefix("__dict_")?.to_string();
+            Some((c, ast::Expr::new(span, ast::ExprKind::Var(name.clone()))))
+        })
+        .collect();
+    param_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        // Candidates from previously chosen concrete dictionaries.
-        let mut known_candidates: Vec<(String, ast::Expr)> = known_dicts_in_scope
-            .iter()
-            .map(|(c, n)| (c.clone(), ast::Expr::new(span, ast::ExprKind::Var(n.clone()))))
-            .collect();
-        known_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
+    // Candidates from previously chosen concrete dictionaries.
+    let mut known_candidates: Vec<(String, ast::Expr)> = known_dicts_in_scope
+        .iter()
+        .map(|(c, n)| {
+            (
+                c.clone(),
+                ast::Expr::new(span, ast::ExprKind::Var(n.clone())),
+            )
+        })
+        .collect();
+    known_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        for (base_class, base_expr) in param_candidates.into_iter().chain(known_candidates) {
-            let Some(path) = find_super_path(class_env, &base_class, wanted_class) else {
-                continue;
-            };
-            return Some(project_dict_along_path(span, base_expr, &path));
-        }
-
-        None
+    for (base_class, base_expr) in param_candidates.into_iter().chain(known_candidates) {
+        let Some(path) = find_super_path(class_env, &base_class, wanted_class) else {
+            continue;
+        };
+        return Some(project_dict_along_path(span, base_expr, &path));
     }
 
-fn rewrite_class_method_var(
-        class_env: &ClassEnv,
-        dicts_in_scope: &HashSet<String>,
-        known_dicts_in_scope: &HashMap<String, String>,
-        span: ast::Span,
-        mname: String,
-    ) -> Result<ast::Expr> {
-        use ast::{Expr, ExprKind};
+    None
+}
 
-        if let Some(classes) = class_env.method_classes.get(&mname) {
-            if std::env::var("KSCR_DEBUG_METHOD_VALUES").ok().as_deref() == Some("1")
-                && (mname == "enumFromTo" || mname == "enumFromThenTo")
-            {
-                eprintln!(
+fn rewrite_class_method_var(
+    class_env: &ClassEnv,
+    dicts_in_scope: &HashSet<String>,
+    known_dicts_in_scope: &HashMap<String, String>,
+    span: ast::Span,
+    mname: String,
+) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
+
+    if let Some(classes) = class_env.method_classes.get(&mname) {
+        if std::env::var("KSCR_DEBUG_METHOD_VALUES").ok().as_deref() == Some("1")
+            && (mname == "enumFromTo" || mname == "enumFromThenTo")
+        {
+            eprintln!(
                     "[KSCR_DEBUG_METHOD_VALUES] rewrite_class_method_var hit: {mname} classes={classes:?} dicts_in_scope={:?} known_dicts={:?}",
                     dicts_in_scope,
                     known_dicts_in_scope
                 );
-            }
-            let Some(class) = classes.first() else {
-                return Err(Error::msg("internal: empty method class list"));
-            };
-
-            let dict_var = format!("__dict_{class}");
-
-            let dict_expr: Option<ast::Expr> = if dicts_in_scope.contains(&dict_var) {
-                Some(Expr::new(span, ExprKind::Var(dict_var.clone())))
-            } else if let Some(d) = known_dicts_in_scope.get(class) {
-                Some(Expr::new(span, ExprKind::Var(d.clone())))
-            } else {
-                derive_dict_expr_from_candidates(span, class_env, class, dicts_in_scope, known_dicts_in_scope)
-            };
-
-            let make_method_value = |dict_expr: ast::Expr| {
-                let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
-                let method_fn = Expr::new(
-                    span,
-                    ExprKind::Apply {
-                        func: Box::new(get),
-                        args: vec![
-                            dict_expr.clone(),
-                            Expr::new(span, ExprKind::String(mname.clone())),
-                        ],
-                    },
-                );
-                Expr::new(
-                    span,
-                    ExprKind::Apply {
-                        func: Box::new(method_fn),
-                        args: vec![dict_expr],
-                    },
-                )
-            };
-
-            Ok(if let Some(dict_expr) = dict_expr {
-                make_method_value(dict_expr)
-            } else {
-                let param = dict_var;
-                let dict_expr = Expr::new(span, ExprKind::Var(param.clone()));
-                Expr::new(
-                    span,
-                    ExprKind::Lambda {
-                        params: vec![param],
-                        body: Box::new(make_method_value(dict_expr)),
-                    },
-                )
-            })
-        } else {
-            Ok(Expr::new(span, ExprKind::Var(mname)))
         }
-    }
-
-fn rewrite_class_method_lambda(ctx: &ApplyRewriteCtx<'_>,
-        params: Vec<String>,
-        body: ast::Expr,
-    ) -> Result<ast::Expr> {
-        use ast::{Expr, ExprKind};
-
-        let mut scope = ctx.dicts_in_scope.clone();
-        for p in &params {
-            if p.starts_with("__dict_") {
-                scope.insert(p.clone());
-            }
-        }
-        Ok(Expr::new(
-            ctx.span,
-            ExprKind::Lambda {
-                params,
-                body: Box::new(rewrite_expr(
-                    ctx.module_snapshot,
-                    ctx.class_env,
-                    ctx.inferred,
-                    &scope,
-                    ctx.known_dicts_in_scope,
-                    body,
-                )?),
-            },
-        ))
-    }
-
-fn monad_syntactic_head(e: &ast::Expr) -> Option<String> {
-        match &e.kind {
-            ast::ExprKind::Ctor(n) => Some(n.clone()),
-            ast::ExprKind::Apply { func, .. } => match &func.kind {
-                ast::ExprKind::Ctor(n) => Some(n.clone()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-fn resolve_method_dict_name(
-        ctx: &ApplyRewriteCtx<'_>,
-        class: &str,
-        mname: &str,
-        args: &[ast::Expr],
-    ) -> Result<(ast::Expr, Option<String>)> {
-        use ast::{Expr, ExprKind};
+        let Some(class) = classes.first() else {
+            return Err(Error::msg("internal: empty method class list"));
+        };
 
         let dict_var = format!("__dict_{class}");
-        if ctx.dicts_in_scope.contains(&dict_var) {
-            return Ok((Expr::new(ctx.span, ExprKind::Var(dict_var.clone())), Some(dict_var)));
+
+        let dict_expr: Option<ast::Expr> = if dicts_in_scope.contains(&dict_var) {
+            Some(Expr::new(span, ExprKind::Var(dict_var.clone())))
+        } else if let Some(d) = known_dicts_in_scope.get(class) {
+            Some(Expr::new(span, ExprKind::Var(d.clone())))
+        } else {
+            derive_dict_expr_from_candidates(
+                span,
+                class_env,
+                class,
+                dicts_in_scope,
+                known_dicts_in_scope,
+            )
+        };
+
+        let make_method_value = |dict_expr: ast::Expr| {
+            let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
+            let method_fn = Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(get),
+                    args: vec![
+                        dict_expr.clone(),
+                        Expr::new(span, ExprKind::String(mname.clone())),
+                    ],
+                },
+            );
+            Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(method_fn),
+                    args: vec![dict_expr],
+                },
+            )
+        };
+
+        Ok(if let Some(dict_expr) = dict_expr {
+            make_method_value(dict_expr)
+        } else {
+            let param = dict_var;
+            let dict_expr = Expr::new(span, ExprKind::Var(param.clone()));
+            Expr::new(
+                span,
+                ExprKind::Lambda {
+                    params: vec![param],
+                    body: Box::new(make_method_value(dict_expr)),
+                },
+            )
+        })
+    } else {
+        Ok(Expr::new(span, ExprKind::Var(mname)))
+    }
+}
+
+fn rewrite_class_method_lambda(
+    ctx: &ApplyRewriteCtx<'_>,
+    params: Vec<String>,
+    body: ast::Expr,
+) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
+
+    let mut scope = ctx.dicts_in_scope.clone();
+    for p in &params {
+        if p.starts_with("__dict_") {
+            scope.insert(p.clone());
         }
+    }
+    Ok(Expr::new(
+        ctx.span,
+        ExprKind::Lambda {
+            params,
+            body: Box::new(rewrite_expr(
+                ctx.module_snapshot,
+                ctx.class_env,
+                ctx.inferred,
+                &scope,
+                ctx.known_dicts_in_scope,
+                body,
+            )?),
+        },
+    ))
+}
 
-        let mut first_non_ground: Option<Ty> = None;
-        let mut first_missing_instance: Option<Ty> = None;
-        let mut dict_name: Option<String> = None;
+fn monad_syntactic_head(e: &ast::Expr) -> Option<String> {
+    match &e.kind {
+        ast::ExprKind::Ctor(n) => Some(n.clone()),
+        ast::ExprKind::Apply { func, .. } => match &func.kind {
+            ast::ExprKind::Ctor(n) => Some(n.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
-        if class == "Monad" {
-            for a in args {
-                if let Some(head) = monad_syntactic_head(a) {
-                    let key = (class.to_string(), head);
-                    if let Some(d) = ctx.class_env.instances.get(&key) {
-                        dict_name = Some(d.clone());
-                        break;
-                    }
-                }
-            }
-        }
+fn resolve_method_dict_name(
+    ctx: &ApplyRewriteCtx<'_>,
+    class: &str,
+    mname: &str,
+    args: &[ast::Expr],
+) -> Result<(ast::Expr, Option<String>)> {
+    use ast::{Expr, ExprKind};
 
-        if dict_name.is_none() {
-            for a in args {
-                let Ok(a_ty) = infer_in_module_with_class_env(
-                    ctx.module_snapshot,
-                    ctx.class_env,
-                    ctx.inferred,
-                    a.clone(),
-                ) else {
-                    continue;
-                };
+    let dict_var = format!("__dict_{class}");
+    if ctx.dicts_in_scope.contains(&dict_var) {
+        return Ok((
+            Expr::new(ctx.span, ExprKind::Var(dict_var.clone())),
+            Some(dict_var),
+        ));
+    }
 
-                if !ftv_ty(&a_ty).is_empty() {
-                    if first_non_ground.is_none() {
-                        first_non_ground = Some(a_ty.clone());
-                    }
-                    if class != "Monad" {
-                        continue;
-                    }
-                }
+    let mut first_non_ground: Option<Ty> = None;
+    let mut first_missing_instance: Option<Ty> = None;
+    let mut dict_name: Option<String> = None;
 
-                let Ok(head) = instance_head_key_ty_for_class(class, &a_ty) else {
-                    continue;
-                };
-
+    if class == "Monad" {
+        for a in args {
+            if let Some(head) = monad_syntactic_head(a) {
                 let key = (class.to_string(), head);
                 if let Some(d) = ctx.class_env.instances.get(&key) {
                     dict_name = Some(d.clone());
                     break;
                 }
-
-                if first_missing_instance.is_none() {
-                    first_missing_instance = Some(a_ty);
-                }
             }
         }
-
-        if let Some(dict_name) = dict_name {
-            let chosen_name_for_known = Some(dict_name.clone());
-            return Ok((Expr::new(ctx.span, ExprKind::Var(dict_name)), chosen_name_for_known));
-        }
-        if let Some(d) = ctx.known_dicts_in_scope.get(class) {
-            let chosen_name_for_known = Some(d.clone());
-            return Ok((Expr::new(ctx.span, ExprKind::Var(d.clone())), chosen_name_for_known));
-        }
-        if let Some(d) = derive_dict_expr_from_candidates(
-            ctx.span,
-            ctx.class_env,
-            class,
-            ctx.dicts_in_scope,
-            ctx.known_dicts_in_scope,
-        ) {
-            return Ok((d, None));
-        }
-
-        if let Some(ty) = first_missing_instance {
-            return Err(Error::msg(format!(
-                "no instance found for method call `{mname}`: {class} {ty}"
-            )));
-        }
-
-        let ty_hint = first_non_ground
-            .or_else(|| {
-                args.first().and_then(|a0| {
-                    infer_in_module_with_class_env(
-                        ctx.module_snapshot,
-                        ctx.class_env,
-                        ctx.inferred,
-                        a0.clone(),
-                    )
-                    .ok()
-                })
-            })
-            .unwrap_or(Ty::Con("<unknown>".to_string()));
-
-        Err(Error::msg(format!(
-            "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
-        )))
     }
 
-fn build_method_call(
-        ctx: &ApplyRewriteCtx<'_>,
-        mname: &str,
-        dict_expr: ast::Expr,
-        new_args: Vec<ast::Expr>,
-    ) -> ast::Expr {
-        use ast::{Expr, ExprKind};
+    if dict_name.is_none() {
+        for a in args {
+            let Ok(a_ty) = infer_in_module_with_class_env(
+                ctx.module_snapshot,
+                ctx.class_env,
+                ctx.inferred,
+                a.clone(),
+            ) else {
+                continue;
+            };
 
-        let get = Expr::new(ctx.span, ExprKind::Var("__recordGet".to_string()));
-        let method_fn = Expr::new(
-            ctx.span,
-            ExprKind::Apply {
-                func: Box::new(get),
-                args: vec![
-                    dict_expr.clone(),
-                    Expr::new(ctx.span, ExprKind::String(mname.to_string())),
-                ],
-            },
-        );
+            if !ftv_ty(&a_ty).is_empty() {
+                if first_non_ground.is_none() {
+                    first_non_ground = Some(a_ty.clone());
+                }
+                if class != "Monad" {
+                    continue;
+                }
+            }
 
-        let mut call_args = Vec::with_capacity(1 + new_args.len());
-        call_args.push(dict_expr);
-        call_args.extend(new_args);
+            let Ok(head) = instance_head_key_ty_for_class(class, &a_ty) else {
+                continue;
+            };
 
-        Expr::new(
-            ctx.span,
-            ExprKind::Apply {
-                func: Box::new(method_fn),
-                args: call_args,
-            },
-        )
+            let key = (class.to_string(), head);
+            if let Some(d) = ctx.class_env.instances.get(&key) {
+                dict_name = Some(d.clone());
+                break;
+            }
+
+            if first_missing_instance.is_none() {
+                first_missing_instance = Some(a_ty);
+            }
+        }
     }
 
-fn rewrite_args_with_known(
-        ctx: &ApplyRewriteCtx<'_>,
-        known_dicts_in_scope: &HashMap<String, String>,
-        args: Vec<ast::Expr>,
-    ) -> Result<Vec<ast::Expr>> {
-        args.into_iter()
-            .map(|a| {
-                rewrite_expr(
+    if let Some(dict_name) = dict_name {
+        let chosen_name_for_known = Some(dict_name.clone());
+        return Ok((
+            Expr::new(ctx.span, ExprKind::Var(dict_name)),
+            chosen_name_for_known,
+        ));
+    }
+    if let Some(d) = ctx.known_dicts_in_scope.get(class) {
+        let chosen_name_for_known = Some(d.clone());
+        return Ok((
+            Expr::new(ctx.span, ExprKind::Var(d.clone())),
+            chosen_name_for_known,
+        ));
+    }
+    if let Some(d) = derive_dict_expr_from_candidates(
+        ctx.span,
+        ctx.class_env,
+        class,
+        ctx.dicts_in_scope,
+        ctx.known_dicts_in_scope,
+    ) {
+        return Ok((d, None));
+    }
+
+    if let Some(ty) = first_missing_instance {
+        return Err(Error::msg(format!(
+            "no instance found for method call `{mname}`: {class} {ty}"
+        )));
+    }
+
+    let ty_hint = first_non_ground
+        .or_else(|| {
+            args.first().and_then(|a0| {
+                infer_in_module_with_class_env(
                     ctx.module_snapshot,
                     ctx.class_env,
                     ctx.inferred,
-                    ctx.dicts_in_scope,
-                    known_dicts_in_scope,
-                    a,
+                    a0.clone(),
                 )
+                .ok()
             })
-            .collect()
-    }
+        })
+        .unwrap_or(Ty::Con("<unknown>".to_string()));
+
+    Err(Error::msg(format!(
+        "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
+    )))
+}
+
+fn build_method_call(
+    ctx: &ApplyRewriteCtx<'_>,
+    mname: &str,
+    dict_expr: ast::Expr,
+    new_args: Vec<ast::Expr>,
+) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+
+    let get = Expr::new(ctx.span, ExprKind::Var("__recordGet".to_string()));
+    let method_fn = Expr::new(
+        ctx.span,
+        ExprKind::Apply {
+            func: Box::new(get),
+            args: vec![
+                dict_expr.clone(),
+                Expr::new(ctx.span, ExprKind::String(mname.to_string())),
+            ],
+        },
+    );
+
+    let mut call_args = Vec::with_capacity(1 + new_args.len());
+    call_args.push(dict_expr);
+    call_args.extend(new_args);
+
+    Expr::new(
+        ctx.span,
+        ExprKind::Apply {
+            func: Box::new(method_fn),
+            args: call_args,
+        },
+    )
+}
+
+fn rewrite_args_with_known(
+    ctx: &ApplyRewriteCtx<'_>,
+    known_dicts_in_scope: &HashMap<String, String>,
+    args: Vec<ast::Expr>,
+) -> Result<Vec<ast::Expr>> {
+    args.into_iter()
+        .map(|a| {
+            rewrite_expr(
+                ctx.module_snapshot,
+                ctx.class_env,
+                ctx.inferred,
+                ctx.dicts_in_scope,
+                known_dicts_in_scope,
+                a,
+            )
+        })
+        .collect()
+}
 
 fn rewrite_class_method_apply(
-        ctx: &ApplyRewriteCtx<'_>,
-        func: ast::Expr,
-        args: Vec<ast::Expr>,
-    ) -> Result<ast::Expr> {
-        use ast::{Expr, ExprKind};
+    ctx: &ApplyRewriteCtx<'_>,
+    func: ast::Expr,
+    args: Vec<ast::Expr>,
+) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
 
-        if let ExprKind::Var(mname) = &func.kind {
-            if let Some(classes) = ctx.class_env.method_classes.get(mname) {
-                let Some(class) = classes.first() else {
-                    return Err(Error::msg("internal: empty method class list"));
-                };
+    if let ExprKind::Var(mname) = &func.kind {
+        if let Some(classes) = ctx.class_env.method_classes.get(mname) {
+            let Some(class) = classes.first() else {
+                return Err(Error::msg("internal: empty method class list"));
+            };
 
-                let (dict_expr, chosen_name_for_known) =
-                    resolve_method_dict_name(ctx, class, mname, &args)?;
+            let (dict_expr, chosen_name_for_known) =
+                resolve_method_dict_name(ctx, class, mname, &args)?;
 
-                let mut known = ctx.known_dicts_in_scope.clone();
-                if let Some(chosen) = chosen_name_for_known.clone() {
-                    known.insert(class.clone(), chosen);
-                }
-
-                let new_args = rewrite_args_with_known(ctx, &known, args)?;
-
-                return Ok(build_method_call(ctx, mname, dict_expr, new_args));
+            let mut known = ctx.known_dicts_in_scope.clone();
+            if let Some(chosen) = chosen_name_for_known.clone() {
+                known.insert(class.clone(), chosen);
             }
-        }
 
-        let func = ctx.rewrite_expr(func)?;
-        let args: Vec<_> = args
-            .into_iter()
-            .map(|a| ctx.rewrite_expr(a))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Expr::new(
-            ctx.span,
-            ExprKind::Apply {
-                func: Box::new(func),
-                args,
-            },
-        ))
+            let new_args = rewrite_args_with_known(ctx, &known, args)?;
+
+            return Ok(build_method_call(ctx, mname, dict_expr, new_args));
+        }
     }
+
+    let func = ctx.rewrite_expr(func)?;
+    let args: Vec<_> = args
+        .into_iter()
+        .map(|a| ctx.rewrite_expr(a))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Expr::new(
+        ctx.span,
+        ExprKind::Apply {
+            func: Box::new(func),
+            args,
+        },
+    ))
+}
 
 fn rewrite_expr(
-        module_snapshot: &ast::Module,
-        class_env: &ClassEnv,
-        inferred: &HashMap<String, Scheme>,
-        dicts_in_scope: &HashSet<String>,
-        known_dicts_in_scope: &HashMap<String, String>,
-        expr: ast::Expr,
-    ) -> Result<ast::Expr> {
-        let span = expr.span;
-        let rewrite_ctx = RewriteExprCtx::new(
-            module_snapshot,
-            class_env,
-            inferred,
-            dicts_in_scope,
-            known_dicts_in_scope,
-            span,
-        );
-        rewrite_expr_inner(&rewrite_ctx, expr, span)
-    }
+    module_snapshot: &ast::Module,
+    class_env: &ClassEnv,
+    inferred: &HashMap<String, Scheme>,
+    dicts_in_scope: &HashSet<String>,
+    known_dicts_in_scope: &HashMap<String, String>,
+    expr: ast::Expr,
+) -> Result<ast::Expr> {
+    let span = expr.span;
+    let rewrite_ctx = RewriteExprCtx::new(
+        module_snapshot,
+        class_env,
+        inferred,
+        dicts_in_scope,
+        known_dicts_in_scope,
+        span,
+    );
+    rewrite_expr_inner(&rewrite_ctx, expr, span)
+}
 
 struct RewriteExprCtx<'a> {
-        apply_ctx: ApplyRewriteCtx<'a>,
-    }
+    apply_ctx: ApplyRewriteCtx<'a>,
+}
 
 impl<'a> RewriteExprCtx<'a> {
-        fn new(
-            module_snapshot: &'a ast::Module,
-            class_env: &'a ClassEnv,
-            inferred: &'a HashMap<String, Scheme>,
-            dicts_in_scope: &'a HashSet<String>,
-            known_dicts_in_scope: &'a HashMap<String, String>,
-            span: ast::Span,
-        ) -> Self {
-            Self {
-                apply_ctx: ApplyRewriteCtx {
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    dicts_in_scope,
-                    known_dicts_in_scope,
-                    span,
-                },
-            }
-        }
-
-        fn ctx(&self) -> &ApplyRewriteCtx<'a> {
-            &self.apply_ctx
-        }
-
-        fn rewrite(&self, expr: ast::Expr) -> Result<ast::Expr> {
-            rewrite_expr(
-                self.apply_ctx.module_snapshot,
-                self.apply_ctx.class_env,
-                self.apply_ctx.inferred,
-                self.apply_ctx.dicts_in_scope,
-                self.apply_ctx.known_dicts_in_scope,
-                expr,
-            )
-        }
-
-        fn rewrite_bindings(&self, bindings: Vec<ast::Binding>) -> Result<Vec<ast::Binding>> {
-            bindings
-                .into_iter()
-                .map(|b| {
-                    Ok(ast::Binding {
-                        pat: b.pat,
-                        expr: self.rewrite(b.expr)?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()
-        }
-
-        fn rewrite_do(&self, stmts: Vec<ast::DoStmt>) -> Result<Vec<ast::DoStmt>> {
-            stmts
-                .into_iter()
-                .map(|s| {
-                    Ok(match s {
-                        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
-                            pat,
-                            expr: self.rewrite(expr)?,
-                        },
-                        ast::DoStmt::Expr(e) => ast::DoStmt::Expr(self.rewrite(e)?),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()
-        }
-
-        fn rewrite_case_arms(&self, arms: Vec<ast::CaseArm>) -> Result<Vec<ast::CaseArm>> {
-            arms
-                .into_iter()
-                .map(|a| {
-                    Ok(ast::CaseArm {
-                        pat: a.pat,
-                        guard: a.guard.map(|g| self.rewrite(g)).transpose()?,
-                        body: self.rewrite(a.body)?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()
-        }
-
-        fn rewrite_expr_list(&self, es: Vec<ast::Expr>) -> Result<Vec<ast::Expr>> {
-            es.into_iter().map(|e| self.rewrite(e)).collect()
-        }
-
-        fn rewrite_record_fields(&self, fields: Vec<(String, ast::Expr)>) -> Result<Vec<(String, ast::Expr)>> {
-            fields
-                .into_iter()
-                .map(|(k, v)| Ok((k, self.rewrite(v)?)))
-                .collect::<Result<Vec<_>>>()
+    fn new(
+        module_snapshot: &'a ast::Module,
+        class_env: &'a ClassEnv,
+        inferred: &'a HashMap<String, Scheme>,
+        dicts_in_scope: &'a HashSet<String>,
+        known_dicts_in_scope: &'a HashMap<String, String>,
+        span: ast::Span,
+    ) -> Self {
+        Self {
+            apply_ctx: ApplyRewriteCtx {
+                module_snapshot,
+                class_env,
+                inferred,
+                dicts_in_scope,
+                known_dicts_in_scope,
+                span,
+            },
         }
     }
+
+    fn ctx(&self) -> &ApplyRewriteCtx<'a> {
+        &self.apply_ctx
+    }
+
+    fn rewrite(&self, expr: ast::Expr) -> Result<ast::Expr> {
+        rewrite_expr(
+            self.apply_ctx.module_snapshot,
+            self.apply_ctx.class_env,
+            self.apply_ctx.inferred,
+            self.apply_ctx.dicts_in_scope,
+            self.apply_ctx.known_dicts_in_scope,
+            expr,
+        )
+    }
+
+    fn rewrite_bindings(&self, bindings: Vec<ast::Binding>) -> Result<Vec<ast::Binding>> {
+        bindings
+            .into_iter()
+            .map(|b| {
+                Ok(ast::Binding {
+                    pat: b.pat,
+                    expr: self.rewrite(b.expr)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
+    fn rewrite_do(&self, stmts: Vec<ast::DoStmt>) -> Result<Vec<ast::DoStmt>> {
+        stmts
+            .into_iter()
+            .map(|s| {
+                Ok(match s {
+                    ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                        pat,
+                        expr: self.rewrite(expr)?,
+                    },
+                    ast::DoStmt::Expr(e) => ast::DoStmt::Expr(self.rewrite(e)?),
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
+    fn rewrite_case_arms(&self, arms: Vec<ast::CaseArm>) -> Result<Vec<ast::CaseArm>> {
+        arms.into_iter()
+            .map(|a| {
+                Ok(ast::CaseArm {
+                    pat: a.pat,
+                    guard: a.guard.map(|g| self.rewrite(g)).transpose()?,
+                    body: self.rewrite(a.body)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
+    fn rewrite_expr_list(&self, es: Vec<ast::Expr>) -> Result<Vec<ast::Expr>> {
+        es.into_iter().map(|e| self.rewrite(e)).collect()
+    }
+
+    fn rewrite_record_fields(
+        &self,
+        fields: Vec<(String, ast::Expr)>,
+    ) -> Result<Vec<(String, ast::Expr)>> {
+        fields
+            .into_iter()
+            .map(|(k, v)| Ok((k, self.rewrite(v)?)))
+            .collect::<Result<Vec<_>>>()
+    }
+}
 
 fn rewrite_expr_inner(
-        rewrite_ctx: &RewriteExprCtx<'_>,
-        expr: ast::Expr,
-        span: ast::Span,
-    ) -> Result<ast::Expr> {
-        use ast::{Expr, ExprKind};
+    rewrite_ctx: &RewriteExprCtx<'_>,
+    expr: ast::Expr,
+    span: ast::Span,
+) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
 
-        let apply_ctx = rewrite_ctx.ctx();
-        Ok(match expr.kind {
-            ExprKind::Var(mname) => rewrite_class_method_var(
-                apply_ctx.class_env,
-                apply_ctx.dicts_in_scope,
-                apply_ctx.known_dicts_in_scope,
-                span,
-                mname,
-            )?,
-            ExprKind::Lambda { params, body } => {
-                rewrite_class_method_lambda(apply_ctx, params, *body)?
-            }
-            ExprKind::Apply { func, args } => rewrite_class_method_apply(apply_ctx, *func, args)?,
-            ExprKind::Let { bindings, body } => Expr::new(
-                span,
-                ExprKind::Let {
-                    bindings: rewrite_ctx.rewrite_bindings(bindings)?,
-                    body: Box::new(rewrite_ctx.rewrite(*body)?),
-                },
-            ),
-            ExprKind::Where { expr, bindings } => Expr::new(
-                span,
-                ExprKind::Where {
-                    expr: Box::new(rewrite_ctx.rewrite(*expr)?),
-                    bindings: rewrite_ctx.rewrite_bindings(bindings)?,
-                },
-            ),
-            ExprKind::Annot { expr, ty } => Expr::new(
-                span,
-                ExprKind::Annot {
-                    expr: Box::new(rewrite_ctx.rewrite(*expr)?),
-                    ty,
-                },
-            ),
-            ExprKind::Do(stmts) => Expr::new(span, ExprKind::Do(rewrite_ctx.rewrite_do(stmts)?)),
-            ExprKind::Case { expr, arms } => Expr::new(
-                span,
-                ExprKind::Case {
-                    expr: Box::new(rewrite_ctx.rewrite(*expr)?),
-                    arms: rewrite_ctx.rewrite_case_arms(arms)?,
-                },
-            ),
-            ExprKind::Cons { head, tail } => Expr::new(
-                span,
-                ExprKind::Cons {
-                    head: Box::new(rewrite_ctx.rewrite(*head)?),
-                    tail: Box::new(rewrite_ctx.rewrite(*tail)?),
-                },
-            ),
-            ExprKind::List(es) => Expr::new(span, ExprKind::List(rewrite_ctx.rewrite_expr_list(es)?)),
-            ExprKind::Tuple(es) => Expr::new(span, ExprKind::Tuple(rewrite_ctx.rewrite_expr_list(es)?)),
-            ExprKind::Record(fields) => Expr::new(
-                span,
-                ExprKind::Record(rewrite_ctx.rewrite_record_fields(fields)?),
-            ),
-            other => Expr::new(span, other),
-        })
-    }
+    let apply_ctx = rewrite_ctx.ctx();
+    Ok(match expr.kind {
+        ExprKind::Var(mname) => rewrite_class_method_var(
+            apply_ctx.class_env,
+            apply_ctx.dicts_in_scope,
+            apply_ctx.known_dicts_in_scope,
+            span,
+            mname,
+        )?,
+        ExprKind::Lambda { params, body } => rewrite_class_method_lambda(apply_ctx, params, *body)?,
+        ExprKind::Apply { func, args } => rewrite_class_method_apply(apply_ctx, *func, args)?,
+        ExprKind::Let { bindings, body } => Expr::new(
+            span,
+            ExprKind::Let {
+                bindings: rewrite_ctx.rewrite_bindings(bindings)?,
+                body: Box::new(rewrite_ctx.rewrite(*body)?),
+            },
+        ),
+        ExprKind::Where { expr, bindings } => Expr::new(
+            span,
+            ExprKind::Where {
+                expr: Box::new(rewrite_ctx.rewrite(*expr)?),
+                bindings: rewrite_ctx.rewrite_bindings(bindings)?,
+            },
+        ),
+        ExprKind::Annot { expr, ty } => Expr::new(
+            span,
+            ExprKind::Annot {
+                expr: Box::new(rewrite_ctx.rewrite(*expr)?),
+                ty,
+            },
+        ),
+        ExprKind::Do(stmts) => Expr::new(span, ExprKind::Do(rewrite_ctx.rewrite_do(stmts)?)),
+        ExprKind::Case { expr, arms } => Expr::new(
+            span,
+            ExprKind::Case {
+                expr: Box::new(rewrite_ctx.rewrite(*expr)?),
+                arms: rewrite_ctx.rewrite_case_arms(arms)?,
+            },
+        ),
+        ExprKind::Cons { head, tail } => Expr::new(
+            span,
+            ExprKind::Cons {
+                head: Box::new(rewrite_ctx.rewrite(*head)?),
+                tail: Box::new(rewrite_ctx.rewrite(*tail)?),
+            },
+        ),
+        ExprKind::List(es) => Expr::new(span, ExprKind::List(rewrite_ctx.rewrite_expr_list(es)?)),
+        ExprKind::Tuple(es) => Expr::new(span, ExprKind::Tuple(rewrite_ctx.rewrite_expr_list(es)?)),
+        ExprKind::Record(fields) => Expr::new(
+            span,
+            ExprKind::Record(rewrite_ctx.rewrite_record_fields(fields)?),
+        ),
+        other => Expr::new(span, other),
+    })
+}
 
 fn rewrite_class_method_calls_in_module(
     module: &mut ast::Module,
@@ -7674,7 +7818,10 @@ fn inject_class_method_value_bindings(
         // Therefore, when we project the method function out of an instance
         // dictionary record, we must also pass the instance dictionary as the
         // first argument.
-        let dict_arg = Expr::new(ast::dummy_span(), ExprKind::Var("__dict_Enum_Integer".to_string()));
+        let dict_arg = Expr::new(
+            ast::dummy_span(),
+            ExprKind::Var("__dict_Enum_Integer".to_string()),
+        );
         let args = match mname.as_str() {
             "enumFromTo" => vec![
                 dict_arg.clone(),
@@ -7801,10 +7948,10 @@ fn expr_contains_var(e: &ast::Expr, name: &str) -> bool {
         }),
         ast::ExprKind::Case { expr, arms } => {
             expr_contains_var(expr, name)
-                || arms
-                    .iter()
-                    .any(|a| a.guard.as_ref().is_some_and(|g| expr_contains_var(g, name))
-                        || expr_contains_var(&a.body, name))
+                || arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(|g| expr_contains_var(g, name))
+                        || expr_contains_var(&a.body, name)
+                })
         }
         ast::ExprKind::Cons { head, tail } => {
             expr_contains_var(head, name) || expr_contains_var(tail, name)
@@ -7938,9 +8085,7 @@ type InferModuleBindingSccOrder = (
     Vec<usize>,
 );
 
-fn infer_module_binding_scc_order(
-    module: &ast::Module,
-) -> Result<InferModuleBindingSccOrder> {
+fn infer_module_binding_scc_order(module: &ast::Module) -> Result<InferModuleBindingSccOrder> {
     // Collect top-level bindings as nodes.
     let mut bindings: Vec<ast::Binding> = Vec::new();
     let mut ctx_names: Vec<String> = Vec::new();
@@ -8066,7 +8211,11 @@ fn desugar_lambda1(span: ast::Span, param: String, body: ast::Expr) -> ast::Expr
     )
 }
 
-fn desugar_monad_do_block(stmts: Vec<ast::DoStmt>, fresh: &mut usize, span: ast::Span) -> Result<ast::Expr> {
+fn desugar_monad_do_block(
+    stmts: Vec<ast::DoStmt>,
+    fresh: &mut usize,
+    span: ast::Span,
+) -> Result<ast::Expr> {
     use ast::{DoStmt, Expr, ExprKind, PatternKind};
 
     if stmts.is_empty() {
@@ -8132,9 +8281,7 @@ fn desugar_monad_do_expr(expr: ast::Expr, fresh: &mut usize) -> Result<ast::Expr
     let span = expr.span;
     Ok(match expr.kind {
         ExprKind::Do(stmts) => desugar_monad_do_block(stmts, fresh, span)?,
-        ExprKind::Lambda { params, body } => {
-            desugar_monad_do_lambda(span, params, *body, fresh)?
-        }
+        ExprKind::Lambda { params, body } => desugar_monad_do_lambda(span, params, *body, fresh)?,
         ExprKind::Apply { func, args } => desugar_monad_do_apply(span, *func, args, fresh)?,
         ExprKind::If {
             cond,
@@ -8142,9 +8289,7 @@ fn desugar_monad_do_expr(expr: ast::Expr, fresh: &mut usize) -> Result<ast::Expr
             else_branch,
         } => desugar_monad_do_if(span, *cond, *then_branch, *else_branch, fresh)?,
         ExprKind::Let { bindings, body } => desugar_monad_do_let(span, bindings, *body, fresh)?,
-        ExprKind::Where { expr, bindings } => {
-            desugar_monad_do_where(span, *expr, bindings, fresh)?
-        }
+        ExprKind::Where { expr, bindings } => desugar_monad_do_where(span, *expr, bindings, fresh)?,
         ExprKind::Annot { expr, ty } => desugar_monad_do_annot(span, *expr, ty, fresh)?,
         ExprKind::Case { expr, arms } => desugar_monad_do_case(span, *expr, arms, fresh)?,
         ExprKind::Cons { head, tail } => desugar_monad_do_cons(span, *head, *tail, fresh)?,
@@ -8425,8 +8570,7 @@ fn expand_case_arms(
     arms: Vec<ast::CaseArm>,
     aliases: &HashMap<String, ast::TypeAlias>,
 ) -> Result<Vec<ast::CaseArm>> {
-    arms
-        .into_iter()
+    arms.into_iter()
         .map(|a| {
             Ok(ast::CaseArm {
                 pat: expand_pat(a.pat, aliases)?,
@@ -8690,14 +8834,8 @@ fn expand_expr(expr: ast::Expr, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 tail: Box::new(expand_expr(*tail, aliases)?),
             },
         ),
-        ExprKind::List(v) => Expr::new(
-            span,
-            ExprKind::List(expand_expr_list(v, aliases)?),
-        ),
-        ExprKind::Tuple(v) => Expr::new(
-            span,
-            ExprKind::Tuple(expand_expr_list(v, aliases)?),
-        ),
+        ExprKind::List(v) => Expr::new(span, ExprKind::List(expand_expr_list(v, aliases)?)),
+        ExprKind::Tuple(v) => Expr::new(span, ExprKind::Tuple(expand_expr_list(v, aliases)?)),
         ExprKind::Record(fields) => Expr::new(
             span,
             ExprKind::Record(

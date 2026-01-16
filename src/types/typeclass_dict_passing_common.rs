@@ -152,7 +152,11 @@ pub(super) fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Opt
     None
 }
 
-pub(super) fn project_dict_along_path(span: ast::Span, mut base: ast::Expr, path: &[String]) -> ast::Expr {
+pub(super) fn project_dict_along_path(
+    span: ast::Span,
+    mut base: ast::Expr,
+    path: &[String],
+) -> ast::Expr {
     for sup in path {
         let get = ast::Expr::new(span, ast::ExprKind::Var("__recordGet".to_string()));
         base = ast::Expr::new(
@@ -346,7 +350,11 @@ fn required_classes_in_apply(
     }
 }
 
-pub(super) fn add_dict_params_to_expr(span: ast::Span, expr: ast::Expr, classes: &[String]) -> ast::Expr {
+pub(super) fn add_dict_params_to_expr(
+    span: ast::Span,
+    expr: ast::Expr,
+    classes: &[String],
+) -> ast::Expr {
     use ast::{Expr, ExprKind};
 
     let mut dict_params: Vec<String> = classes.iter().map(|c| dict_param_name(c)).collect();
@@ -500,7 +508,9 @@ pub(super) fn call_info_for_call(
 
         expected.push(apply(&subst, (*dom).clone()));
 
-        if let Ok(arg_ty) = infer_in_module_with_class_env(module_snapshot, class_env, inferred, arg.clone()) {
+        if let Ok(arg_ty) =
+            infer_in_module_with_class_env(module_snapshot, class_env, inferred, arg.clone())
+        {
             if let Ok(s) = unify(apply(&subst, (*dom).clone()), apply(&subst, arg_ty)) {
                 subst = compose(&s, &subst);
             }

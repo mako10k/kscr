@@ -87,19 +87,97 @@ fn try_consume_sig_line(
 fn collect_fixities(tokens: &[lexer::Token]) -> HashMap<String, Fixity> {
     // Default fixities.
     let mut m: HashMap<String, Fixity> = HashMap::new();
-    m.insert("*".to_string(), Fixity { prec: 70, assoc: Assoc::Left });
-    m.insert("/".to_string(), Fixity { prec: 70, assoc: Assoc::Left });
-    m.insert("+".to_string(), Fixity { prec: 60, assoc: Assoc::Left });
-    m.insert("-".to_string(), Fixity { prec: 60, assoc: Assoc::Left });
-    m.insert("++".to_string(), Fixity { prec: 60, assoc: Assoc::Left });
-    m.insert("==".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
-    m.insert("!=".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
-    m.insert("<".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
-    m.insert("<=".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
-    m.insert(">".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
-    m.insert(">=".to_string(), Fixity { prec: 50, assoc: Assoc::Left });
-    m.insert("&&".to_string(), Fixity { prec: 40, assoc: Assoc::Left });
-    m.insert("||".to_string(), Fixity { prec: 30, assoc: Assoc::Left });
+    m.insert(
+        "*".to_string(),
+        Fixity {
+            prec: 70,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "/".to_string(),
+        Fixity {
+            prec: 70,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "+".to_string(),
+        Fixity {
+            prec: 60,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "-".to_string(),
+        Fixity {
+            prec: 60,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "++".to_string(),
+        Fixity {
+            prec: 60,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "==".to_string(),
+        Fixity {
+            prec: 50,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "!=".to_string(),
+        Fixity {
+            prec: 50,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "<".to_string(),
+        Fixity {
+            prec: 50,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "<=".to_string(),
+        Fixity {
+            prec: 50,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        ">".to_string(),
+        Fixity {
+            prec: 50,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        ">=".to_string(),
+        Fixity {
+            prec: 50,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "&&".to_string(),
+        Fixity {
+            prec: 40,
+            assoc: Assoc::Left,
+        },
+    );
+    m.insert(
+        "||".to_string(),
+        Fixity {
+            prec: 30,
+            assoc: Assoc::Left,
+        },
+    );
 
     // NOTE: Full fixity decl parsing happens during module parsing.
     // Here we just provide defaults so the token stream can parse expressions.
@@ -209,7 +287,10 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_instance_decl(ts)?);
             }
-            Some(TokenKind::Ident(_)) | Some(TokenKind::LParen) | Some(TokenKind::Question) | Some(TokenKind::LBrace) => {
+            Some(TokenKind::Ident(_))
+            | Some(TokenKind::LParen)
+            | Some(TokenKind::Question)
+            | Some(TokenKind::LBrace) => {
                 // Either a signature line `x :: ...` or a binding/fun-clause.
                 if try_consume_sig_line(ts, &mut signature_buf)? {
                     continue;
@@ -313,7 +394,10 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
             {
                 args.push(parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?);
             }
-            Some(ast::DataCtor { name: ctor_name, args })
+            Some(ast::DataCtor {
+                name: ctor_name,
+                args,
+            })
         } else {
             (ts.i, ts.last_span_end) = save;
             let lhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
@@ -474,9 +558,7 @@ fn class_body_allows_default_item(ts: &TokenStream) -> bool {
     )
 }
 
-fn parse_class_body(
-    ts: &mut TokenStream,
-) -> Result<(Vec<ast::ClassMethodSig>, Vec<ast::Binding>)> {
+fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, Vec<ast::Binding>)> {
     ts.expect(TokenKind::Indent)?;
 
     let mut methods: Vec<ast::ClassMethodSig> = Vec::new();
@@ -1299,7 +1381,10 @@ fn try_parse_funclause_infix_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
     })))
 }
 
-fn try_parse_funclause_prefix_ident(ts: &mut TokenStream, stop: Stop) -> Result<Option<ParsedBind>> {
+fn try_parse_funclause_prefix_ident(
+    ts: &mut TokenStream,
+    stop: Stop,
+) -> Result<Option<ParsedBind>> {
     let save = (ts.i, ts.last_span_end);
     let name = match ts.expect_ident() {
         Ok(n) => n,
@@ -1336,7 +1421,10 @@ fn try_parse_funclause_prefix_ident(ts: &mut TokenStream, stop: Stop) -> Result<
     })))
 }
 
-fn parse_guard_and_body(ts: &mut TokenStream, stop: Stop) -> Result<(Option<ast::Expr>, ast::Expr)> {
+fn parse_guard_and_body(
+    ts: &mut TokenStream,
+    stop: Stop,
+) -> Result<(Option<ast::Expr>, ast::Expr)> {
     if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
         ts.bump();
         let guard = parse_expr(ts, Stop::LineEnd)?;
@@ -1736,7 +1824,6 @@ fn parse_type_expr(
     type_expr::parse_type_expr_in_root(ts, stop, end)
 }
 
-
 fn parse_type_atom(
     ts: &mut TokenStream,
     stop: Stop,
@@ -1744,7 +1831,6 @@ fn parse_type_atom(
 ) -> Result<ast::Type> {
     type_expr::parse_type_atom_in_root(ts, stop, end)
 }
-
 
 fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
     let start = expr.span.start;
@@ -1940,7 +2026,11 @@ fn try_parse_binop(ts: &mut TokenStream) -> Result<Option<BinOpInfo>> {
         _ => return Ok(None),
     };
 
-    Ok(Some(BinOpInfo { op, fixity, is_cons }))
+    Ok(Some(BinOpInfo {
+        op,
+        fixity,
+        is_cons,
+    }))
 }
 
 fn bump_fixed_op(ts: &mut TokenStream, op: &str) -> (String, Fixity) {
@@ -1958,7 +2048,12 @@ fn rhs_min_prec(is_cons: bool, fixity: Fixity) -> u8 {
     }
 }
 
-fn build_binop_expr(ts: &TokenStream, lhs: ast::Expr, rhs: ast::Expr, opinfo: BinOpInfo) -> ast::Expr {
+fn build_binop_expr(
+    ts: &TokenStream,
+    lhs: ast::Expr,
+    rhs: ast::Expr,
+    opinfo: BinOpInfo,
+) -> ast::Expr {
     let start = lhs.span.start;
     if opinfo.is_cons {
         return expr_from(
@@ -2282,7 +2377,11 @@ fn try_parse_list_range(
 
     if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
         ts.bump();
-        return Ok(Some(expr_from(ts, start, apply_var("enumFrom", vec![first]))));
+        return Ok(Some(expr_from(
+            ts,
+            start,
+            apply_var("enumFrom", vec![first]),
+        )));
     }
 
     let end = parse_expr(ts, Stop::Pattern)?;
@@ -2397,7 +2496,12 @@ fn parse_list_generators(ts: &mut TokenStream) -> Result<Vec<ListCompGen>> {
     Ok(gens)
 }
 
-fn build_list_comp_bind(ts: &mut TokenStream, pat: ast::Pattern, xs: ast::Expr, out: ast::Expr) -> ast::ExprKind {
+fn build_list_comp_bind(
+    ts: &mut TokenStream,
+    pat: ast::Pattern,
+    xs: ast::Expr,
+    out: ast::Expr,
+) -> ast::ExprKind {
     match pat.kind {
         ast::PatternKind::Var(name) => apply_var(
             "concatMap",
@@ -2453,7 +2557,11 @@ fn build_list_comp_bind(ts: &mut TokenStream, pat: ast::Pattern, xs: ast::Expr, 
     }
 }
 
-fn parse_list_literal_tail(ts: &mut TokenStream, start: usize, first: ast::Expr) -> Result<ast::Expr> {
+fn parse_list_literal_tail(
+    ts: &mut TokenStream,
+    start: usize,
+    first: ast::Expr,
+) -> Result<ast::Expr> {
     let mut elems = vec![first];
     while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
         ts.bump();

@@ -1,5 +1,5 @@
-mod typeclass_phase3;
 mod parser_typehole_alias_do;
+mod typeclass_phase3;
 
 #[test]
 fn scaffold_parser_accepts_binding() {

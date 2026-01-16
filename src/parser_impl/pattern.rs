@@ -2,7 +2,10 @@ use crate::{ast, lexer::TokenKind, Result};
 
 use crate::parser::token_stream::TokenStream;
 
-use super::{is_ctor_symbol, is_sym_op_token, is_upper_by_last_segment, parse_expr, parse_maybe_qualified_ident, parse_operator_name, pat_from, Stop};
+use super::{
+    is_ctor_symbol, is_sym_op_token, is_upper_by_last_segment, parse_expr,
+    parse_maybe_qualified_ident, parse_operator_name, pat_from, Stop,
+};
 
 pub(super) fn parse_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
     // Patterns support `x:xs` cons syntax; parse it at the top-level.
@@ -367,7 +370,11 @@ fn parse_record_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
 
     if is_loose {
         // `{x: a, ...}` and `{x: a, ...r}` are loose record patterns.
-        Ok(pat_from(ts, start, ast::PatternKind::RecordLoose(loose_fields, rest)))
+        Ok(pat_from(
+            ts,
+            start,
+            ast::PatternKind::RecordLoose(loose_fields, rest),
+        ))
     } else {
         // In strict record patterns, tests allow `:` interchangeably with `=`.
         if !loose_fields.is_empty() {
