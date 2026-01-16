@@ -7296,212 +7296,9 @@ pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
 }
 
 fn desugar_do_to_monad_ops_in_module(module: &mut ast::Module) -> Result<()> {
-    fn apply2(span: ast::Span, op: &str, a: ast::Expr, b: ast::Expr) -> ast::Expr {
-        ast::Expr::new(
-            span,
-            ast::ExprKind::Apply {
-                func: Box::new(ast::Expr::new(span, ast::ExprKind::Var(op.to_string()))),
-                args: vec![a, b],
-            },
-        )
-    }
-
-    fn lambda1(span: ast::Span, param: String, body: ast::Expr) -> ast::Expr {
-        ast::Expr::new(
-            span,
-            ast::ExprKind::Lambda {
-                params: vec![param],
-                body: Box::new(body),
-            },
-        )
-    }
-
-    fn desugar_expr(expr: ast::Expr, fresh: &mut usize) -> Result<ast::Expr> {
-        use ast::{DoStmt, Expr, ExprKind, PatternKind};
-
-        let span = expr.span;
-        Ok(match expr.kind {
-            ExprKind::Do(stmts) => {
-                if stmts.is_empty() {
-                    return Err(Error::msg("empty do-block"));
-                }
-
-                let mut it = stmts.into_iter();
-                let last = it.next_back().unwrap();
-
-                let mut acc = match last {
-                    DoStmt::Expr(e) => desugar_expr(e, fresh)?,
-                    DoStmt::Bind { .. } => {
-                        return Err(Error::msg("do-block must end with an expression statement"))
-                    }
-                };
-
-                while let Some(stmt) = it.next_back() {
-                    match stmt {
-                        DoStmt::Expr(e) => {
-                            let e = desugar_expr(e, fresh)?;
-                            acc = apply2(span, ">>", e, acc);
-                        }
-                        DoStmt::Bind { pat, expr } => {
-                            let rhs = desugar_expr(expr, fresh)?;
-                            match pat.kind {
-                                PatternKind::Var(name) => {
-                                    let k = lambda1(span, name, acc);
-                                    acc = apply2(span, ">>=", rhs, k);
-                                }
-                                PatternKind::Wildcard => {
-                                    let name = format!("__do_ignored{}", *fresh);
-                                    *fresh += 1;
-                                    let k = lambda1(span, name, acc);
-                                    acc = apply2(span, ">>=", rhs, k);
-                                }
-                                _ => {
-                                    let tmp = format!("__do_tmp{}", *fresh);
-                                    *fresh += 1;
-                                    let case_expr = Expr::new(
-                                        span,
-                                        ExprKind::Case {
-                                            expr: Box::new(Expr::new(
-                                                span,
-                                                ExprKind::Var(tmp.clone()),
-                                            )),
-                                            arms: vec![ast::CaseArm {
-                                                pat,
-                                                guard: None,
-                                                body: acc,
-                                            }],
-                                        },
-                                    );
-                                    let k = lambda1(span, tmp, case_expr);
-                                    acc = apply2(span, ">>=", rhs, k);
-                                }
-                            }
-                        }
-                    }
-                }
-                acc
-            }
-            ExprKind::Lambda { params, body } => Expr::new(
-                span,
-                ExprKind::Lambda {
-                    params,
-                    body: Box::new(desugar_expr(*body, fresh)?),
-                },
-            ),
-            ExprKind::Apply { func, args } => Expr::new(
-                span,
-                ExprKind::Apply {
-                    func: Box::new(desugar_expr(*func, fresh)?),
-                    args: args
-                        .into_iter()
-                        .map(|a| desugar_expr(a, fresh))
-                        .collect::<Result<Vec<_>>>()?,
-                },
-            ),
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => Expr::new(
-                span,
-                ExprKind::If {
-                    cond: Box::new(desugar_expr(*cond, fresh)?),
-                    then_branch: Box::new(desugar_expr(*then_branch, fresh)?),
-                    else_branch: Box::new(desugar_expr(*else_branch, fresh)?),
-                },
-            ),
-            ExprKind::Let { bindings, body } => Expr::new(
-                span,
-                ExprKind::Let {
-                    bindings: bindings
-                        .into_iter()
-                        .map(|b| {
-                            Ok(ast::Binding {
-                                pat: b.pat,
-                                expr: desugar_expr(b.expr, fresh)?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                    body: Box::new(desugar_expr(*body, fresh)?),
-                },
-            ),
-            ExprKind::Where { expr, bindings } => Expr::new(
-                span,
-                ExprKind::Where {
-                    expr: Box::new(desugar_expr(*expr, fresh)?),
-                    bindings: bindings
-                        .into_iter()
-                        .map(|b| {
-                            Ok(ast::Binding {
-                                pat: b.pat,
-                                expr: desugar_expr(b.expr, fresh)?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                },
-            ),
-            ExprKind::Annot { expr, ty } => Expr::new(
-                span,
-                ExprKind::Annot {
-                    expr: Box::new(desugar_expr(*expr, fresh)?),
-                    ty,
-                },
-            ),
-            ExprKind::Case { expr, arms } => Expr::new(
-                span,
-                ExprKind::Case {
-                    expr: Box::new(desugar_expr(*expr, fresh)?),
-                    arms: arms
-                        .into_iter()
-                        .map(|a| {
-                            Ok(ast::CaseArm {
-                                pat: a.pat,
-                                guard: a.guard.map(|g| desugar_expr(g, fresh)).transpose()?,
-                                body: desugar_expr(a.body, fresh)?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                },
-            ),
-            ExprKind::Cons { head, tail } => Expr::new(
-                span,
-                ExprKind::Cons {
-                    head: Box::new(desugar_expr(*head, fresh)?),
-                    tail: Box::new(desugar_expr(*tail, fresh)?),
-                },
-            ),
-            ExprKind::List(es) => Expr::new(
-                span,
-                ExprKind::List(
-                    es.into_iter()
-                        .map(|e| desugar_expr(e, fresh))
-                        .collect::<Result<Vec<_>>>()?,
-                ),
-            ),
-            ExprKind::Tuple(es) => Expr::new(
-                span,
-                ExprKind::Tuple(
-                    es.into_iter()
-                        .map(|e| desugar_expr(e, fresh))
-                        .collect::<Result<Vec<_>>>()?,
-                ),
-            ),
-            ExprKind::Record(fields) => Expr::new(
-                span,
-                ExprKind::Record(
-                    fields
-                        .into_iter()
-                        .map(|(k, v)| Ok((k, desugar_expr(v, fresh)?)))
-                        .collect::<Result<Vec<_>>>()?,
-                ),
-            ),
-            other => Expr::new(span, other),
-        })
-    }
-
     fn desugar_binding(binding: &mut ast::Binding, fresh: &mut usize) -> Result<()> {
         let expr = std::mem::replace(&mut binding.expr, ast::Expr::dummy(ast::ExprKind::Unit));
-        binding.expr = desugar_expr(expr, fresh)?;
+        binding.expr = desugar_monad_do_expr(expr, fresh)?;
         Ok(())
     }
 
@@ -7524,6 +7321,313 @@ fn desugar_do_to_monad_ops_in_module(module: &mut ast::Module) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn desugar_apply2(span: ast::Span, op: &str, a: ast::Expr, b: ast::Expr) -> ast::Expr {
+    ast::Expr::new(
+        span,
+        ast::ExprKind::Apply {
+            func: Box::new(ast::Expr::new(span, ast::ExprKind::Var(op.to_string()))),
+            args: vec![a, b],
+        },
+    )
+}
+
+fn desugar_lambda1(span: ast::Span, param: String, body: ast::Expr) -> ast::Expr {
+    ast::Expr::new(
+        span,
+        ast::ExprKind::Lambda {
+            params: vec![param],
+            body: Box::new(body),
+        },
+    )
+}
+
+fn desugar_monad_do_block(stmts: Vec<ast::DoStmt>, fresh: &mut usize, span: ast::Span) -> Result<ast::Expr> {
+    use ast::{DoStmt, Expr, ExprKind, PatternKind};
+
+    if stmts.is_empty() {
+        return Err(Error::msg("empty do-block"));
+    }
+
+    let mut it = stmts.into_iter();
+    let last = it.next_back().unwrap();
+
+    let mut acc = match last {
+        DoStmt::Expr(e) => desugar_monad_do_expr(e, fresh)?,
+        DoStmt::Bind { .. } => {
+            return Err(Error::msg("do-block must end with an expression statement"))
+        }
+    };
+
+    while let Some(stmt) = it.next_back() {
+        match stmt {
+            DoStmt::Expr(e) => {
+                let e = desugar_monad_do_expr(e, fresh)?;
+                acc = desugar_apply2(span, ">>", e, acc);
+            }
+            DoStmt::Bind { pat, expr } => {
+                let rhs = desugar_monad_do_expr(expr, fresh)?;
+                match pat.kind {
+                    PatternKind::Var(name) => {
+                        let k = desugar_lambda1(span, name, acc);
+                        acc = desugar_apply2(span, ">>=", rhs, k);
+                    }
+                    PatternKind::Wildcard => {
+                        let name = format!("__do_ignored{}", *fresh);
+                        *fresh += 1;
+                        let k = desugar_lambda1(span, name, acc);
+                        acc = desugar_apply2(span, ">>=", rhs, k);
+                    }
+                    _ => {
+                        let tmp = format!("__do_tmp{}", *fresh);
+                        *fresh += 1;
+                        let case_expr = Expr::new(
+                            span,
+                            ExprKind::Case {
+                                expr: Box::new(Expr::new(span, ExprKind::Var(tmp.clone()))),
+                                arms: vec![ast::CaseArm {
+                                    pat,
+                                    guard: None,
+                                    body: acc,
+                                }],
+                            },
+                        );
+                        let k = desugar_lambda1(span, tmp, case_expr);
+                        acc = desugar_apply2(span, ">>=", rhs, k);
+                    }
+                }
+            }
+        }
+    }
+    Ok(acc)
+}
+
+fn desugar_monad_do_expr(expr: ast::Expr, fresh: &mut usize) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
+
+    let span = expr.span;
+    Ok(match expr.kind {
+        ExprKind::Do(stmts) => desugar_monad_do_block(stmts, fresh, span)?,
+        ExprKind::Lambda { params, body } => {
+            desugar_monad_do_lambda(span, params, *body, fresh)?
+        }
+        ExprKind::Apply { func, args } => desugar_monad_do_apply(span, *func, args, fresh)?,
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => desugar_monad_do_if(span, *cond, *then_branch, *else_branch, fresh)?,
+        ExprKind::Let { bindings, body } => desugar_monad_do_let(span, bindings, *body, fresh)?,
+        ExprKind::Where { expr, bindings } => {
+            desugar_monad_do_where(span, *expr, bindings, fresh)?
+        }
+        ExprKind::Annot { expr, ty } => desugar_monad_do_annot(span, *expr, ty, fresh)?,
+        ExprKind::Case { expr, arms } => desugar_monad_do_case(span, *expr, arms, fresh)?,
+        ExprKind::Cons { head, tail } => desugar_monad_do_cons(span, *head, *tail, fresh)?,
+        ExprKind::List(es) => desugar_monad_do_list(span, es, fresh)?,
+        ExprKind::Tuple(es) => desugar_monad_do_tuple(span, es, fresh)?,
+        ExprKind::Record(fields) => desugar_monad_do_record(span, fields, fresh)?,
+        other => Expr::new(span, other),
+    })
+}
+
+fn desugar_monad_do_lambda(
+    span: ast::Span,
+    params: Vec<String>,
+    body: ast::Expr,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Lambda {
+            params,
+            body: Box::new(desugar_monad_do_expr(body, fresh)?),
+        },
+    ))
+}
+
+fn desugar_monad_do_apply(
+    span: ast::Span,
+    func: ast::Expr,
+    args: Vec<ast::Expr>,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Apply {
+            func: Box::new(desugar_monad_do_expr(func, fresh)?),
+            args: args
+                .into_iter()
+                .map(|a| desugar_monad_do_expr(a, fresh))
+                .collect::<Result<Vec<_>>>()?,
+        },
+    ))
+}
+
+fn desugar_monad_do_if(
+    span: ast::Span,
+    cond: ast::Expr,
+    then_branch: ast::Expr,
+    else_branch: ast::Expr,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::If {
+            cond: Box::new(desugar_monad_do_expr(cond, fresh)?),
+            then_branch: Box::new(desugar_monad_do_expr(then_branch, fresh)?),
+            else_branch: Box::new(desugar_monad_do_expr(else_branch, fresh)?),
+        },
+    ))
+}
+
+fn desugar_monad_do_bindings(
+    bindings: Vec<ast::Binding>,
+    fresh: &mut usize,
+) -> Result<Vec<ast::Binding>> {
+    bindings
+        .into_iter()
+        .map(|b| {
+            Ok(ast::Binding {
+                pat: b.pat,
+                expr: desugar_monad_do_expr(b.expr, fresh)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+fn desugar_monad_do_let(
+    span: ast::Span,
+    bindings: Vec<ast::Binding>,
+    body: ast::Expr,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Let {
+            bindings: desugar_monad_do_bindings(bindings, fresh)?,
+            body: Box::new(desugar_monad_do_expr(body, fresh)?),
+        },
+    ))
+}
+
+fn desugar_monad_do_where(
+    span: ast::Span,
+    expr: ast::Expr,
+    bindings: Vec<ast::Binding>,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Where {
+            expr: Box::new(desugar_monad_do_expr(expr, fresh)?),
+            bindings: desugar_monad_do_bindings(bindings, fresh)?,
+        },
+    ))
+}
+
+fn desugar_monad_do_annot(
+    span: ast::Span,
+    expr: ast::Expr,
+    ty: ast::QualType,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Annot {
+            expr: Box::new(desugar_monad_do_expr(expr, fresh)?),
+            ty,
+        },
+    ))
+}
+
+fn desugar_monad_do_case(
+    span: ast::Span,
+    expr: ast::Expr,
+    arms: Vec<ast::CaseArm>,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Case {
+            expr: Box::new(desugar_monad_do_expr(expr, fresh)?),
+            arms: arms
+                .into_iter()
+                .map(|a| {
+                    Ok(ast::CaseArm {
+                        pat: a.pat,
+                        guard: a
+                            .guard
+                            .map(|g| desugar_monad_do_expr(g, fresh))
+                            .transpose()?,
+                        body: desugar_monad_do_expr(a.body, fresh)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+        },
+    ))
+}
+
+fn desugar_monad_do_cons(
+    span: ast::Span,
+    head: ast::Expr,
+    tail: ast::Expr,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Cons {
+            head: Box::new(desugar_monad_do_expr(head, fresh)?),
+            tail: Box::new(desugar_monad_do_expr(tail, fresh)?),
+        },
+    ))
+}
+
+fn desugar_monad_do_list(
+    span: ast::Span,
+    es: Vec<ast::Expr>,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::List(
+            es.into_iter()
+                .map(|e| desugar_monad_do_expr(e, fresh))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+    ))
+}
+
+fn desugar_monad_do_tuple(
+    span: ast::Span,
+    es: Vec<ast::Expr>,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Tuple(
+            es.into_iter()
+                .map(|e| desugar_monad_do_expr(e, fresh))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+    ))
+}
+
+fn desugar_monad_do_record(
+    span: ast::Span,
+    fields: Vec<(String, ast::Expr)>,
+    fresh: &mut usize,
+) -> Result<ast::Expr> {
+    Ok(ast::Expr::new(
+        span,
+        ast::ExprKind::Record(
+            fields
+                .into_iter()
+                .map(|(k, v)| Ok((k, desugar_monad_do_expr(v, fresh)?)))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+    ))
 }
 
 fn collect_type_aliases(module: &ast::Module) -> HashMap<String, ast::TypeAlias> {
