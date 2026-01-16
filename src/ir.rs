@@ -2,6 +2,9 @@
 
 use crate::{ast, error::Error, Result};
 pub use kscr_ir::ir::*;
+pub use kscr_ir::optimize::{
+    run_passes, CaseSimplification, ConstantFolding, DeadCodeElimination, OptimizationPass,
+};
 
 #[cfg(feature = "unsafe_bigint")]
 type Integer = kscr_unsafe_bigint::Integer;
@@ -9,6 +12,21 @@ type Integer = kscr_unsafe_bigint::Integer;
 type Integer = crate::safe_bigint::Integer;
 
 // NOTE: IR data types are defined in `crates/kscr_ir` and re-exported here.
+
+/// Apply default optimization passes to an IR module.
+///
+/// This applies a standard set of safe optimizations:
+/// 1. Constant folding
+/// 2. Case simplification
+/// 3. Dead code elimination
+pub fn optimize_ir(module: &IrModule) -> IrModule {
+    let passes: Vec<Box<dyn OptimizationPass>> = vec![
+        Box::new(ConstantFolding),
+        Box::new(CaseSimplification),
+        Box::new(DeadCodeElimination),
+    ];
+    run_passes(module, &passes)
+}
 
 fn last_ty_seg(name: &str) -> &str {
     name.rsplit('.').next().unwrap_or(name)

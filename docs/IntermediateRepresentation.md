@@ -198,3 +198,30 @@ The IR uses LLVM-aligned numeric types for code generation and FFI boundaries.
 
 ---
 
+## 9. IR Optimization
+
+The IR can be optimized using safe transformation passes before execution. See [`IROptimization.md`](IROptimization.md) for details.
+
+### Optimization Passes
+
+1. **Constant Folding**: Evaluates constant expressions at compile time (e.g., `if True then 42 else 0` → `42`)
+2. **Dead Code Elimination**: Removes unused bindings via reachability analysis from `main`
+3. **Case Simplification**: Simplifies trivial case expressions (e.g., `case x of _ -> e` → `e`)
+
+### Safety Guarantees
+
+All optimizations preserve:
+- **Correctness**: Observable behavior remains unchanged
+- **Lazy Semantics**: Thunks and sharing are respected
+- **Effects**: IO actions and exceptions are properly sequenced
+
+### Integration
+
+The optimizer is integrated into the compilation pipeline between IR lowering and execution:
+
+```
+Parser → Typechecker → IR Lowering → **Optimizer** → Runtime/LLVM
+```
+
+---
+
