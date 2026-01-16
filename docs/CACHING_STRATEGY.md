@@ -59,7 +59,7 @@ The codebase already has some caching in `src/types/stdlib_cache.rs`:
 **Location:** `src/types.rs:4824-4875` (`load_stdlib_class_env()`)
 
 **Problem:**
-- Called on EVERY `typecheck_file()` invocation
+- Called on every `typecheck_file()` invocation
 - Walks `stdlib/` directory recursively
 - Parses every `.ks` file in stdlib (even if already in AST cache)
 - Collects all class/instance declarations
@@ -382,11 +382,14 @@ fn hash_module_with_imports(module: &ast::Module) -> u64 {
         }
     }
     
-    // Hash non-import items
-    format!("{:?}", module.items.iter()
-        .filter(|it| !matches!(it, ast::Item::Import(_)))
-        .collect::<Vec<_>>())
-        .hash(&mut hasher);
+    // Hash non-import items efficiently
+    // Note: If Item implements Hash, this can be simplified to just hash each item directly
+    for item in &module.items {
+        if !matches!(item, ast::Item::Import(_)) {
+            // TODO: Implement Hash for ast::Item or use structural hashing
+            format!("{:?}", item).hash(&mut hasher);
+        }
+    }
     
     hasher.finish()
 }
@@ -683,14 +686,14 @@ pub fn clear_all_caches() {
 
 Add debugging environment variables:
 
-```rust
-// Disable all caching
+```bash
+# Disable all caching
 KSCR_NO_CACHE=1 cargo test
 
-// Show cache statistics
+# Show cache statistics
 KSCR_CACHE_STATS=1 cargo test
 
-// Clear cache before run
+# Clear cache before run
 KSCR_CLEAR_CACHE=1 cargo test
 ```
 
@@ -771,7 +774,7 @@ fn bench_typecheck_file_warm_cache() {
 **Risk:** Different ASTs hash to same value, causing incorrect cache hits.
 
 **Mitigation:**
-- Use 64-bit hashes (2^64 space, collision unlikely)
+- Use 64-bit hashes (collision probability ~50% after 2^32 entries per birthday paradox)
 - For critical caches, validate content after hash match
 - Use cryptographic hash (SHA-256) for stdlib ClassEnv if needed
 
@@ -948,7 +951,7 @@ Register atexit handler to print stats:
 ```rust
 // In src/lib.rs
 #[cfg(test)]
-#[ctor::dtor]
+#[dtor]
 fn print_cache_stats_on_exit() {
     if std::env::var("KSCR_CACHE_STATS").is_ok() {
         types::stdlib_cache::print_cache_stats();
