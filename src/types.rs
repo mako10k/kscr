@@ -998,6 +998,68 @@ fn collect_deps_in_binding_seq(
     }
 }
 
+fn collect_deps_in_lambda(
+    params: &[String],
+    body: &ast::Expr,
+    name_to_binding: &HashMap<String, usize>,
+    bound: &HashSet<String>,
+    out: &mut HashSet<usize>,
+) {
+    let mut bound2 = bound.clone();
+    for p in params {
+        bound2.insert(p.clone());
+    }
+    collect_deps_in_expr(body, name_to_binding, &bound2, out);
+}
+
+fn collect_deps_in_do(
+    stmts: &[ast::DoStmt],
+    name_to_binding: &HashMap<String, usize>,
+    bound: &HashSet<String>,
+    out: &mut HashSet<usize>,
+) {
+    let mut bound_do = bound.clone();
+    for s in stmts {
+        match s {
+            ast::DoStmt::Bind { pat, expr } => {
+                collect_deps_in_expr(expr, name_to_binding, &bound_do, out);
+                let mut names = HashSet::new();
+                pat_defined_names(pat, &mut names);
+                for n in names {
+                    bound_do.insert(n);
+                }
+            }
+            ast::DoStmt::Expr(e) => {
+                collect_deps_in_expr(e, name_to_binding, &bound_do, out);
+            }
+        }
+    }
+}
+
+fn collect_deps_in_case(
+    expr: &ast::Expr,
+    arms: &[ast::CaseArm],
+    name_to_binding: &HashMap<String, usize>,
+    bound: &HashSet<String>,
+    out: &mut HashSet<usize>,
+) {
+    collect_deps_in_expr(expr, name_to_binding, bound, out);
+    for a in arms {
+        collect_deps_in_pattern(&a.pat, name_to_binding, bound, out);
+
+        let mut bound_arm = bound.clone();
+        let mut names = HashSet::new();
+        pat_defined_names(&a.pat, &mut names);
+        for n in names {
+            bound_arm.insert(n);
+        }
+        if let Some(g) = &a.guard {
+            collect_deps_in_expr(g, name_to_binding, &bound_arm, out);
+        }
+        collect_deps_in_expr(&a.body, name_to_binding, &bound_arm, out);
+    }
+}
+
 fn collect_deps_in_expr(
     expr: &ast::Expr,
     name_to_binding: &HashMap<String, usize>,
@@ -1021,11 +1083,7 @@ fn collect_deps_in_expr(
         | ExprKind::String(_)
         | ExprKind::Char(_) => {}
         ExprKind::Lambda { params, body } => {
-            let mut bound2 = bound.clone();
-            for p in params {
-                bound2.insert(p.clone());
-            }
-            collect_deps_in_expr(body, name_to_binding, &bound2, out);
+            collect_deps_in_lambda(params, body, name_to_binding, bound, out);
         }
         ExprKind::Apply { func, args } => {
             collect_deps_in_expr(func, name_to_binding, bound, out);
@@ -1062,40 +1120,10 @@ fn collect_deps_in_expr(
         }
         ExprKind::Annot { expr, .. } => collect_deps_in_expr(expr, name_to_binding, bound, out),
         ExprKind::Do(stmts) => {
-            let mut bound_do = bound.clone();
-            for s in stmts {
-                match s {
-                    ast::DoStmt::Bind { pat, expr } => {
-                        collect_deps_in_expr(expr, name_to_binding, &bound_do, out);
-                        let mut names = HashSet::new();
-                        pat_defined_names(pat, &mut names);
-                        for n in names {
-                            bound_do.insert(n);
-                        }
-                    }
-                    ast::DoStmt::Expr(e) => {
-                        collect_deps_in_expr(e, name_to_binding, &bound_do, out);
-                    }
-                }
-            }
+            collect_deps_in_do(stmts, name_to_binding, bound, out);
         }
         ExprKind::Case { expr, arms } => {
-            collect_deps_in_expr(expr, name_to_binding, bound, out);
-            for a in arms {
-                // View-pattern expressions do not see the newly bound names.
-                collect_deps_in_pattern(&a.pat, name_to_binding, bound, out);
-
-                let mut bound_arm = bound.clone();
-                let mut names = HashSet::new();
-                pat_defined_names(&a.pat, &mut names);
-                for n in names {
-                    bound_arm.insert(n);
-                }
-                if let Some(g) = &a.guard {
-                    collect_deps_in_expr(g, name_to_binding, &bound_arm, out);
-                }
-                collect_deps_in_expr(&a.body, name_to_binding, &bound_arm, out);
-            }
+            collect_deps_in_case(expr, arms, name_to_binding, bound, out);
         }
         ExprKind::Cons { head, tail } => {
             collect_deps_in_expr(head, name_to_binding, bound, out);
@@ -2580,21 +2608,27 @@ fn check_case_exhaustive(
         }
     }
 
+    fn has_unguarded_catch_all(arms: &[(ast::Pattern, bool)]) -> bool {
+        arms.iter()
+            .any(|(pat, has_guard)| !*has_guard && is_catch_all(pat))
+    }
+
+    fn collect_unguarded_top_alts(arms: &[(ast::Pattern, bool)], out: &mut Vec<String>) {
+        for (pat, has_guard) in arms {
+            if *has_guard {
+                continue;
+            }
+            collect_top_alts(pat, out);
+        }
+    }
+
     // Guarded arms are conservatively treated as non-covering.
-    if arms
-        .iter()
-        .any(|(pat, has_guard)| !*has_guard && is_catch_all(pat))
-    {
+    if has_unguarded_catch_all(arms) {
         return Ok(());
     }
 
     let mut alts: Vec<String> = Vec::new();
-    for (pat, has_guard) in arms {
-        if *has_guard {
-            continue;
-        }
-        collect_top_alts(pat, &mut alts);
-    }
+    collect_unguarded_top_alts(arms, &mut alts);
 
     // Normalize.
     alts.sort();
@@ -2990,17 +3024,20 @@ fn simplify_constraints(
         }
     }
 
-    let mut out = Vec::new();
-    let mut in_progress = Vec::new();
-    let mut work: VecDeque<Constraint> = cs.into_iter().collect();
-    let mut expanded: HashMap<String, ()> = HashMap::new();
-
-    while let Some(c) = work.pop_front() {
+    fn process_constraint(
+        data_env: &DataEnv,
+        class_env: &ClassEnv,
+        expanded: &mut HashMap<String, ()>,
+        in_progress: &mut Vec<Ty>,
+        work: &mut VecDeque<Constraint>,
+        out: &mut Vec<Constraint>,
+        c: Constraint,
+    ) -> Result<()> {
         match c {
-            Constraint::Show(t) => out.extend(entails_show(data_env, &t, &mut in_progress)?),
-            Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, &mut in_progress)?),
-            Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, &mut in_progress)?),
-            Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, &mut in_progress)?),
+            Constraint::Show(t) => out.extend(entails_show(data_env, &t, in_progress)?),
+            Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, in_progress)?),
+            Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, in_progress)?),
+            Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, in_progress)?),
             Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
             Constraint::Class { class, ty } => {
                 // Haskell-aligned superclass closure: `C t` entails `super(C) t`.
@@ -3027,6 +3064,24 @@ fn simplify_constraints(
                 }
             }
         }
+        Ok(())
+    }
+
+    let mut out = Vec::new();
+    let mut in_progress = Vec::new();
+    let mut work: VecDeque<Constraint> = cs.into_iter().collect();
+    let mut expanded: HashMap<String, ()> = HashMap::new();
+
+    while let Some(c) = work.pop_front() {
+        process_constraint(
+            data_env,
+            class_env,
+            &mut expanded,
+            &mut in_progress,
+            &mut work,
+            &mut out,
+            c,
+        )?;
     }
 
     // Haskell-aligned context reduction for user-defined classes:
@@ -4224,6 +4279,33 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
 }
 
 impl ModuleLoader {
+    fn debug_print_import(&self, enabled: bool, id: &ast::ImportDecl) {
+        if !enabled {
+            return;
+        }
+        eprintln!(
+            "[KSCR_DEBUG_IMPORTS] saw import: module={} qualified={} as={:?}",
+            id.module, id.qualified, id.as_name
+        );
+    }
+
+    fn resolve_import_path(&self, dir: &Path, module: &str) -> Result<std::path::PathBuf> {
+        let rel = module.replace('.', "/");
+        let local = dir.join(format!("{}.ks", rel));
+        let stdlib = stdlib_cache::stdlib_root().join(format!("{}.ks", rel));
+
+        std::fs::canonicalize(&local)
+            .or_else(|_| std::fs::canonicalize(&stdlib))
+            .map_err(|_| {
+                Error::msg(format!(
+                    "cannot find module file for import {} (tried: {}, {})",
+                    module,
+                    local.display(),
+                    stdlib.display()
+                ))
+            })
+    }
+
     fn load_ast(&mut self, path: &Path) -> Result<ast::Module> {
         if let Some(m) = self.cache.get(path) {
             return Ok(m.clone());
@@ -4257,12 +4339,7 @@ impl ModuleLoader {
                 continue;
             };
 
-            if debug_imports {
-                eprintln!(
-                    "[KSCR_DEBUG_IMPORTS] saw import: module={} qualified={} as={:?}",
-                    id.module, id.qualified, id.as_name
-                );
-            }
+            self.debug_print_import(debug_imports, id);
 
             let primary_qual = id.as_name.as_deref().unwrap_or(&id.module);
             let canonical_qual = id.module.as_str();
@@ -4270,20 +4347,7 @@ impl ModuleLoader {
             // NOTE: For `import qualified M as Q`, we only need to emit a single qualified
             // forwarder set. Emitting more than one can create duplicate names like `Q.x`.
 
-            let rel = id.module.replace('.', "/");
-            let local = dir.join(format!("{}.ks", rel));
-            let stdlib = stdlib_cache::stdlib_root().join(format!("{}.ks", rel));
-
-            let p = std::fs::canonicalize(&local)
-                .or_else(|_| std::fs::canonicalize(&stdlib))
-                .map_err(|_| {
-                    Error::msg(format!(
-                        "cannot find module file for import {} (tried: {}, {})",
-                        id.module,
-                        local.display(),
-                        stdlib.display()
-                    ))
-                })?;
+            let p = self.resolve_import_path(dir, &id.module)?;
 
             if let Some(pos) = self.stack.iter().position(|x| x == &p) {
                 let mut chain: Vec<String> = self.stack[pos..]
