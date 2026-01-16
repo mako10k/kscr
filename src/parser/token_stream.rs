@@ -17,7 +17,6 @@ pub(crate) enum Stop {
 pub(crate) enum Assoc {
     Left,
     Right,
-    Non,
 }
 
 #[derive(Clone, Copy, Debug)]

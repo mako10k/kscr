@@ -4628,14 +4628,6 @@ fn merge_duplicate_bindings_for_names(items: Vec<ast::Item>, names: &[&str]) -> 
         subst_expr(expr, &map)
     }
 
-    fn starts_with_case_arms(e: &ast::Expr) -> Option<(ast::Expr, Vec<ast::CaseArm>)> {
-        if let ExprKind::Case { expr, arms } = &e.kind {
-            Some(((**expr).clone(), arms.clone()))
-        } else {
-            None
-        }
-    }
-
     fn eta_collapse_to_unary(expr: ast::Expr) -> Result<ast::Expr> {
         use ast::{Expr, ExprKind};
         let ExprKind::Lambda { params, body } = expr.kind else {
@@ -4903,40 +4895,6 @@ fn merge_duplicate_bindings_for_names(items: Vec<ast::Item>, names: &[&str]) -> 
     }
 
     Ok(out)
-}
-
-fn eta_expand_lambda(expr: ast::Expr, target_arity: usize) -> Result<ast::Expr> {
-    use ast::{Expr, ExprKind};
-    let ExprKind::Lambda { mut params, body } = expr.kind else {
-        return Ok(expr);
-    };
-    if params.len() >= target_arity {
-        return Ok(Expr::new(expr.span, ExprKind::Lambda { params, body }));
-    }
-    // Create new params and apply the original lambda to them.
-    let mut new_params = params.clone();
-    while new_params.len() < target_arity {
-        new_params.push(format!("_eta{}", new_params.len()));
-    }
-    // Rebuild: \\new_params -> (\\params -> body) new_params...
-    let orig = Expr::new(expr.span, ExprKind::Lambda { params, body });
-    let applied = Expr::new(
-        expr.span,
-        ExprKind::Apply {
-            func: Box::new(orig),
-            args: new_params
-                .iter()
-                .map(|p| Expr::new(expr.span, ExprKind::Var(p.clone())))
-                .collect(),
-        },
-    );
-    Ok(Expr::new(
-        expr.span,
-        ExprKind::Lambda {
-            params: new_params,
-            body: Box::new(applied),
-        },
-    ))
 }
 
 fn import_unqualified_forwarders(

@@ -1581,7 +1581,7 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
                 return Err(ts.err_here("unexpected EOF in case"));
             }
 
-            let mut pat = pattern::parse_pattern(ts)?;
+            let pat = pattern::parse_pattern(ts)?;
 
             // Disambiguation:
             // - `pat1 | pat2 ->` is an or-pattern arm
@@ -1627,7 +1627,7 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             return Err(ts.err_here("unexpected EOF in case"));
         }
 
-        let mut pat = pattern::parse_pattern(ts)?;
+        let pat = pattern::parse_pattern(ts)?;
 
         // Same disambiguation as indent-block case arms.
         let guard = if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
@@ -1696,53 +1696,6 @@ fn parse_type_expr(
     type_expr::parse_type_expr_in_root(ts, stop, end)
 }
 
-fn parse_type_func(
-    ts: &mut TokenStream,
-    stop: Stop,
-    end: fn(Option<&TokenKind>, Stop) -> bool,
-) -> Result<ast::Type> {
-    let lhs = parse_type_app(ts, stop, end)?;
-    if matches!(ts.peek_kind(), Some(TokenKind::Arrow)) && !end(ts.peek_kind(), stop) {
-        ts.bump();
-        let rhs = parse_type_func(ts, stop, end)?;
-        Ok(ast::Type::Func(Box::new(lhs), Box::new(rhs)))
-    } else {
-        Ok(lhs)
-    }
-}
-
-fn parse_type_app(
-    ts: &mut TokenStream,
-    stop: Stop,
-    end: fn(Option<&TokenKind>, Stop) -> bool,
-) -> Result<ast::Type> {
-    let head = parse_type_atom(ts, stop, end)?;
-
-    let mut args = Vec::new();
-    while !end(ts.peek_kind(), stop) && is_type_atom_start(ts.peek_kind()) {
-        args.push(parse_type_atom(ts, stop, end)?);
-    }
-
-    if args.is_empty() {
-        Ok(head)
-    } else {
-        Ok(ast::Type::App {
-            head: Box::new(head),
-            args,
-        })
-    }
-}
-
-fn is_type_atom_start(kind: Option<&TokenKind>) -> bool {
-    matches!(
-        kind,
-        Some(TokenKind::Ident(_))
-            | Some(TokenKind::LParen)
-            | Some(TokenKind::LBracket)
-            | Some(TokenKind::LBrace)
-            | Some(TokenKind::Question)
-    )
-}
 
 fn parse_type_atom(
     ts: &mut TokenStream,
@@ -1752,17 +1705,6 @@ fn parse_type_atom(
     type_expr::parse_type_atom_in_root(ts, stop, end)
 }
 
-fn is_paren_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
-    matches!(kind, Some(TokenKind::Comma) | Some(TokenKind::RParen))
-}
-
-fn is_bracket_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
-    matches!(kind, Some(TokenKind::RBracket))
-}
-
-fn is_record_field_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
-    matches!(kind, Some(TokenKind::Comma) | Some(TokenKind::RBrace))
-}
 
 fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
     let start = expr.span.start;
