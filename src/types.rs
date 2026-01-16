@@ -4858,187 +4858,324 @@ fn import_qualified_items_for_decl(
     Ok(out)
 }
 
+fn merge_build_rename_map(from: &[String], to: &[String]) -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+    for (f, t) in from.iter().zip(to.iter()) {
+        if f != t {
+            map.insert(f.clone(), t.clone());
+        }
+    }
+    map
+}
+
+fn merge_subst_pat(p: &ast::Pattern, map: &HashMap<String, String>) -> ast::Pattern {
+    use ast::PatternKind;
+    let mut out = p.clone();
+    out.kind = match &p.kind {
+        PatternKind::Var(n) => {
+            if let Some(n2) = map.get(n) {
+                PatternKind::Var(n2.clone())
+            } else {
+                PatternKind::Var(n.clone())
+            }
+        }
+        PatternKind::Tuple(ps) => PatternKind::Tuple(ps.iter().map(|p| merge_subst_pat(p, map)).collect()),
+        PatternKind::List(ps) => PatternKind::List(ps.iter().map(|p| merge_subst_pat(p, map)).collect()),
+        PatternKind::Record(fields) => PatternKind::Record(
+            fields
+                .iter()
+                .map(|(k, p)| (k.clone(), merge_subst_pat(p, map)))
+                .collect(),
+        ),
+        PatternKind::Constructor { name, args } => PatternKind::Constructor {
+            name: name.clone(),
+            args: args.iter().map(|p| merge_subst_pat(p, map)).collect(),
+        },
+        PatternKind::As(n, p) => {
+            let n2 = map.get(n).cloned().unwrap_or_else(|| n.clone());
+            PatternKind::As(n2, Box::new(merge_subst_pat(p, map)))
+        }
+        // Literals / wildcards
+        other => other.clone(),
+    };
+    out
+}
+
+fn merge_subst_expr(e: &ast::Expr, map: &HashMap<String, String>) -> ast::Expr {
+    use ast::ExprKind;
+    let mut out = e.clone();
+    out.kind = match &e.kind {
+        ExprKind::Var(n) => {
+            if let Some(n2) = map.get(n) {
+                ExprKind::Var(n2.clone())
+            } else {
+                ExprKind::Var(n.clone())
+            }
+        }
+        ExprKind::Apply { func, args } => ExprKind::Apply {
+            func: Box::new(merge_subst_expr(func, map)),
+            args: args.iter().map(|e| merge_subst_expr(e, map)).collect(),
+        },
+        ExprKind::Lambda { params, body } => ExprKind::Lambda {
+            // NOTE: We assume no shadowing here because we're only rewriting the
+            // specific case-scrutinee tuple expression produced for top-level clauses.
+            params: params
+                .iter()
+                .map(|p| map.get(p).cloned().unwrap_or_else(|| p.clone()))
+                .collect(),
+            body: Box::new(merge_subst_expr(body, map)),
+        },
+        ExprKind::Let { bindings, body } => ExprKind::Let {
+            bindings: bindings
+                .iter()
+                .map(|b| {
+                    let mut b2 = b.clone();
+                    b2.pat = merge_subst_pat(&b.pat, map);
+                    b2.expr = merge_subst_expr(&b.expr, map);
+                    b2
+                })
+                .collect(),
+            body: Box::new(merge_subst_expr(body, map)),
+        },
+        ExprKind::Case { expr, arms } => ExprKind::Case {
+            expr: Box::new(merge_subst_expr(expr, map)),
+            arms: arms
+                .iter()
+                .map(|a| {
+                    let mut a2 = a.clone();
+                    a2.pat = merge_subst_pat(&a.pat, map);
+                    a2.guard = a.guard.as_ref().map(|g| merge_subst_expr(g, map));
+                    a2.body = merge_subst_expr(&a.body, map);
+                    a2
+                })
+                .collect(),
+        },
+        ExprKind::Tuple(es) => ExprKind::Tuple(es.iter().map(|e| merge_subst_expr(e, map)).collect()),
+        ExprKind::List(es) => ExprKind::List(es.iter().map(|e| merge_subst_expr(e, map)).collect()),
+        ExprKind::Record(fields) => ExprKind::Record(
+            fields
+                .iter()
+                .map(|(k, e)| (k.clone(), merge_subst_expr(e, map)))
+                .collect(),
+        ),
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => ExprKind::If {
+            cond: Box::new(merge_subst_expr(cond, map)),
+            then_branch: Box::new(merge_subst_expr(then_branch, map)),
+            else_branch: Box::new(merge_subst_expr(else_branch, map)),
+        },
+        other => other.clone(),
+    };
+    out
+}
+
+fn merge_substitute_vars_in_expr(expr: &ast::Expr, from: &[String], to: &[String]) -> ast::Expr {
+    let map = merge_build_rename_map(from, to);
+    if map.is_empty() {
+        return expr.clone();
+    }
+    merge_subst_expr(expr, &map)
+}
+
+fn merge_eta_collapse_to_unary(expr: ast::Expr) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
+    let ExprKind::Lambda { params, body } = expr.kind else {
+        return Ok(expr);
+    };
+    if params.len() <= 1 {
+        return Ok(Expr::new(expr.span, ExprKind::Lambda { params, body }));
+    }
+    let first = params[0].clone();
+    let rest: Vec<String> = params[1..].to_vec();
+    let applied = Expr::new(
+        expr.span,
+        ExprKind::Apply {
+            func: Box::new(Expr::new(expr.span, ExprKind::Lambda { params: rest, body })),
+            args: vec![Expr::new(expr.span, ExprKind::Var(first.clone()))],
+        },
+    );
+    Ok(Expr::new(
+        expr.span,
+        ExprKind::Lambda {
+            params: vec![first],
+            body: Box::new(applied),
+        },
+    ))
+}
+
+fn merge_unwrap_case_body(mut e: ast::Expr) -> Option<(ast::Expr, Vec<ast::CaseArm>)> {
+    // In some transformations (e.g. eta-expansion), the body may become an application.
+    // We only care about recovering the original `case` arms.
+    loop {
+        match &e.kind {
+            ast::ExprKind::Case { expr, arms } => return Some(((**expr).clone(), arms.clone())),
+            ast::ExprKind::Apply { func, args: _ } => {
+                // Peel left-nested applications; `case` may live inside `func`.
+                e = (**func).clone();
+            }
+            ast::ExprKind::Lambda { params: _, body } => {
+                // Eta-collapsing can leave us with an inner lambda; keep unwrapping.
+                e = (**body).clone();
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn merge_binding_name(b: &ast::Binding) -> Option<&str> {
+    match &b.pat.kind {
+        ast::PatternKind::Var(n) => Some(n.as_str()),
+        _ => None,
+    }
+}
+
+fn merge_rewrite_tuple_scrutinee_arms_to_cons(b_scrut: &ast::Expr, b_arms: &mut [ast::CaseArm]) {
+    // If RHS was a tuple-scrutinee clause, collapsing to unary means we must
+    // also rewrite its patterns to match on the single arg directly.
+    if let ast::ExprKind::Tuple(_) = &b_scrut.kind {
+        for arm in b_arms {
+            if let ast::PatternKind::Tuple(ps) = &arm.pat.kind {
+                if ps.len() == 3 {
+                    // Expect (_, Constructor(:), _) shape.
+                    if let ast::PatternKind::Constructor { name: ctor, args } = &ps[1].kind {
+                        if ctor == ":" && args.is_empty() {
+                            arm.pat = ast::Pattern::new(
+                                arm.pat.span,
+                                ast::PatternKind::Cons(
+                                    Box::new(ast::Pattern::new(ps[0].span, ps[0].kind.clone())),
+                                    Box::new(ast::Pattern::new(ps[2].span, ps[2].kind.clone())),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn merge_is_collapse_needed(expr: &ast::Expr) -> bool {
+    match &expr.kind {
+        ast::ExprKind::Lambda { params, .. } => params.len() > 1,
+        _ => false,
+    }
+}
+
+fn merge_rebuild_lambda_case(span: ast::Span, params: Vec<String>, scrut: ast::Expr, arms: Vec<ast::CaseArm>) -> ast::Expr {
+    ast::Expr::new(
+        span,
+        ast::ExprKind::Lambda {
+            params,
+            body: Box::new(ast::Expr::new(
+                span,
+                ast::ExprKind::Case {
+                    expr: Box::new(scrut),
+                    arms,
+                },
+            )),
+        },
+    )
+}
+
+fn merge_try_merge_lambda_clauses(prev: &mut ast::Binding, b: &ast::Binding, name: &str) -> Result<bool> {
+    let (ast::ExprKind::Lambda { params: p_params, body: p_body }, ast::ExprKind::Lambda { params: b_params, body: b_body }) =
+        (&prev.expr.kind, &b.expr.kind)
+    else {
+        return Err(Error::msg(format!(
+            "duplicate binding for `{name}` cannot be merged (unexpected shape)"
+        )));
+    };
+
+    // If arity differs, collapse both sides to unary so we can merge on one scrutinee.
+    if p_params.len() != b_params.len() {
+        while merge_is_collapse_needed(&prev.expr) {
+            prev.expr = merge_eta_collapse_to_unary(prev.expr.clone())?;
+        }
+
+        let mut b_expr = b.expr.clone();
+        while merge_is_collapse_needed(&b_expr) {
+            b_expr = merge_eta_collapse_to_unary(b_expr)?;
+        }
+
+        let (ast::ExprKind::Lambda { params: p_params, body: p_body }, ast::ExprKind::Lambda { params: b_params, body: b_body }) =
+            (&prev.expr.kind, &b_expr.kind)
+        else {
+            return Err(Error::msg(format!(
+                "duplicate binding for `{name}` cannot be merged (unexpected shape after collapse)"
+            )));
+        };
+        if p_params.len() != b_params.len() {
+            return Err(Error::msg(format!(
+                "duplicate binding for `{name}` cannot be merged (arity mismatch)"
+            )));
+        }
+
+        let Some((p_scrut, mut p_arms)) = merge_unwrap_case_body((**p_body).clone()) else {
+            return Err(Error::msg(format!(
+                "duplicate binding for `{name}` cannot be merged (expected case body)"
+            )));
+        };
+        let Some((b_scrut, mut b_arms)) = merge_unwrap_case_body((**b_body).clone()) else {
+            return Err(Error::msg(format!(
+                "duplicate binding for `{name}` cannot be merged (expected case body)"
+            )));
+        };
+
+        merge_rewrite_tuple_scrutinee_arms_to_cons(&b_scrut, &mut b_arms);
+
+        let b_scrut = merge_substitute_vars_in_expr(&b_scrut, b_params, p_params);
+        if p_scrut.kind != b_scrut.kind {
+            // Special-case: we sometimes collapse a multi-arg tuple-scrutinee clause
+            // into unary form; treat its scrutinee as the single param.
+            if let ast::ExprKind::Var(v) = &p_scrut.kind {
+                if v != &p_params[0] {
+                    return Err(Error::msg(format!(
+                        "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
+                    )));
+                }
+            } else {
+                return Err(Error::msg(format!(
+                    "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
+                )));
+            }
+        }
+
+        p_arms.extend(b_arms);
+        prev.expr = merge_rebuild_lambda_case(prev.expr.span, p_params.clone(), p_scrut, p_arms);
+        return Ok(true);
+    }
+
+    let Some((p_scrut, mut p_arms)) = merge_unwrap_case_body((**p_body).clone()) else {
+        return Err(Error::msg(format!(
+            "duplicate binding for `{name}` cannot be merged (expected case body)"
+        )));
+    };
+    let Some((b_scrut, b_arms)) = merge_unwrap_case_body((**b_body).clone()) else {
+        return Err(Error::msg(format!(
+            "duplicate binding for `{name}` cannot be merged (expected case body)"
+        )));
+    };
+
+    // Scrutinees should be equivalent up to alpha-renaming of the params.
+    let b_scrut = merge_substitute_vars_in_expr(&b_scrut, b_params, p_params);
+    if p_scrut.kind != b_scrut.kind {
+        return Err(Error::msg(format!(
+            "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
+        )));
+    }
+
+    p_arms.extend(b_arms);
+    prev.expr = merge_rebuild_lambda_case(prev.expr.span, p_params.clone(), p_scrut, p_arms);
+    Ok(true)
+}
+
 fn merge_duplicate_bindings_for_names(items: Vec<ast::Item>, names: &[&str]) -> Result<Vec<ast::Item>> {
-    use ast::{Binding, Expr, ExprKind, Item, PatternKind};
+    use ast::Item;
 
     let target: HashSet<String> = names.iter().map(|n| n.to_string()).collect();
-
-    fn substitute_vars_in_expr(expr: &ast::Expr, from: &[String], to: &[String]) -> ast::Expr {
-        fn subst_pat(p: &ast::Pattern, map: &HashMap<String, String>) -> ast::Pattern {
-            use ast::PatternKind;
-            let mut out = p.clone();
-            out.kind = match &p.kind {
-                PatternKind::Var(n) => {
-                    if let Some(n2) = map.get(n) {
-                        PatternKind::Var(n2.clone())
-                    } else {
-                        PatternKind::Var(n.clone())
-                    }
-                }
-                PatternKind::Tuple(ps) => {
-                    PatternKind::Tuple(ps.iter().map(|p| subst_pat(p, map)).collect())
-                }
-                PatternKind::List(ps) => {
-                    PatternKind::List(ps.iter().map(|p| subst_pat(p, map)).collect())
-                }
-                PatternKind::Record(fields) => PatternKind::Record(
-                    fields
-                        .iter()
-                        .map(|(k, p)| (k.clone(), subst_pat(p, map)))
-                        .collect(),
-                ),
-                PatternKind::Constructor { name, args } => PatternKind::Constructor {
-                    name: name.clone(),
-                    args: args.iter().map(|p| subst_pat(p, map)).collect(),
-                },
-                PatternKind::As(n, p) => {
-                    let n2 = map.get(n).cloned().unwrap_or_else(|| n.clone());
-                    PatternKind::As(n2, Box::new(subst_pat(p, map)))
-                }
-                // Literals / wildcards
-                other => other.clone(),
-            };
-            out
-        }
-
-        fn subst_expr(e: &ast::Expr, map: &HashMap<String, String>) -> ast::Expr {
-            use ast::ExprKind;
-            let mut out = e.clone();
-            out.kind = match &e.kind {
-                ExprKind::Var(n) => {
-                    if let Some(n2) = map.get(n) {
-                        ExprKind::Var(n2.clone())
-                    } else {
-                        ExprKind::Var(n.clone())
-                    }
-                }
-                ExprKind::Apply { func, args } => ExprKind::Apply {
-                    func: Box::new(subst_expr(func, map)),
-                    args: args.iter().map(|e| subst_expr(e, map)).collect(),
-                },
-                ExprKind::Lambda { params, body } => ExprKind::Lambda {
-                    // NOTE: We assume no shadowing here because we're only rewriting the
-                    // specific case-scrutinee tuple expression produced for top-level clauses.
-                    params: params
-                        .iter()
-                        .map(|p| map.get(p).cloned().unwrap_or_else(|| p.clone()))
-                        .collect(),
-                    body: Box::new(subst_expr(body, map)),
-                },
-                ExprKind::Let { bindings, body } => ExprKind::Let {
-                    bindings: bindings
-                        .iter()
-                        .map(|b| {
-                            let mut b2 = b.clone();
-                            b2.pat = subst_pat(&b.pat, map);
-                            b2.expr = subst_expr(&b.expr, map);
-                            b2
-                        })
-                        .collect(),
-                    body: Box::new(subst_expr(body, map)),
-                },
-                ExprKind::Case { expr, arms } => ExprKind::Case {
-                    expr: Box::new(subst_expr(expr, map)),
-                    arms: arms
-                        .iter()
-                        .map(|a| {
-                            let mut a2 = a.clone();
-                            a2.pat = subst_pat(&a.pat, map);
-                            a2.guard = a.guard.as_ref().map(|g| subst_expr(g, map));
-                            a2.body = subst_expr(&a.body, map);
-                            a2
-                        })
-                        .collect(),
-                },
-                ExprKind::Tuple(es) => {
-                    ExprKind::Tuple(es.iter().map(|e| subst_expr(e, map)).collect())
-                }
-                ExprKind::List(es) => {
-                    ExprKind::List(es.iter().map(|e| subst_expr(e, map)).collect())
-                }
-                ExprKind::Record(fields) => ExprKind::Record(
-                    fields
-                        .iter()
-                        .map(|(k, e)| (k.clone(), subst_expr(e, map)))
-                        .collect(),
-                ),
-                ExprKind::If {
-                    cond,
-                    then_branch,
-                    else_branch,
-                } => ExprKind::If {
-                    cond: Box::new(subst_expr(cond, map)),
-                    then_branch: Box::new(subst_expr(then_branch, map)),
-                    else_branch: Box::new(subst_expr(else_branch, map)),
-                },
-                other => other.clone(),
-            };
-            out
-        }
-
-        let mut map: HashMap<String, String> = HashMap::new();
-        for (f, t) in from.iter().zip(to.iter()) {
-            if f != t {
-                map.insert(f.clone(), t.clone());
-            }
-        }
-        if map.is_empty() {
-            return expr.clone();
-        }
-        subst_expr(expr, &map)
-    }
-
-    fn eta_collapse_to_unary(expr: ast::Expr) -> Result<ast::Expr> {
-        use ast::{Expr, ExprKind};
-        let ExprKind::Lambda { params, body } = expr.kind else {
-            return Ok(expr);
-        };
-        if params.len() <= 1 {
-            return Ok(Expr::new(expr.span, ExprKind::Lambda { params, body }));
-        }
-        let first = params[0].clone();
-        let rest: Vec<String> = params[1..].to_vec();
-        let applied = Expr::new(
-            expr.span,
-            ExprKind::Apply {
-                func: Box::new(Expr::new(expr.span, ExprKind::Lambda { params: rest, body })),
-                args: vec![Expr::new(expr.span, ExprKind::Var(first.clone()))],
-            },
-        );
-        Ok(Expr::new(
-            expr.span,
-            ExprKind::Lambda {
-                params: vec![first],
-                body: Box::new(applied),
-            },
-        ))
-    }
-
-    fn unwrap_case_body(mut e: ast::Expr) -> Option<(ast::Expr, Vec<ast::CaseArm>)> {
-        // In some transformations (e.g. eta-expansion), the body may become an application.
-        // We only care about recovering the original `case` arms.
-        loop {
-            match &e.kind {
-                ast::ExprKind::Case { expr, arms } => return Some(((**expr).clone(), arms.clone())),
-                ast::ExprKind::Apply { func, args: _ } => {
-                    // Peel left-nested applications; `case` may live inside `func`.
-                    e = (**func).clone();
-                }
-                ast::ExprKind::Lambda { params: _, body } => {
-                    // Eta-collapsing can leave us with an inner lambda; keep unwrapping.
-                    e = (**body).clone();
-                }
-                _ => return None,
-            }
-        }
-    }
-
-    fn binding_name(b: &Binding) -> Option<&str> {
-        match &b.pat.kind {
-            PatternKind::Var(n) => Some(n.as_str()),
-            _ => None,
-        }
-    }
 
     // Preserve overall item order while merging only duplicate name bindings.
     let mut out: Vec<Item> = Vec::with_capacity(items.len());
@@ -5052,7 +5189,7 @@ fn merge_duplicate_bindings_for_names(items: Vec<ast::Item>, names: &[&str]) -> 
             continue;
         };
 
-        let Some(name) = binding_name(&b) else {
+        let Some(name) = merge_binding_name(&b) else {
             out.push(Item::Binding(b));
             continue;
         };
@@ -5086,167 +5223,7 @@ fn merge_duplicate_bindings_for_names(items: Vec<ast::Item>, names: &[&str]) -> 
                 }
             }
 
-            // Merge `prev.expr` and `b.expr`.
-            // We only support merging the specific shape we produce for function clauses:
-            // `\\args.. -> case <tuple args> of <arms>`.
-            let (ExprKind::Lambda { params: p_params, body: p_body },
-                 ExprKind::Lambda { params: b_params, body: b_body }) = (&prev.expr.kind, &b.expr.kind) else {
-                return Err(Error::msg(format!(
-                    "duplicate binding for `{name}` cannot be merged (unexpected shape)"
-                )));
-            };
-            // The stdlib can produce different desugared lambda arities across clauses.
-            // For merging, collapse both sides to unary lambdas (left-associative) so we
-            // can merge case-arms on a single scrutinee.
-            if p_params.len() != b_params.len() {
-                // Collapse *both* to unary so we can merge on one scrutinee.
-                while match &prev.expr.kind {
-                    ExprKind::Lambda { params, .. } => params.len() > 1,
-                    _ => false,
-                } {
-                    prev.expr = eta_collapse_to_unary(prev.expr.clone())?;
-                }
-                let mut b_expr = b.expr.clone();
-                while match &b_expr.kind {
-                    ExprKind::Lambda { params, .. } => params.len() > 1,
-                    _ => false,
-                } {
-                    b_expr = eta_collapse_to_unary(b_expr)?;
-                }
-
-                #[cfg(test)]
-                {
-                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1")
-                        && name == "L.null"
-                    {
-                        eprintln!("[KSCR_DEBUG_IMPORTS] after collapse prev.expr = {:?}", prev.expr.kind);
-                        eprintln!("[KSCR_DEBUG_IMPORTS] after collapse b_expr    = {:?}", b_expr.kind);
-                    }
-                }
-                let (ExprKind::Lambda { params: p_params, body: p_body },
-                     ExprKind::Lambda { params: b_params, body: b_body }) = (&prev.expr.kind, &b_expr.kind) else {
-                    return Err(Error::msg(format!(
-                        "duplicate binding for `{name}` cannot be merged (unexpected shape after collapse)"
-                    )));
-                };
-                if p_params.len() != b_params.len() {
-                    return Err(Error::msg(format!(
-                        "duplicate binding for `{name}` cannot be merged (arity mismatch)"
-                    )));
-                }
-                let Some((p_scrut, mut p_arms)) = unwrap_case_body((**p_body).clone()) else {
-                    return Err(Error::msg(format!(
-                        "duplicate binding for `{name}` cannot be merged (expected case body)"
-                    )));
-                };
-                let Some((b_scrut, b_arms)) = unwrap_case_body((**b_body).clone()) else {
-                    return Err(Error::msg(format!(
-                        "duplicate binding for `{name}` cannot be merged (expected case body)"
-                    )));
-                };
-                // If RHS was a tuple-scrutinee clause, collapsing to unary means we must
-                // also rewrite its patterns to match on the single arg directly.
-                let mut b_arms = b_arms;
-                if let ast::ExprKind::Tuple(_) = &b_scrut.kind {
-                    for arm in &mut b_arms {
-                        if let ast::PatternKind::Tuple(ps) = &arm.pat.kind {
-                            if ps.len() == 3 {
-                                // Expect (_, Constructor(:), _) shape.
-                                if let ast::PatternKind::Constructor { name: ctor, args } = &ps[1].kind {
-                                    if ctor == ":" && args.is_empty() {
-                                        arm.pat = ast::Pattern::new(
-                                            arm.pat.span,
-                                            ast::PatternKind::Cons(
-                                                Box::new(ast::Pattern::new(ps[0].span, ps[0].kind.clone())),
-                                                Box::new(ast::Pattern::new(ps[2].span, ps[2].kind.clone())),
-                                            ),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                let b_scrut = substitute_vars_in_expr(&b_scrut, b_params, p_params);
-                if p_scrut.kind != b_scrut.kind {
-                    // Special-case: we sometimes collapse a multi-arg tuple-scrutinee clause
-                    // into unary form; treat its scrutinee as the single param.
-                    if let ast::ExprKind::Var(v) = &p_scrut.kind {
-                        if v == &p_params[0] {
-                            // accept
-                        } else {
-                            return Err(Error::msg(format!(
-                                "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
-                            )));
-                        }
-                    } else {
-                        return Err(Error::msg(format!(
-                            "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
-                        )));
-                    }
-                }
-                p_arms.extend(b_arms);
-                let span = prev.expr.span;
-                prev.expr = Expr::new(
-                    span,
-                    ExprKind::Lambda {
-                        params: p_params.clone(),
-                        body: Box::new(Expr::new(
-                            span,
-                            ExprKind::Case {
-                                expr: Box::new(p_scrut),
-                                arms: p_arms,
-                            },
-                        )),
-                    },
-                );
-                continue;
-            }
-
-
-            #[cfg(test)]
-            {
-                if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1")
-                    && name == "L.null"
-                {
-                    eprintln!("merge `{}`: p_params={:?} b_params={:?}", name, p_params, b_params);
-                }
-            }
-
-            let Some((p_scrut, mut p_arms)) = unwrap_case_body((**p_body).clone()) else {
-                return Err(Error::msg(format!(
-                    "duplicate binding for `{name}` cannot be merged (expected case body)"
-                )));
-            };
-            let Some((b_scrut, b_arms)) = unwrap_case_body((**b_body).clone()) else {
-                return Err(Error::msg(format!(
-                    "duplicate binding for `{name}` cannot be merged (expected case body)"
-                )));
-            };
-            // Scrutinees should be equivalent up to alpha-renaming of the params.
-            // We normalize the RHS clause by renaming its params to the first clause's params.
-            let b_scrut = substitute_vars_in_expr(&b_scrut, b_params, p_params);
-            if p_scrut.kind != b_scrut.kind {
-                return Err(Error::msg(format!(
-                    "duplicate binding for `{name}` cannot be merged (scrutinee mismatch)"
-                )));
-            }
-
-            p_arms.extend(b_arms);
-            let span = prev.expr.span;
-            prev.expr = Expr::new(
-                span,
-                ExprKind::Lambda {
-                    params: p_params.clone(),
-                    body: Box::new(Expr::new(
-                        span,
-                        ExprKind::Case {
-                            expr: Box::new(p_scrut),
-                            arms: p_arms,
-                        },
-                    )),
-                },
-            );
+            let _merged = merge_try_merge_lambda_clauses(prev, &b, &name)?;
         } else {
             let idx = out.len();
             out.push(Item::Binding(b));
