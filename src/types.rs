@@ -6042,6 +6042,139 @@ fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
     }
 }
 
+fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<ast::Expr>) -> Option<ast::Expr> {
+    use ast::ExprKind;
+    let ExprKind::Var(n) = &func.kind else {
+        return None;
+    };
+
+    match (n.as_str(), args.len()) {
+        ("show", 1) => {
+            let a0 = args.remove(0);
+            Some(ast::Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__show".to_string()))),
+                    args: vec![
+                        ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
+                        a0,
+                    ],
+                },
+            ))
+        }
+        ("toString", 1) => {
+            let a0 = args.remove(0);
+            Some(ast::Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__toString".to_string()))),
+                    args: vec![
+                        ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
+                        a0,
+                    ],
+                },
+            ))
+        }
+        ("==", 1) => {
+            let a0 = args.remove(0);
+            Some(ast::Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__eq".to_string()))),
+                    args: vec![
+                        ast::Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
+                        a0,
+                    ],
+                },
+            ))
+        }
+        ("==", 2) => {
+            let a = args.remove(0);
+            let b = args.remove(0);
+            Some(ast::Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__eq".to_string()))),
+                    args: vec![
+                        ast::Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
+                        a,
+                        b,
+                    ],
+                },
+            ))
+        }
+        ("/=", 1) => {
+            // Section: `(/= a)` becomes `\b -> not (__eq __builtinEqDict a b)`.
+            let a = args.remove(0);
+            let bname = "__kscr_neq_rhs".to_string();
+            Some(ast::Expr::new(
+                span,
+                ExprKind::Lambda {
+                    params: vec![bname.clone()],
+                    body: Box::new(ast::Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(ast::Expr::new(span, ExprKind::Var("not".to_string()))),
+                            args: vec![ast::Expr::new(
+                                span,
+                                ExprKind::Apply {
+                                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__eq".to_string()))),
+                                    args: vec![
+                                        ast::Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
+                                        a,
+                                        ast::Expr::new(span, ExprKind::Var(bname)),
+                                    ],
+                                },
+                            )],
+                        },
+                    )),
+                },
+            ))
+        }
+        ("/=", 2) => {
+            let a = args.remove(0);
+            let b = args.remove(0);
+            Some(ast::Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(ast::Expr::new(span, ExprKind::Var("not".to_string()))),
+                    args: vec![ast::Expr::new(
+                        span,
+                        ExprKind::Apply {
+                            func: Box::new(ast::Expr::new(span, ExprKind::Var("__eq".to_string()))),
+                            args: vec![
+                                ast::Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
+                                a,
+                                b,
+                            ],
+                        },
+                    )],
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_show_calls_in_apply(span: ast::Span, func: ast::Expr, args: Vec<ast::Expr>) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+
+    let func = rewrite_show_calls_in_expr(func);
+    let args: Vec<_> = args.into_iter().map(rewrite_show_calls_in_expr).collect();
+
+    if let Some(rewritten) = rewrite_show_apply_special(span, &func, args.clone()) {
+        return rewritten;
+    }
+
+    Expr::new(
+        span,
+        ExprKind::Apply {
+            func: Box::new(func),
+            args,
+        },
+    )
+}
+
 fn rewrite_show_calls_in_expr(expr: ast::Expr) -> ast::Expr {
     use ast::{Expr, ExprKind};
     let span = expr.span;
@@ -6053,140 +6186,7 @@ fn rewrite_show_calls_in_expr(expr: ast::Expr) -> ast::Expr {
                 body: Box::new(rewrite_show_calls_in_expr(*body)),
             },
         ),
-        ExprKind::Apply { func, args } => {
-            let func = rewrite_show_calls_in_expr(*func);
-            let mut args: Vec<_> = args.into_iter().map(rewrite_show_calls_in_expr).collect();
-
-            match (&func.kind, args.len()) {
-                (ExprKind::Var(n), 1) if n == "show" => {
-                    return Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(Expr::new(span, ExprKind::Var("__show".to_string()))),
-                            args: vec![
-                                Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
-                                args.remove(0),
-                            ],
-                        },
-                    );
-                }
-                (ExprKind::Var(n), 1) if n == "toString" => {
-                    return Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(Expr::new(
-                                span,
-                                ExprKind::Var("__toString".to_string()),
-                            )),
-                            args: vec![
-                                Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
-                                args.remove(0),
-                            ],
-                        },
-                    );
-                }
-                (ExprKind::Var(n), 1) if n == "==" => {
-                    return Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(Expr::new(span, ExprKind::Var("__eq".to_string()))),
-                            args: vec![
-                                Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
-                                args.remove(0),
-                            ],
-                        },
-                    );
-                }
-                (ExprKind::Var(n), 2) if n == "==" => {
-                    let a = args.remove(0);
-                    let b = args.remove(0);
-                    return Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(Expr::new(span, ExprKind::Var("__eq".to_string()))),
-                            args: vec![
-                                Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
-                                a,
-                                b,
-                            ],
-                        },
-                    );
-                }
-                (ExprKind::Var(n), 1) if n == "/=" => {
-                    // Section: `(/= a)` becomes `\b -> not (__eq __builtinEqDict a b)`.
-                    let a = args.remove(0);
-                    let bname = "__kscr_neq_rhs".to_string();
-                    return Expr::new(
-                        span,
-                        ExprKind::Lambda {
-                            params: vec![bname.clone()],
-                            body: Box::new(Expr::new(
-                                span,
-                                ExprKind::Apply {
-                                    func: Box::new(Expr::new(
-                                        span,
-                                        ExprKind::Var("not".to_string()),
-                                    )),
-                                    args: vec![Expr::new(
-                                        span,
-                                        ExprKind::Apply {
-                                            func: Box::new(Expr::new(
-                                                span,
-                                                ExprKind::Var("__eq".to_string()),
-                                            )),
-                                            args: vec![
-                                                Expr::new(
-                                                    span,
-                                                    ExprKind::Var("__builtinEqDict".to_string()),
-                                                ),
-                                                a,
-                                                Expr::new(span, ExprKind::Var(bname)),
-                                            ],
-                                        },
-                                    )],
-                                },
-                            )),
-                        },
-                    );
-                }
-                (ExprKind::Var(n), 2) if n == "/=" => {
-                    let a = args.remove(0);
-                    let b = args.remove(0);
-                    return Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(Expr::new(span, ExprKind::Var("not".to_string()))),
-                            args: vec![Expr::new(
-                                span,
-                                ExprKind::Apply {
-                                    func: Box::new(Expr::new(
-                                        span,
-                                        ExprKind::Var("__eq".to_string()),
-                                    )),
-                                    args: vec![
-                                        Expr::new(
-                                            span,
-                                            ExprKind::Var("__builtinEqDict".to_string()),
-                                        ),
-                                        a,
-                                        b,
-                                    ],
-                                },
-                            )],
-                        },
-                    );
-                }
-                _ => {}
-            }
-
-            Expr::new(
-                span,
-                ExprKind::Apply {
-                    func: Box::new(func),
-                    args,
-                },
-            )
-        }
+        ExprKind::Apply { func, args } => rewrite_show_calls_in_apply(span, *func, args),
         ExprKind::If {
             cond,
             then_branch,
