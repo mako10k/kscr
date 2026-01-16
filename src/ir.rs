@@ -331,7 +331,7 @@ fn lower_expr(
     fresh: &mut usize,
     ctor_aliases: &std::collections::HashMap<String, String>,
 ) -> Result<IrExpr> {
-    use ast::{ExprKind, PatternKind};
+    use ast::ExprKind;
     Ok(match &expr.kind {
         // literals
         ExprKind::Unit => IrExpr::Unit,
@@ -362,63 +362,10 @@ fn lower_expr(
             then_branch: Box::new(lower_expr(then_branch, fresh, ctor_aliases)?),
             else_branch: Box::new(lower_expr(else_branch, fresh, ctor_aliases)?),
         },
-        ExprKind::Let { bindings, body } => {
-            // Order-independent recursive let-bindings.
-            // - Variable binders become direct bindings.
-            // - Pattern binders are lowered as:
-            //     tmp = rhs
-            //     v = case tmp of pat -> v
-            //   for each bound variable v.
-            let mut out_bindings: Vec<(String, IrExpr)> = Vec::new();
-
-            for b in bindings {
-                match &b.pat.kind {
-                    PatternKind::Var(name) => {
-                        out_bindings
-                            .push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
-                    }
-                    pat => {
-                        let mut vars = std::collections::BTreeSet::new();
-                        collect_pat_vars(&b.pat, &mut vars);
-                        if vars.is_empty() {
-                            continue;
-                        }
-
-                        let tmp = format!("_ir_let{fresh}");
-                        *fresh += 1;
-                        out_bindings.push((tmp.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
-
-                        let ir_pat = lower_pat(
-                            &ast::Pattern {
-                                span: b.pat.span,
-                                kind: pat.clone(),
-                            },
-                            fresh,
-                            ctor_aliases,
-                        )?;
-
-                        for v in vars {
-                            out_bindings.push((
-                                v.clone(),
-                                IrExpr::Case {
-                                    expr: Box::new(IrExpr::Var(tmp.clone())),
-                                    arms: vec![IrCaseArm {
-                                        pat: ir_pat.clone(),
-                                        guard: None,
-                                        body: IrExpr::Var(v),
-                                    }],
-                                },
-                            ));
-                        }
-                    }
-                }
-            }
-
-            IrExpr::Let {
-                bindings: out_bindings,
-                body: Box::new(lower_expr(body, fresh, ctor_aliases)?),
-            }
-        }
+        ExprKind::Let { bindings, body } => IrExpr::Let {
+            bindings: lower_let_like_bindings(bindings, fresh, ctor_aliases, "_ir_let")?,
+            body: Box::new(lower_expr(body, fresh, ctor_aliases)?),
+        },
         ExprKind::Cons { head, tail } => IrExpr::Cons {
             head: Box::new(lower_expr(head, fresh, ctor_aliases)?),
             tail: Box::new(lower_expr(tail, fresh, ctor_aliases)?),
@@ -470,59 +417,72 @@ fn lower_expr(
                 inner
             }
         }
-        ExprKind::Where { expr, bindings } => {
-            // Same semantics as `let`: order-independent recursive bindings in scope for `expr`.
-            let mut out_bindings: Vec<(String, IrExpr)> = Vec::new();
+        ExprKind::Where { expr, bindings } => IrExpr::Let {
+            bindings: lower_let_like_bindings(bindings, fresh, ctor_aliases, "_ir_where")?,
+            body: Box::new(lower_expr(expr, fresh, ctor_aliases)?),
+        },
+    })
+}
 
-            for b in bindings {
-                match &b.pat.kind {
-                    PatternKind::Var(name) => {
-                        out_bindings
-                            .push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
-                    }
-                    pat => {
-                        let mut vars = std::collections::BTreeSet::new();
-                        collect_pat_vars(&b.pat, &mut vars);
-                        if vars.is_empty() {
-                            continue;
-                        }
+fn lower_let_like_bindings(
+    bindings: &[ast::Binding],
+    fresh: &mut usize,
+    ctor_aliases: &std::collections::HashMap<String, String>,
+    tmp_prefix: &str,
+) -> Result<Vec<(String, IrExpr)>> {
+    use ast::PatternKind;
 
-                        let tmp = format!("_ir_where{fresh}");
-                        *fresh += 1;
-                        out_bindings.push((tmp.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
+    // Order-independent recursive let-bindings.
+    // - Variable binders become direct bindings.
+    // - Pattern binders are lowered as:
+    //     tmp = rhs
+    //     v = case tmp of pat -> v
+    //   for each bound variable v.
+    let mut out: Vec<(String, IrExpr)> = Vec::new();
 
-                        let ir_pat = lower_pat(
-                            &ast::Pattern {
-                                span: b.pat.span,
-                                kind: pat.clone(),
-                            },
-                            fresh,
-                            ctor_aliases,
-                        )?;
+    for b in bindings {
+        match &b.pat.kind {
+            PatternKind::Var(name) => {
+                out.push((name.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
+            }
+            pat => {
+                let mut vars = std::collections::BTreeSet::new();
+                collect_pat_vars(&b.pat, &mut vars);
+                if vars.is_empty() {
+                    continue;
+                }
 
-                        for v in vars {
-                            out_bindings.push((
-                                v.clone(),
-                                IrExpr::Case {
-                                    expr: Box::new(IrExpr::Var(tmp.clone())),
-                                    arms: vec![IrCaseArm {
-                                        pat: ir_pat.clone(),
-                                        guard: None,
-                                        body: IrExpr::Var(v),
-                                    }],
-                                },
-                            ));
-                        }
-                    }
+                let tmp = format!("{tmp_prefix}{fresh}");
+                *fresh += 1;
+                out.push((tmp.clone(), lower_expr(&b.expr, fresh, ctor_aliases)?));
+
+                let ir_pat = lower_pat(
+                    &ast::Pattern {
+                        span: b.pat.span,
+                        kind: pat.clone(),
+                    },
+                    fresh,
+                    ctor_aliases,
+                )?;
+
+                for v in vars {
+                    out.push((
+                        v.clone(),
+                        IrExpr::Case {
+                            expr: Box::new(IrExpr::Var(tmp.clone())),
+                            arms: vec![IrCaseArm {
+                                pat: ir_pat.clone(),
+                                guard: None,
+                                body: IrExpr::Var(v),
+                            }],
+                        },
+                    ));
                 }
             }
-
-            IrExpr::Let {
-                bindings: out_bindings,
-                body: Box::new(lower_expr(expr, fresh, ctor_aliases)?),
-            }
         }
-    })
+    }
+
+    Ok(out)
 }
 
 #[derive(Debug, Clone)]
@@ -759,176 +719,8 @@ fn eval_var(
         return force_value(g, v.clone());
     }
 
-    if name == "IO" {
-        // Built-in IO constructor used by the minimal typecheck prelude.
-        return Ok(Value::IoCtor);
-    }
-
-    if name == "stdoutWrite" {
-        return Ok(Value::BuiltinStdoutWrite);
-    }
-
-    if name == "concatMap" {
-        return Ok(Value::BuiltinConcatMap);
-    }
-
-    if name == "+" {
-        return Ok(Value::BuiltinAdd);
-    }
-
-    if name == "-" {
-        return Ok(Value::BuiltinSub);
-    }
-
-    if name == "*" {
-        return Ok(Value::BuiltinMul);
-    }
-
-    if name == "/" {
-        return Ok(Value::BuiltinDiv);
-    }
-
-    if name == "__quotInt" {
-        return Ok(Value::BuiltinQuotInt);
-    }
-    if name == "__remInt" {
-        return Ok(Value::BuiltinRemInt);
-    }
-    if name == "__divInt" {
-        return Ok(Value::BuiltinDivInt);
-    }
-    if name == "__modInt" {
-        return Ok(Value::BuiltinModInt);
-    }
-
-    if name == "==" {
-        return Ok(Value::BuiltinEq);
-    }
-
-    if name == "<" {
-        return Ok(Value::BuiltinLtInt);
-    }
-
-    if name == "<=" {
-        return Ok(Value::BuiltinLeInt);
-    }
-
-    if name == ">" {
-        return Ok(Value::BuiltinGtInt);
-    }
-
-    if name == ">=" {
-        return Ok(Value::BuiltinGeInt);
-    }
-
-    if name == "/=" {
-        return Ok(Value::BuiltinNe);
-    }
-
-    if name == "&&" {
-        return Ok(Value::BuiltinAnd);
-    }
-
-    if name == "||" {
-        return Ok(Value::BuiltinOr);
-    }
-
-    if name == "not" {
-        return Ok(Value::BuiltinNot);
-    }
-
-    if name == "intToString" {
-        return Ok(Value::BuiltinIntToString);
-    }
-
-    if name == "boolToString" {
-        return Ok(Value::BuiltinBoolToString);
-    }
-
-    if name == "++" {
-        return Ok(Value::BuiltinListAppend);
-    }
-
-    if name == "show" || name == "toString" {
-        return Ok(Value::BuiltinShow);
-    }
-
-    if name == "__show" || name == "__toString" {
-        return Ok(Value::BuiltinShowDictApply);
-    }
-
-    if name == "__builtinShowDict" {
-        return Ok(Value::Record(vec![(
-            "show".to_string(),
-            Value::BuiltinShow,
-        )]));
-    }
-
-    if name == "__eq" {
-        return Ok(Value::BuiltinEqDictApply);
-    }
-
-    if name == "__builtinEqDict" {
-        return Ok(Value::Record(vec![("eq".to_string(), Value::BuiltinEq)]));
-    }
-
-    if name == "__recordGet" {
-        return Ok(Value::BuiltinRecordGet);
-    }
-
-    if name == "error" {
-        return Ok(Value::BuiltinError);
-    }
-
-    if name == "throw" {
-        return Ok(Value::BuiltinThrow);
-    }
-
-    if name == "catch" {
-        return Ok(Value::BuiltinCatch);
-    }
-
-    if name == "try" {
-        return Ok(Value::BuiltinTry);
-    }
-
-    if name == "__ioBind" {
-        return Ok(Value::BuiltinIoBind);
-    }
-
-    if name == "__ioThen" {
-        return Ok(Value::BuiltinIoThen);
-    }
-
-    if name == "ffiAddI32" {
-        return Ok(Value::BuiltinFfiAddI32);
-    }
-
-    if name == "ffiAddF32" {
-        return Ok(Value::BuiltinFfiAddF32);
-    }
-
-    if name == "ffiPuts" {
-        #[cfg(feature = "unsafe_ffi")]
-        return Ok(Value::BuiltinFfiPuts);
-    }
-
-    if name == "stdinReadLine" {
-        return Ok(Value::IoAction(Box::new(IoAction::StdinReadLine)));
-    }
-
-    if name == "readLine" && !g.defs.contains_key(name) {
-        // NOTE: currently a builtin for early ergonomics.
-        // In the future, `readLine` should become a library function built on top of IO primitives
-        // such as `stdinReadLine`.
-        return Ok(Value::IoAction(Box::new(IoAction::StdinReadLine)));
-    }
-
-    if name == "print" && !g.defs.contains_key(name) {
-        // NOTE: temporary name for observability.
-        // In the future, `print` should become a library function built on top of IO primitives
-        // such as `stdoutWrite`.
-        return Ok(Value::BuiltinStdoutWrite);
+    if let Some(v) = eval_builtin_var(g, name) {
+        return Ok(v);
     }
 
     if !g.defs.contains_key(name) {
@@ -954,6 +746,84 @@ fn eval_var(
         .borrow_mut()
         .insert(name.to_string(), MemoValue::Evaluated(v.clone()));
     Ok(v)
+}
+
+fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
+    // Some builtins are only used as a fallback when there isn't a user definition.
+    fn only_if_undefined(g: &Globals, name: &str, v: Value) -> Option<Value> {
+        if g.defs.contains_key(name) {
+            None
+        } else {
+            Some(v)
+        }
+    }
+
+    let v = match name {
+        // Built-in IO constructor used by the minimal typecheck prelude.
+        "IO" => Value::IoCtor,
+
+        "stdoutWrite" => Value::BuiltinStdoutWrite,
+        "concatMap" => Value::BuiltinConcatMap,
+
+        "+" => Value::BuiltinAdd,
+        "-" => Value::BuiltinSub,
+        "*" => Value::BuiltinMul,
+        "/" => Value::BuiltinDiv,
+
+        "__quotInt" => Value::BuiltinQuotInt,
+        "__remInt" => Value::BuiltinRemInt,
+        "__divInt" => Value::BuiltinDivInt,
+        "__modInt" => Value::BuiltinModInt,
+
+        "==" => Value::BuiltinEq,
+        "<" => Value::BuiltinLtInt,
+        "<=" => Value::BuiltinLeInt,
+        ">" => Value::BuiltinGtInt,
+        ">=" => Value::BuiltinGeInt,
+        "/=" => Value::BuiltinNe,
+
+        "&&" => Value::BuiltinAnd,
+        "||" => Value::BuiltinOr,
+        "not" => Value::BuiltinNot,
+
+        "intToString" => Value::BuiltinIntToString,
+        "boolToString" => Value::BuiltinBoolToString,
+        "++" => Value::BuiltinListAppend,
+
+        "show" | "toString" => Value::BuiltinShow,
+        "__show" | "__toString" => Value::BuiltinShowDictApply,
+
+        "__builtinShowDict" => Value::Record(vec![("show".to_string(), Value::BuiltinShow)]),
+
+        "__eq" => Value::BuiltinEqDictApply,
+        "__builtinEqDict" => Value::Record(vec![("eq".to_string(), Value::BuiltinEq)]),
+
+        "__recordGet" => Value::BuiltinRecordGet,
+        "error" => Value::BuiltinError,
+        "throw" => Value::BuiltinThrow,
+        "catch" => Value::BuiltinCatch,
+        "try" => Value::BuiltinTry,
+
+        "__ioBind" => Value::BuiltinIoBind,
+        "__ioThen" => Value::BuiltinIoThen,
+
+        "ffiAddI32" => Value::BuiltinFfiAddI32,
+        "ffiAddF32" => Value::BuiltinFfiAddF32,
+
+        #[cfg(feature = "unsafe_ffi")]
+        "ffiPuts" => Value::BuiltinFfiPuts,
+
+        "stdinReadLine" => Value::IoAction(Box::new(IoAction::StdinReadLine)),
+        "readLine" => {
+            return only_if_undefined(g, name, Value::IoAction(Box::new(IoAction::StdinReadLine)));
+        }
+        "print" => {
+            return only_if_undefined(g, name, Value::BuiltinStdoutWrite);
+        }
+
+        _ => return None,
+    };
+    Some(v)
 }
 
 fn eval_expr(
