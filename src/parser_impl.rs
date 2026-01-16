@@ -385,9 +385,7 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
     Ok(ast::Item::TypeAlias(ast::TypeAlias { name, params, ty }))
 }
 
-fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
-    ts.expect(TokenKind::KwClass)?;
-
+fn parse_class_supers(ts: &mut TokenStream) -> Result<Vec<ast::Predicate>> {
     // Optional superclass context (Haskell-style):
     //   class (p1, p2) => C a where
     //   class p => C a where
@@ -401,20 +399,144 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         }
         ts.expect(TokenKind::RParen)?;
         ts.expect(TokenKind::FatArrow)?;
-    } else {
-        // Single predicate form, but only if followed by `=>`.
-        let save = ts.i;
-        if let Ok(pred) = parse_predicate(ts, Stop::LineEnd) {
-            if matches!(ts.peek_kind(), Some(TokenKind::FatArrow)) {
-                ts.bump();
-                supers.push(pred);
-            } else {
-                ts.i = save;
-            }
+        return Ok(supers);
+    }
+
+    // Single predicate form, but only if followed by `=>`.
+    let save = ts.i;
+    if let Ok(pred) = parse_predicate(ts, Stop::LineEnd) {
+        if matches!(ts.peek_kind(), Some(TokenKind::FatArrow)) {
+            ts.bump();
+            supers.push(pred);
         } else {
             ts.i = save;
         }
+    } else {
+        ts.i = save;
     }
+    Ok(supers)
+}
+
+fn parse_class_method_sig_line(ts: &mut TokenStream) -> Result<Option<ast::ClassMethodSig>> {
+    // Try parsing a signature line first:
+    //   f :: ...
+    //   (++) :: ...
+    let save = (ts.i, ts.last_span_end);
+
+    // Parse a method name token that can be either an identifier or a parenthesized operator.
+    let maybe_name = match ts.peek_kind() {
+        Some(TokenKind::Ident(_)) => ts.expect_ident().ok(),
+        Some(TokenKind::LParen) => {
+            // Only treat it as an operator-name if it looks like one.
+            let save2 = (ts.i, ts.last_span_end);
+            ts.bump();
+            let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick))
+                || is_sym_op_token(ts.peek_kind());
+            (ts.i, ts.last_span_end) = save2;
+            if op_ok {
+                parse_paren_operator_name(ts).ok()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    if let Some(mname) = maybe_name {
+        if matches!(ts.peek_kind(), Some(TokenKind::ColonColon)) {
+            ts.expect(TokenKind::ColonColon)?;
+            let ty = parse_qual_type(ts, Stop::LineEnd)?;
+            ts.consume_line_end();
+            return Ok(Some(ast::ClassMethodSig { name: mname, ty }));
+        }
+    }
+
+    (ts.i, ts.last_span_end) = save;
+    Ok(None)
+}
+
+fn class_body_allows_default_item(ts: &TokenStream) -> bool {
+    matches!(
+        ts.peek_kind(),
+        Some(
+            TokenKind::Ident(_)
+                | TokenKind::LParen
+                | TokenKind::LBracket
+                | TokenKind::LBrace
+                | TokenKind::Integer(_)
+                | TokenKind::Float(_)
+                | TokenKind::String(_)
+                | TokenKind::Char(_)
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Question,
+        )
+    )
+}
+
+fn parse_class_body(
+    ts: &mut TokenStream,
+) -> Result<(Vec<ast::ClassMethodSig>, Vec<ast::Binding>)> {
+    ts.expect(TokenKind::Indent)?;
+
+    let mut methods: Vec<ast::ClassMethodSig> = Vec::new();
+    let mut default_items: Vec<ast::Item> = Vec::new();
+    let mut pending: Option<PendingFun> = None;
+
+    loop {
+        ts.skip_newlines();
+        if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+            break;
+        }
+        if ts.is_eof() {
+            return Err(ts.err_here("unexpected EOF in class"));
+        }
+
+        if let Some(sig) = parse_class_method_sig_line(ts)? {
+            methods.push(sig);
+            continue;
+        }
+
+        if class_body_allows_default_item(ts) {
+            match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
+                ParsedBind::Binding(b) => {
+                    flush_pending_fun_item(ts, &mut default_items, pending.take())?;
+                    default_items.push(ast::Item::Binding(b));
+                }
+                ParsedBind::FunClause(c) => {
+                    push_fun_clause_item(ts, &mut default_items, &mut pending, c)?;
+                }
+            }
+            ts.consume_line_end();
+            continue;
+        }
+
+        match ts.peek_kind() {
+            Some(_) => return Err(ts.err_here("unexpected token in class")),
+            None => break,
+        }
+    }
+
+    flush_pending_fun_item(ts, &mut default_items, pending.take())?;
+
+    ts.expect(TokenKind::Dedent)?;
+    ts.consume_line_end();
+
+    let mut default_methods: Vec<ast::Binding> = Vec::new();
+    for it in default_items {
+        let ast::Item::Binding(b) = it else {
+            return Err(ts.err_here("unexpected item in class"));
+        };
+        default_methods.push(b);
+    }
+
+    Ok((methods, default_methods))
+}
+
+fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+    ts.expect(TokenKind::KwClass)?;
+
+    let supers = parse_class_supers(ts)?;
 
     let name = ts.expect_ident()?;
     let param = ts.expect_ident()?;
@@ -432,102 +554,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         }));
     }
 
-    ts.expect(TokenKind::Indent)?;
-
-    let mut methods: Vec<ast::ClassMethodSig> = Vec::new();
-
-    let mut default_items: Vec<ast::Item> = Vec::new();
-    let mut pending: Option<PendingFun> = None;
-
-    loop {
-        ts.skip_newlines();
-        if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
-            break;
-        }
-        if ts.is_eof() {
-            return Err(ts.err_here("unexpected EOF in class"));
-        }
-
-        // Try parsing a signature line first:
-        //   f :: ...
-        //   (++) :: ...
-        {
-            let save = (ts.i, ts.last_span_end);
-
-            // Parse a method name token that can be either an identifier or a parenthesized operator.
-            let maybe_name = match ts.peek_kind() {
-                Some(TokenKind::Ident(_)) => ts.expect_ident().ok(),
-                Some(TokenKind::LParen) => {
-                    // Only treat it as an operator-name if it looks like one.
-                    let save2 = (ts.i, ts.last_span_end);
-                    ts.bump();
-                    let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick))
-                        || is_sym_op_token(ts.peek_kind());
-                    (ts.i, ts.last_span_end) = save2;
-                    if op_ok {
-                        parse_paren_operator_name(ts).ok()
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
-
-            if let Some(mname) = maybe_name {
-                if matches!(ts.peek_kind(), Some(TokenKind::ColonColon)) {
-                    ts.expect(TokenKind::ColonColon)?;
-                    let ty = parse_qual_type(ts, Stop::LineEnd)?;
-                    methods.push(ast::ClassMethodSig { name: mname, ty });
-                    ts.consume_line_end();
-                    continue;
-                }
-            }
-
-            (ts.i, ts.last_span_end) = save;
-        }
-
-        // Otherwise parse a default method binding / clause.
-        match ts.peek_kind() {
-            Some(
-                TokenKind::Ident(_)
-                | TokenKind::LParen
-                | TokenKind::LBracket
-                | TokenKind::LBrace
-                | TokenKind::Integer(_)
-                | TokenKind::Float(_)
-                | TokenKind::String(_)
-                | TokenKind::Char(_)
-                | TokenKind::True
-                | TokenKind::False
-                | TokenKind::Question,
-            ) => match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
-                ParsedBind::Binding(b) => {
-                    flush_pending_fun_item(ts, &mut default_items, pending.take())?;
-                    default_items.push(ast::Item::Binding(b));
-                }
-                ParsedBind::FunClause(c) => {
-                    push_fun_clause_item(ts, &mut default_items, &mut pending, c)?;
-                }
-            },
-            Some(_) => return Err(ts.err_here("unexpected token in class")),
-            None => break,
-        }
-
-        ts.consume_line_end();
-    }
-
-    flush_pending_fun_item(ts, &mut default_items, pending.take())?;
-
-    ts.expect(TokenKind::Dedent)?;
-    ts.consume_line_end();
-
-    let mut default_methods: Vec<ast::Binding> = Vec::new();
-    for it in default_items {
-        let ast::Item::Binding(b) = it else {
-            return Err(ts.err_here("unexpected item in class"));
-        };
-        default_methods.push(b);
-    }
+    let (methods, default_methods) = parse_class_body(ts)?;
 
     Ok(ast::Item::ClassDecl(ast::ClassDecl {
         name,
