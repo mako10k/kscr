@@ -6439,6 +6439,28 @@ fn rewrite_class_method_calls_in_module(
         instance_head_key_ty(ty)
     }
 
+    struct ApplyRewriteCtx<'a> {
+        module_snapshot: &'a ast::Module,
+        class_env: &'a ClassEnv,
+        inferred: &'a HashMap<String, Scheme>,
+        dicts_in_scope: &'a HashSet<String>,
+        known_dicts_in_scope: &'a HashMap<String, String>,
+        span: ast::Span,
+    }
+
+    impl<'a> ApplyRewriteCtx<'a> {
+        fn rewrite_expr(&self, expr: ast::Expr) -> Result<ast::Expr> {
+            rewrite_expr(
+                self.module_snapshot,
+                self.class_env,
+                self.inferred,
+                self.dicts_in_scope,
+                self.known_dicts_in_scope,
+                expr,
+            )
+        }
+    }
+
     fn super_field_name(class: &str) -> String {
         format!("__super_{}", mangle_ident(class))
     }
@@ -6598,56 +6620,42 @@ fn rewrite_class_method_calls_in_module(
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn rewrite_class_method_lambda(
-        module_snapshot: &ast::Module,
-        class_env: &ClassEnv,
-        inferred: &HashMap<String, Scheme>,
-        dicts_in_scope: &HashSet<String>,
-        known_dicts_in_scope: &HashMap<String, String>,
-        span: ast::Span,
+    fn rewrite_class_method_lambda(ctx: &ApplyRewriteCtx<'_>,
         params: Vec<String>,
         body: ast::Expr,
     ) -> Result<ast::Expr> {
         use ast::{Expr, ExprKind};
 
-        let mut scope = dicts_in_scope.clone();
+        let mut scope = ctx.dicts_in_scope.clone();
         for p in &params {
             if p.starts_with("__dict_") {
                 scope.insert(p.clone());
             }
         }
         Ok(Expr::new(
-            span,
+            ctx.span,
             ExprKind::Lambda {
                 params,
                 body: Box::new(rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
+                    ctx.module_snapshot,
+                    ctx.class_env,
+                    ctx.inferred,
                     &scope,
-                    known_dicts_in_scope,
+                    ctx.known_dicts_in_scope,
                     body,
                 )?),
             },
         ))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn rewrite_class_method_apply(
-        module_snapshot: &ast::Module,
-        class_env: &ClassEnv,
-        inferred: &HashMap<String, Scheme>,
-        dicts_in_scope: &HashSet<String>,
-        known_dicts_in_scope: &HashMap<String, String>,
-        span: ast::Span,
+    fn rewrite_class_method_apply(ctx: &ApplyRewriteCtx<'_>,
         func: ast::Expr,
         args: Vec<ast::Expr>,
     ) -> Result<ast::Expr> {
         use ast::{Expr, ExprKind};
 
         if let ExprKind::Var(mname) = &func.kind {
-            if let Some(classes) = class_env.method_classes.get(mname) {
+            if let Some(classes) = ctx.class_env.method_classes.get(mname) {
                 let Some(class) = classes.first() else {
                     return Err(Error::msg("internal: empty method class list"));
                 };
@@ -6655,9 +6663,9 @@ fn rewrite_class_method_calls_in_module(
                 let dict_var = format!("__dict_{class}");
                 let mut chosen_name_for_known: Option<String> = None;
 
-                let dict_expr: ast::Expr = if dicts_in_scope.contains(&dict_var) {
+                let dict_expr: ast::Expr = if ctx.dicts_in_scope.contains(&dict_var) {
                     chosen_name_for_known = Some(dict_var.clone());
-                    Expr::new(span, ExprKind::Var(dict_var))
+                    Expr::new(ctx.span, ExprKind::Var(dict_var))
                 } else {
                     let mut first_non_ground: Option<Ty> = None;
                     let mut first_missing_instance: Option<Ty> = None;
@@ -6678,7 +6686,7 @@ fn rewrite_class_method_calls_in_module(
                         for a in &args {
                             if let Some(head) = monad_syntactic_head(a) {
                                 let key = (class.clone(), head);
-                                if let Some(d) = class_env.instances.get(&key) {
+                                if let Some(d) = ctx.class_env.instances.get(&key) {
                                     dict_name = Some(d.clone());
                                     break;
                                 }
@@ -6689,9 +6697,9 @@ fn rewrite_class_method_calls_in_module(
                     if dict_name.is_none() {
                         for a in &args {
                             let Ok(a_ty) = infer_in_module_with_class_env(
-                                module_snapshot,
-                                class_env,
-                                inferred,
+                                ctx.module_snapshot,
+                                ctx.class_env,
+                                ctx.inferred,
                                 a.clone(),
                             ) else {
                                 continue;
@@ -6711,7 +6719,7 @@ fn rewrite_class_method_calls_in_module(
                             };
 
                             let key = (class.clone(), head);
-                            if let Some(d) = class_env.instances.get(&key) {
+                            if let Some(d) = ctx.class_env.instances.get(&key) {
                                 dict_name = Some(d.clone());
                                 break;
                             }
@@ -6724,16 +6732,16 @@ fn rewrite_class_method_calls_in_module(
 
                     if let Some(dict_name) = dict_name {
                         chosen_name_for_known = Some(dict_name.clone());
-                        Expr::new(span, ExprKind::Var(dict_name))
-                    } else if let Some(d) = known_dicts_in_scope.get(class) {
+                        Expr::new(ctx.span, ExprKind::Var(dict_name))
+                    } else if let Some(d) = ctx.known_dicts_in_scope.get(class) {
                         chosen_name_for_known = Some(d.clone());
-                        Expr::new(span, ExprKind::Var(d.clone()))
+                        Expr::new(ctx.span, ExprKind::Var(d.clone()))
                     } else if let Some(d) = derive_dict_expr_from_candidates(
-                        span,
-                        class_env,
+                        ctx.span,
+                        ctx.class_env,
                         class,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
+                        ctx.dicts_in_scope,
+                        ctx.known_dicts_in_scope,
                     ) {
                         d
                     } else {
@@ -6747,9 +6755,9 @@ fn rewrite_class_method_calls_in_module(
                             args.first()
                                 .and_then(|a0| {
                                     infer_in_module_with_class_env(
-                                        module_snapshot,
-                                        class_env,
-                                        inferred,
+                                        ctx.module_snapshot,
+                                        ctx.class_env,
+                                        ctx.inferred,
                                         a0.clone(),
                                     )
                                     .ok()
@@ -6763,24 +6771,33 @@ fn rewrite_class_method_calls_in_module(
                     }
                 };
 
-                let mut known = known_dicts_in_scope.clone();
+                let mut known = ctx.known_dicts_in_scope.clone();
                 if let Some(chosen) = chosen_name_for_known.clone() {
                     known.insert(class.clone(), chosen);
                 }
 
                 let new_args: Vec<_> = args
                     .into_iter()
-                    .map(|a| rewrite_expr(module_snapshot, class_env, inferred, dicts_in_scope, &known, a))
+                    .map(|a| {
+                        rewrite_expr(
+                            ctx.module_snapshot,
+                            ctx.class_env,
+                            ctx.inferred,
+                            ctx.dicts_in_scope,
+                            &known,
+                            a,
+                        )
+                    })
                     .collect::<Result<Vec<_>>>()?;
 
-                let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
+                let get = Expr::new(ctx.span, ExprKind::Var("__recordGet".to_string()));
                 let method_fn = Expr::new(
-                    span,
+                    ctx.span,
                     ExprKind::Apply {
                         func: Box::new(get),
                         args: vec![
                             dict_expr.clone(),
-                            Expr::new(span, ExprKind::String(mname.clone())),
+                            Expr::new(ctx.span, ExprKind::String(mname.clone())),
                         ],
                     },
                 );
@@ -6790,7 +6807,7 @@ fn rewrite_class_method_calls_in_module(
                 call_args.extend(new_args);
 
                 return Ok(Expr::new(
-                    span,
+                    ctx.span,
                     ExprKind::Apply {
                         func: Box::new(method_fn),
                         args: call_args,
@@ -6799,29 +6816,13 @@ fn rewrite_class_method_calls_in_module(
             }
         }
 
-        let func = rewrite_expr(
-            module_snapshot,
-            class_env,
-            inferred,
-            dicts_in_scope,
-            known_dicts_in_scope,
-            func,
-        )?;
+        let func = ctx.rewrite_expr(func)?;
         let args: Vec<_> = args
             .into_iter()
-            .map(|a| {
-                rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    dicts_in_scope,
-                    known_dicts_in_scope,
-                    a,
-                )
-            })
+            .map(|a| ctx.rewrite_expr(a))
             .collect::<Result<Vec<_>>>()?;
         Ok(Expr::new(
-            span,
+            ctx.span,
             ExprKind::Apply {
                 func: Box::new(func),
                 args,
@@ -6838,7 +6839,83 @@ fn rewrite_class_method_calls_in_module(
         expr: ast::Expr,
     ) -> Result<ast::Expr> {
         use ast::{Expr, ExprKind};
+
+        fn rewrite_with_ctx(ctx: &ApplyRewriteCtx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
+            rewrite_expr(
+                ctx.module_snapshot,
+                ctx.class_env,
+                ctx.inferred,
+                ctx.dicts_in_scope,
+                ctx.known_dicts_in_scope,
+                expr,
+            )
+        }
+
+        fn rewrite_bindings(ctx: &ApplyRewriteCtx<'_>, bindings: Vec<ast::Binding>) -> Result<Vec<ast::Binding>> {
+            bindings
+                .into_iter()
+                .map(|b| {
+                    Ok(ast::Binding {
+                        pat: b.pat,
+                        expr: rewrite_with_ctx(ctx, b.expr)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        }
+
+        fn rewrite_do(ctx: &ApplyRewriteCtx<'_>, stmts: Vec<ast::DoStmt>) -> Result<Vec<ast::DoStmt>> {
+            stmts
+                .into_iter()
+                .map(|s| {
+                    Ok(match s {
+                        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                            pat,
+                            expr: rewrite_with_ctx(ctx, expr)?,
+                        },
+                        ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_with_ctx(ctx, e)?),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        }
+
+        fn rewrite_case_arms(ctx: &ApplyRewriteCtx<'_>, arms: Vec<ast::CaseArm>) -> Result<Vec<ast::CaseArm>> {
+            arms
+                .into_iter()
+                .map(|a| {
+                    Ok(ast::CaseArm {
+                        pat: a.pat,
+                        guard: a
+                            .guard
+                            .map(|g| rewrite_with_ctx(ctx, g))
+                            .transpose()?,
+                        body: rewrite_with_ctx(ctx, a.body)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        }
+
+        fn rewrite_expr_list(ctx: &ApplyRewriteCtx<'_>, es: Vec<ast::Expr>) -> Result<Vec<ast::Expr>> {
+            es.into_iter().map(|e| rewrite_with_ctx(ctx, e)).collect()
+        }
+
+        fn rewrite_record_fields(
+            ctx: &ApplyRewriteCtx<'_>,
+            fields: Vec<(String, ast::Expr)>,
+        ) -> Result<Vec<(String, ast::Expr)>> {
+            fields
+                .into_iter()
+                .map(|(k, v)| Ok((k, rewrite_with_ctx(ctx, v)?)))
+                .collect::<Result<Vec<_>>>()
+        }
         let span = expr.span;
+        let apply_ctx = ApplyRewriteCtx {
+            module_snapshot,
+            class_env,
+            inferred,
+            dicts_in_scope,
+            known_dicts_in_scope,
+            span,
+        };
         Ok(match expr.kind {
             ExprKind::Var(mname) => rewrite_class_method_var(
                 class_env,
@@ -6848,244 +6925,66 @@ fn rewrite_class_method_calls_in_module(
                 mname,
             )?,
             ExprKind::Lambda { params, body } => rewrite_class_method_lambda(
-                module_snapshot,
-                class_env,
-                inferred,
-                dicts_in_scope,
-                known_dicts_in_scope,
-                span,
+                &apply_ctx,
                 params,
                 *body,
             )?,
             ExprKind::Apply { func, args } => rewrite_class_method_apply(
-                module_snapshot,
-                class_env,
-                inferred,
-                dicts_in_scope,
-                known_dicts_in_scope,
-                span,
+                &apply_ctx,
                 *func,
                 args,
             )?,
             ExprKind::Let { bindings, body } => Expr::new(
                 span,
                 ExprKind::Let {
-                    bindings: bindings
-                        .into_iter()
-                        .map(|b| {
-                            Ok(ast::Binding {
-                                pat: b.pat,
-                                expr: rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    dicts_in_scope,
-                                    known_dicts_in_scope,
-                                    b.expr,
-                                )?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                    body: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *body,
-                    )?),
+                    bindings: rewrite_bindings(&apply_ctx, bindings)?,
+                    body: Box::new(rewrite_with_ctx(&apply_ctx, *body)?),
                 },
             ),
             ExprKind::Where { expr, bindings } => Expr::new(
                 span,
                 ExprKind::Where {
-                    expr: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *expr,
-                    )?),
-                    bindings: bindings
-                        .into_iter()
-                        .map(|b| {
-                            Ok(ast::Binding {
-                                pat: b.pat,
-                                expr: rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    dicts_in_scope,
-                                    known_dicts_in_scope,
-                                    b.expr,
-                                )?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
+                    expr: Box::new(rewrite_with_ctx(&apply_ctx, *expr)?),
+                    bindings: rewrite_bindings(&apply_ctx, bindings)?,
                 },
             ),
             ExprKind::Annot { expr, ty } => Expr::new(
                 span,
                 ExprKind::Annot {
-                    expr: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *expr,
-                    )?),
+                    expr: Box::new(rewrite_with_ctx(&apply_ctx, *expr)?),
                     ty,
                 },
             ),
             ExprKind::Do(stmts) => Expr::new(
                 span,
-                ExprKind::Do(
-                    stmts
-                        .into_iter()
-                        .map(|s| {
-                            Ok(match s {
-                                ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
-                                    pat,
-                                    expr: rewrite_expr(
-                                        module_snapshot,
-                                        class_env,
-                                        inferred,
-                                        dicts_in_scope,
-                                        known_dicts_in_scope,
-                                        expr,
-                                    )?,
-                                },
-                                ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    dicts_in_scope,
-                                    known_dicts_in_scope,
-                                    e,
-                                )?),
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                ),
+                ExprKind::Do(rewrite_do(&apply_ctx, stmts)?),
             ),
             ExprKind::Case { expr, arms } => Expr::new(
                 span,
                 ExprKind::Case {
-                    expr: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *expr,
-                    )?),
-                    arms: arms
-                        .into_iter()
-                        .map(|a| {
-                            Ok(ast::CaseArm {
-                                pat: a.pat,
-                                guard: a
-                                    .guard
-                                    .map(|g| {
-                                        rewrite_expr(
-                                            module_snapshot,
-                                            class_env,
-                                            inferred,
-                                            dicts_in_scope,
-                                            known_dicts_in_scope,
-                                            g,
-                                        )
-                                    })
-                                    .transpose()?,
-                                body: rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    dicts_in_scope,
-                                    known_dicts_in_scope,
-                                    a.body,
-                                )?,
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()?,
+                    expr: Box::new(rewrite_with_ctx(&apply_ctx, *expr)?),
+                    arms: rewrite_case_arms(&apply_ctx, arms)?,
                 },
             ),
             ExprKind::Cons { head, tail } => Expr::new(
                 span,
                 ExprKind::Cons {
-                    head: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *head,
-                    )?),
-                    tail: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *tail,
-                    )?),
+                    head: Box::new(rewrite_with_ctx(&apply_ctx, *head)?),
+                    tail: Box::new(rewrite_with_ctx(&apply_ctx, *tail)?),
                 },
             ),
             ExprKind::List(es) => Expr::new(
                 span,
-                ExprKind::List(
-                    es.into_iter()
-                        .map(|e| {
-                            rewrite_expr(
-                                module_snapshot,
-                                class_env,
-                                inferred,
-                                dicts_in_scope,
-                                known_dicts_in_scope,
-                                e,
-                            )
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                ),
+                ExprKind::List(rewrite_expr_list(&apply_ctx, es)?),
             ),
             ExprKind::Tuple(es) => Expr::new(
                 span,
-                ExprKind::Tuple(
-                    es.into_iter()
-                        .map(|e| {
-                            rewrite_expr(
-                                module_snapshot,
-                                class_env,
-                                inferred,
-                                dicts_in_scope,
-                                known_dicts_in_scope,
-                                e,
-                            )
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                ),
+                ExprKind::Tuple(rewrite_expr_list(&apply_ctx, es)?),
             ),
             ExprKind::Record(fields) => Expr::new(
                 span,
                 ExprKind::Record(
-                    fields
-                        .into_iter()
-                        .map(|(k, v)| {
-                            Ok((
-                                k,
-                                rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    dicts_in_scope,
-                                    known_dicts_in_scope,
-                                    v,
-                                )?,
-                            ))
-                        })
-                        .collect::<Result<Vec<_>>>()?,
+                    rewrite_record_fields(&apply_ctx, fields)?,
                 ),
             ),
             other => Expr::new(span, other),
