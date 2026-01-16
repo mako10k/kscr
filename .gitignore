@@ -16,6 +16,9 @@ Cargo.lock
 .DS_Store
 Thumbs.db
 
+# Node
+node_modules/
+
 # Logs and temp
 *.log
 *.tmp
