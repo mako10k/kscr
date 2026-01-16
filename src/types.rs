@@ -3178,6 +3178,227 @@ fn simplify_constraints(
     Ok(sort_dedup_constraints_stable(out))
 }
 
+fn build_letrec_binding_metadata(
+    bindings: &[ast::Binding],
+) -> (
+    Vec<String>,
+    Vec<HashSet<String>>,
+    HashMap<String, usize>,
+) {
+    let n = bindings.len();
+    let mut ctx_names: Vec<String> = Vec::with_capacity(n);
+    let mut defined_names: Vec<HashSet<String>> = Vec::with_capacity(n);
+    for b in bindings {
+        let ctx_name = match &b.pat.kind {
+            ast::PatternKind::Var(name) => name.clone(),
+            _ => "<pattern>".to_string(),
+        };
+        ctx_names.push(ctx_name);
+        let mut names = HashSet::new();
+        pat_defined_names(&b.pat, &mut names);
+        defined_names.push(names);
+    }
+
+    let mut name_to_binding: HashMap<String, usize> = HashMap::new();
+    for (i, names) in defined_names.iter().enumerate() {
+        for name in names {
+            name_to_binding.insert(name.clone(), i);
+        }
+    }
+
+    (ctx_names, defined_names, name_to_binding)
+}
+
+fn build_letrec_dep_graph(
+    bindings: &[ast::Binding],
+    name_to_binding: &HashMap<String, usize>,
+) -> Vec<Vec<usize>> {
+    let n = bindings.len();
+    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for i in 0..n {
+        let mut deps = HashSet::new();
+        let empty: HashSet<String> = HashSet::new();
+        collect_deps_in_expr(&bindings[i].expr, name_to_binding, &empty, &mut deps);
+        graph[i] = deps.into_iter().collect();
+    }
+    graph
+}
+
+fn topo_order_sccs(graph: &[Vec<usize>], comps: &[Vec<usize>]) -> Result<Vec<usize>> {
+    let n = graph.len();
+    let mut node_to_comp = vec![0usize; n];
+    for (ci, comp) in comps.iter().enumerate() {
+        for &v in comp {
+            node_to_comp[v] = ci;
+        }
+    }
+
+    // Component graph: dependency -> dependent.
+    let comp_n = comps.len();
+    let mut comp_edges: Vec<HashSet<usize>> = vec![HashSet::new(); comp_n];
+    let mut indeg = vec![0usize; comp_n];
+    for u in 0..n {
+        let cu = node_to_comp[u];
+        for &v in &graph[u] {
+            let cv = node_to_comp[v];
+            if cu == cv {
+                continue;
+            }
+            if comp_edges[cv].insert(cu) {
+                indeg[cu] += 1;
+            }
+        }
+    }
+
+    let mut queue: std::collections::VecDeque<usize> = indeg
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &d)| if d == 0 { Some(i) } else { None })
+        .collect();
+    let mut comp_order = Vec::with_capacity(comp_n);
+    while let Some(c) = queue.pop_front() {
+        comp_order.push(c);
+        for &to in comp_edges[c].iter() {
+            indeg[to] -= 1;
+            if indeg[to] == 0 {
+                queue.push_back(to);
+            }
+        }
+    }
+    if comp_order.len() != comp_n {
+        return Err(Error::msg("internal error: cyclic component graph"));
+    }
+    Ok(comp_order)
+}
+
+type LetrecBindingInfer = (Vec<(String, Ty)>, Vec<Constraint>);
+
+struct LetrecInferCx<'a> {
+    cx: &'a mut InferCtx,
+    data_env: &'a DataEnv,
+    subst: &'a mut Subst,
+    env_scc: &'a TypeEnv,
+    placeholders: &'a HashMap<String, Ty>,
+    ctx_prefix: &'a str,
+    ctx_name: &'a str,
+}
+
+fn infer_one_letrec_binding(cxi: &mut LetrecInferCx<'_>, b: ast::Binding) -> Result<LetrecBindingInfer> {
+    let mut binds = Vec::new();
+    let mut seen = HashSet::new();
+    let mut cs_pat = Vec::new();
+    let pat_ty = infer_pat_in(
+        cxi.cx,
+        cxi.data_env,
+        cxi.subst,
+        cxi.env_scc,
+        &b.pat,
+        &mut binds,
+        &mut seen,
+        &mut cs_pat,
+    )
+    .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
+
+    let env_in = apply_env(cxi.subst, cxi.env_scc);
+    let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cxi.cx, cxi.data_env, &env_in, b.expr)
+        .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
+    *cxi.subst = compose(&s_rhs, cxi.subst);
+
+    let s_pat = unify(apply(cxi.subst, t_rhs), apply(cxi.subst, pat_ty))
+        .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
+    *cxi.subst = compose(&s_pat, cxi.subst);
+
+    // Connect binder types to their placeholders so recursive references unify.
+    for (name, t) in &binds {
+        if let Some(ph) = cxi.placeholders.get(name).cloned() {
+            let su = unify(apply(cxi.subst, t.clone()), apply(cxi.subst, ph))
+                .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
+            *cxi.subst = compose(&su, cxi.subst);
+        }
+    }
+
+    let mut cs = cs_rhs;
+    cs.extend(cs_pat);
+    Ok((binds, cs))
+}
+
+fn infer_local_letrec_bindings(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    base_env: &TypeEnv,
+    bindings: Vec<ast::Binding>,
+    ctx_prefix: &str,
+) -> Result<(Subst, TypeEnv)> {
+    // Constraints produced while typechecking local bindings are captured in their
+    // generalized schemes. They should not leak to the surrounding expression.
+    let mut s = Subst::new();
+    let mut env_global = base_env.clone();
+
+    let n = bindings.len();
+    if n == 0 {
+        return Ok((s, env_global));
+    }
+
+    let (ctx_names, defined_names, name_to_binding) =
+        build_letrec_binding_metadata(&bindings);
+    let graph = build_letrec_dep_graph(&bindings, &name_to_binding);
+
+    let comps = tarjan_scc(&graph);
+    let comp_order = topo_order_sccs(&graph, &comps)?;
+
+    for ci in comp_order {
+        let comp = &comps[ci];
+
+        // Placeholders for all names in this SCC (monomorphic during inference).
+        let mut placeholders: HashMap<String, Ty> = HashMap::new();
+        let mut env_scc = env_global.clone();
+        for &bi in comp {
+            for name in &defined_names[bi] {
+                let tv = cx.fresh();
+                placeholders.insert(name.clone(), tv.clone());
+                env_scc.insert(name.clone(), Scheme::mono(tv));
+            }
+        }
+
+        let mut per_bind: Vec<LetrecBindingInfer> = Vec::new();
+        for &bi in comp {
+            let b = bindings[bi].clone();
+            let ctx_name = &ctx_names[bi];
+
+            let mut cxi = LetrecInferCx {
+                cx,
+                data_env,
+                subst: &mut s,
+                env_scc: &env_scc,
+                placeholders: &placeholders,
+                ctx_prefix,
+                ctx_name,
+            };
+            per_bind.push(infer_one_letrec_binding(&mut cxi, b)?);
+        }
+
+        let env_gen_base = apply_env(&s, &env_global);
+        let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
+        for (binds, cs) in per_bind {
+            for (name, t) in binds {
+                let cs = simplify_constraints(
+                    data_env,
+                    &ClassEnv::default(),
+                    apply_constraints(&s, cs.clone()),
+                )?;
+                let scheme = generalize_qual(&env_gen_base, cs, apply(&s, t));
+                new_schemes.push((name, scheme));
+            }
+        }
+
+        for (name, scheme) in new_schemes {
+            env_global.insert(name, scheme);
+        }
+    }
+
+    Ok((s, env_global))
+}
+
 fn infer_expr_in(
     cx: &mut InferCtx,
     data_env: &DataEnv,
@@ -3187,177 +3408,6 @@ fn infer_expr_in(
     use ast::ExprKind;
 
     let span = expr.span;
-
-    fn infer_local_letrec_bindings(
-        cx: &mut InferCtx,
-        data_env: &DataEnv,
-        base_env: &TypeEnv,
-        bindings: Vec<ast::Binding>,
-        ctx_prefix: &str,
-    ) -> Result<(Subst, TypeEnv)> {
-        // Constraints produced while typechecking local bindings are captured in their
-        // generalized schemes. They should not leak to the surrounding expression.
-        let mut s = Subst::new();
-        let mut env_global = base_env.clone();
-
-        let n = bindings.len();
-        if n == 0 {
-            return Ok((s, env_global));
-        }
-
-        let mut ctx_names: Vec<String> = Vec::with_capacity(n);
-        let mut defined_names: Vec<HashSet<String>> = Vec::with_capacity(n);
-        for b in &bindings {
-            let ctx_name = match &b.pat.kind {
-                ast::PatternKind::Var(name) => name.clone(),
-                _ => "<pattern>".to_string(),
-            };
-            ctx_names.push(ctx_name);
-            let mut names = HashSet::new();
-            pat_defined_names(&b.pat, &mut names);
-            defined_names.push(names);
-        }
-
-        let mut name_to_binding: HashMap<String, usize> = HashMap::new();
-        for (i, names) in defined_names.iter().enumerate() {
-            for name in names {
-                name_to_binding.insert(name.clone(), i);
-            }
-        }
-
-        let mut graph: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for i in 0..n {
-            let mut deps = HashSet::new();
-            let empty: HashSet<String> = HashSet::new();
-            collect_deps_in_expr(&bindings[i].expr, &name_to_binding, &empty, &mut deps);
-            graph[i] = deps.into_iter().collect();
-        }
-
-        let comps = tarjan_scc(&graph);
-        let mut node_to_comp = vec![0usize; n];
-        for (ci, comp) in comps.iter().enumerate() {
-            for &v in comp {
-                node_to_comp[v] = ci;
-            }
-        }
-
-        // Component graph: dependency -> dependent.
-        let comp_n = comps.len();
-        let mut comp_edges: Vec<HashSet<usize>> = vec![HashSet::new(); comp_n];
-        let mut indeg = vec![0usize; comp_n];
-        for u in 0..n {
-            let cu = node_to_comp[u];
-            for &v in &graph[u] {
-                let cv = node_to_comp[v];
-                if cu == cv {
-                    continue;
-                }
-                if comp_edges[cv].insert(cu) {
-                    indeg[cu] += 1;
-                }
-            }
-        }
-
-        let mut queue: std::collections::VecDeque<usize> = indeg
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &d)| if d == 0 { Some(i) } else { None })
-            .collect();
-        let mut comp_order = Vec::with_capacity(comp_n);
-        while let Some(c) = queue.pop_front() {
-            comp_order.push(c);
-            for &to in comp_edges[c].iter() {
-                indeg[to] -= 1;
-                if indeg[to] == 0 {
-                    queue.push_back(to);
-                }
-            }
-        }
-        if comp_order.len() != comp_n {
-            return Err(Error::msg("internal error: cyclic component graph"));
-        }
-
-        type BindingInfer = (Vec<(String, Ty)>, Vec<Constraint>);
-
-        for ci in comp_order {
-            let comp = &comps[ci];
-
-            // Placeholders for all names in this SCC (monomorphic during inference).
-            let mut placeholders: HashMap<String, Ty> = HashMap::new();
-            let mut env_scc = env_global.clone();
-            for &bi in comp {
-                for name in &defined_names[bi] {
-                    let tv = cx.fresh();
-                    placeholders.insert(name.clone(), tv.clone());
-                    env_scc.insert(name.clone(), Scheme::mono(tv));
-                }
-            }
-
-            let mut per_bind: Vec<BindingInfer> = Vec::new();
-            for &bi in comp {
-                let b = bindings[bi].clone();
-                let ctx_name = &ctx_names[bi];
-
-                let mut binds = Vec::new();
-                let mut seen = HashSet::new();
-                let mut cs_pat = Vec::new();
-                let pat_ty = infer_pat_in(
-                    cx,
-                    data_env,
-                    &mut s,
-                    &env_scc,
-                    &b.pat,
-                    &mut binds,
-                    &mut seen,
-                    &mut cs_pat,
-                )
-                .map_err(|e| e.with_context(format!("in {ctx_prefix} binding {ctx_name}")))?;
-
-                let env_in = apply_env(&s, &env_scc);
-                let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cx, data_env, &env_in, b.expr)
-                    .map_err(|e| e.with_context(format!("in {ctx_prefix} binding {ctx_name}")))?;
-                s = compose(&s_rhs, &s);
-
-                let s_pat = unify(apply(&s, t_rhs), apply(&s, pat_ty))
-                    .map_err(|e| e.with_context(format!("in {ctx_prefix} binding {ctx_name}")))?;
-                s = compose(&s_pat, &s);
-
-                // Connect binder types to their placeholders so recursive references unify.
-                for (name, t) in &binds {
-                    if let Some(ph) = placeholders.get(name).cloned() {
-                        let su = unify(apply(&s, t.clone()), apply(&s, ph)).map_err(|e| {
-                            e.with_context(format!("in {ctx_prefix} binding {ctx_name}"))
-                        })?;
-                        s = compose(&su, &s);
-                    }
-                }
-
-                let mut cs = cs_rhs;
-                cs.extend(cs_pat);
-                per_bind.push((binds, cs));
-            }
-
-            let env_gen_base = apply_env(&s, &env_global);
-            let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
-            for (binds, cs) in per_bind {
-                for (name, t) in binds {
-                    let cs = simplify_constraints(
-                        data_env,
-                        &ClassEnv::default(),
-                        apply_constraints(&s, cs.clone()),
-                    )?;
-                    let scheme = generalize_qual(&env_gen_base, cs, apply(&s, t));
-                    new_schemes.push((name, scheme));
-                }
-            }
-
-            for (name, scheme) in new_schemes {
-                env_global.insert(name, scheme);
-            }
-        }
-
-        Ok((s, env_global))
-    }
 
     match expr.kind {
         ExprKind::Unit => Ok((Subst::new(), vec![], Ty::Con("Unit".to_string()))),
