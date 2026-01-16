@@ -1215,150 +1215,138 @@ fn parse_binding_or_fun_clause(ts: &mut TokenStream, stop: Stop) -> Result<Parse
     // Operator forms supported:
     // - `(++) a b = ...`
     // - `a ++ b = ...`
-    // Disambiguation: reject pattern-bind continuations like `x:xs = ...` and `xs@_ = ...`.
+    // Disambiguation: reject pattern-bind continuations like `x:xs = ...`.
 
-    // NOTE: The full binding / fun-clause implementation is large.
-    // During the previous split attempt, it was partially overwritten.
-    // Restore it by delegating to the original implementation from HEAD.
-    parse_binding_or_fun_clause_full(ts, stop)
+    if let Some(parsed) = try_parse_funclause_paren_op(ts, stop)? {
+        return Ok(parsed);
+    }
+    if let Some(parsed) = try_parse_funclause_infix_op(ts, stop)? {
+        return Ok(parsed);
+    }
+    if let Some(parsed) = try_parse_funclause_prefix_ident(ts, stop)? {
+        return Ok(parsed);
+    }
+    Ok(ParsedBind::Binding(parse_binding_simple(ts, stop)?))
 }
 
-fn parse_binding_or_fun_clause_full(ts: &mut TokenStream, stop: Stop) -> Result<ParsedBind> {
-    // Reconstruct the original behavior based on the remaining helpers.
-    // 1) Handle operator-name in parentheses: `(++) a b = ...`
-    // 2) Handle normal lhs: `f a b = ...` or guarded `f a | g = ...`
-    // 3) Handle infix operator clauses: `a ++ b = ...`
-    // 4) Otherwise fall back to pattern binding: `pat = expr`
-
-    // (++) style
-    if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
-        let save = (ts.i, ts.last_span_end);
-        if let Ok(name) = parse_paren_operator_name(ts) {
-            if is_ctor_symbol(&name) {
-                return Err(ts.err_here("operators starting with ':' are constructors"));
-            }
-            let mut args = Vec::new();
-            while can_start_pattern_atom(ts.peek_kind()) {
-                args.push(pattern::parse_pattern_atom(ts)?);
-            }
-            if !args.is_empty() {
-                if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
-                    // single guard form
-                    ts.bump();
-                    let guard = parse_expr(ts, Stop::LineEnd)?;
-                    ts.expect(TokenKind::Eq)?;
-                    let body = parse_expr(ts, stop)?;
-                    return Ok(ParsedBind::FunClause(FunClause {
-                        name,
-                        args,
-                        guard: Some(guard),
-                        body,
-                    }));
-                }
-                if matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
-                    ts.bump();
-                    let body = parse_expr(ts, stop)?;
-                    return Ok(ParsedBind::FunClause(FunClause {
-                        name,
-                        args,
-                        guard: None,
-                        body,
-                    }));
-                }
-            }
-        }
-        (ts.i, ts.last_span_end) = save;
+fn try_parse_funclause_paren_op(ts: &mut TokenStream, stop: Stop) -> Result<Option<ParsedBind>> {
+    if !matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+        return Ok(None);
     }
 
-    // Infix operator clause `a ++ b = ...`
-    {
-        let save = (ts.i, ts.last_span_end);
-        if let Ok(lhs_pat) = pattern::parse_pattern_atom(ts) {
-            if is_sym_op_token(ts.peek_kind()) || matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
-                let op = parse_operator_name(ts)?;
-                if is_ctor_symbol(&op) {
-                    // `x:xs = ...` is a pattern binding, not an infix fun clause.
-                    // Defer to `parse_binding_simple` by rewinding.
-                    (ts.i, ts.last_span_end) = save;
-                } else if !is_upper_by_last_segment(&op) {
-                    let rhs_pat = pattern::parse_pattern_atom(ts)?;
-                    if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
-                        ts.bump();
-                        let guard = parse_expr(ts, Stop::LineEnd)?;
-                        ts.expect(TokenKind::Eq)?;
-                        let body = parse_expr(ts, stop)?;
-                        return Ok(ParsedBind::FunClause(FunClause {
-                            name: op,
-                            args: vec![lhs_pat, rhs_pat],
-                            guard: Some(guard),
-                            body,
-                        }));
-                    }
-                    ts.expect(TokenKind::Eq)?;
-                    let body = parse_expr(ts, stop)?;
-                    return Ok(ParsedBind::FunClause(FunClause {
-                        name: op,
-                        args: vec![lhs_pat, rhs_pat],
-                        guard: None,
-                        body,
-                    }));
-                }
-            }
+    let save = (ts.i, ts.last_span_end);
+    let name = match parse_paren_operator_name(ts) {
+        Ok(name) => name,
+        Err(_) => {
+            (ts.i, ts.last_span_end) = save;
+            return Ok(None);
         }
-        (ts.i, ts.last_span_end) = save;
+    };
+    if is_ctor_symbol(&name) {
+        return Err(ts.err_here("operators starting with ':' are constructors"));
     }
 
-    // Normal fun clause: `f a b = ...`
-    {
-        let save = (ts.i, ts.last_span_end);
-        if let Ok(name) = ts.expect_ident() {
-            // Reject ctor-ish operator names at value level (e.g. `(:+) x = ...`).
-            // Colon-leading operators are reserved for constructors.
-            if is_ctor_symbol(&name) {
-                return Err(ts.err_here("operators starting with ':' are constructors"));
-            }
-
-            // Disambiguation: `x:xs = ...` is a pattern binding, not a fun clause.
-            // `expect_ident()` already consumed `x`, so if a colon follows immediately
-            // we must rewind and let `parse_binding_simple` parse the full cons pattern.
-            if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
-                (ts.i, ts.last_span_end) = save;
-                return Ok(ParsedBind::Binding(parse_binding_simple(ts, stop)?));
-            }
-
-            let mut args = Vec::new();
-            while can_start_pattern_atom(ts.peek_kind()) {
-                args.push(pattern::parse_pattern_atom(ts)?);
-            }
-            if !args.is_empty() {
-                if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
-                    ts.bump();
-                    let guard = parse_expr(ts, Stop::LineEnd)?;
-                    ts.expect(TokenKind::Eq)?;
-                    let body = parse_expr(ts, stop)?;
-                    return Ok(ParsedBind::FunClause(FunClause {
-                        name,
-                        args,
-                        guard: Some(guard),
-                        body,
-                    }));
-                }
-                if matches!(ts.peek_kind(), Some(TokenKind::Eq)) {
-                    ts.bump();
-                    let body = parse_expr(ts, stop)?;
-                    return Ok(ParsedBind::FunClause(FunClause {
-                        name,
-                        args,
-                        guard: None,
-                        body,
-                    }));
-                }
-            }
-        }
+    let mut args = Vec::new();
+    while can_start_pattern_atom(ts.peek_kind()) {
+        args.push(pattern::parse_pattern_atom(ts)?);
+    }
+    if args.is_empty() {
         (ts.i, ts.last_span_end) = save;
+        return Ok(None);
     }
 
-    Ok(ParsedBind::Binding(parse_binding_simple(ts, stop)?))
+    let (guard, body) = parse_guard_and_body(ts, stop)?;
+    Ok(Some(ParsedBind::FunClause(FunClause {
+        name,
+        args,
+        guard,
+        body,
+    })))
+}
+
+fn try_parse_funclause_infix_op(ts: &mut TokenStream, stop: Stop) -> Result<Option<ParsedBind>> {
+    let save = (ts.i, ts.last_span_end);
+    let lhs_pat = match pattern::parse_pattern_atom(ts) {
+        Ok(p) => p,
+        Err(_) => {
+            (ts.i, ts.last_span_end) = save;
+            return Ok(None);
+        }
+    };
+    if !(is_sym_op_token(ts.peek_kind()) || matches!(ts.peek_kind(), Some(TokenKind::Backtick))) {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+
+    let op = parse_operator_name(ts)?;
+    if is_ctor_symbol(&op) {
+        // `x:xs = ...` is a pattern binding, not an infix fun clause.
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+    if is_upper_by_last_segment(&op) {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+
+    let rhs_pat = pattern::parse_pattern_atom(ts)?;
+    let (guard, body) = parse_guard_and_body(ts, stop)?;
+    Ok(Some(ParsedBind::FunClause(FunClause {
+        name: op,
+        args: vec![lhs_pat, rhs_pat],
+        guard,
+        body,
+    })))
+}
+
+fn try_parse_funclause_prefix_ident(ts: &mut TokenStream, stop: Stop) -> Result<Option<ParsedBind>> {
+    let save = (ts.i, ts.last_span_end);
+    let name = match ts.expect_ident() {
+        Ok(n) => n,
+        Err(_) => {
+            (ts.i, ts.last_span_end) = save;
+            return Ok(None);
+        }
+    };
+    if is_ctor_symbol(&name) {
+        return Err(ts.err_here("operators starting with ':' are constructors"));
+    }
+
+    // If a colon follows immediately, this is a pattern binding (`x:xs = ...`).
+    if matches!(ts.peek_kind(), Some(TokenKind::Colon)) {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+
+    let mut args = Vec::new();
+    while can_start_pattern_atom(ts.peek_kind()) {
+        args.push(pattern::parse_pattern_atom(ts)?);
+    }
+    if args.is_empty() {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+
+    let (guard, body) = parse_guard_and_body(ts, stop)?;
+    Ok(Some(ParsedBind::FunClause(FunClause {
+        name,
+        args,
+        guard,
+        body,
+    })))
+}
+
+fn parse_guard_and_body(ts: &mut TokenStream, stop: Stop) -> Result<(Option<ast::Expr>, ast::Expr)> {
+    if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+        ts.bump();
+        let guard = parse_expr(ts, Stop::LineEnd)?;
+        ts.expect(TokenKind::Eq)?;
+        let body = parse_expr(ts, stop)?;
+        return Ok((Some(guard), body));
+    }
+    ts.expect(TokenKind::Eq)?;
+    let body = parse_expr(ts, stop)?;
+    Ok((None, body))
 }
 
 fn can_start_pattern_atom(kind: Option<&TokenKind>) -> bool {
