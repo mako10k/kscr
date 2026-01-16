@@ -1873,132 +1873,113 @@ fn parse_binops(ts: &mut TokenStream, stop: Stop, min_prec: u8) -> Result<ast::E
 
     while ts.can_continue_expr(stop.to_token_stream()) {
         let save = (ts.i, ts.last_span_end);
-        let is_cons = matches!(ts.peek_kind(), Some(TokenKind::Colon));
-
-        let (op, fixity) = match ts.peek_kind() {
-            Some(TokenKind::Backtick) => {
-                ts.expect(TokenKind::Backtick)?;
-                let op = ts.expect_ident()?;
-                ts.expect(TokenKind::Backtick)?;
-                (op.clone(), ts.fixity(&op))
-            }
-            Some(TokenKind::Operator(op)) => {
-                let op = op.clone();
-                ts.bump();
-                (op.clone(), ts.fixity(&op))
-            }
-            Some(TokenKind::Star) => {
-                ts.bump();
-                ("*".to_string(), ts.fixity("*"))
-            }
-            Some(TokenKind::Slash) => {
-                ts.bump();
-                ("/".to_string(), ts.fixity("/"))
-            }
-            Some(TokenKind::Plus) => {
-                ts.bump();
-                ("+".to_string(), ts.fixity("+"))
-            }
-            Some(TokenKind::Minus) => {
-                ts.bump();
-                ("-".to_string(), ts.fixity("-"))
-            }
-            Some(TokenKind::PlusPlus) => {
-                ts.bump();
-                ("++".to_string(), ts.fixity("++"))
-            }
-            Some(TokenKind::Colon) => {
-                ts.bump();
-                (
-                    ":".to_string(),
-                    Fixity {
-                        prec: 55,
-                        assoc: Assoc::Right,
-                    },
-                )
-            }
-            Some(TokenKind::EqEq) => {
-                ts.bump();
-                ("==".to_string(), ts.fixity("=="))
-            }
-            Some(TokenKind::SlashEq) => {
-                ts.bump();
-                ("/=".to_string(), ts.fixity("/="))
-            }
-            Some(TokenKind::Lt) => {
-                ts.bump();
-                ("<".to_string(), ts.fixity("<"))
-            }
-            Some(TokenKind::Le) => {
-                ts.bump();
-                ("<=".to_string(), ts.fixity("<="))
-            }
-            Some(TokenKind::Gt) => {
-                ts.bump();
-                (">".to_string(), ts.fixity(">"))
-            }
-            Some(TokenKind::Ge) => {
-                ts.bump();
-                (">=".to_string(), ts.fixity(">="))
-            }
-            Some(TokenKind::GtGt) => {
-                ts.bump();
-                (">>".to_string(), ts.fixity(">>"))
-            }
-            Some(TokenKind::GtGtEq) => {
-                ts.bump();
-                (">>=".to_string(), ts.fixity(">>="))
-            }
-            Some(TokenKind::AndAnd) => {
-                ts.bump();
-                ("&&".to_string(), ts.fixity("&&"))
-            }
-            Some(TokenKind::OrOr) => {
-                ts.bump();
-                ("||".to_string(), ts.fixity("||"))
-            }
-            _ => break,
+        let Some(opinfo) = try_parse_binop(ts)? else {
+            break;
         };
 
-        if fixity.prec < min_prec {
+        if opinfo.fixity.prec < min_prec {
             (ts.i, ts.last_span_end) = save;
             break;
         }
 
-        let rhs_min_prec = if is_cons {
-            fixity.prec
-        } else {
-            match fixity.assoc {
-                Assoc::Right => fixity.prec,
-                _ => fixity.prec + 1,
-            }
-        };
-
+        let rhs_min_prec = rhs_min_prec(opinfo.is_cons, opinfo.fixity);
         let rhs = parse_binops(ts, stop, rhs_min_prec)?;
-        let start = lhs.span.start;
-        lhs = if is_cons {
-            expr_from(
-                ts,
-                start,
-                ast::ExprKind::Cons {
-                    head: Box::new(lhs),
-                    tail: Box::new(rhs),
-                },
-            )
-        } else {
-            let func_kind = op_expr_kind(op);
-            expr_from(
-                ts,
-                start,
-                ast::ExprKind::Apply {
-                    func: Box::new(ast::Expr::dummy(func_kind)),
-                    args: vec![lhs, rhs],
-                },
-            )
-        };
+        lhs = build_binop_expr(ts, lhs, rhs, opinfo);
     }
 
     Ok(lhs)
+}
+
+#[derive(Clone)]
+struct BinOpInfo {
+    op: String,
+    fixity: Fixity,
+    is_cons: bool,
+}
+
+fn try_parse_binop(ts: &mut TokenStream) -> Result<Option<BinOpInfo>> {
+    let is_cons = matches!(ts.peek_kind(), Some(TokenKind::Colon));
+
+    let (op, fixity) = match ts.peek_kind() {
+        Some(TokenKind::Backtick) => {
+            ts.expect(TokenKind::Backtick)?;
+            let op = ts.expect_ident()?;
+            ts.expect(TokenKind::Backtick)?;
+            (op.clone(), ts.fixity(&op))
+        }
+        Some(TokenKind::Operator(op)) => {
+            let op = op.clone();
+            ts.bump();
+            (op.clone(), ts.fixity(&op))
+        }
+        Some(TokenKind::Star) => bump_fixed_op(ts, "*"),
+        Some(TokenKind::Slash) => bump_fixed_op(ts, "/"),
+        Some(TokenKind::Plus) => bump_fixed_op(ts, "+"),
+        Some(TokenKind::Minus) => bump_fixed_op(ts, "-"),
+        Some(TokenKind::PlusPlus) => bump_fixed_op(ts, "++"),
+        Some(TokenKind::Colon) => {
+            ts.bump();
+            (
+                ":".to_string(),
+                Fixity {
+                    prec: 55,
+                    assoc: Assoc::Right,
+                },
+            )
+        }
+        Some(TokenKind::EqEq) => bump_fixed_op(ts, "=="),
+        Some(TokenKind::SlashEq) => bump_fixed_op(ts, "/="),
+        Some(TokenKind::Lt) => bump_fixed_op(ts, "<"),
+        Some(TokenKind::Le) => bump_fixed_op(ts, "<="),
+        Some(TokenKind::Gt) => bump_fixed_op(ts, ">"),
+        Some(TokenKind::Ge) => bump_fixed_op(ts, ">="),
+        Some(TokenKind::GtGt) => bump_fixed_op(ts, ">>"),
+        Some(TokenKind::GtGtEq) => bump_fixed_op(ts, ">>="),
+        Some(TokenKind::AndAnd) => bump_fixed_op(ts, "&&"),
+        Some(TokenKind::OrOr) => bump_fixed_op(ts, "||"),
+        _ => return Ok(None),
+    };
+
+    Ok(Some(BinOpInfo { op, fixity, is_cons }))
+}
+
+fn bump_fixed_op(ts: &mut TokenStream, op: &str) -> (String, Fixity) {
+    ts.bump();
+    (op.to_string(), ts.fixity(op))
+}
+
+fn rhs_min_prec(is_cons: bool, fixity: Fixity) -> u8 {
+    if is_cons {
+        return fixity.prec;
+    }
+    match fixity.assoc {
+        Assoc::Right => fixity.prec,
+        _ => fixity.prec + 1,
+    }
+}
+
+fn build_binop_expr(ts: &TokenStream, lhs: ast::Expr, rhs: ast::Expr, opinfo: BinOpInfo) -> ast::Expr {
+    let start = lhs.span.start;
+    if opinfo.is_cons {
+        return expr_from(
+            ts,
+            start,
+            ast::ExprKind::Cons {
+                head: Box::new(lhs),
+                tail: Box::new(rhs),
+            },
+        );
+    }
+
+    let func_kind = op_expr_kind(opinfo.op);
+    expr_from(
+        ts,
+        start,
+        ast::ExprKind::Apply {
+            func: Box::new(ast::Expr::dummy(func_kind)),
+            args: vec![lhs, rhs],
+        },
+    )
 }
 
 fn parse_application(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
@@ -2108,108 +2089,116 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     //   (op)      => op
     //   (op x)    => \a -> a `op` x
     //   (x op)    => \a -> x `op` a
-    {
-        let save = (ts.i, ts.last_span_end);
-        if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind()) {
-            let op = if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
-                ts.expect(TokenKind::Backtick)?;
-                let op = ts.expect_ident()?;
-                ts.expect(TokenKind::Backtick)?;
-                op
-            } else {
-                parse_fixity_op(ts)?
-            };
 
-            if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
-                ts.bump();
-                if op == ":" {
-                    let a = ts.fresh_name("__cons_a");
-                    let b = ts.fresh_name("__cons_b");
-                    let body = ast::Expr::dummy(ast::ExprKind::Cons {
-                        head: Box::new(ast::Expr::dummy(ast::ExprKind::Var(a.clone()))),
-                        tail: Box::new(ast::Expr::dummy(ast::ExprKind::Var(b.clone()))),
-                    });
-                    return Ok(expr_from(
-                        ts,
-                        start,
-                        ast::ExprKind::Lambda {
-                            params: vec![a, b],
-                            body: Box::new(body),
-                        },
-                    ));
-                }
-                return Ok(expr_from(ts, start, op_expr_kind(op)));
-            }
-
-            let rhs = parse_expr(ts, Stop::LineEnd)?;
-            ts.expect(TokenKind::RParen)?;
-            let param = ts.fresh_name("__section");
-            let body = if op == ":" {
-                ast::Expr::dummy(ast::ExprKind::Cons {
-                    head: Box::new(ast::Expr::dummy(ast::ExprKind::Var(param.clone()))),
-                    tail: Box::new(rhs),
-                })
-            } else {
-                ast::Expr::dummy(ast::ExprKind::Apply {
-                    func: Box::new(ast::Expr::dummy(op_expr_kind(op))),
-                    args: vec![ast::Expr::dummy(ast::ExprKind::Var(param.clone())), rhs],
-                })
-            };
-            return Ok(expr_from(
-                ts,
-                start,
-                ast::ExprKind::Lambda {
-                    params: vec![param],
-                    body: Box::new(body),
-                },
-            ));
-        }
-        (ts.i, ts.last_span_end) = save;
+    if let Some(expr) = try_parse_paren_section_prefix(ts, start)? {
+        return Ok(expr);
+    }
+    if let Some(expr) = try_parse_paren_section_suffix(ts, start)? {
+        return Ok(expr);
     }
 
-    {
-        let save = (ts.i, ts.last_span_end);
-        if let Ok(lhs) = parse_application(ts, Stop::LineEnd) {
-            if matches!(ts.peek_kind(), Some(TokenKind::Backtick))
-                || is_sym_op_token(ts.peek_kind())
-            {
-                let op = if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
-                    ts.expect(TokenKind::Backtick)?;
-                    let op = ts.expect_ident()?;
-                    ts.expect(TokenKind::Backtick)?;
-                    op
-                } else {
-                    parse_fixity_op(ts)?
-                };
+    parse_paren_tuple_or_group(ts, start)
+}
 
-                if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
-                    ts.bump();
-                    let param = ts.fresh_name("__section");
-                    let body = if op == ":" {
-                        ast::Expr::dummy(ast::ExprKind::Cons {
-                            head: Box::new(lhs),
-                            tail: Box::new(ast::Expr::dummy(ast::ExprKind::Var(param.clone()))),
-                        })
-                    } else {
-                        ast::Expr::dummy(ast::ExprKind::Apply {
-                            func: Box::new(ast::Expr::dummy(op_expr_kind(op))),
-                            args: vec![lhs, ast::Expr::dummy(ast::ExprKind::Var(param.clone()))],
-                        })
-                    };
-                    return Ok(expr_from(
-                        ts,
-                        start,
-                        ast::ExprKind::Lambda {
-                            params: vec![param],
-                            body: Box::new(body),
-                        },
-                    ));
-                }
-            }
-        }
-        (ts.i, ts.last_span_end) = save;
+fn parse_backtick_or_sym_op(ts: &mut TokenStream) -> Result<String> {
+    if matches!(ts.peek_kind(), Some(TokenKind::Backtick)) {
+        ts.expect(TokenKind::Backtick)?;
+        let op = ts.expect_ident()?;
+        ts.expect(TokenKind::Backtick)?;
+        return Ok(op);
+    }
+    parse_fixity_op(ts)
+}
+
+fn try_parse_paren_section_prefix(ts: &mut TokenStream, start: usize) -> Result<Option<ast::Expr>> {
+    let save = (ts.i, ts.last_span_end);
+    if !(matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind())) {
+        return Ok(None);
     }
 
+    let op = match parse_backtick_or_sym_op(ts) {
+        Ok(op) => op,
+        Err(_) => {
+            (ts.i, ts.last_span_end) = save;
+            return Ok(None);
+        }
+    };
+    if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+        ts.bump();
+        if op == ":" {
+            return Ok(Some(make_cons_lambda_2(ts, start)));
+        }
+        return Ok(Some(expr_from(ts, start, op_expr_kind(op))));
+    }
+
+    let rhs = parse_expr(ts, Stop::LineEnd)?;
+    ts.expect(TokenKind::RParen)?;
+    let param = ts.fresh_name("__section");
+    let body = if op == ":" {
+        ast::Expr::dummy(ast::ExprKind::Cons {
+            head: Box::new(ast::Expr::dummy(ast::ExprKind::Var(param.clone()))),
+            tail: Box::new(rhs),
+        })
+    } else {
+        ast::Expr::dummy(ast::ExprKind::Apply {
+            func: Box::new(ast::Expr::dummy(op_expr_kind(op))),
+            args: vec![ast::Expr::dummy(ast::ExprKind::Var(param.clone())), rhs],
+        })
+    };
+    Ok(Some(expr_from(
+        ts,
+        start,
+        ast::ExprKind::Lambda {
+            params: vec![param],
+            body: Box::new(body),
+        },
+    )))
+}
+
+fn try_parse_paren_section_suffix(ts: &mut TokenStream, start: usize) -> Result<Option<ast::Expr>> {
+    let save = (ts.i, ts.last_span_end);
+    let lhs = match parse_application(ts, Stop::LineEnd) {
+        Ok(lhs) => lhs,
+        Err(_) => {
+            (ts.i, ts.last_span_end) = save;
+            return Ok(None);
+        }
+    };
+
+    if !(matches!(ts.peek_kind(), Some(TokenKind::Backtick)) || is_sym_op_token(ts.peek_kind())) {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+    let op = parse_backtick_or_sym_op(ts)?;
+    if !matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+
+    ts.bump();
+    let param = ts.fresh_name("__section");
+    let body = if op == ":" {
+        ast::Expr::dummy(ast::ExprKind::Cons {
+            head: Box::new(lhs),
+            tail: Box::new(ast::Expr::dummy(ast::ExprKind::Var(param.clone()))),
+        })
+    } else {
+        ast::Expr::dummy(ast::ExprKind::Apply {
+            func: Box::new(ast::Expr::dummy(op_expr_kind(op))),
+            args: vec![lhs, ast::Expr::dummy(ast::ExprKind::Var(param.clone()))],
+        })
+    };
+    Ok(Some(expr_from(
+        ts,
+        start,
+        ast::ExprKind::Lambda {
+            params: vec![param],
+            body: Box::new(body),
+        },
+    )))
+}
+
+fn parse_paren_tuple_or_group(ts: &mut TokenStream, start: usize) -> Result<ast::Expr> {
     let first = parse_expr(ts, Stop::LineEnd)?;
     if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
         let mut elems = vec![first];
@@ -2226,6 +2215,23 @@ fn parse_paren_or_tuple_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     }
 }
 
+fn make_cons_lambda_2(ts: &mut TokenStream, start: usize) -> ast::Expr {
+    let a = ts.fresh_name("__cons_a");
+    let b = ts.fresh_name("__cons_b");
+    let body = ast::Expr::dummy(ast::ExprKind::Cons {
+        head: Box::new(ast::Expr::dummy(ast::ExprKind::Var(a.clone()))),
+        tail: Box::new(ast::Expr::dummy(ast::ExprKind::Var(b.clone()))),
+    });
+    expr_from(
+        ts,
+        start,
+        ast::ExprKind::Lambda {
+            params: vec![a, b],
+            body: Box::new(body),
+        },
+    )
+}
+
 fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
     let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::LBracket)?;
@@ -2237,191 +2243,222 @@ fn parse_list_expr(ts: &mut TokenStream) -> Result<ast::Expr> {
 
     let first = parse_expr(ts, Stop::Pattern)?;
 
-    // List ranges (Enum-based desugar)
-    // - [a..b]      => enumFromTo a b
-    // - [a..]       => enumFrom a
-    // - [a,b..c]    => enumFromThenTo a b c
-    // - [a,b..]     => enumFromThen a b
-    if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
-        ts.bump();
-
-        if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
-            ts.bump();
-            let kind = ast::ExprKind::Apply {
-                func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("enumFrom".to_string()))),
-                args: vec![first],
-            };
-            return Ok(expr_from(ts, start, kind));
-        }
-
-        let end = parse_expr(ts, Stop::Pattern)?;
-        ts.expect(TokenKind::RBracket)?;
-
-        let kind = ast::ExprKind::Apply {
-            func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
-                "enumFromTo".to_string(),
-            ))),
-            args: vec![first, end],
-        };
-        return Ok(expr_from(ts, start, kind));
+    if let Some(expr) = try_parse_list_range(ts, start, first.clone())? {
+        return Ok(expr);
+    }
+    if let Some(expr) = try_parse_list_step_range(ts, start, first.clone())? {
+        return Ok(expr);
+    }
+    if let Some(expr) = try_parse_list_comprehension(ts, start, first.clone())? {
+        return Ok(expr);
     }
 
-    // Step ranges start with a comma.
-    if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
-        let save = (ts.i, ts.last_span_end);
+    parse_list_literal_tail(ts, start, first)
+}
+
+fn apply_var(name: &str, args: Vec<ast::Expr>) -> ast::ExprKind {
+    ast::ExprKind::Apply {
+        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(name.to_string()))),
+        args,
+    }
+}
+
+enum ListCompGen {
+    Bind(ast::Pattern, ast::Expr),
+    Guard(ast::Expr),
+}
+
+fn try_parse_list_range(
+    ts: &mut TokenStream,
+    start: usize,
+    first: ast::Expr,
+) -> Result<Option<ast::Expr>> {
+    // [a..b] => enumFromTo a b
+    // [a..]  => enumFrom a
+    if !matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
+        return Ok(None);
+    }
+    ts.bump();
+
+    if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
         ts.bump();
-        let second = parse_expr(ts, Stop::Pattern)?;
-        if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
-            ts.bump();
+        return Ok(Some(expr_from(ts, start, apply_var("enumFrom", vec![first]))));
+    }
 
-            if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
-                ts.bump();
-                let kind = ast::ExprKind::Apply {
-                    func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
-                        "enumFromThen".to_string(),
-                    ))),
-                    args: vec![first, second],
-                };
-                return Ok(expr_from(ts, start, kind));
-            }
+    let end = parse_expr(ts, Stop::Pattern)?;
+    ts.expect(TokenKind::RBracket)?;
+    Ok(Some(expr_from(
+        ts,
+        start,
+        apply_var("enumFromTo", vec![first, end]),
+    )))
+}
 
-            let end = parse_expr(ts, Stop::Pattern)?;
-            ts.expect(TokenKind::RBracket)?;
-            let kind = ast::ExprKind::Apply {
-                func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
-                    "enumFromThenTo".to_string(),
-                ))),
-                args: vec![first, second, end],
-            };
-            return Ok(expr_from(ts, start, kind));
+fn try_parse_list_step_range(
+    ts: &mut TokenStream,
+    start: usize,
+    first: ast::Expr,
+) -> Result<Option<ast::Expr>> {
+    // [a,b..c] => enumFromThenTo a b c
+    // [a,b..]  => enumFromThen a b
+    if !matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+        return Ok(None);
+    }
+
+    let save = (ts.i, ts.last_span_end);
+    ts.bump();
+    let second = match parse_expr(ts, Stop::Pattern) {
+        Ok(e) => e,
+        Err(e) => {
+            (ts.i, ts.last_span_end) = save;
+            return Err(e);
         }
-
-        // Not a step range; rewind and parse as a normal list literal.
+    };
+    if !matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
         (ts.i, ts.last_span_end) = save;
+        return Ok(None);
+    }
+    ts.bump();
+
+    if matches!(ts.peek_kind(), Some(TokenKind::RBracket)) {
+        ts.bump();
+        return Ok(Some(expr_from(
+            ts,
+            start,
+            apply_var("enumFromThen", vec![first, second]),
+        )));
     }
 
-    // List comprehension: [ expr | generator_list ]
-    if matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
-        ts.bump();
+    let end = parse_expr(ts, Stop::Pattern)?;
+    ts.expect(TokenKind::RBracket)?;
+    Ok(Some(expr_from(
+        ts,
+        start,
+        apply_var("enumFromThenTo", vec![first, second, end]),
+    )))
+}
 
-        enum Gen {
-            Bind(ast::Pattern, ast::Expr),
-            Guard(ast::Expr),
-        }
+fn try_parse_list_comprehension(
+    ts: &mut TokenStream,
+    start: usize,
+    first: ast::Expr,
+) -> Result<Option<ast::Expr>> {
+    // [expr | generator_list]
+    if !matches!(ts.peek_kind(), Some(TokenKind::Pipe)) {
+        return Ok(None);
+    }
+    ts.bump();
 
-        let mut gens = Vec::new();
-        loop {
-            let save = (ts.i, ts.last_span_end);
-            if let Ok(pat) = pattern::parse_pattern(ts) {
-                if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
-                    ts.bump();
-                    let rhs = parse_expr(ts, Stop::Pattern)?;
-                    gens.push(Gen::Bind(pat, rhs));
-                } else {
-                    (ts.i, ts.last_span_end) = save;
-                    let e = parse_expr(ts, Stop::Pattern)?;
-                    gens.push(Gen::Guard(e));
-                }
+    let gens = parse_list_generators(ts)?;
+    ts.expect(TokenKind::RBracket)?;
+
+    let mut out = ast::Expr::dummy(ast::ExprKind::List(vec![first]));
+    for g in gens.into_iter().rev() {
+        out = ast::Expr::dummy(match g {
+            ListCompGen::Guard(cond) => ast::ExprKind::If {
+                cond: Box::new(cond),
+                then_branch: Box::new(out),
+                else_branch: Box::new(ast::Expr::dummy(ast::ExprKind::List(Vec::new()))),
+            },
+            ListCompGen::Bind(pat, xs) => build_list_comp_bind(ts, pat, xs, out),
+        });
+    }
+
+    let ast::Expr { kind, .. } = out;
+    Ok(Some(expr_from(ts, start, kind)))
+}
+
+fn parse_list_generators(ts: &mut TokenStream) -> Result<Vec<ListCompGen>> {
+    let mut gens = Vec::new();
+    loop {
+        let save = (ts.i, ts.last_span_end);
+        if let Ok(pat) = pattern::parse_pattern(ts) {
+            if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
+                ts.bump();
+                let rhs = parse_expr(ts, Stop::Pattern)?;
+                gens.push(ListCompGen::Bind(pat, rhs));
             } else {
                 (ts.i, ts.last_span_end) = save;
                 let e = parse_expr(ts, Stop::Pattern)?;
-                gens.push(Gen::Guard(e));
+                gens.push(ListCompGen::Guard(e));
             }
-
-            if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
-                ts.bump();
-                continue;
-            }
-            break;
+        } else {
+            (ts.i, ts.last_span_end) = save;
+            let e = parse_expr(ts, Stop::Pattern)?;
+            gens.push(ListCompGen::Guard(e));
         }
 
-        ts.expect(TokenKind::RBracket)?;
-
-        let mut out = ast::Expr::dummy(ast::ExprKind::List(vec![first]));
-        for g in gens.into_iter().rev() {
-            out = ast::Expr::dummy(match g {
-                Gen::Guard(cond) => ast::ExprKind::If {
-                    cond: Box::new(cond),
-                    then_branch: Box::new(out),
-                    else_branch: Box::new(ast::Expr::dummy(ast::ExprKind::List(Vec::new()))),
-                },
-                Gen::Bind(pat, xs) => match pat.kind {
-                    ast::PatternKind::Var(name) => ast::ExprKind::Apply {
-                        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
-                            "concatMap".to_string(),
-                        ))),
-                        args: vec![
-                            ast::Expr::dummy(ast::ExprKind::Lambda {
-                                params: vec![name],
-                                body: Box::new(out),
-                            }),
-                            xs,
-                        ],
-                    },
-                    ast::PatternKind::Wildcard => ast::ExprKind::Apply {
-                        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
-                            "concatMap".to_string(),
-                        ))),
-                        args: vec![
-                            ast::Expr::dummy(ast::ExprKind::Lambda {
-                                params: vec!["_".to_string()],
-                                body: Box::new(out),
-                            }),
-                            xs,
-                        ],
-                    },
-                    other_kind => {
-                        let other_pat = ast::Pattern {
-                            kind: other_kind,
-                            span: pat.span,
-                        };
-                        let tmp = ts.fresh_name("_lc");
-                        ast::ExprKind::Apply {
-                            func: Box::new(ast::Expr::dummy(ast::ExprKind::Var(
-                                "concatMap".to_string(),
-                            ))),
-                            args: vec![
-                                ast::Expr::dummy(ast::ExprKind::Lambda {
-                                    params: vec![tmp.clone()],
-                                    body: Box::new(ast::Expr::dummy(ast::ExprKind::Case {
-                                        expr: Box::new(ast::Expr::dummy(ast::ExprKind::Var(tmp))),
-                                        arms: vec![
-                                            ast::CaseArm {
-                                                pat: other_pat,
-                                                guard: None,
-                                                body: out,
-                                            },
-                                            ast::CaseArm {
-                                                pat: ast::Pattern::dummy(
-                                                    ast::PatternKind::Wildcard,
-                                                ),
-                                                guard: None,
-                                                body: ast::Expr::dummy(ast::ExprKind::List(
-                                                    Vec::new(),
-                                                )),
-                                            },
-                                        ],
-                                    })),
-                                }),
-                                xs,
-                            ],
-                        }
-                    }
-                },
-            });
+        if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            ts.bump();
+            continue;
         }
-
-        let ast::Expr { kind, .. } = out;
-        return Ok(expr_from(ts, start, kind));
+        break;
     }
+    Ok(gens)
+}
 
-    // List literal: [e1, e2, ...]
+fn build_list_comp_bind(ts: &mut TokenStream, pat: ast::Pattern, xs: ast::Expr, out: ast::Expr) -> ast::ExprKind {
+    match pat.kind {
+        ast::PatternKind::Var(name) => apply_var(
+            "concatMap",
+            vec![
+                ast::Expr::dummy(ast::ExprKind::Lambda {
+                    params: vec![name],
+                    body: Box::new(out),
+                }),
+                xs,
+            ],
+        ),
+        ast::PatternKind::Wildcard => apply_var(
+            "concatMap",
+            vec![
+                ast::Expr::dummy(ast::ExprKind::Lambda {
+                    params: vec!["_".to_string()],
+                    body: Box::new(out),
+                }),
+                xs,
+            ],
+        ),
+        other_kind => {
+            let other_pat = ast::Pattern {
+                kind: other_kind,
+                span: pat.span,
+            };
+            let tmp = ts.fresh_name("_lc");
+            apply_var(
+                "concatMap",
+                vec![
+                    ast::Expr::dummy(ast::ExprKind::Lambda {
+                        params: vec![tmp.clone()],
+                        body: Box::new(ast::Expr::dummy(ast::ExprKind::Case {
+                            expr: Box::new(ast::Expr::dummy(ast::ExprKind::Var(tmp))),
+                            arms: vec![
+                                ast::CaseArm {
+                                    pat: other_pat,
+                                    guard: None,
+                                    body: out,
+                                },
+                                ast::CaseArm {
+                                    pat: ast::Pattern::dummy(ast::PatternKind::Wildcard),
+                                    guard: None,
+                                    body: ast::Expr::dummy(ast::ExprKind::List(Vec::new())),
+                                },
+                            ],
+                        })),
+                    }),
+                    xs,
+                ],
+            )
+        }
+    }
+}
+
+fn parse_list_literal_tail(ts: &mut TokenStream, start: usize, first: ast::Expr) -> Result<ast::Expr> {
     let mut elems = vec![first];
     while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
         ts.bump();
         elems.push(parse_expr(ts, Stop::Pattern)?);
     }
-
     ts.expect(TokenKind::RBracket)?;
     Ok(expr_from(ts, start, ast::ExprKind::List(elems)))
 }
