@@ -6042,40 +6042,48 @@ fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
     }
 }
 
-fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<ast::Expr>) -> Option<ast::Expr> {
+fn rewrite_show_apply_builtin_show(span: ast::Span, args: &mut Vec<ast::Expr>) -> Option<ast::Expr> {
     use ast::ExprKind;
-    let ExprKind::Var(n) = &func.kind else {
+    if args.len() != 1 {
         return None;
-    };
+    }
 
-    match (n.as_str(), args.len()) {
-        ("show", 1) => {
-            let a0 = args.remove(0);
-            Some(ast::Expr::new(
-                span,
-                ExprKind::Apply {
-                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__show".to_string()))),
-                    args: vec![
-                        ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
-                        a0,
-                    ],
-                },
-            ))
-        }
-        ("toString", 1) => {
-            let a0 = args.remove(0);
-            Some(ast::Expr::new(
-                span,
-                ExprKind::Apply {
-                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__toString".to_string()))),
-                    args: vec![
-                        ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
-                        a0,
-                    ],
-                },
-            ))
-        }
-        ("==", 1) => {
+    let a0 = args.remove(0);
+    Some(ast::Expr::new(
+        span,
+        ExprKind::Apply {
+            func: Box::new(ast::Expr::new(span, ExprKind::Var("__show".to_string()))),
+            args: vec![
+                ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
+                a0,
+            ],
+        },
+    ))
+}
+
+fn rewrite_show_apply_builtin_to_string(span: ast::Span, args: &mut Vec<ast::Expr>) -> Option<ast::Expr> {
+    use ast::ExprKind;
+    if args.len() != 1 {
+        return None;
+    }
+
+    let a0 = args.remove(0);
+    Some(ast::Expr::new(
+        span,
+        ExprKind::Apply {
+            func: Box::new(ast::Expr::new(span, ExprKind::Var("__toString".to_string()))),
+            args: vec![
+                ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
+                a0,
+            ],
+        },
+    ))
+}
+
+fn rewrite_show_apply_builtin_eq(span: ast::Span, args: &mut Vec<ast::Expr>) -> Option<ast::Expr> {
+    use ast::ExprKind;
+    match args.len() {
+        1 => {
             let a0 = args.remove(0);
             Some(ast::Expr::new(
                 span,
@@ -6088,7 +6096,7 @@ fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<a
                 },
             ))
         }
-        ("==", 2) => {
+        2 => {
             let a = args.remove(0);
             let b = args.remove(0);
             Some(ast::Expr::new(
@@ -6103,7 +6111,14 @@ fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<a
                 },
             ))
         }
-        ("/=", 1) => {
+        _ => None,
+    }
+}
+
+fn rewrite_show_apply_builtin_neq(span: ast::Span, args: &mut Vec<ast::Expr>) -> Option<ast::Expr> {
+    use ast::ExprKind;
+    match args.len() {
+        1 => {
             // Section: `(/= a)` becomes `\b -> not (__eq __builtinEqDict a b)`.
             let a = args.remove(0);
             let bname = "__kscr_neq_rhs".to_string();
@@ -6131,7 +6146,7 @@ fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<a
                 },
             ))
         }
-        ("/=", 2) => {
+        2 => {
             let a = args.remove(0);
             let b = args.remove(0);
             Some(ast::Expr::new(
@@ -6156,6 +6171,21 @@ fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<a
     }
 }
 
+fn rewrite_show_apply_special(span: ast::Span, func: &ast::Expr, mut args: Vec<ast::Expr>) -> Option<ast::Expr> {
+    use ast::ExprKind;
+    let ExprKind::Var(n) = &func.kind else {
+        return None;
+    };
+
+    match n.as_str() {
+        "show" => rewrite_show_apply_builtin_show(span, &mut args),
+        "toString" => rewrite_show_apply_builtin_to_string(span, &mut args),
+        "==" => rewrite_show_apply_builtin_eq(span, &mut args),
+        "/=" => rewrite_show_apply_builtin_neq(span, &mut args),
+        _ => None,
+    }
+}
+
 fn rewrite_show_calls_in_apply(span: ast::Span, func: ast::Expr, args: Vec<ast::Expr>) -> ast::Expr {
     use ast::{Expr, ExprKind};
 
@@ -6175,109 +6205,173 @@ fn rewrite_show_calls_in_apply(span: ast::Span, func: ast::Expr, args: Vec<ast::
     )
 }
 
+fn rewrite_show_calls_in_lambda(span: ast::Span, params: Vec<String>, body: ast::Expr) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Lambda {
+            params,
+            body: Box::new(rewrite_show_calls_in_expr(body)),
+        },
+    )
+}
+
+fn rewrite_show_calls_in_if(
+    span: ast::Span,
+    cond: ast::Expr,
+    then_branch: ast::Expr,
+    else_branch: ast::Expr,
+) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::If {
+            cond: Box::new(rewrite_show_calls_in_expr(cond)),
+            then_branch: Box::new(rewrite_show_calls_in_expr(then_branch)),
+            else_branch: Box::new(rewrite_show_calls_in_expr(else_branch)),
+        },
+    )
+}
+
+fn rewrite_show_calls_in_let(span: ast::Span, bindings: Vec<ast::Binding>, body: ast::Expr) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Let {
+            bindings: bindings
+                .into_iter()
+                .map(rewrite_show_calls_in_binding)
+                .collect(),
+            body: Box::new(rewrite_show_calls_in_expr(body)),
+        },
+    )
+}
+
+fn rewrite_show_calls_in_where(
+    span: ast::Span,
+    expr: ast::Expr,
+    bindings: Vec<ast::Binding>,
+) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Where {
+            expr: Box::new(rewrite_show_calls_in_expr(expr)),
+            bindings: bindings
+                .into_iter()
+                .map(rewrite_show_calls_in_binding)
+                .collect(),
+        },
+    )
+}
+
+fn rewrite_show_calls_in_annot(span: ast::Span, expr: ast::Expr, ty: ast::QualType) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Annot {
+            expr: Box::new(rewrite_show_calls_in_expr(expr)),
+            ty,
+        },
+    )
+}
+
+fn rewrite_show_calls_in_do(span: ast::Span, stmts: Vec<ast::DoStmt>) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Do(
+            stmts
+                .into_iter()
+                .map(|s| match s {
+                    ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                        pat,
+                        expr: rewrite_show_calls_in_expr(expr),
+                    },
+                    ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_show_calls_in_expr(e)),
+                })
+                .collect(),
+        ),
+    )
+}
+
+fn rewrite_show_calls_in_case(span: ast::Span, expr: ast::Expr, arms: Vec<ast::CaseArm>) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Case {
+            expr: Box::new(rewrite_show_calls_in_expr(expr)),
+            arms: arms
+                .into_iter()
+                .map(|a| ast::CaseArm {
+                    pat: a.pat,
+                    guard: a.guard.map(rewrite_show_calls_in_expr),
+                    body: rewrite_show_calls_in_expr(a.body),
+                })
+                .collect(),
+        },
+    )
+}
+
+fn rewrite_show_calls_in_cons(span: ast::Span, head: ast::Expr, tail: ast::Expr) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Cons {
+            head: Box::new(rewrite_show_calls_in_expr(head)),
+            tail: Box::new(rewrite_show_calls_in_expr(tail)),
+        },
+    )
+}
+
+fn rewrite_show_calls_in_list(span: ast::Span, es: Vec<ast::Expr>) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::List(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
+    )
+}
+
+fn rewrite_show_calls_in_tuple(span: ast::Span, es: Vec<ast::Expr>) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Tuple(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
+    )
+}
+
+fn rewrite_show_calls_in_record(span: ast::Span, fs: Vec<(String, ast::Expr)>) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+    Expr::new(
+        span,
+        ExprKind::Record(
+            fs.into_iter()
+                .map(|(l, e)| (l, rewrite_show_calls_in_expr(e)))
+                .collect(),
+        ),
+    )
+}
+
 fn rewrite_show_calls_in_expr(expr: ast::Expr) -> ast::Expr {
     use ast::{Expr, ExprKind};
     let span = expr.span;
     match expr.kind {
-        ExprKind::Lambda { params, body } => Expr::new(
-            span,
-            ExprKind::Lambda {
-                params,
-                body: Box::new(rewrite_show_calls_in_expr(*body)),
-            },
-        ),
+        ExprKind::Lambda { params, body } => rewrite_show_calls_in_lambda(span, params, *body),
         ExprKind::Apply { func, args } => rewrite_show_calls_in_apply(span, *func, args),
         ExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => Expr::new(
-            span,
-            ExprKind::If {
-                cond: Box::new(rewrite_show_calls_in_expr(*cond)),
-                then_branch: Box::new(rewrite_show_calls_in_expr(*then_branch)),
-                else_branch: Box::new(rewrite_show_calls_in_expr(*else_branch)),
-            },
-        ),
-        ExprKind::Let { bindings, body } => Expr::new(
-            span,
-            ExprKind::Let {
-                bindings: bindings
-                    .into_iter()
-                    .map(rewrite_show_calls_in_binding)
-                    .collect(),
-                body: Box::new(rewrite_show_calls_in_expr(*body)),
-            },
-        ),
-        ExprKind::Where { expr, bindings } => Expr::new(
-            span,
-            ExprKind::Where {
-                expr: Box::new(rewrite_show_calls_in_expr(*expr)),
-                bindings: bindings
-                    .into_iter()
-                    .map(rewrite_show_calls_in_binding)
-                    .collect(),
-            },
-        ),
-        ExprKind::Annot { expr, ty } => Expr::new(
-            span,
-            ExprKind::Annot {
-                expr: Box::new(rewrite_show_calls_in_expr(*expr)),
-                ty,
-            },
-        ),
-        ExprKind::Do(stmts) => Expr::new(
-            span,
-            ExprKind::Do(
-                stmts
-                    .into_iter()
-                    .map(|s| match s {
-                        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
-                            pat,
-                            expr: rewrite_show_calls_in_expr(expr),
-                        },
-                        ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_show_calls_in_expr(e)),
-                    })
-                    .collect(),
-            ),
-        ),
-        ExprKind::Case { expr, arms } => Expr::new(
-            span,
-            ExprKind::Case {
-                expr: Box::new(rewrite_show_calls_in_expr(*expr)),
-                arms: arms
-                    .into_iter()
-                    .map(|a| ast::CaseArm {
-                        pat: a.pat,
-                        guard: a.guard.map(rewrite_show_calls_in_expr),
-                        body: rewrite_show_calls_in_expr(a.body),
-                    })
-                    .collect(),
-            },
-        ),
-        ExprKind::Cons { head, tail } => Expr::new(
-            span,
-            ExprKind::Cons {
-                head: Box::new(rewrite_show_calls_in_expr(*head)),
-                tail: Box::new(rewrite_show_calls_in_expr(*tail)),
-            },
-        ),
-        ExprKind::List(es) => Expr::new(
-            span,
-            ExprKind::List(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
-        ),
-        ExprKind::Tuple(es) => Expr::new(
-            span,
-            ExprKind::Tuple(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
-        ),
-        ExprKind::Record(fs) => Expr::new(
-            span,
-            ExprKind::Record(
-                fs.into_iter()
-                    .map(|(l, e)| (l, rewrite_show_calls_in_expr(e)))
-                    .collect(),
-            ),
-        ),
+        } => rewrite_show_calls_in_if(span, *cond, *then_branch, *else_branch),
+        ExprKind::Let { bindings, body } => rewrite_show_calls_in_let(span, bindings, *body),
+        ExprKind::Where { expr, bindings } => rewrite_show_calls_in_where(span, *expr, bindings),
+        ExprKind::Annot { expr, ty } => rewrite_show_calls_in_annot(span, *expr, ty),
+        ExprKind::Do(stmts) => rewrite_show_calls_in_do(span, stmts),
+        ExprKind::Case { expr, arms } => rewrite_show_calls_in_case(span, *expr, arms),
+        ExprKind::Cons { head, tail } => rewrite_show_calls_in_cons(span, *head, *tail),
+        ExprKind::List(es) => rewrite_show_calls_in_list(span, es),
+        ExprKind::Tuple(es) => rewrite_show_calls_in_tuple(span, es),
+        ExprKind::Record(fs) => rewrite_show_calls_in_record(span, fs),
         other => Expr::new(span, other),
     }
 }
