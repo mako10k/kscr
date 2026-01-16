@@ -2622,6 +2622,99 @@ fn check_case_exhaustive(
         }
     }
 
+    fn normalize_alts(alts: &mut Vec<String>) {
+        alts.sort();
+        alts.dedup();
+    }
+
+    fn check_primitive_exhaustive(scrut_ty: &Ty, alts: &[String]) -> Result<Option<Result<()>>> {
+        match scrut_ty {
+            Ty::Con(name) if name == "Bool" => {
+                let has_true = alts.iter().any(|a| a == "bool:true");
+                let has_false = alts.iter().any(|a| a == "bool:false");
+                return Ok(Some(if has_true && has_false {
+                    Ok(())
+                } else {
+                    Err(Error::msg(
+                        "non-exhaustive case: missing Bool branch (add `_ -> ...`)",
+                    ))
+                }));
+            }
+            Ty::Con(name) if name == "Unit" => {
+                return Ok(Some(if alts.iter().any(|a| a == "unit") {
+                    Ok(())
+                } else {
+                    Err(Error::msg("non-exhaustive case on Unit (add `_ -> ...`)"))
+                }));
+            }
+            Ty::List(_) => {
+                let has_nil = alts.iter().any(|a| a == "list:nil");
+                let has_cons = alts.iter().any(|a| a == "list:cons_all");
+                return Ok(Some(if has_nil && has_cons {
+                    Ok(())
+                } else {
+                    Err(Error::msg(
+                        "non-exhaustive case on List: missing `[]` or `(_:_)` (add `_ -> ...`)",
+                    ))
+                }));
+            }
+            Ty::Con(name) if matches!(name.as_str(), "Integer" | "Float64" | "Char") => {
+                return Ok(Some(Err(Error::msg(format!(
+                    "non-exhaustive case on {name} (add `_ -> ...`)"
+                )))));
+            }
+            Ty::Var(_) => return Ok(Some(Ok(()))),
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    fn adt_head_name(scrut_ty: &Ty) -> Option<String> {
+        match scrut_ty {
+            Ty::Con(n) => Some(n.clone()),
+            Ty::App { head, .. } => match head.as_ref() {
+                Ty::Con(n) => Some(n.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn check_adt_exhaustive(
+        data_env: &DataEnv,
+        scrut_ty: &Ty,
+        alts: &[String],
+    ) -> Result<Option<Result<()>>> {
+        let (Ty::App { .. } | Ty::Con(_)) = scrut_ty else {
+            return Ok(None);
+        };
+
+        let Some(ty_name) = adt_head_name(scrut_ty) else {
+            return Ok(Some(Ok(())));
+        };
+
+        let Some(d) = data_env.get(&ty_name) else {
+            return Ok(Some(Ok(())));
+        };
+
+        let mut missing: Vec<String> = Vec::new();
+        for c in &d.ctors {
+            let key = format!("ctor:{}", unqual_name(&c.name));
+            if !alts.iter().any(|a| a == &key) {
+                missing.push(c.name.clone());
+            }
+        }
+
+        Ok(Some(if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::msg(format!(
+                "non-exhaustive case on {ty_name}: missing constructors: {}",
+                missing.join(", ")
+            )))
+        }))
+    }
+
     // Guarded arms are conservatively treated as non-covering.
     if has_unguarded_catch_all(arms) {
         return Ok(());
@@ -2630,83 +2723,17 @@ fn check_case_exhaustive(
     let mut alts: Vec<String> = Vec::new();
     collect_unguarded_top_alts(arms, &mut alts);
 
-    // Normalize.
-    alts.sort();
-    alts.dedup();
+    normalize_alts(&mut alts);
 
-    match scrut_ty {
-        Ty::Con(name) if name == "Bool" => {
-            let has_true = alts.iter().any(|a| a == "bool:true");
-            let has_false = alts.iter().any(|a| a == "bool:false");
-            if has_true && has_false {
-                Ok(())
-            } else {
-                Err(Error::msg(
-                    "non-exhaustive case: missing Bool branch (add `_ -> ...`)",
-                ))
-            }
-        }
-        Ty::Con(name) if name == "Unit" => {
-            if alts.iter().any(|a| a == "unit") {
-                Ok(())
-            } else {
-                Err(Error::msg("non-exhaustive case on Unit (add `_ -> ...`)"))
-            }
-        }
-        Ty::List(_) => {
-            let has_nil = alts.iter().any(|a| a == "list:nil");
-            let has_cons = alts.iter().any(|a| a == "list:cons_all");
-            if has_nil && has_cons {
-                Ok(())
-            } else {
-                Err(Error::msg(
-                    "non-exhaustive case on List: missing `[]` or `(_:_)` (add `_ -> ...`)",
-                ))
-            }
-        }
-        Ty::Con(name) if matches!(name.as_str(), "Integer" | "Float64" | "Char") => Err(
-            Error::msg(format!("non-exhaustive case on {name} (add `_ -> ...`)")),
-        ),
-        // Best-effort check only: if we can't prove non-exhaustiveness, do not error.
-        Ty::Var(_) => Ok(()),
-        Ty::App { .. } | Ty::Con(_) => {
-            // Try ADT constructor coverage for (possibly applied) data types.
-            let ty_name = match scrut_ty {
-                Ty::Con(n) => Some(n.clone()),
-                Ty::App { head, .. } => match head.as_ref() {
-                    Ty::Con(n) => Some(n.clone()),
-                    _ => None,
-                },
-                _ => None,
-            };
-
-            let Some(ty_name) = ty_name else {
-                return Ok(());
-            };
-
-            let Some(d) = data_env.get(&ty_name) else {
-                return Ok(());
-            };
-
-            let mut missing: Vec<String> = Vec::new();
-            for c in &d.ctors {
-                let key = format!("ctor:{}", unqual_name(&c.name));
-                if !alts.iter().any(|a| a == &key) {
-                    missing.push(c.name.clone());
-                }
-            }
-
-            if missing.is_empty() {
-                Ok(())
-            } else {
-                Err(Error::msg(format!(
-                    "non-exhaustive case on {ty_name}: missing constructors: {}",
-                    missing.join(", ")
-                )))
-            }
-        }
-        _ => Ok(()),
+    if let Some(res) = check_primitive_exhaustive(scrut_ty, &alts)? {
+        return res;
     }
+
+    if let Some(res) = check_adt_exhaustive(data_env, scrut_ty, &alts)? {
+        return res;
+    }
+
+    Ok(())
 }
 
 fn data_derives_show(d: &ast::DataDecl) -> bool {
@@ -3118,36 +3145,41 @@ fn simplify_constraints(
         false
     }
 
-    let mut keep: Vec<bool> = vec![true; out.len()];
-    for (i, ci_constraint) in out.iter().enumerate() {
-        let Constraint::Class { class: ci, ty: ti } = ci_constraint else {
-            continue;
-        };
-
-        for (j, cj_constraint) in out.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            let Constraint::Class { class: cj, ty: tj } = cj_constraint else {
+    fn context_reduce_user_classes(class_env: &ClassEnv, cs: Vec<Constraint>) -> Vec<Constraint> {
+        let mut keep: Vec<bool> = vec![true; cs.len()];
+        for (i, ci_constraint) in cs.iter().enumerate() {
+            let Constraint::Class { class: ci, ty: ti } = ci_constraint else {
                 continue;
             };
 
-            if ti == tj && is_superclass_of(class_env, cj, ci) {
-                keep[i] = false;
-                break;
+            for (j, cj_constraint) in cs.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                let Constraint::Class { class: cj, ty: tj } = cj_constraint else {
+                    continue;
+                };
+
+                if ti == tj && is_superclass_of(class_env, cj, ci) {
+                    keep[i] = false;
+                    break;
+                }
             }
         }
+        cs.into_iter()
+            .enumerate()
+            .filter_map(|(i, c)| if keep[i] { Some(c) } else { None })
+            .collect()
     }
-    out = out
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, c)| if keep[i] { Some(c) } else { None })
-        .collect();
 
-    // Dedup for stability.
-    out.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-    out.dedup();
-    Ok(out)
+    fn sort_dedup_constraints(mut cs: Vec<Constraint>) -> Vec<Constraint> {
+        cs.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        cs.dedup();
+        cs
+    }
+
+    out = context_reduce_user_classes(class_env, out);
+    Ok(sort_dedup_constraints(out))
 }
 
 fn infer_expr_in(
