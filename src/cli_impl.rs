@@ -689,11 +689,7 @@ mod tests {
     fn cli_run_do_smoke() {
         let path =
             std::env::temp_dir().join(format!("kscr_cli_run_do_smoke_{}.ks", std::process::id()));
-        std::fs::write(
-            &path,
-            "module Main where\n  main = IO ()\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "module Main where\n  main = IO ()\n").unwrap();
         let args = vec![
             "kscr".to_string(),
             "run".to_string(),
