@@ -1695,6 +1695,11 @@ fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
 }
 
 fn add_io_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
+    add_io_basic_primitives(env);
+    add_io_exception_primitives(cx, env);
+}
+
+fn add_io_basic_primitives(env: &mut TypeEnv) {
     let char_list = Ty::List(Box::new(Ty::Con("Char".to_string())));
 
     // stdoutWrite :: [Char] -> IO Unit
@@ -1754,6 +1759,10 @@ fn add_io_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
             ),
         },
     );
+}
+
+fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
+    let char_list = Ty::List(Box::new(Ty::Con("Char".to_string())));
 
     // throw :: forall a. [Char] -> IO a
     let Ty::Var(a) = cx.fresh() else {
@@ -1805,7 +1814,7 @@ fn add_io_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     let either = Ty::App {
         head: Box::new(Ty::Con("Prelude.Either".to_string())),
-        args: vec![char_list.clone(), Ty::Var(a)],
+        args: vec![char_list, Ty::Var(a)],
     };
     env.insert(
         "try".to_string(),
@@ -1908,6 +1917,13 @@ fn collect_ctor_env_with_class_env(
     add_misc_builtins(cx, &mut env);
     add_ffi_primitives(&mut env);
 
+    add_data_ctors_into_env(cx, module, &mut env);
+    add_class_methods_into_env(cx, class_env, &mut env)?;
+
+    Ok(env)
+}
+
+fn add_data_ctors_into_env(cx: &mut InferCtx, module: &ast::Module, env: &mut TypeEnv) {
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
             continue;
@@ -1959,7 +1975,13 @@ fn collect_ctor_env_with_class_env(
             );
         }
     }
+}
 
+fn add_class_methods_into_env(
+    cx: &mut InferCtx,
+    class_env: &ClassEnv,
+    env: &mut TypeEnv,
+) -> Result<()> {
     // Add class methods as overloaded functions.
     for ((class, method), qt) in &class_env.methods {
         // If the module defines a value with the same name, let it win.
@@ -2035,7 +2057,7 @@ fn collect_ctor_env_with_class_env(
         );
     }
 
-    Ok(env)
+    Ok(())
 }
 
 fn lower_surface_type_with_params(
@@ -2160,7 +2182,39 @@ fn mangle_ident(s: &str) -> String {
 
 fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
     let mut env = ClassEnv::default();
+    let (class_method_names, class_default_methods) = collect_class_decls(module, &mut env)?;
+    reject_ambiguous_method_names(&mut env)?;
+    validate_superclass_preds(&env)?;
+    detect_superclass_cycles(&env)?;
 
+    let instance_decls = collect_instance_decls(module);
+    preregister_instance_dicts(&mut env, &instance_decls)?;
+    let extra_items = generate_instance_items(
+        &env,
+        &instance_decls,
+        &class_method_names,
+        &class_default_methods,
+    )?;
+
+    module.items = module
+        .items
+        .drain(..)
+        .filter(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
+        .chain(extra_items)
+        .collect();
+
+    Ok(env)
+}
+
+type ClassDeclInfo = (
+    HashMap<String, Vec<String>>,
+    HashMap<(String, String), ast::Expr>,
+);
+
+fn collect_class_decls(
+    module: &ast::Module,
+    env: &mut ClassEnv,
+) -> Result<ClassDeclInfo> {
     // class name -> method names (declaration order)
     let mut class_method_names: HashMap<String, Vec<String>> = HashMap::new();
     // (class, method) -> default implementation expression
@@ -2209,6 +2263,10 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         classes.dedup();
     }
 
+    Ok((class_method_names, class_default_methods))
+}
+
+fn reject_ambiguous_method_names(env: &mut ClassEnv) -> Result<()> {
     // MVP: avoid ambiguous unqualified method names.
     for (m, classes) in &env.method_classes {
         if classes.len() > 1 {
@@ -2218,7 +2276,10 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
             )));
         }
     }
+    Ok(())
+}
 
+fn validate_superclass_preds(env: &ClassEnv) -> Result<()> {
     // Validate superclass predicates (minimal, Haskell-aligned):
     // - super predicates must be of the form `P a` where `a` is the class parameter
     // - user-defined superclasses must refer to known classes
@@ -2254,7 +2315,10 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
             }
         }
     }
+    Ok(())
+}
 
+fn detect_superclass_cycles(env: &ClassEnv) -> Result<()> {
     // Detect cycles in the user-defined superclass graph.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Mark {
@@ -2299,24 +2363,27 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
     let mut marks: HashMap<String, Mark> = HashMap::new();
     for c in env.class_params.keys() {
         let mut stack: Vec<String> = Vec::new();
-        dfs_cycle(&env, c, &mut marks, &mut stack)?;
+        dfs_cycle(env, c, &mut marks, &mut stack)?;
     }
+    Ok(())
+}
 
-    // Desugar instances into bindings for dictionaries + method implementations.
-    // We do this in two phases so superclass dict references are independent of instance order.
-    let instance_decls: Vec<ast::InstanceDecl> = module
+fn collect_instance_decls(module: &ast::Module) -> Vec<ast::InstanceDecl> {
+    module
         .items
         .iter()
         .filter_map(|it| match it {
             ast::Item::InstanceDecl(inst) => Some(inst.clone()),
             _ => None,
         })
-        .collect();
+        .collect()
+}
 
+fn preregister_instance_dicts(env: &mut ClassEnv, instance_decls: &[ast::InstanceDecl]) -> Result<()> {
     // Phase 1: pre-register all instance dictionary names.
     // We also collect polymorphic instance metadata for later selection.
     let mut poly_to_register: Vec<PolyInstance> = Vec::new();
-    for inst in &instance_decls {
+    for inst in instance_decls {
         match instance_head_key_ast(&inst.ty) {
             Ok(ty_key) => {
                 let ty_mangled = mangle_ident(&ty_key);
@@ -2346,229 +2413,259 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         }
     }
     env.poly_instances.extend(poly_to_register);
+    Ok(())
+}
 
-    fn super_field_name(class: &str) -> String {
-        format!("__super_{}", mangle_ident(class))
+fn super_field_name(class: &str) -> String {
+    format!("__super_{}", mangle_ident(class))
+}
+
+fn dict_param_name(class: &str) -> String {
+    format!("__dict_{class}")
+}
+
+fn ctx_param_name(i: usize) -> String {
+    format!("__ctx_dict_{i}")
+}
+
+fn class_name_of_pred(p: &ast::Predicate) -> Option<&str> {
+    match p {
+        ast::Predicate::Class { class, .. } => Some(class.as_str()),
+        _ => None,
+    }
+}
+
+fn add_params_to_expr(span: ast::Span, expr: ast::Expr, params: &[String]) -> ast::Expr {
+    use ast::ExprKind;
+
+    if params.is_empty() {
+        return expr;
     }
 
-    fn dict_param_name(class: &str) -> String {
-        format!("__dict_{class}")
-    }
-
-    fn ctx_param_name(i: usize) -> String {
-        format!("__ctx_dict_{i}")
-    }
-
-    fn class_name_of_pred(p: &ast::Predicate) -> Option<&str> {
-        match p {
-            ast::Predicate::Class { class, .. } => Some(class.as_str()),
-            _ => None,
+    match expr.kind {
+        ExprKind::Lambda {
+            params: mut ps,
+            body,
+        } => {
+            let mut all: Vec<String> = params.to_vec();
+            all.append(&mut ps);
+            ast::Expr::new(span, ExprKind::Lambda { params: all, body })
         }
-    }
-
-    fn add_params_to_expr(span: ast::Span, expr: ast::Expr, params: &[String]) -> ast::Expr {
-        use ast::ExprKind;
-
-        if params.is_empty() {
-            return expr;
-        }
-
-        match expr.kind {
+        other => ast::Expr::new(
+            span,
             ExprKind::Lambda {
-                params: mut ps,
-                body,
-            } => {
-                let mut all: Vec<String> = params.to_vec();
-                all.append(&mut ps);
-                ast::Expr::new(span, ExprKind::Lambda { params: all, body })
-            }
-            other => ast::Expr::new(
-                span,
-                ExprKind::Lambda {
-                    params: params.to_vec(),
-                    body: Box::new(ast::Expr::new(span, other)),
-                },
-            ),
-        }
+                params: params.to_vec(),
+                body: Box::new(ast::Expr::new(span, other)),
+            },
+        ),
     }
+}
 
+fn generate_instance_items(
+    env: &ClassEnv,
+    instance_decls: &[ast::InstanceDecl],
+    class_method_names: &HashMap<String, Vec<String>>,
+    class_default_methods: &HashMap<(String, String), ast::Expr>,
+) -> Result<Vec<ast::Item>> {
     // Phase 2: generate impl bindings + dictionary records.
     let mut extra_items: Vec<ast::Item> = Vec::new();
-    for inst in &instance_decls {
-        let (ty_key_opt, ty_mangled, dict_name) = match instance_head_key_ast(&inst.ty) {
-            Ok(ty_key) => {
-                let ty_mangled = mangle_ident(&ty_key);
-                let dict_key = (inst.class.clone(), ty_key.clone());
-                let dict_name = env
-                    .instances
-                    .get(&dict_key)
-                    .cloned()
-                    .ok_or_else(|| Error::msg("internal: missing instance dict name"))?;
-                (Some(ty_key), ty_mangled, dict_name)
-            }
-            Err(_) => {
-                let mut cx = InferCtx::default();
-                let head_pat = lower_surface_type(&mut cx, &inst.ty, &mut HashMap::new());
-                let Some(pi) = env.poly_instances.iter().find(|pi| {
-                    pi.class == inst.class
-                        && pi.head_pat == head_pat
-                        && pi.ctx_len == inst.preds.len()
-                }) else {
-                    return Err(Error::msg("internal: missing poly instance"));
-                };
-                (None, "poly".to_string(), pi.dict_name.clone())
-            }
-        };
+    for inst in instance_decls {
+        append_instance_items(
+            env,
+            inst,
+            class_method_names,
+            class_default_methods,
+            &mut extra_items,
+        )?;
+    }
+    Ok(extra_items)
+}
 
-        let Some(method_names) = class_method_names.get(&inst.class) else {
-            return Err(Error::msg("unknown class in instance"));
-        };
+fn append_instance_items(
+    env: &ClassEnv,
+    inst: &ast::InstanceDecl,
+    class_method_names: &HashMap<String, Vec<String>>,
+    class_default_methods: &HashMap<(String, String), ast::Expr>,
+    extra_items: &mut Vec<ast::Item>,
+) -> Result<()> {
+    let (ty_key_opt, ty_mangled, dict_name) = resolve_instance_dict_name(env, inst)?;
 
-        let mut inst_methods: HashMap<String, ast::Expr> = HashMap::new();
-        for b in &inst.methods {
-            let ast::PatternKind::Var(mname) = &b.pat.kind else {
-                return Err(Error::msg(
-                    "MVP: instance methods must be simple variable bindings",
-                ));
-            };
-            if inst_methods.contains_key(mname) {
-                return Err(Error::msg("duplicate instance method"));
-            }
-            inst_methods.insert(mname.clone(), b.expr.clone());
-        }
+    let Some(method_names) = class_method_names.get(&inst.class) else {
+        return Err(Error::msg("unknown class in instance"));
+    };
 
-        // Direct user-defined superclasses (for dict fields + params).
-        let mut direct_supers: Vec<String> = Vec::new();
-        if let Some(supers) = env.class_supers.get(&inst.class) {
-            for p in supers {
-                if let ast::Predicate::Class { class: sup, .. } = p {
-                    direct_supers.push(sup.clone());
-                }
-            }
-        }
-        direct_supers.sort();
-        direct_supers.dedup();
+    let inst_methods = collect_instance_methods(inst)?;
+    let direct_supers = collect_direct_supers(env, inst);
+    let extra_param_names = build_extra_param_names(inst)?;
+    let super_dict_names = resolve_super_dict_names(env, inst, ty_key_opt.as_ref(), &direct_supers)?;
 
-        // Self dictionary param is always available inside method bodies.
-        // This is important for class default methods that call other methods (e.g. Monad.(>>)
-        // calling (>>=)).
-        //
-        // NOTE: we intentionally do NOT reference the dictionary binding name (e.g. `__dict_C_T`)
-        // from within its own record literal, to avoid introducing accidental recursion.
-        let self_param_name: String = dict_param_name(&inst.class);
-
-        // Extra params available inside instance method bodies:
-        // - the instance's own dictionary (self)
-        // - dictionaries for instance context predicates (`instance P => ...`)
-        let mut extra_param_names: Vec<String> = vec![self_param_name.clone()];
-
-        // Collect context dictionaries and map class name -> param var for easy lookup.
-        let mut ctx_dict_by_class: HashMap<String, String> = HashMap::new();
-        for (i, p) in inst.preds.iter().enumerate() {
-            let Some(cls) = class_name_of_pred(p) else {
-                return Err(Error::msg(
-                    "MVP: instance context supports only class predicates (C t)",
-                ));
-            };
-            // Reject duplicates to avoid ambiguity.
-            if ctx_dict_by_class.contains_key(cls) {
-                return Err(Error::msg(
-                    "MVP: duplicate class in instance context is not supported",
-                ));
-            }
-            let pname = ctx_param_name(i);
-            extra_param_names.push(pname.clone());
-            ctx_dict_by_class.insert(cls.to_string(), pname);
-        }
-
-        let mut super_dict_names: Vec<String> = Vec::new();
-        for sup in &direct_supers {
-            if let Some(pname) = ctx_dict_by_class.get(sup) {
-                super_dict_names.push(pname.clone());
-                continue;
-            }
-
-            let Some(ty_key) = ty_key_opt.clone() else {
-                return Err(Error::msg(
-                    "MVP: superclass resolution for non-ground instance heads is not supported yet",
-                ));
-            };
-            let sup_key = (sup.clone(), ty_key.clone());
-            let Some(sup_dict_name) = env.instances.get(&sup_key) else {
-                return Err(Error::msg(format!(
-                    "missing superclass instance required by `{}`: {} {}",
-                    inst.class, sup, ty_key
-                )));
-            };
-            super_dict_names.push(sup_dict_name.clone());
-        }
-
-        // Method impl bindings (instance overrides or class defaults).
-        let mut dict_fields: Vec<(String, ast::Expr)> = Vec::new();
-        for mname in method_names {
-            let expr = if let Some(e) = inst_methods.get(mname) {
-                e.clone()
-            } else if let Some(e) = class_default_methods.get(&(inst.class.clone(), mname.clone()))
-            {
-                e.clone()
-            } else {
-                return Err(Error::msg(format!(
-                    "missing method implementation for `{}` in instance {} {}",
-                    mname,
-                    inst.class,
-                    ty_key_opt.clone().unwrap_or_else(|| "<poly>".to_string())
-                )));
-            };
-
-            let impl_name = format!(
-                "__inst_{}_{}_{}",
+    // Method impl bindings (instance overrides or class defaults).
+    let mut dict_fields: Vec<(String, ast::Expr)> = Vec::new();
+    for mname in method_names {
+        let expr = if let Some(e) = inst_methods.get(mname) {
+            e.clone()
+        } else if let Some(e) = class_default_methods.get(&(inst.class.clone(), mname.clone())) {
+            e.clone()
+        } else {
+            return Err(Error::msg(format!(
+                "missing method implementation for `{}` in instance {} {}",
+                mname,
                 inst.class,
-                ty_mangled,
-                mangle_ident(mname)
-            );
+                ty_key_opt.clone().unwrap_or_else(|| "<poly>".to_string())
+            )));
+        };
 
-            let expr = add_params_to_expr(ast::dummy_span(), expr, &extra_param_names);
-            extra_items.push(ast::Item::Binding(ast::Binding {
-                pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
-                expr,
-            }));
+        let impl_name = format!(
+            "__inst_{}_{}_{}",
+            inst.class,
+            ty_mangled,
+            mangle_ident(mname)
+        );
 
-            // Store the method implementation itself.
-            // Call sites will pass the selected dictionary as the first argument.
-            dict_fields.push((
-                mname.clone(),
-                ast::Expr::new(ast::dummy_span(), ast::ExprKind::Var(impl_name)),
-            ));
-        }
-
-        // Superclass dictionary fields (Haskell-style dictionary embedding).
-        for (sup, sup_dict_name) in direct_supers.into_iter().zip(super_dict_names.into_iter()) {
-            dict_fields.push((
-                super_field_name(&sup),
-                ast::Expr::new(ast::dummy_span(), ast::ExprKind::Var(sup_dict_name)),
-            ));
-        }
-
-        // Dictionary binding.
-        // If the instance has a context (`instance P => ...`), we represent the dictionary as a
-        // function that takes those context dictionaries as parameters.
-        let ctx_params: Vec<String> = (0..inst.preds.len()).map(ctx_param_name).collect();
-        let dict_expr = ast::Expr::new(ast::dummy_span(), ast::ExprKind::Record(dict_fields));
-        let dict_expr = add_params_to_expr(ast::dummy_span(), dict_expr, &ctx_params);
+        let expr = add_params_to_expr(ast::dummy_span(), expr, &extra_param_names);
         extra_items.push(ast::Item::Binding(ast::Binding {
-            pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(dict_name)),
-            expr: dict_expr,
+            pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
+            expr,
         }));
+
+        dict_fields.push((
+            mname.clone(),
+            ast::Expr::new(ast::dummy_span(), ast::ExprKind::Var(impl_name)),
+        ));
     }
 
-    module.items = module
-        .items
-        .drain(..)
-        .filter(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
-        .chain(extra_items)
-        .collect();
+    for (sup, sup_dict_name) in direct_supers.into_iter().zip(super_dict_names.into_iter()) {
+        dict_fields.push((
+            super_field_name(&sup),
+            ast::Expr::new(ast::dummy_span(), ast::ExprKind::Var(sup_dict_name)),
+        ));
+    }
 
-    Ok(env)
+    let ctx_params: Vec<String> = (0..inst.preds.len()).map(ctx_param_name).collect();
+    let dict_expr = ast::Expr::new(ast::dummy_span(), ast::ExprKind::Record(dict_fields));
+    let dict_expr = add_params_to_expr(ast::dummy_span(), dict_expr, &ctx_params);
+    extra_items.push(ast::Item::Binding(ast::Binding {
+        pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(dict_name)),
+        expr: dict_expr,
+    }));
+
+    Ok(())
+}
+
+fn resolve_instance_dict_name(
+    env: &ClassEnv,
+    inst: &ast::InstanceDecl,
+) -> Result<(Option<String>, String, String)> {
+    match instance_head_key_ast(&inst.ty) {
+        Ok(ty_key) => {
+            let ty_mangled = mangle_ident(&ty_key);
+            let dict_key = (inst.class.clone(), ty_key.clone());
+            let dict_name = env
+                .instances
+                .get(&dict_key)
+                .cloned()
+                .ok_or_else(|| Error::msg("internal: missing instance dict name"))?;
+            Ok((Some(ty_key), ty_mangled, dict_name))
+        }
+        Err(_) => {
+            let mut cx = InferCtx::default();
+            let head_pat = lower_surface_type(&mut cx, &inst.ty, &mut HashMap::new());
+            let Some(pi) = env.poly_instances.iter().find(|pi| {
+                pi.class == inst.class && pi.head_pat == head_pat && pi.ctx_len == inst.preds.len()
+            }) else {
+                return Err(Error::msg("internal: missing poly instance"));
+            };
+            Ok((None, "poly".to_string(), pi.dict_name.clone()))
+        }
+    }
+}
+
+fn collect_instance_methods(inst: &ast::InstanceDecl) -> Result<HashMap<String, ast::Expr>> {
+    let mut inst_methods: HashMap<String, ast::Expr> = HashMap::new();
+    for b in &inst.methods {
+        let ast::PatternKind::Var(mname) = &b.pat.kind else {
+            return Err(Error::msg(
+                "MVP: instance methods must be simple variable bindings",
+            ));
+        };
+        if inst_methods.contains_key(mname) {
+            return Err(Error::msg("duplicate instance method"));
+        }
+        inst_methods.insert(mname.clone(), b.expr.clone());
+    }
+    Ok(inst_methods)
+}
+
+fn collect_direct_supers(env: &ClassEnv, inst: &ast::InstanceDecl) -> Vec<String> {
+    let mut direct_supers: Vec<String> = Vec::new();
+    if let Some(supers) = env.class_supers.get(&inst.class) {
+        for p in supers {
+            if let ast::Predicate::Class { class: sup, .. } = p {
+                direct_supers.push(sup.clone());
+            }
+        }
+    }
+    direct_supers.sort();
+    direct_supers.dedup();
+    direct_supers
+}
+
+fn build_extra_param_names(inst: &ast::InstanceDecl) -> Result<Vec<String>> {
+    let mut extra_param_names: Vec<String> = vec![dict_param_name(&inst.class)];
+    let mut ctx_dict_by_class: HashMap<String, String> = HashMap::new();
+    for (i, p) in inst.preds.iter().enumerate() {
+        let Some(cls) = class_name_of_pred(p) else {
+            return Err(Error::msg(
+                "MVP: instance context supports only class predicates (C t)",
+            ));
+        };
+        if ctx_dict_by_class.contains_key(cls) {
+            return Err(Error::msg(
+                "MVP: duplicate class in instance context is not supported",
+            ));
+        }
+        let pname = ctx_param_name(i);
+        extra_param_names.push(pname.clone());
+        ctx_dict_by_class.insert(cls.to_string(), pname);
+    }
+    Ok(extra_param_names)
+}
+
+fn resolve_super_dict_names(
+    env: &ClassEnv,
+    inst: &ast::InstanceDecl,
+    ty_key_opt: Option<&String>,
+    direct_supers: &[String],
+) -> Result<Vec<String>> {
+    let mut ctx_dict_by_class: HashMap<String, String> = HashMap::new();
+    for (i, p) in inst.preds.iter().enumerate() {
+        if let Some(cls) = class_name_of_pred(p) {
+            ctx_dict_by_class.insert(cls.to_string(), ctx_param_name(i));
+        }
+    }
+
+    let mut super_dict_names: Vec<String> = Vec::new();
+    for sup in direct_supers {
+        if let Some(pname) = ctx_dict_by_class.get(sup) {
+            super_dict_names.push(pname.clone());
+            continue;
+        }
+
+        let Some(ty_key) = ty_key_opt else {
+            return Err(Error::msg(
+                "MVP: superclass resolution for non-ground instance heads is not supported yet",
+            ));
+        };
+        let sup_key = (sup.clone(), ty_key.clone());
+        let Some(sup_dict_name) = env.instances.get(&sup_key) else {
+            return Err(Error::msg(format!(
+                "missing superclass instance required by `{}`: {} {}",
+                inst.class, sup, ty_key
+            )));
+        };
+        super_dict_names.push(sup_dict_name.clone());
+    }
+    Ok(super_dict_names)
 }
 
 fn collect_data_env(module: &ast::Module) -> DataEnv {
@@ -6410,10 +6507,6 @@ impl<'a> ApplyRewriteCtx<'a> {
         )
     }
 }
-
-fn super_field_name(class: &str) -> String {
-        format!("__super_{}", mangle_ident(class))
-    }
 
 fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Option<Vec<String>> {
         use std::collections::{HashMap, VecDeque};
