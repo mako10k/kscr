@@ -1065,7 +1065,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  data Maybe a = Nothing | Just a deriving Show\n  xs = [a | Just a <- [Just 1, Nothing, Just 3]]\n  main = do\n    print (show xs)\n",
+            "module Main where\n  import Prelude\n  data MMaybe a = MNothing | MJust a deriving Show\n  xs = [a | MJust a <- [MJust 1, MNothing, MJust 3]]\n  main = do\n    print (show xs)\n",
         )
         .unwrap();
 
@@ -1086,7 +1086,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  data Maybe a = Nothing | Just a deriving Show\n  id = \\x -> x\n  xs = [a | (Just a <- id) <- [Just 1, Nothing, Just 3]]\n  main = do\n    print (show xs)\n",
+            "module Main where\n  import Prelude\n  data MMaybe a = MNothing | MJust a deriving Show\n  ident = \\x -> x\n  xs = [a | (MJust a <- ident) <- [MJust 1, MNothing, MJust 3]]\n  main = do\n    print (show xs)\n",
         )
         .unwrap();
 
@@ -1428,7 +1428,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  data Maybe a = Nothing | Just a deriving Show\n  main = do\n    Just n <- IO (Just 1)\n    print (intToString n)\n",
+            "module Main where\n  import Prelude\n  data MMaybe a = MNothing | MJust a deriving Show\n  main = do\n    v <- IO (MJust 1)\n    case v of\n      MJust n -> print (intToString n)\n      MNothing -> putStrLn \"nope\"\n",
         )
         .unwrap();
         let args = vec![
@@ -1698,7 +1698,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            "module Main where\n  data Maybe a = Nothing | Just a deriving Show\n  id = \\x -> x\n  x = case Just 1 of\n    (Just n <- id) -> n\n    _ -> 0\n  main = do\n    print (intToString x)\n",
+            "module Main where\n  import Prelude\n  data MMaybe a = MNothing | MJust a deriving Show\n  ident = \\x -> x\n  x = case MJust 1 of\n    (MJust n <- ident) -> n\n    _ -> 0\n  main = do\n    print (intToString x)\n",
         )
         .unwrap();
         let args = vec![

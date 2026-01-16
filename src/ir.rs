@@ -1446,6 +1446,9 @@ fn mod_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 fn record_get(g: &Globals, dict: Value, label: Value) -> Result<Value> {
     let dict = force_value(g, dict)?;
     let Value::Record(fields) = dict else {
+        if std::env::var("KSCR_DEBUG_RECORDGET").ok().as_deref() == Some("1") {
+            eprintln!("[KSCR_DEBUG_RECORDGET] __recordGet got non-record: {dict:?}");
+        }
         return Err(Error::msg("__recordGet expects a record"));
     };
 

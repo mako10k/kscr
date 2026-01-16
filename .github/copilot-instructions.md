@@ -60,6 +60,62 @@ cargo geiger
 cargo +nightly udeps
 ```
 
+## Recommended LSP workflow (VS Code + `lsp-cli`)
+
+Use VS Code’s built-in language features for fast interactive navigation, and use `lsp-cli` when you need reproducible, shareable diagnostics.
+
+### When to use which
+
+- VS Code built-in (interactive): jump-to-definition, find-references, quick symbol hopping, browsing diagnostics with source locations.
+- `lsp-cli` (reproducible): capture diagnostics in logs, compare before/after changes, scriptable debugging, CI-like reproduction.
+
+### `lsp-cli` (portable)
+
+Prefer the portable invocation so contributors don’t need a global install:
+
+```bash
+npx -y @mako10k/lsp-cli --help
+```
+
+If `lsp-cli` is already available in `PATH`, `lsp-cli ...` is fine.
+
+### Rust codebase analysis (default: rust-analyzer)
+
+`lsp-cli` defaults to a rust-analyzer profile, so it can drive Rust navigation without extra flags.
+
+```bash
+# Workspace symbol search
+npx -y @mako10k/lsp-cli --root . --format pretty ws-symbols "typecheck"
+
+# Definition / references (0-based line/col)
+npx -y @mako10k/lsp-cli --root . --format pretty definition src/types.rs 2972 5
+npx -y @mako10k/lsp-cli --root . --format pretty references src/types.rs 2972 5
+```
+
+### kscr language analysis (kscr-lsp)
+
+For `.ks` diagnostics and language-specific queries, run `kscr-lsp` as the server command.
+
+```bash
+# Build the server
+cd crates/kscr_lsp
+cargo build --release
+
+# Trigger analysis (batch) and then pull diagnostics via daemon events
+npx -y @mako10k/lsp-cli \
+   --root /tmp \
+   --server-cmd "$PWD/target/release/kscr-lsp" \
+   --format json batch <<'JSONL'
+{"id":1,"cmd":"symbols","file":"/tmp/example.ks"}
+JSONL
+
+npx -y @mako10k/lsp-cli --root /tmp --format pretty events --kind diagnostics --since 0 --limit 200
+```
+
+Notes:
+- `events` reads the daemon’s buffered notifications (e.g. `publishDiagnostics`).
+- If results look stale, use `server-restart` and re-run the trigger request.
+
 ## Source code quality rules (review-driven)
 
 ### Cyclomatic complexity

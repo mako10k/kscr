@@ -36,6 +36,15 @@ pub(super) fn rewrite_class_dict_passing_in_module(
 
     let snapshot = module.clone();
 
+    // 0) Ensure ground instance dictionaries referenced by name actually exist as bindings.
+    // Some constraints are discharged at typecheck time (e.g. `Monad IO`, `Ring Integer`) and
+    // later rewrites may refer to their concrete dictionary names (e.g. `__dict_Monad_IO`).
+    // When typechecking a flattened module (imports resolved), those dictionaries may live in
+    // stdlib and not be present as values in the current module, so we inject forwarder
+    // bindings that point to the imported dictionary variables.
+    // NOTE: stdlib instance dictionaries (`__dict_*`) are now unqualified-forwarded in
+    // `typecheck_with_stdlib_class_env` for the `typecheck_file()` path.
+
     // 1) Add dictionary params to constrained top-level bindings.
     module.items = module
         .items
