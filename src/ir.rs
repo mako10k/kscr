@@ -36,12 +36,20 @@ fn collect_ctor_aliases(module: &ast::Module) -> std::collections::HashMap<Strin
         let ast::PatternKind::Var(name) = &b.pat.kind else {
             continue;
         };
-        match &b.expr.kind {
-            ast::ExprKind::Var(v) | ast::ExprKind::Ctor(v) if v.contains('.') => {
-                out.insert(name.clone(), v.clone());
+            match &b.expr.kind {
+                ast::ExprKind::Var(v) => {
+                    if v.contains('.') {
+                        out.insert(name.clone(), v.clone());
+                    }
+                }
+                ast::ExprKind::Ctor(v) => {
+                    let v = v.qualified_text();
+                    if v.contains('.') {
+                        out.insert(name.clone(), v.clone());
+                    }
+                }
+                _ => {}
             }
-            _ => {}
-        }
     }
     out
 }
@@ -307,13 +315,14 @@ fn lower_pat(
             Box::new(lower_expr(e, fresh, ctor_aliases)?),
         ),
         PatternKind::Constructor { name, args } => {
-            let name = if name.contains('.') {
-                name.clone()
+            let name_text = name.qualified_text();
+            let name = if name_text.contains('.') {
+                name_text
             } else {
                 ctor_aliases
-                    .get(name)
+                    .get(name.local_name())
                     .cloned()
-                    .unwrap_or_else(|| name.clone())
+                    .unwrap_or(name_text)
             };
             IrPattern::Constructor {
                 name,
@@ -341,7 +350,7 @@ fn lower_expr(
         ExprKind::String(s) => IrExpr::String(s.clone()),
         ExprKind::Char(c) => IrExpr::Char(*c),
         ExprKind::Var(v) => IrExpr::Var(v.clone()),
-        ExprKind::Ctor(v) => IrExpr::Var(v.clone()),
+          ExprKind::Ctor(v) => IrExpr::Var(v.qualified_text()),
         ExprKind::Lambda { params, body } => IrExpr::Lambda {
             params: params.clone(),
             body: Box::new(lower_expr(body, fresh, ctor_aliases)?),

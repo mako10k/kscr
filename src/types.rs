@@ -161,6 +161,16 @@ pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
     Ok(subst)
 }
 
+fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
+    unify(a.clone(), b.clone()).inspect_err(|_e| {
+        if std::env::var("KSCR_DEBUG_UNIFY").ok().as_deref() == Some("1") {
+            eprintln!("[KSCR_DEBUG_UNIFY] {ctx}");
+            eprintln!("  a: {a}");
+            eprintln!("  b: {b}");
+        }
+    })
+}
+
 fn last_ty_seg(name: &str) -> &str {
     name.rsplit('.').next().unwrap_or(name)
 }
@@ -1005,9 +1015,14 @@ fn infer_pat_constructor(
     seen: &mut HashSet<String>,
     cs_out: &mut Vec<Constraint>,
 ) -> Result<Ty> {
-    let scheme = env
-        .get(name)
-        .ok_or_else(|| Error::msg("unknown constructor"))?;
+    let scheme = env.get(name).ok_or_else(|| {
+        let hint = if name.contains('.') {
+            " (hint: check qualified imports / aliasing)"
+        } else {
+            ""
+        };
+        Error::msg(format!("unknown constructor: {name}{hint}"))
+    })?;
     let mut ctor_ty = instantiate(cx, scheme);
 
     for p in args {
@@ -1063,7 +1078,17 @@ fn infer_pat_in(
             infer_pat_view(cx, data_env, subst, env, p, e, binds, seen, cs_out)
         }
         PatternKind::Constructor { name, args } => {
-            infer_pat_constructor(cx, data_env, subst, env, name, args, binds, seen, cs_out)
+            infer_pat_constructor(
+                cx,
+                data_env,
+                subst,
+                env,
+                &name.qualified_text(),
+                args,
+                binds,
+                seen,
+                cs_out,
+            )
         }
     }
 }
@@ -2566,6 +2591,12 @@ fn append_instance_items(
         resolve_super_dict_names(env, inst, ty_key_opt.as_ref(), &direct_supers)?;
 
     // Method impl bindings (instance overrides or class defaults).
+    //
+    // IMPORTANT (Plan A / Haskell-like imports): after import-flattening we may have
+    // instance decls whose method bodies refer to constructors unqualified (e.g. `Nothing`).
+    // Under `import qualified Prelude as P`, those constructors are only available as
+    // `P.Nothing` / `P.Just`, so we must qualify ctor references inside the generated
+    // `__inst_*` bindings.
     let mut dict_fields: Vec<(String, ast::Expr)> = Vec::new();
     for mname in method_names {
         let expr = if let Some(e) = inst_methods.get(mname) {
@@ -2588,6 +2619,7 @@ fn append_instance_items(
             mangle_ident(mname)
         );
 
+        let expr = qualify_expr_ctors_for_instance_import(expr, &impl_name);
         let expr = add_params_to_expr(ast::dummy_span(), expr, &extra_param_names);
         extra_items.push(ast::Item::Binding(ast::Binding {
             pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
@@ -2616,6 +2648,115 @@ fn append_instance_items(
     }));
 
     Ok(())
+}
+
+fn qualify_expr_ctors_for_instance_import(expr: ast::Expr, impl_name: &str) -> ast::Expr {
+    // The generated impl binding name is stable and contains the import qualifier:
+    // `__inst_<Class>_<Qual>_<Ty>_<method>`.
+    // We only need <Qual> here.
+    let Some(rest) = impl_name.strip_prefix("__inst_") else {
+        return expr;
+    };
+    let parts: Vec<&str> = rest.split('_').collect();
+    if parts.len() < 4 {
+        return expr;
+    }
+    // parts[0]=Class, parts[1]=Qual, parts[2]=Ty, parts[3]=method...
+    let qual = parts[1];
+    if qual.is_empty() {
+        return expr;
+    }
+
+    fn go(mut e: ast::Expr, qual: &str) -> ast::Expr {
+        match &mut e.kind {
+            ast::ExprKind::Ctor(n) => {
+                if n.is_unresolved_eq("Nothing") {
+                    *n = ast::ResolvedName::unresolved(format!("{qual}.Nothing"));
+                }
+                if n.is_unresolved_eq("Just") {
+                    *n = ast::ResolvedName::unresolved(format!("{qual}.Just"));
+                }
+            }
+            ast::ExprKind::Lambda { body, .. } => {
+                **body = go((**body).clone(), qual);
+            }
+            ast::ExprKind::Apply { func, args } => {
+                **func = go((**func).clone(), qual);
+                for a in args {
+                    *a = go(a.clone(), qual);
+                }
+            }
+            ast::ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                **cond = go((**cond).clone(), qual);
+                **then_branch = go((**then_branch).clone(), qual);
+                **else_branch = go((**else_branch).clone(), qual);
+            }
+            ast::ExprKind::Let { bindings, body } => {
+                for b in bindings {
+                    b.expr = go(b.expr.clone(), qual);
+                }
+                **body = go((**body).clone(), qual);
+            }
+            ast::ExprKind::Where { expr, bindings } => {
+                for b in bindings {
+                    b.expr = go(b.expr.clone(), qual);
+                }
+                **expr = go((**expr).clone(), qual);
+            }
+            ast::ExprKind::Annot { expr, .. } => {
+                **expr = go((**expr).clone(), qual);
+            }
+            ast::ExprKind::Do(stmts) => {
+                for s in stmts {
+                    match s {
+                        ast::DoStmt::Bind { pat: _, expr } => {
+                            *expr = go(expr.clone(), qual);
+                        }
+                        ast::DoStmt::Expr(e) => {
+                            *e = go(e.clone(), qual);
+                        }
+                    }
+                }
+            }
+            ast::ExprKind::Case { expr, arms } => {
+                **expr = go((**expr).clone(), qual);
+                for a in arms {
+                    if let Some(g) = &mut a.guard {
+                        *g = go(g.clone(), qual);
+                    }
+                    a.body = go(a.body.clone(), qual);
+                }
+            }
+            ast::ExprKind::Cons { head, tail } => {
+                **head = go((**head).clone(), qual);
+                **tail = go((**tail).clone(), qual);
+            }
+            ast::ExprKind::List(es) | ast::ExprKind::Tuple(es) => {
+                for x in es {
+                    *x = go(x.clone(), qual);
+                }
+            }
+            ast::ExprKind::Record(fields) => {
+                for (_, v) in fields {
+                    *v = go(v.clone(), qual);
+                }
+            }
+            _ => {}
+        }
+        e
+    }
+
+    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+        eprintln!(
+            "[KSCR_DEBUG_IMPORTS] qualify_expr_ctors_for_instance_import: impl={impl_name} qual={qual}",
+        );
+    }
+
+    go(expr, qual)
 }
 
 fn resolve_instance_dict_name(
@@ -2845,7 +2986,7 @@ fn case_collect_top_alts(p: &ast::Pattern, out: &mut Vec<String>) {
             case_collect_top_alts(b, out);
         }
         PatternKind::Constructor { name, .. } => {
-            out.push(format!("ctor:{}", unqual_name_last_segment(name)))
+            out.push(format!("ctor:{}", unqual_name_last_segment(&name.qualified_text())))
         }
         PatternKind::Cons(_, _) if case_pat_is_list_cons_all(p) => {
             out.push("list:cons_all".to_string())
@@ -3724,9 +3865,17 @@ fn infer_expr_in(
         }
 
         ExprKind::Ctor(name) => {
+            let key = name.qualified_text();
             let s = env
-                .get(&name)
-                .ok_or_else(|| Error::msg_with_span("unknown constructor", span))?;
+                .get(&key)
+                .ok_or_else(|| {
+                    let hint = if key.contains('.') {
+                        " (hint: check qualified imports / aliasing)"
+                    } else {
+                        ""
+                    };
+                    Error::msg_with_span(format!("unknown constructor: {key}{hint}"), span)
+                })?;
             let (cs, ty) = instantiate_qual(cx, s);
             Ok((Subst::new(), cs, ty))
         }
@@ -3826,9 +3975,10 @@ fn infer_expr_apply(
         fun_ty = apply(&s, fun_ty);
         let res = cx.fresh();
 
-        let s_unify = unify(
+        let s_unify = unify_dbg(
             fun_ty,
             Ty::Func(Box::new(apply(&s, arg_ty)), Box::new(res.clone())),
+            "infer_expr_apply",
         )?;
         s = compose(&s_unify, &s);
         cs = apply_constraints(&s, cs);
@@ -3885,7 +4035,11 @@ fn infer_expr_annot(
     }
 
     let t_ann = lower_surface_type(cx, &ty.ty, &mut holes);
-    let s2 = unify(apply(&s1, t1), apply(&s1, t_ann.clone()))?;
+    let s2 = unify_dbg(
+        apply(&s1, t1),
+        apply(&s1, t_ann.clone()),
+        "infer_expr_annot",
+    )?;
     let s = compose(&s2, &s1);
     Ok((s.clone(), apply_constraints(&s, cs1), apply(&s, t_ann)))
 }
@@ -3900,7 +4054,11 @@ fn infer_expr_if(
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
     let (s_cond, cs_cond, t_cond) =
         infer_expr_in(cx, data_env, env, cond).map_err(|e| e.with_context("in if cond"))?;
-    let s_bool = unify(apply(&s_cond, t_cond), Ty::Con("Bool".to_string()))
+    let s_bool = unify_dbg(
+        apply(&s_cond, t_cond),
+        Ty::Con("Bool".to_string()),
+        "infer_expr_if:cond",
+    )
         .map_err(|e| e.with_context("in if cond"))?;
     let mut s = compose(&s_bool, &s_cond);
     let mut cs = apply_constraints(&s, cs_cond);
@@ -3919,7 +4077,11 @@ fn infer_expr_if(
     cs = apply_constraints(&s, cs);
     cs.extend(apply_constraints(&s, cs_else));
 
-    let s_res = unify(apply(&s, t_then.clone()), apply(&s, t_else))
+    let s_res = unify_dbg(
+        apply(&s, t_then.clone()),
+        apply(&s, t_else),
+        "infer_expr_if:branches",
+    )
         .map_err(|e| e.with_context("in if branches"))?;
     s = compose(&s_res, &s);
     cs = apply_constraints(&s, cs);
@@ -3961,11 +4123,19 @@ fn infer_expr_cons(
     cs.extend(apply_constraints(&s, cs_tl));
 
     let elem = cx.fresh();
-    let su_tl = unify(apply(&s, t_tl), Ty::List(Box::new(elem.clone())))?;
+    let su_tl = unify_dbg(
+        apply(&s, t_tl),
+        Ty::List(Box::new(elem.clone())),
+        "infer_expr_cons:tail",
+    )?;
     s = compose(&su_tl, &s);
     cs = apply_constraints(&s, cs);
 
-    let su_hd = unify(apply(&s, t_hd), apply(&s, elem.clone()))?;
+    let su_hd = unify_dbg(
+        apply(&s, t_hd),
+        apply(&s, elem.clone()),
+        "infer_expr_cons:head",
+    )?;
     s = compose(&su_hd, &s);
     cs = apply_constraints(&s, cs);
 
@@ -3992,7 +4162,11 @@ fn infer_expr_list(
         cs = apply_constraints(&s, cs);
         cs.extend(apply_constraints(&s, cs_e));
 
-        let su = unify(apply(&s, elem_ty.clone()), apply(&s, t_e))?;
+        let su = unify_dbg(
+            apply(&s, elem_ty.clone()),
+            apply(&s, t_e),
+            "infer_expr_list:elem",
+        )?;
         s = compose(&su, &s);
         cs = apply_constraints(&s, cs);
         elem_ty = apply(&s, elem_ty);
@@ -4034,8 +4208,12 @@ fn infer_expr_case(
         return Err(Error::msg_with_span("empty case", span));
     }
 
-    let (mut s, mut cs, scrut_ty) =
-        infer_expr_in(cx, data_env, env, expr).map_err(|e| e.with_context("in case scrutinee"))?;
+    let (mut s, mut cs, scrut_ty) = infer_expr_in(cx, data_env, env, expr).map_err(|e| {
+        if std::env::var("KSCR_DEBUG_CASE_UNIFY").ok().as_deref() == Some("1") {
+            eprintln!("[KSCR_DEBUG_CASE_UNIFY] scrutinee inference failed: {e}");
+        }
+        e.with_context("in case scrutinee")
+    })?;
     let mut out_ty = cx.fresh();
 
     let mut pats_for_exhaustive_check: Vec<(ast::Pattern, bool)> = Vec::new();
@@ -4061,8 +4239,21 @@ fn infer_expr_case(
         )
         .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
 
-        let su_pat = unify(apply(&s, pat_ty), apply(&s, scrut_ty.clone()))
-            .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
+        let pat_ty_applied = apply(&s, pat_ty);
+        let scrut_ty_applied = apply(&s, scrut_ty.clone());
+        let su_pat = unify_dbg(
+            pat_ty_applied.clone(),
+            scrut_ty_applied.clone(),
+            &format!("infer_expr_case:arm {arm_no}:pat_vs_scrut"),
+        )
+        .map_err(|e| {
+            if std::env::var("KSCR_DEBUG_CASE_UNIFY").ok().as_deref() == Some("1") {
+                eprintln!("[KSCR_DEBUG_CASE_UNIFY] arm {arm_no}");
+                eprintln!("  pat:   {pat_ty_applied}");
+                eprintln!("  scrut: {scrut_ty_applied}");
+            }
+            e.with_context(format!("in case arm {arm_no}"))
+        })?;
         s = compose(&su_pat, &s);
         cs = apply_constraints(&s, cs);
         cs.extend(apply_constraints(&s, cs_pat));
@@ -4079,7 +4270,11 @@ fn infer_expr_case(
             cs = apply_constraints(&s, cs);
             cs.extend(apply_constraints(&s, cs_g));
 
-            let su_g = unify(apply(&s, t_g), Ty::Con("Bool".to_string()))
+            let su_g = unify_dbg(
+                apply(&s, t_g),
+                Ty::Con("Bool".to_string()),
+                &format!("infer_expr_case:arm {arm_no}:guard_bool"),
+            )
                 .map_err(|e| e.with_context(format!("in case arm {arm_no} guard")))?;
             s = compose(&su_g, &s);
             cs = apply_constraints(&s, cs);
@@ -4092,7 +4287,11 @@ fn infer_expr_case(
         cs = apply_constraints(&s, cs);
         cs.extend(apply_constraints(&s, cs_arm));
 
-        let su_out = unify(apply(&s, out_ty.clone()), apply(&s, arm_ty))
+        let su_out = unify_dbg(
+            apply(&s, out_ty.clone()),
+            apply(&s, arm_ty),
+            &format!("infer_expr_case:arm {arm_no}:out"),
+        )
             .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
         s = compose(&su_out, &s);
         cs = apply_constraints(&s, cs);
@@ -4153,18 +4352,23 @@ fn infer_expr_do(
                 cs.extend(apply_constraints(&s, cs_e));
 
                 let io_r = cx.fresh();
-                let su = unify(
+                let su = unify_dbg(
                     apply(&s, t_e),
                     Ty::App {
                         head: Box::new(Ty::Con("IO".to_string())),
                         args: vec![io_r.clone()],
                     },
+                    &format!("infer_expr_do:stmt {stmt_no}:bind_io"),
                 )
                 .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
                 s = compose(&su, &s);
                 cs = apply_constraints(&s, cs);
 
-                let su_pat = unify(apply(&s, pat_ty), apply(&s, io_r.clone()))
+                let su_pat = unify_dbg(
+                    apply(&s, pat_ty),
+                    apply(&s, io_r.clone()),
+                    &format!("infer_expr_do:stmt {stmt_no}:bind_pat"),
+                )
                     .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
                 s = compose(&su_pat, &s);
                 cs = apply_constraints(&s, cs);
@@ -4193,12 +4397,13 @@ fn infer_expr_do(
                 cs.extend(apply_constraints(&s, cs_e));
 
                 let io_r = cx.fresh();
-                let su = unify(
+                let su = unify_dbg(
                     apply(&s, t_e),
                     Ty::App {
                         head: Box::new(Ty::Con("IO".to_string())),
                         args: vec![io_r.clone()],
                     },
+                    &format!("infer_expr_do:stmt {stmt_no}:expr_io"),
                 )
                 .map_err(|e| e.with_context(format!("in do stmt {stmt_no}")))?;
                 s = compose(&su, &s);
@@ -4725,6 +4930,13 @@ struct QualEnv {
 fn module_qual_env(module: &ast::Module) -> QualEnv {
     let mut env = QualEnv::default();
     let mut module_counts: HashMap<String, usize> = HashMap::new();
+    
+    // Always allow the module's own canonical qualifier, so internal references like
+    // `Prelude.Nothing` remain valid even after import lowering.
+    if let Some(name) = module.name.as_ref() {
+        env.allowed.insert(name.clone());
+        env.local_to_module.insert(name.clone(), name.clone());
+    }
 
     for it in &module.items {
         let ast::Item::Import(id) = it else {
@@ -4735,9 +4947,9 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
         env.local_to_module.insert(local, id.module.clone());
     }
 
-    // `import qualified M as Q` introduces both `Q.x` and (optionally) the canonical prefix
-    // `M.x` for convenience. This matches existing tests that use `import qualified Data.List as L`
-    // but still refer to members as `Data.List.map` in desugared stdlib imports.
+    // `import qualified M as Q` introduces the canonical prefix `M.x` as well.
+    // This is required since internal module code may use its own canonical qualifier
+    // after `collect_imports` qualifies exported names.
     for it in &module.items {
         let ast::Item::Import(id) = it else {
             continue;
@@ -4745,9 +4957,27 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
         if !id.qualified {
             continue;
         }
-        let canon = id.module.clone();
-        env.allowed.insert(canon.clone());
-        env.local_to_module.insert(canon, id.module.clone());
+        env.allowed.insert(id.module.clone());
+        env.local_to_module
+            .insert(id.module.clone(), id.module.clone());
+    }
+
+    // If a module was imported qualified with an alias (`import qualified M as Q`),
+    // the module's own internal references may still use `M.*`. Allow `M` as a
+    // qualifier even if it wasn't imported with that local name.
+    for it in &module.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        if !id.qualified {
+            continue;
+        }
+        if id.as_name.is_none() {
+            continue;
+        }
+        env.allowed.insert(id.module.clone());
+        env.local_to_module
+            .insert(id.module.clone(), id.module.clone());
     }
 
     for module_name in env.local_to_module.values() {
@@ -4783,7 +5013,9 @@ fn desugar_qualified_expr(expr: ast::Expr, env: &QualEnv) -> Result<ast::Expr> {
     let span = expr.span;
     let kind = match expr.kind {
         ExprKind::Var(n) => ExprKind::Var(desugar_qualified_ref(&n, env)?),
-        ExprKind::Ctor(n) => ExprKind::Ctor(desugar_qualified_ref(&n, env)?),
+        // Constructors must preserve qualification under `import qualified`.
+        // Desugaring `P.Nothing` into `Nothing` breaks Haskell-like semantics.
+        ExprKind::Ctor(n) => ExprKind::Ctor(n),
         ExprKind::Lambda { params, body } => ExprKind::Lambda {
             params,
             body: Box::new(desugar_qualified_expr(*body, env)?),
@@ -4950,7 +5182,7 @@ fn desugar_qualified_pattern(p: ast::Pattern, env: &QualEnv) -> Result<ast::Patt
             Box::new(desugar_qualified_expr(*e, env)?),
         ),
         PatternKind::Constructor { name, args } => PatternKind::Constructor {
-            name: desugar_qualified_ref(&name, env)?,
+            name: ast::ResolvedName::unresolved(desugar_qualified_ref(&name.qualified_text(), env)?),
             args: args
                 .into_iter()
                 .map(|p| desugar_qualified_pattern(p, env))
@@ -5205,8 +5437,11 @@ impl ModuleLoader {
             // - `import M as Q` is unqualified, but must still allow `Q.x` dotted refs.
             //   For that, we also emit qualified bindings under the alias.
             // - Plain `import M` uses the canonical qualifier only.
-            let quals: Vec<&str> = if id.qualified || id.as_name.is_some() {
+            let quals: Vec<&str> = if id.qualified {
                 vec![primary_qual]
+            } else if id.as_name.is_some() {
+                // `import M as Q` is unqualified (brings `x`), but must also allow dotted refs `Q.x`.
+                vec![canonical_qual, primary_qual]
             } else {
                 vec![canonical_qual]
             };
@@ -5249,12 +5484,17 @@ impl ModuleLoader {
             // Emit unqualified forwarders.
             //
             // IMPORTANT: `emitted_unqualified` must key by BOTH `(module file, qual)`.
-            // Otherwise, if the same module is imported multiple times under different aliases
-            // (directly or transitively), only the first alias would get unqualified forwarders.
-            // That can make unqualified references fail (e.g. Prelude functions like
-            // `enumFromTo`/`enumFromThenTo` used by list-range sugar) when the first import used
-            // a non-Prelude alias.
+            //
+            // Semantics:
+            // - `import M` brings M's exports into the unqualified namespace.
+            // - `import M as Q` should be qualified-only (no unqualified forwarders).
+            //   Desugaring/instance code must then refer to constructors via the qualified
+            //   alias (e.g. `Q.Just`), not via unqualified `Just`.
             if !id.qualified {
+                // Unqualified imports should forward values/types under the import's *primary*
+                // qualifier. When `import Model as M`, we want unqualified forwarding to use
+                // `M` so that type names remain stable (`M.Opt`) and don't unexpectedly show
+                // up as `Model.Opt` in the environment.
                 let key = ImportQualKey {
                     path: p.clone(),
                     qual: primary_qual.to_string(),
@@ -5594,7 +5834,7 @@ fn merge_rewrite_tuple_scrutinee_arms_to_cons(b_scrut: &ast::Expr, b_arms: &mut 
                 if ps.len() == 3 {
                     // Expect (_, Constructor(:), _) shape.
                     if let ast::PatternKind::Constructor { name: ctor, args } = &ps[1].kind {
-                        if ctor == ":" && args.is_empty() {
+                        if ctor.is_unresolved_eq(":") && args.is_empty() {
                             arm.pat = ast::Pattern::new(
                                 arm.pat.span,
                                 ast::PatternKind::Cons(
@@ -5912,7 +6152,7 @@ fn qualify_class_instance_decls(
         })
         .collect();
 
-    module
+    let out: Vec<ast::Item> = module
         .items
         .iter()
         .filter(|it| matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
@@ -5937,7 +6177,9 @@ fn qualify_class_instance_decls(
                 other => other,
             })
         })
-        .collect::<Result<Vec<_>>>()
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(out)
 }
 
 fn qualify_items(
@@ -6012,6 +6254,14 @@ fn qualify_items(
         })
         .collect();
 
+    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() && qual == "P" {
+        eprintln!(
+            "[KSCR_DEBUG_IMPORTS] qualify_items qual={qual} ctor_map contains Nothing={} Just={}",
+            ctor_map.contains_key("Nothing"),
+            ctor_map.contains_key("Just")
+        );
+    }
+
     import_items(module)
         .into_iter()
         .map(|it| qualify_item(it, &val_map, &type_map, &ctor_map))
@@ -6056,6 +6306,26 @@ fn qualify_item(
         | ast::Item::ClassDecl(_)
         | ast::Item::InstanceDecl(_)) => x,
     })
+}
+
+fn qualify_ctor_if_imported(
+    name: String,
+    ctor_map: &HashMap<String, String>,
+) -> String {
+    // If a constructor name is unqualified (no dot) but it is exported by the imported
+    // module, rewrite to the qualified ctor name. This is crucial for Haskell-like
+    // `import qualified`, where unqualified names are not brought into scope.
+    if !name.contains('.') {
+        if let Some(q) = ctor_map.get(&name) {
+            if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                eprintln!(
+                    "[KSCR_DEBUG_IMPORTS] qualify_ctor_if_imported: {name} -> {q}"
+                );
+            }
+            return q.clone();
+        }
+    }
+    name
 }
 
 fn qualify_expr_boxed(
@@ -6118,7 +6388,8 @@ fn qualify_expr(
     Ok(match expr.kind {
         ExprKind::Var(n) => Expr::new(span, ExprKind::Var(val_map.get(&n).cloned().unwrap_or(n))),
         ExprKind::Ctor(n) => {
-            Expr::new(span, ExprKind::Ctor(ctor_map.get(&n).cloned().unwrap_or(n)))
+            let new_n = qualify_ctor_if_imported(n.qualified_text(), ctor_map);
+            Expr::new(span, ExprKind::Ctor(ast::ResolvedName::unresolved(new_n)))
         }
         ExprKind::Lambda { params, body } => Expr::new(
             span,
@@ -6399,7 +6670,7 @@ fn qualify_pat_nonbinders(
         PatternKind::Constructor { name, args } => Pattern::new(
             span,
             PatternKind::Constructor {
-                name: ctor_map.get(&name).cloned().unwrap_or(name),
+                name: ast::ResolvedName::unresolved(qualify_ctor_if_imported(name.qualified_text(), ctor_map)),
                 args: args
                     .into_iter()
                     .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
@@ -7300,9 +7571,9 @@ fn rewrite_class_method_lambda(
 
 fn monad_syntactic_head(e: &ast::Expr) -> Option<String> {
     match &e.kind {
-        ast::ExprKind::Ctor(n) => Some(n.clone()),
+        ast::ExprKind::Ctor(n) => Some(n.qualified_text()),
         ast::ExprKind::Apply { func, .. } => match &func.kind {
-            ast::ExprKind::Ctor(n) => Some(n.clone()),
+            ast::ExprKind::Ctor(n) => Some(n.qualified_text()),
             _ => None,
         },
         _ => None,

@@ -1267,7 +1267,7 @@ fn is_ctor_symbol(op: &str) -> bool {
 
 fn op_expr_kind(op: String) -> ast::ExprKind {
     if is_ctor_symbol(&op) || is_upper_by_last_segment(&op) {
-        ast::ExprKind::Ctor(op)
+                ast::ExprKind::Ctor(ast::ResolvedName::Unresolved(op))
     } else {
         ast::ExprKind::Var(op)
     }
@@ -2159,7 +2159,11 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
         Some(TokenKind::Ident(_)) => {
             let s = parse_maybe_qualified_ident(ts)?;
             if is_upper_by_last_segment(&s) {
-                Ok(expr_from(ts, start, ast::ExprKind::Ctor(s)))
+                Ok(expr_from(
+                    ts,
+                    start,
+                    ast::ExprKind::Ctor(ast::ResolvedName::Unresolved(s)),
+                ))
             } else {
                 Ok(expr_from(ts, start, ast::ExprKind::Var(s)))
             }

@@ -4,6 +4,51 @@ pub struct Module {
     pub items: Vec<Item>,
 }
 
+/// Internal module identity.
+///
+/// This is intentionally decoupled from the syntactic module name string.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModuleId(pub u32);
+
+/// A name that can be either syntactic (unresolved) or resolved to a module.
+///
+/// The `module_name` is kept for diagnostics and pretty-printing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ResolvedName {
+    Unresolved(String),
+    Resolved {
+        module: ModuleId,
+        module_name: String,
+        name: String,
+    },
+}
+
+impl ResolvedName {
+    pub fn unresolved(s: impl Into<String>) -> Self {
+        ResolvedName::Unresolved(s.into())
+    }
+
+    pub fn local_name(&self) -> &str {
+        match self {
+            ResolvedName::Unresolved(s) => s,
+            ResolvedName::Resolved { name, .. } => name,
+        }
+    }
+
+    pub fn qualified_text(&self) -> String {
+        match self {
+            ResolvedName::Unresolved(s) => s.clone(),
+            ResolvedName::Resolved {
+                module_name, name, ..
+            } => format!("{module_name}.{name}"),
+        }
+    }
+
+    pub fn is_unresolved_eq(&self, s: &str) -> bool {
+        matches!(self, ResolvedName::Unresolved(x) if x == s)
+    }
+}
+
 pub type Span = crate::lexer::Span;
 
 pub fn dummy_span() -> Span {
@@ -131,7 +176,7 @@ pub enum ExprKind {
     String(String),
     Char(char),
     Var(String),
-    Ctor(String),
+    Ctor(ResolvedName),
     Lambda {
         params: Vec<String>,
         body: Box<Expr>,
@@ -218,7 +263,7 @@ pub enum PatternKind {
     As(String, Box<Pattern>),
     View(Box<Pattern>, Box<Expr>),
     Constructor {
-        name: String,
+        name: ResolvedName,
         args: Vec<Pattern>,
     },
 }

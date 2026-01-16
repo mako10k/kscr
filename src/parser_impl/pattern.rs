@@ -66,7 +66,7 @@ fn parse_cons_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
                 ts,
                 start,
                 ast::PatternKind::Constructor {
-                    name: op,
+                    name: ast::ResolvedName::Unresolved(op),
                     args: vec![pat, rhs],
                 },
             ));
@@ -80,7 +80,7 @@ fn normalize_cons_constructor_in_pattern(mut pat: ast::Pattern) -> ast::Pattern 
     // Convert `(:) a b` patterns desugared as `Constructor { name: ":", args: [a,b] }`
     // into `Cons(a,b)` so downstream typechecking (and tests) see `Cons`.
     if let ast::PatternKind::Constructor { name, args } = &pat.kind {
-        if name == ":" && args.len() == 2 {
+        if matches!(name, ast::ResolvedName::Unresolved(n) if n == ":") && args.len() == 2 {
             let lhs = args[0].clone();
             let rhs = args[1].clone();
             pat.kind = ast::PatternKind::Cons(Box::new(lhs), Box::new(rhs));
@@ -111,7 +111,7 @@ fn parse_app_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
             while ts.can_continue_pattern() {
                 args.push(parse_pattern_atom(ts)?);
             }
-            if name == ":" {
+            if matches!(&name, ast::ResolvedName::Unresolved(n) if n == ":") {
                 if args.len() == 2 {
                     let lhs = args.remove(0);
                     let rhs = args.remove(0);
@@ -146,7 +146,7 @@ pub(super) fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
                 ts,
                 start,
                 ast::PatternKind::Constructor {
-                    name: ":".to_string(),
+                    name: ast::ResolvedName::Unresolved(":".to_string()),
                     args: vec![],
                 },
             ))
@@ -174,7 +174,7 @@ pub(super) fn parse_pattern_atom(ts: &mut TokenStream) -> Result<ast::Pattern> {
                     ts,
                     start,
                     ast::PatternKind::Constructor {
-                        name: s,
+                        name: ast::ResolvedName::Unresolved(s),
                         args: vec![],
                     },
                 ))
@@ -253,7 +253,7 @@ fn parse_paren_or_tuple_pattern(ts: &mut TokenStream) -> Result<ast::Pattern> {
                 ts,
                 start,
                 ast::PatternKind::Constructor {
-                    name: op,
+                    name: ast::ResolvedName::Unresolved(op),
                     args: vec![],
                 },
             ));
