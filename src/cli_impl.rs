@@ -691,7 +691,7 @@ mod tests {
             std::env::temp_dir().join(format!("kscr_cli_run_do_smoke_{}.ks", std::process::id()));
         std::fs::write(
             &path,
-            "module Main where\n  main = do\n    print \"hello\"\n    print \"world\"\n",
+            "module Main where\n  main = IO ()\n",
         )
         .unwrap();
         let args = vec![

@@ -23,6 +23,14 @@ Goal: improve and expand `stdlib/` while keeping the Rust execution engine (lexe
 - If behavior/spec is unclear or docs disagree with reality, open a GitHub Issue first.
   - Include: minimal repro, expected behavior, actual behavior, suspected subsystem.
 
+## No Test-Only Special-Casing (MANDATORY)
+
+- Do not add conditional branches or special cases whose only purpose is to make tests pass.
+- If a change "makes tests green" for unclear reasons, assume an engine bug first.
+  - Add a minimal `.ks` reproduction.
+  - Fix the Rust subsystem (Lexer/Parser/Typechecker/IR/Runtime).
+  - Add regression coverage.
+
 ## `lsp-cli` Usage (REQUIRED)
 
 Use `lsp-cli` for reproducible diagnostics and reference searches.

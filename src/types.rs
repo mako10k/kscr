@@ -4826,6 +4826,16 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
         items: Vec::new(),
     };
 
+    // Important: stdlib modules are allowed to have imports.
+    // Parsing them by raw text here bypasses the stdlib cache + import logic and can
+    // yield confusing failures. Use ModuleLoader to keep behavior consistent.
+    let mut loader = ModuleLoader {
+        cache: HashMap::new(),
+        stack: Vec::new(),
+        emitted_qualified: HashSet::new(),
+        emitted_unqualified: HashSet::new(),
+    };
+
     let mut stack: Vec<PathBuf> = vec![stdlib];
     while let Some(dir) = stack.pop() {
         for ent in std::fs::read_dir(&dir).map_err(Error::Io)? {
@@ -4838,8 +4848,11 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
             if path.extension().and_then(|s| s.to_str()) != Some("ks") {
                 continue;
             }
-            let src = std::fs::read_to_string(&path).map_err(Error::Io)?;
-            let parsed = crate::parser::parse_module(&src)?;
+
+            // Load AST via the loader so stdlib cache and parsing stays consistent.
+            let parsed = loader
+                .load_ast(&path)
+                .map_err(|e| e.with_context(format!("while loading stdlib module {}", path.display())))?;
             for it in parsed.items {
                 if matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)) {
                     m.items.push(it);
@@ -4849,6 +4862,7 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
     }
 
     desugar_typeclasses(&mut m)
+        .map_err(|e| e.with_context("while desugaring stdlib typeclasses"))
 }
 
 fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
@@ -4879,10 +4893,30 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
         e.dedup();
     }
 
+    // Compare method signatures modulo type aliases.
+    // During stdlib scanning / merging, different sources may preserve aliases
+    // (`String`) while others are already expanded (`[Char]`). Treat them equal.
+    let normalize_qt = |qt: ast::QualType| -> Result<ast::QualType> {
+        // NOTE: `ast::Type::String` is a built-in surface alias for `[Char]`.
+        // We model it here as a type alias so we can reuse the general alias expander.
+        let mut aliases: HashMap<String, ast::TypeAlias> = HashMap::new();
+        aliases.insert(
+            "String".to_string(),
+            ast::TypeAlias {
+                name: "String".to_string(),
+                params: Vec::new(),
+                ty: ast::Type::List(Box::new(ast::Type::Char)),
+            },
+        );
+        expand_qual_type(qt, &aliases)
+    };
+
     for ((class, method), qt) in &src.methods {
         let key = (class.clone(), method.clone());
         if let Some(existing) = dst.methods.get(&key) {
-            if existing != qt {
+            let existing_n = normalize_qt(existing.clone())?;
+            let qt_n = normalize_qt(qt.clone())?;
+            if existing_n != qt_n {
                 return Err(Error::msg(format!(
                     "conflicting method type for {class}.{method}"
                 )));
