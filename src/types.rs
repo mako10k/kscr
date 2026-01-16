@@ -2558,178 +2558,300 @@ fn eq_primitives(name: &str) -> bool {
     matches!(name, "Integer" | "Bool" | "Char" | "Unit" | "Float64")
 }
 
+fn unqual_name_last_segment(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
+}
+
+fn case_pat_is_catch_all(p: &ast::Pattern) -> bool {
+    use ast::PatternKind;
+    match &p.kind {
+        PatternKind::Var(_) | PatternKind::Wildcard | PatternKind::Hole(_) => true,
+        PatternKind::As(_, inner) => case_pat_is_catch_all(inner),
+        PatternKind::Or(a, b) => case_pat_is_catch_all(a) || case_pat_is_catch_all(b),
+        _ => false,
+    }
+}
+
+fn case_pat_is_list_cons_all(p: &ast::Pattern) -> bool {
+    use ast::PatternKind;
+    match &p.kind {
+        PatternKind::As(_, inner) => case_pat_is_list_cons_all(inner),
+        PatternKind::Or(a, b) => case_pat_is_list_cons_all(a) || case_pat_is_list_cons_all(b),
+        PatternKind::Cons(_, tail) => case_pat_is_catch_all(tail),
+        _ => false,
+    }
+}
+
+fn case_collect_top_alts(p: &ast::Pattern, out: &mut Vec<String>) {
+    use ast::{ExprKind, PatternKind};
+    match &p.kind {
+        PatternKind::As(_, inner) => case_collect_top_alts(inner, out),
+        PatternKind::Or(a, b) => {
+            case_collect_top_alts(a, out);
+            case_collect_top_alts(b, out);
+        }
+        PatternKind::Constructor { name, .. } => {
+            out.push(format!("ctor:{}", unqual_name_last_segment(name)))
+        }
+        PatternKind::Cons(_, _) if case_pat_is_list_cons_all(p) => {
+            out.push("list:cons_all".to_string())
+        }
+        PatternKind::List(ps) if ps.is_empty() => out.push("list:nil".to_string()),
+        PatternKind::Literal(e) => match &e.kind {
+            ExprKind::Bool(b) => out.push(format!("bool:{b}")),
+            ExprKind::Unit => out.push("unit".to_string()),
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+fn case_has_unguarded_catch_all(arms: &[(ast::Pattern, bool)]) -> bool {
+    arms.iter()
+        .any(|(pat, has_guard)| !*has_guard && case_pat_is_catch_all(pat))
+}
+
+fn case_collect_unguarded_top_alts(arms: &[(ast::Pattern, bool)], out: &mut Vec<String>) {
+    for (pat, has_guard) in arms {
+        if *has_guard {
+            continue;
+        }
+        case_collect_top_alts(pat, out);
+    }
+}
+
+fn normalize_string_alts(alts: &mut Vec<String>) {
+    alts.sort();
+    alts.dedup();
+}
+
+fn check_case_primitive_exhaustive(scrut_ty: &Ty, alts: &[String]) -> Result<Option<Result<()>>> {
+    match scrut_ty {
+        Ty::Con(name) if name == "Bool" => {
+            let has_true = alts.iter().any(|a| a == "bool:true");
+            let has_false = alts.iter().any(|a| a == "bool:false");
+            return Ok(Some(if has_true && has_false {
+                Ok(())
+            } else {
+                Err(Error::msg(
+                    "non-exhaustive case: missing Bool branch (add `_ -> ...`)",
+                ))
+            }));
+        }
+        Ty::Con(name) if name == "Unit" => {
+            return Ok(Some(if alts.iter().any(|a| a == "unit") {
+                Ok(())
+            } else {
+                Err(Error::msg("non-exhaustive case on Unit (add `_ -> ...`)"))
+            }));
+        }
+        Ty::List(_) => {
+            let has_nil = alts.iter().any(|a| a == "list:nil");
+            let has_cons = alts.iter().any(|a| a == "list:cons_all");
+            return Ok(Some(if has_nil && has_cons {
+                Ok(())
+            } else {
+                Err(Error::msg(
+                    "non-exhaustive case on List: missing `[]` or `(_:_)` (add `_ -> ...`)",
+                ))
+            }));
+        }
+        Ty::Con(name) if matches!(name.as_str(), "Integer" | "Float64" | "Char") => {
+            return Ok(Some(Err(Error::msg(format!(
+                "non-exhaustive case on {name} (add `_ -> ...`)"
+            )))));
+        }
+        Ty::Var(_) => return Ok(Some(Ok(()))),
+        _ => {}
+    }
+    Ok(None)
+}
+
+fn adt_head_type_name(scrut_ty: &Ty) -> Option<String> {
+    match scrut_ty {
+        Ty::Con(n) => Some(n.clone()),
+        Ty::App { head, .. } => match head.as_ref() {
+            Ty::Con(n) => Some(n.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn check_case_adt_exhaustive(
+    data_env: &DataEnv,
+    scrut_ty: &Ty,
+    alts: &[String],
+) -> Result<Option<Result<()>>> {
+    let (Ty::App { .. } | Ty::Con(_)) = scrut_ty else {
+        return Ok(None);
+    };
+
+    let Some(ty_name) = adt_head_type_name(scrut_ty) else {
+        return Ok(Some(Ok(())));
+    };
+
+    let Some(d) = data_env.get(&ty_name) else {
+        return Ok(Some(Ok(())));
+    };
+
+    let mut missing: Vec<String> = Vec::new();
+    for c in &d.ctors {
+        let key = format!("ctor:{}", unqual_name_last_segment(&c.name));
+        if !alts.iter().any(|a| a == &key) {
+            missing.push(c.name.clone());
+        }
+    }
+
+    Ok(Some(if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::msg(format!(
+            "non-exhaustive case on {ty_name}: missing constructors: {}",
+            missing.join(", ")
+        )))
+    }))
+}
+
+fn lower_super_predicate_for_constraints(p: &ast::Predicate, ty: &Ty) -> Constraint {
+    match p {
+        ast::Predicate::Show(_) => Constraint::Show(ty.clone()),
+        ast::Predicate::ShowRow(_) => Constraint::ShowRow(ty.clone()),
+        ast::Predicate::Eq(_) => Constraint::Eq(ty.clone()),
+        ast::Predicate::EqRow(_) => Constraint::EqRow(ty.clone()),
+        ast::Predicate::Class { class, .. } => Constraint::Class {
+            class: class.clone(),
+            ty: ty.clone(),
+        },
+        ast::Predicate::Lacks { .. } => unreachable!(
+            "internal error: Lacks predicate is not allowed in superclass constraints"
+        ),
+    }
+}
+
+fn simplify_process_constraint(
+    data_env: &DataEnv,
+    class_env: &ClassEnv,
+    expanded: &mut HashMap<String, ()>,
+    in_progress: &mut Vec<Ty>,
+    work: &mut std::collections::VecDeque<Constraint>,
+    out: &mut Vec<Constraint>,
+    c: Constraint,
+) -> Result<()> {
+    match c {
+        Constraint::Show(t) => out.extend(entails_show(data_env, &t, in_progress)?),
+        Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, in_progress)?),
+        Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, in_progress)?),
+        Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, in_progress)?),
+        Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
+        Constraint::Class { class, ty } => {
+            let expand_key = format!("{class}:{ty:?}");
+            if expanded.insert(expand_key, ()).is_none() {
+                if let Some(supers) = class_env.class_supers.get(&class) {
+                    for p in supers {
+                        work.push_back(lower_super_predicate_for_constraints(p, &ty));
+                    }
+                }
+            }
+
+            if !ftv_ty(&ty).is_empty() {
+                out.push(Constraint::Class { class, ty });
+            } else {
+                let key = (class.clone(), instance_head_key_ty(&ty)?);
+                if !class_env.instances.contains_key(&key) {
+                    return Err(Error::msg(format!("cannot satisfy constraint: {class} {ty}")));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_superclass_of_class_env(class_env: &ClassEnv, sub: &str, sup: &str) -> bool {
+    use std::collections::{HashSet, VecDeque};
+
+    if sub == sup {
+        return false;
+    }
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut q: VecDeque<String> = VecDeque::new();
+    q.push_back(sub.to_string());
+
+    while let Some(c) = q.pop_front() {
+        if !seen.insert(c.clone()) {
+            continue;
+        }
+        let Some(supers) = class_env.class_supers.get(&c) else {
+            continue;
+        };
+        for p in supers {
+            let ast::Predicate::Class { class: next, .. } = p else {
+                continue;
+            };
+            if next == sup {
+                return true;
+            }
+            q.push_back(next.clone());
+        }
+    }
+
+    false
+}
+
+fn simplify_context_reduce_user_classes(class_env: &ClassEnv, cs: Vec<Constraint>) -> Vec<Constraint> {
+    let mut keep: Vec<bool> = vec![true; cs.len()];
+    for (i, ci_constraint) in cs.iter().enumerate() {
+        let Constraint::Class { class: ci, ty: ti } = ci_constraint else {
+            continue;
+        };
+
+        for (j, cj_constraint) in cs.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let Constraint::Class { class: cj, ty: tj } = cj_constraint else {
+                continue;
+            };
+
+            if ti == tj && is_superclass_of_class_env(class_env, cj, ci) {
+                keep[i] = false;
+                break;
+            }
+        }
+    }
+    cs.into_iter()
+        .enumerate()
+        .filter_map(|(i, c)| if keep[i] { Some(c) } else { None })
+        .collect()
+}
+
+fn sort_dedup_constraints_stable(mut cs: Vec<Constraint>) -> Vec<Constraint> {
+    cs.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    cs.dedup();
+    cs
+}
+
 fn check_case_exhaustive(
     data_env: &DataEnv,
     scrut_ty: &Ty,
     arms: &[(ast::Pattern, bool)],
 ) -> Result<()> {
-    use ast::{ExprKind, PatternKind};
-
-    fn unqual_name(name: &str) -> &str {
-        name.rsplit('.').next().unwrap_or(name)
-    }
-
-    fn is_catch_all(p: &ast::Pattern) -> bool {
-        match &p.kind {
-            PatternKind::Var(_) | PatternKind::Wildcard | PatternKind::Hole(_) => true,
-            PatternKind::As(_, inner) => is_catch_all(inner),
-            PatternKind::Or(a, b) => is_catch_all(a) || is_catch_all(b),
-            _ => false,
-        }
-    }
-
-    fn is_list_cons_all(p: &ast::Pattern) -> bool {
-        match &p.kind {
-            PatternKind::As(_, inner) => is_list_cons_all(inner),
-            PatternKind::Or(a, b) => is_list_cons_all(a) || is_list_cons_all(b),
-            PatternKind::Cons(_, tail) => is_catch_all(tail),
-            _ => false,
-        }
-    }
-
-    fn collect_top_alts(p: &ast::Pattern, out: &mut Vec<String>) {
-        match &p.kind {
-            PatternKind::As(_, inner) => collect_top_alts(inner, out),
-            PatternKind::Or(a, b) => {
-                collect_top_alts(a, out);
-                collect_top_alts(b, out);
-            }
-            PatternKind::Constructor { name, .. } => {
-                out.push(format!("ctor:{}", unqual_name(name)))
-            }
-            PatternKind::Cons(_, _) if is_list_cons_all(p) => out.push("list:cons_all".to_string()),
-            PatternKind::List(ps) if ps.is_empty() => out.push("list:nil".to_string()),
-            PatternKind::Literal(e) => match &e.kind {
-                ExprKind::Bool(b) => out.push(format!("bool:{b}")),
-                ExprKind::Unit => out.push("unit".to_string()),
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-
-    fn has_unguarded_catch_all(arms: &[(ast::Pattern, bool)]) -> bool {
-        arms.iter()
-            .any(|(pat, has_guard)| !*has_guard && is_catch_all(pat))
-    }
-
-    fn collect_unguarded_top_alts(arms: &[(ast::Pattern, bool)], out: &mut Vec<String>) {
-        for (pat, has_guard) in arms {
-            if *has_guard {
-                continue;
-            }
-            collect_top_alts(pat, out);
-        }
-    }
-
-    fn normalize_alts(alts: &mut Vec<String>) {
-        alts.sort();
-        alts.dedup();
-    }
-
-    fn check_primitive_exhaustive(scrut_ty: &Ty, alts: &[String]) -> Result<Option<Result<()>>> {
-        match scrut_ty {
-            Ty::Con(name) if name == "Bool" => {
-                let has_true = alts.iter().any(|a| a == "bool:true");
-                let has_false = alts.iter().any(|a| a == "bool:false");
-                return Ok(Some(if has_true && has_false {
-                    Ok(())
-                } else {
-                    Err(Error::msg(
-                        "non-exhaustive case: missing Bool branch (add `_ -> ...`)",
-                    ))
-                }));
-            }
-            Ty::Con(name) if name == "Unit" => {
-                return Ok(Some(if alts.iter().any(|a| a == "unit") {
-                    Ok(())
-                } else {
-                    Err(Error::msg("non-exhaustive case on Unit (add `_ -> ...`)"))
-                }));
-            }
-            Ty::List(_) => {
-                let has_nil = alts.iter().any(|a| a == "list:nil");
-                let has_cons = alts.iter().any(|a| a == "list:cons_all");
-                return Ok(Some(if has_nil && has_cons {
-                    Ok(())
-                } else {
-                    Err(Error::msg(
-                        "non-exhaustive case on List: missing `[]` or `(_:_)` (add `_ -> ...`)",
-                    ))
-                }));
-            }
-            Ty::Con(name) if matches!(name.as_str(), "Integer" | "Float64" | "Char") => {
-                return Ok(Some(Err(Error::msg(format!(
-                    "non-exhaustive case on {name} (add `_ -> ...`)"
-                )))));
-            }
-            Ty::Var(_) => return Ok(Some(Ok(()))),
-            _ => {}
-        }
-        Ok(None)
-    }
-
-    fn adt_head_name(scrut_ty: &Ty) -> Option<String> {
-        match scrut_ty {
-            Ty::Con(n) => Some(n.clone()),
-            Ty::App { head, .. } => match head.as_ref() {
-                Ty::Con(n) => Some(n.clone()),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn check_adt_exhaustive(
-        data_env: &DataEnv,
-        scrut_ty: &Ty,
-        alts: &[String],
-    ) -> Result<Option<Result<()>>> {
-        let (Ty::App { .. } | Ty::Con(_)) = scrut_ty else {
-            return Ok(None);
-        };
-
-        let Some(ty_name) = adt_head_name(scrut_ty) else {
-            return Ok(Some(Ok(())));
-        };
-
-        let Some(d) = data_env.get(&ty_name) else {
-            return Ok(Some(Ok(())));
-        };
-
-        let mut missing: Vec<String> = Vec::new();
-        for c in &d.ctors {
-            let key = format!("ctor:{}", unqual_name(&c.name));
-            if !alts.iter().any(|a| a == &key) {
-                missing.push(c.name.clone());
-            }
-        }
-
-        Ok(Some(if missing.is_empty() {
-            Ok(())
-        } else {
-            Err(Error::msg(format!(
-                "non-exhaustive case on {ty_name}: missing constructors: {}",
-                missing.join(", ")
-            )))
-        }))
-    }
-
     // Guarded arms are conservatively treated as non-covering.
-    if has_unguarded_catch_all(arms) {
+    if case_has_unguarded_catch_all(arms) {
         return Ok(());
     }
 
     let mut alts: Vec<String> = Vec::new();
-    collect_unguarded_top_alts(arms, &mut alts);
+    case_collect_unguarded_top_alts(arms, &mut alts);
 
-    normalize_alts(&mut alts);
+    normalize_string_alts(&mut alts);
 
-    if let Some(res) = check_primitive_exhaustive(scrut_ty, &alts)? {
+    if let Some(res) = check_case_primitive_exhaustive(scrut_ty, &alts)? {
         return res;
     }
 
-    if let Some(res) = check_adt_exhaustive(data_env, scrut_ty, &alts)? {
+    if let Some(res) = check_case_adt_exhaustive(data_env, scrut_ty, &alts)? {
         return res;
     }
 
@@ -3035,72 +3157,13 @@ fn simplify_constraints(
 ) -> Result<Vec<Constraint>> {
     use std::collections::VecDeque;
 
-    fn lower_super_predicate(p: &ast::Predicate, ty: &Ty) -> Constraint {
-        match p {
-            ast::Predicate::Show(_) => Constraint::Show(ty.clone()),
-            ast::Predicate::ShowRow(_) => Constraint::ShowRow(ty.clone()),
-            ast::Predicate::Eq(_) => Constraint::Eq(ty.clone()),
-            ast::Predicate::EqRow(_) => Constraint::EqRow(ty.clone()),
-            ast::Predicate::Class { class, .. } => Constraint::Class {
-                class: class.clone(),
-                ty: ty.clone(),
-            },
-            ast::Predicate::Lacks { .. } => unreachable!(
-                "internal error: Lacks predicate is not allowed in superclass constraints"
-            ),
-        }
-    }
-
-    fn process_constraint(
-        data_env: &DataEnv,
-        class_env: &ClassEnv,
-        expanded: &mut HashMap<String, ()>,
-        in_progress: &mut Vec<Ty>,
-        work: &mut VecDeque<Constraint>,
-        out: &mut Vec<Constraint>,
-        c: Constraint,
-    ) -> Result<()> {
-        match c {
-            Constraint::Show(t) => out.extend(entails_show(data_env, &t, in_progress)?),
-            Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, in_progress)?),
-            Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, in_progress)?),
-            Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, in_progress)?),
-            Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
-            Constraint::Class { class, ty } => {
-                // Haskell-aligned superclass closure: `C t` entails `super(C) t`.
-                let expand_key = format!("{class}:{ty:?}");
-                if expanded.insert(expand_key, ()).is_none() {
-                    if let Some(supers) = class_env.class_supers.get(&class) {
-                        for p in supers {
-                            work.push_back(lower_super_predicate(p, &ty));
-                        }
-                    }
-                }
-
-                // If the constraint is polymorphic, keep it for dictionary passing.
-                // If it is ground, resolve it by requiring a known instance.
-                if !ftv_ty(&ty).is_empty() {
-                    out.push(Constraint::Class { class, ty });
-                } else {
-                    let key = (class.clone(), instance_head_key_ty(&ty)?);
-                    if !class_env.instances.contains_key(&key) {
-                        return Err(Error::msg(format!(
-                            "cannot satisfy constraint: {class} {ty}"
-                        )));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     let mut out = Vec::new();
     let mut in_progress = Vec::new();
     let mut work: VecDeque<Constraint> = cs.into_iter().collect();
     let mut expanded: HashMap<String, ()> = HashMap::new();
 
     while let Some(c) = work.pop_front() {
-        process_constraint(
+        simplify_process_constraint(
             data_env,
             class_env,
             &mut expanded,
@@ -3111,75 +3174,8 @@ fn simplify_constraints(
         )?;
     }
 
-    // Haskell-aligned context reduction for user-defined classes:
-    // If `C t` is present, drop any entailed superclass constraints `D t`.
-    fn is_superclass_of(class_env: &ClassEnv, sub: &str, sup: &str) -> bool {
-        use std::collections::{HashSet, VecDeque};
-
-        if sub == sup {
-            return false;
-        }
-
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut q: VecDeque<String> = VecDeque::new();
-        q.push_back(sub.to_string());
-
-        while let Some(c) = q.pop_front() {
-            if !seen.insert(c.clone()) {
-                continue;
-            }
-            let Some(supers) = class_env.class_supers.get(&c) else {
-                continue;
-            };
-            for p in supers {
-                let ast::Predicate::Class { class: next, .. } = p else {
-                    continue;
-                };
-                if next == sup {
-                    return true;
-                }
-                q.push_back(next.clone());
-            }
-        }
-
-        false
-    }
-
-    fn context_reduce_user_classes(class_env: &ClassEnv, cs: Vec<Constraint>) -> Vec<Constraint> {
-        let mut keep: Vec<bool> = vec![true; cs.len()];
-        for (i, ci_constraint) in cs.iter().enumerate() {
-            let Constraint::Class { class: ci, ty: ti } = ci_constraint else {
-                continue;
-            };
-
-            for (j, cj_constraint) in cs.iter().enumerate() {
-                if i == j {
-                    continue;
-                }
-                let Constraint::Class { class: cj, ty: tj } = cj_constraint else {
-                    continue;
-                };
-
-                if ti == tj && is_superclass_of(class_env, cj, ci) {
-                    keep[i] = false;
-                    break;
-                }
-            }
-        }
-        cs.into_iter()
-            .enumerate()
-            .filter_map(|(i, c)| if keep[i] { Some(c) } else { None })
-            .collect()
-    }
-
-    fn sort_dedup_constraints(mut cs: Vec<Constraint>) -> Vec<Constraint> {
-        cs.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-        cs.dedup();
-        cs
-    }
-
-    out = context_reduce_user_classes(class_env, out);
-    Ok(sort_dedup_constraints(out))
+    out = simplify_context_reduce_user_classes(class_env, out);
+    Ok(sort_dedup_constraints_stable(out))
 }
 
 fn infer_expr_in(
