@@ -4,7 +4,7 @@ use crate::backend_diagnostics_hover as diag_hover;
 use crate::backend_goto_completion;
 use crate::backend_symbols;
 use crate::vfs::{Document, Vfs};
-use kscr::{error::Error as KscrError, lexer, parser};
+use kscr::parser;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
