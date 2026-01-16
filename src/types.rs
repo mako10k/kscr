@@ -682,6 +682,342 @@ fn apply_env(subst: &Subst, env: &TypeEnv) -> TypeEnv {
         .collect()
 }
 
+fn infer_pat_var(
+    cx: &mut InferCtx,
+    pat: &ast::Pattern,
+    name: &str,
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+) -> Result<Ty> {
+    if !seen.insert(name.to_string()) {
+        return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
+    }
+    let t = cx.fresh();
+    binds.push((name.to_string(), t.clone()));
+    Ok(t)
+}
+
+fn infer_pat_literal(e: &ast::Expr) -> Result<Ty> {
+    use ast::ExprKind;
+
+    Ok(match &e.kind {
+        ExprKind::Unit => Ty::Con("Unit".to_string()),
+        ExprKind::Integer(_) => Ty::Con("Integer".to_string()),
+        ExprKind::Float64(_) => Ty::Con("Float64".to_string()),
+        ExprKind::Bool(_) => Ty::Con("Bool".to_string()),
+        ExprKind::String(_) => Ty::List(Box::new(Ty::Con("Char".to_string()))),
+        ExprKind::Char(_) => Ty::Con("Char".to_string()),
+        _ => return Err(Error::msg("unsupported literal pattern")),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_tuple(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    ps: &[ast::Pattern],
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    Ok(Ty::Tuple(
+        ps.iter()
+            .map(|p| infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out))
+            .collect::<Result<Vec<_>>>()?,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_list(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    ps: &[ast::Pattern],
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    if ps.is_empty() {
+        return Ok(Ty::List(Box::new(cx.fresh())));
+    }
+
+    let first = infer_pat_in(cx, data_env, subst, env, &ps[0], binds, seen, cs_out)?;
+    for p in &ps[1..] {
+        let t = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
+        let su = unify(apply(subst, first.clone()), apply(subst, t))?;
+        *subst = compose(&su, subst);
+    }
+    Ok(Ty::List(Box::new(apply(subst, first))))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_record(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    fields: &[(String, ast::Pattern)],
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    let mut out = fields
+        .iter()
+        .map(|(n, p)| {
+            Ok((
+                n.clone(),
+                infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    out.sort_by(|(a, _), (b, _)| a.cmp(b));
+    Ok(Ty::Record(out))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_record_loose(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    fields: &[(String, ast::Pattern)],
+    rest_name: &Option<String>,
+    pat: &ast::Pattern,
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    let mut out = fields
+        .iter()
+        .map(|(n, p)| {
+            Ok((
+                n.clone(),
+                infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    out.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let rest_ty = cx.fresh();
+    if rest_name.is_some() {
+        for (n, _) in &out {
+            cs_out.push(Constraint::Lacks {
+                label: n.clone(),
+                row: rest_ty.clone(),
+            });
+        }
+    }
+
+    if let Some(name) = rest_name {
+        if !seen.insert(name.clone()) {
+            return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
+        }
+        binds.push((name.clone(), rest_ty.clone()));
+    }
+
+    Ok(Ty::RecordOpen(out, Box::new(rest_ty)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_cons(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    hd: &ast::Pattern,
+    tl: &ast::Pattern,
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    let elem = cx.fresh();
+    let t_hd = infer_pat_in(cx, data_env, subst, env, hd, binds, seen, cs_out)?;
+    let t_tl = infer_pat_in(cx, data_env, subst, env, tl, binds, seen, cs_out)?;
+
+    let su_hd = unify(apply(subst, t_hd), apply(subst, elem.clone()))?;
+    *subst = compose(&su_hd, subst);
+
+    let su_tl = unify(
+        apply(subst, t_tl),
+        apply(subst, Ty::List(Box::new(elem.clone()))),
+    )?;
+    *subst = compose(&su_tl, subst);
+
+    Ok(apply(subst, Ty::List(Box::new(elem))))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_or(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    a: &ast::Pattern,
+    b: &ast::Pattern,
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    let base_len = binds.len();
+    let base_seen = seen.clone();
+    let base_binds = binds.clone();
+
+    let mut binds_a = base_binds.clone();
+    let mut seen_a = base_seen.clone();
+    let mut cs_a = Vec::new();
+    let t_a = infer_pat_in(
+        cx,
+        data_env,
+        subst,
+        env,
+        a,
+        &mut binds_a,
+        &mut seen_a,
+        &mut cs_a,
+    )?;
+
+    let mut binds_b = base_binds;
+    let mut seen_b = base_seen;
+    let mut cs_b = Vec::new();
+    let t_b = infer_pat_in(
+        cx,
+        data_env,
+        subst,
+        env,
+        b,
+        &mut binds_b,
+        &mut seen_b,
+        &mut cs_b,
+    )?;
+
+    let su_t = unify(apply(subst, t_a.clone()), apply(subst, t_b.clone()))?;
+    *subst = compose(&su_t, subst);
+
+    let map_a: HashMap<String, Ty> = binds_a[base_len..]
+        .iter()
+        .map(|(n, t)| (n.clone(), t.clone()))
+        .collect();
+    let map_b: HashMap<String, Ty> = binds_b[base_len..]
+        .iter()
+        .map(|(n, t)| (n.clone(), t.clone()))
+        .collect();
+
+    if map_a.len() != map_b.len() || map_a.keys().any(|k| !map_b.contains_key(k)) {
+        return Err(Error::msg("or-pattern must bind the same variables"));
+    }
+
+    let mut ca = apply_constraints(subst, cs_a);
+    let mut cb = apply_constraints(subst, cs_b);
+    ca.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    cb.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    ca.dedup();
+    cb.dedup();
+    if ca != cb {
+        return Err(Error::msg("or-pattern must yield the same constraints"));
+    }
+    cs_out.extend(ca);
+
+    let mut names: Vec<_> = map_a.keys().cloned().collect();
+    names.sort();
+    for n in names {
+        let ta = map_a.get(&n).unwrap().clone();
+        let tb = map_b.get(&n).unwrap().clone();
+        let su = unify(apply(subst, ta.clone()), apply(subst, tb))?;
+        *subst = compose(&su, subst);
+        let _ = seen.insert(n.clone());
+        binds.push((n, apply(subst, ta)));
+    }
+
+    Ok(apply(subst, t_a))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_as(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    name: &str,
+    p: &ast::Pattern,
+    pat: &ast::Pattern,
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    if !seen.insert(name.to_string()) {
+        return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
+    }
+    let t = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
+    binds.push((name.to_string(), apply(subst, t.clone())));
+    Ok(t)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_view(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    p: &ast::Pattern,
+    e: &ast::Expr,
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    let t_scrut = cx.fresh();
+    let t_view = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
+
+    let env_in = apply_env(subst, env);
+    let (s_e, _cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, e.clone())?;
+    *subst = compose(&s_e, subst);
+
+    let su = unify(
+        apply(subst, t_e),
+        Ty::Func(
+            Box::new(apply(subst, t_scrut.clone())),
+            Box::new(apply(subst, t_view)),
+        ),
+    )?;
+    *subst = compose(&su, subst);
+
+    Ok(apply(subst, t_scrut))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_pat_constructor(
+    cx: &mut InferCtx,
+    data_env: &DataEnv,
+    subst: &mut Subst,
+    env: &TypeEnv,
+    name: &str,
+    args: &[ast::Pattern],
+    binds: &mut Vec<(String, Ty)>,
+    seen: &mut HashSet<String>,
+    cs_out: &mut Vec<Constraint>,
+) -> Result<Ty> {
+    let scheme = env
+        .get(name)
+        .ok_or_else(|| Error::msg("unknown constructor"))?;
+    let mut ctor_ty = instantiate(cx, scheme);
+
+    for p in args {
+        let arg_pat_ty = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
+        let res = cx.fresh();
+
+        let su = unify(
+            apply(subst, ctor_ty),
+            Ty::Func(Box::new(apply(subst, arg_pat_ty)), Box::new(res.clone())),
+        )?;
+        *subst = compose(&su, subst);
+        ctor_ty = res;
+    }
+
+    Ok(apply(subst, ctor_ty))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn infer_pat_in(
     cx: &mut InferCtx,
@@ -693,225 +1029,26 @@ fn infer_pat_in(
     seen: &mut HashSet<String>,
     cs_out: &mut Vec<Constraint>,
 ) -> Result<Ty> {
-    use ast::{ExprKind, PatternKind};
+    use ast::PatternKind;
 
     match &pat.kind {
-        PatternKind::Var(name) => {
-            if !seen.insert(name.clone()) {
-                return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
-            }
-            let t = cx.fresh();
-            binds.push((name.clone(), t.clone()));
-            Ok(t)
-        }
+        PatternKind::Var(name) => infer_pat_var(cx, pat, name, binds, seen),
         PatternKind::Wildcard | PatternKind::Hole(_) => Ok(cx.fresh()),
-        PatternKind::Literal(e) => Ok(match &e.kind {
-            ExprKind::Unit => Ty::Con("Unit".to_string()),
-            ExprKind::Integer(_) => Ty::Con("Integer".to_string()),
-            ExprKind::Float64(_) => Ty::Con("Float64".to_string()),
-            ExprKind::Bool(_) => Ty::Con("Bool".to_string()),
-            ExprKind::String(_) => Ty::List(Box::new(Ty::Con("Char".to_string()))),
-            ExprKind::Char(_) => Ty::Con("Char".to_string()),
-            _ => return Err(Error::msg("unsupported literal pattern")),
-        }),
-        PatternKind::Tuple(ps) => Ok(Ty::Tuple(
-            ps.iter()
-                .map(|p| infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out))
-                .collect::<Result<Vec<_>>>()?,
-        )),
-
-        PatternKind::List(ps) => {
-            if ps.is_empty() {
-                return Ok(Ty::List(Box::new(cx.fresh())));
-            }
-
-            let first = infer_pat_in(cx, data_env, subst, env, &ps[0], binds, seen, cs_out)?;
-            for p in &ps[1..] {
-                let t = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
-                let su = unify(apply(subst, first.clone()), apply(subst, t))?;
-                *subst = compose(&su, subst);
-            }
-            Ok(Ty::List(Box::new(apply(subst, first))))
-        }
+        PatternKind::Literal(e) => infer_pat_literal(e),
+        PatternKind::Tuple(ps) => infer_pat_tuple(cx, data_env, subst, env, ps, binds, seen, cs_out),
+        PatternKind::List(ps) => infer_pat_list(cx, data_env, subst, env, ps, binds, seen, cs_out),
         PatternKind::Record(fields) => {
-            let mut out = fields
-                .iter()
-                .map(|(n, p)| {
-                    Ok((
-                        n.clone(),
-                        infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            out.sort_by(|(a, _), (b, _)| a.cmp(b));
-            Ok(Ty::Record(out))
+            infer_pat_record(cx, data_env, subst, env, fields, binds, seen, cs_out)
         }
-        PatternKind::RecordLoose(fields, rest_name) => {
-            let mut out = fields
-                .iter()
-                .map(|(n, p)| {
-                    Ok((
-                        n.clone(),
-                        infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            out.sort_by(|(a, _), (b, _)| a.cmp(b));
-
-            let rest_ty = cx.fresh();
-            if rest_name.is_some() {
-                for (n, _) in &out {
-                    cs_out.push(Constraint::Lacks {
-                        label: n.clone(),
-                        row: rest_ty.clone(),
-                    });
-                }
-            }
-
-            if let Some(name) = rest_name {
-                if !seen.insert(name.clone()) {
-                    return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
-                }
-                binds.push((name.clone(), rest_ty.clone()));
-            }
-
-            Ok(Ty::RecordOpen(out, Box::new(rest_ty)))
-        }
-        PatternKind::Cons(hd, tl) => {
-            let elem = cx.fresh();
-            let t_hd = infer_pat_in(cx, data_env, subst, env, hd, binds, seen, cs_out)?;
-            let t_tl = infer_pat_in(cx, data_env, subst, env, tl, binds, seen, cs_out)?;
-
-            let su_hd = unify(apply(subst, t_hd), apply(subst, elem.clone()))?;
-            *subst = compose(&su_hd, subst);
-
-            let su_tl = unify(
-                apply(subst, t_tl),
-                apply(subst, Ty::List(Box::new(elem.clone()))),
-            )?;
-            *subst = compose(&su_tl, subst);
-
-            Ok(apply(subst, Ty::List(Box::new(elem))))
-        }
-        PatternKind::Or(a, b) => {
-            let base_len = binds.len();
-            let base_seen = seen.clone();
-            let base_binds = binds.clone();
-
-            let mut binds_a = base_binds.clone();
-            let mut seen_a = base_seen.clone();
-            let mut cs_a = Vec::new();
-            let t_a = infer_pat_in(
-                cx,
-                data_env,
-                subst,
-                env,
-                a,
-                &mut binds_a,
-                &mut seen_a,
-                &mut cs_a,
-            )?;
-
-            let mut binds_b = base_binds;
-            let mut seen_b = base_seen;
-            let mut cs_b = Vec::new();
-            let t_b = infer_pat_in(
-                cx,
-                data_env,
-                subst,
-                env,
-                b,
-                &mut binds_b,
-                &mut seen_b,
-                &mut cs_b,
-            )?;
-
-            let su_t = unify(apply(subst, t_a.clone()), apply(subst, t_b.clone()))?;
-            *subst = compose(&su_t, subst);
-
-            let map_a: HashMap<String, Ty> = binds_a[base_len..]
-                .iter()
-                .map(|(n, t)| (n.clone(), t.clone()))
-                .collect();
-            let map_b: HashMap<String, Ty> = binds_b[base_len..]
-                .iter()
-                .map(|(n, t)| (n.clone(), t.clone()))
-                .collect();
-
-            if map_a.len() != map_b.len() || map_a.keys().any(|k| !map_b.contains_key(k)) {
-                return Err(Error::msg("or-pattern must bind the same variables"));
-            }
-
-            let mut ca = apply_constraints(subst, cs_a);
-            let mut cb = apply_constraints(subst, cs_b);
-            ca.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-            cb.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-            ca.dedup();
-            cb.dedup();
-            if ca != cb {
-                return Err(Error::msg("or-pattern must yield the same constraints"));
-            }
-            cs_out.extend(ca);
-
-            let mut names: Vec<_> = map_a.keys().cloned().collect();
-            names.sort();
-            for n in names {
-                let ta = map_a.get(&n).unwrap().clone();
-                let tb = map_b.get(&n).unwrap().clone();
-                let su = unify(apply(subst, ta.clone()), apply(subst, tb))?;
-                *subst = compose(&su, subst);
-                let _ = seen.insert(n.clone());
-                binds.push((n, apply(subst, ta)));
-            }
-
-            Ok(apply(subst, t_a))
-        }
-        PatternKind::As(name, p) => {
-            if !seen.insert(name.clone()) {
-                return Err(Error::msg_with_span("duplicate pattern variable", pat.span));
-            }
-            let t = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
-            binds.push((name.clone(), apply(subst, t.clone())));
-            Ok(t)
-        }
-        PatternKind::View(p, e) => {
-            let t_scrut = cx.fresh();
-            let t_view = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
-
-            let env_in = apply_env(subst, env);
-            let (s_e, _cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, (**e).clone())?;
-            *subst = compose(&s_e, subst);
-
-            let su = unify(
-                apply(subst, t_e),
-                Ty::Func(
-                    Box::new(apply(subst, t_scrut.clone())),
-                    Box::new(apply(subst, t_view)),
-                ),
-            )?;
-            *subst = compose(&su, subst);
-
-            Ok(apply(subst, t_scrut))
-        }
+        PatternKind::RecordLoose(fields, rest_name) => infer_pat_record_loose(
+            cx, data_env, subst, env, fields, rest_name, pat, binds, seen, cs_out,
+        ),
+        PatternKind::Cons(hd, tl) => infer_pat_cons(cx, data_env, subst, env, hd, tl, binds, seen, cs_out),
+        PatternKind::Or(a, b) => infer_pat_or(cx, data_env, subst, env, a, b, binds, seen, cs_out),
+        PatternKind::As(name, p) => infer_pat_as(cx, data_env, subst, env, name, p, pat, binds, seen, cs_out),
+        PatternKind::View(p, e) => infer_pat_view(cx, data_env, subst, env, p, e, binds, seen, cs_out),
         PatternKind::Constructor { name, args } => {
-            let scheme = env
-                .get(name)
-                .ok_or_else(|| Error::msg("unknown constructor"))?;
-            let mut ctor_ty = instantiate(cx, scheme);
-
-            for p in args {
-                let arg_pat_ty = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
-                let res = cx.fresh();
-
-                let su = unify(
-                    apply(subst, ctor_ty),
-                    Ty::Func(Box::new(apply(subst, arg_pat_ty)), Box::new(res.clone())),
-                )?;
-                *subst = compose(&su, subst);
-                ctor_ty = res;
-            }
-
-            Ok(apply(subst, ctor_ty))
+            infer_pat_constructor(cx, data_env, subst, env, name, args, binds, seen, cs_out)
         }
     }
 }
