@@ -1847,6 +1847,28 @@ fn add_misc_builtins(cx: &mut InferCtx, env: &mut TypeEnv) {
             ty: Ty::Func(Box::new(char_list.clone()), Box::new(Ty::Var(a))),
         },
     );
+
+    // __recordGet :: forall a b. { .. } -> [Char] -> b
+    //
+    // Used by the typeclass dict-passing rewrite to project a method field.
+    // The runtime enforces the record-ness dynamically.
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
+    let Ty::Var(b) = cx.fresh() else {
+        unreachable!()
+    };
+    env.insert(
+        "__recordGet".to_string(),
+        Scheme {
+            vars: vec![a, b],
+            constraints: vec![],
+            ty: Ty::Func(
+                Box::new(Ty::Var(a)),
+                Box::new(Ty::Func(Box::new(char_list), Box::new(Ty::Var(b)))),
+            ),
+        },
+    );
 }
 
 fn add_ffi_primitives(env: &mut TypeEnv) {
@@ -4238,6 +4260,12 @@ fn load_module_with_imports(entry: &Path) -> Result<ast::Module> {
         push_item_checked(&mut items, &mut defined, it)?;
     }
 
+    // NOTE: Do not inject implicit Prelude forwarders here.
+    //
+    // Range sugar desugars to `enumFromTo` / `enumFromThenTo` and these are expected to come
+    // from Prelude via normal import loading. Injecting `x = Prelude.x` here is brittle because
+    // name qualification/desugaring can change how Prelude members are represented.
+
     for it in entry_mod.items {
         if matches!(it, ast::Item::Import(_)) {
             continue;
@@ -4260,7 +4288,7 @@ struct ModuleLoader {
     cache: HashMap<PathBuf, ast::Module>,
     stack: Vec<PathBuf>,
     emitted_qualified: HashSet<ImportQualKey>,
-    emitted_unqualified: HashSet<PathBuf>,
+    emitted_unqualified: HashSet<ImportQualKey>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -4271,6 +4299,7 @@ struct QualEnv {
     /// canonical module names that have multiple local qualifiers
     ambiguous_modules: HashSet<String>,
 }
+
 
 fn module_qual_env(module: &ast::Module) -> QualEnv {
     let mut env = QualEnv::default();
@@ -4728,6 +4757,23 @@ impl ModuleLoader {
             self.stack.pop();
 
             let exports = module_exported_names(&imported)?;
+            if debug_imports && (id.module == "Prelude" || id.module == "Prelude.List") {
+                let mut xs: Vec<&str> = exports.iter().map(|s| s.as_str()).collect();
+                xs.sort_unstable();
+                let has_from_to = exports.contains("enumFromTo");
+                let has_from_then_to = exports.contains("enumFromThenTo");
+                eprintln!(
+                    "[KSCR_DEBUG_IMPORTS] exports for module {}: count={} enumFromTo={} enumFromThenTo={}",
+                    id.module,
+                    exports.len(),
+                    has_from_to,
+                    has_from_then_to
+                );
+                if !has_from_to || !has_from_then_to {
+                    // Print a small prefix to avoid spamming.
+                    eprintln!("[KSCR_DEBUG_IMPORTS]   first exports: {:?}", xs.into_iter().take(40).collect::<Vec<_>>());
+                }
+            }
 
             // Emit qualified bindings for each (module file, qualifier) pair.
             // IMPORTANT:
@@ -4775,17 +4821,39 @@ impl ModuleLoader {
                 }
             }
 
-            // Emit unqualified forwarders at most once per module file.
-            // This keeps the flattened module namespace reasonably conflict-free.
-            // NOTE: even for `import qualified ... as ...`, we still want the canonical module
-            // name to be usable as a qualifier inside the importing module. Do this by emitting
-            // `M.x = Q.x` forwarders (qualified-to-qualified), not by importing unqualified.
-            if !id.qualified && self.emitted_unqualified.insert(p) {
-                out.extend(import_unqualified_forwarders(
-                    &imported,
-                    primary_qual,
-                    &exports,
-                )?);
+            // Emit unqualified forwarders.
+            //
+            // IMPORTANT: `emitted_unqualified` must key by BOTH `(module file, qual)`.
+            // Otherwise, if the same module is imported multiple times under different aliases
+            // (directly or transitively), only the first alias would get unqualified forwarders.
+            // That can make unqualified references fail (e.g. Prelude functions like
+            // `enumFromTo`/`enumFromThenTo` used by list-range sugar) when the first import used
+            // a non-Prelude alias.
+            if !id.qualified {
+                let key = ImportQualKey {
+                    path: p.clone(),
+                    qual: primary_qual.to_string(),
+                };
+                if self.emitted_unqualified.insert(key) {
+                    let fwd = import_unqualified_forwarders(&imported, primary_qual, &exports)?;
+                    if debug_imports && id.module == "Prelude" {
+                        let mut defined_names = HashSet::new();
+                        for it in &fwd {
+                            item_defined_names(it, &mut defined_names);
+                        }
+                        eprintln!(
+                            "[KSCR_DEBUG_IMPORTS] unqualified forwarders for Prelude emitted: enumFromTo={} enumFromThenTo={}",
+                            defined_names.contains("enumFromTo"),
+                            defined_names.contains("enumFromThenTo")
+                        );
+                        // Also show the target qualifier used.
+                        eprintln!(
+                            "[KSCR_DEBUG_IMPORTS]   Prelude forwarder qual used: {}",
+                            primary_qual
+                        );
+                    }
+                    out.extend(fwd);
+                }
             }
         }
         Ok(())
@@ -5293,6 +5361,8 @@ fn import_unqualified_forwarders(
     // Bring unqualified exports as simple forwarders: `x = QUAL.x`.
     let mut out = Vec::new();
 
+    let debug_imports = std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1");
+
     let mut values = HashSet::new();
     let mut type_aliases = HashMap::new();
     for it in import_items(module) {
@@ -5312,6 +5382,14 @@ fn import_unqualified_forwarders(
         }
     }
 
+    if debug_imports && module.name.as_deref() == Some("Prelude") {
+        eprintln!(
+            "[KSCR_DEBUG_IMPORTS] Prelude import_unqualified_forwarders: values_has_enumFromTo={} values_has_enumFromThenTo={}",
+            values.contains("enumFromTo"),
+            values.contains("enumFromThenTo")
+        );
+    }
+
     for n in exports.iter() {
         if values.contains(n) {
             out.push(ast::Item::Binding(ast::Binding {
@@ -5319,6 +5397,7 @@ fn import_unqualified_forwarders(
                 expr: ast::Expr::dummy(ast::ExprKind::Var(format!("{qual}.{n}"))),
             }));
         }
+
 
         if let Some(ta) = type_aliases.get(n) {
             let head = ast::Type::Var(format!("{qual}.{}", ta.name));

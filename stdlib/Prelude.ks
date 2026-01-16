@@ -30,6 +30,10 @@ module Prelude where
 
     enumFromThenTo a b c = let step = b - a in if step > 0 then (if a > c then [] else a : enumFromThenTo (a + step) (a + step + step) c) else (if a < c then [] else a : enumFromThenTo (a + step) (a + step + step) c)
 
+  -- Note: list range sugar (`[a..b]`, `[a,b..c]`) currently desugars to `enumFromTo` /
+  -- `enumFromThenTo` as if they were ordinary top-level functions. In this implementation,
+  -- these are class methods only; keep the names reserved here but do not define wrappers.
+
   instance Functor IO where
     fmap f ma = __ioBind ma (\a -> IO (f a))
 
