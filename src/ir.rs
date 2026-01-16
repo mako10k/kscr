@@ -655,6 +655,9 @@ enum IoOutcome {
 
 pub fn run_main(module: &IrModule) -> Result<Value> {
     let g = Globals::from_module(module);
+    if !g.defs.contains_key("main") {
+        return Err(Error::msg("main does not exist"));
+    }
     let v = eval_var(&g, &std::collections::HashMap::new(), "main")?;
     let Value::IoAction(action) = v else {
         return Err(Error::msg("main did not evaluate to an IO action"));

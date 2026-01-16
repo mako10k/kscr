@@ -2626,7 +2626,7 @@ fn append_instance_items(
             mangle_ident(mname)
         );
 
-        let expr = qualify_expr_ctors_for_instance_import(expr, &impl_name);
+        let expr = qualify_expr_ctors_for_instance_import(expr, inst);
         let expr = add_params_to_expr(ast::dummy_span(), expr, &extra_param_names);
         extra_items.push(ast::Item::Binding(ast::Binding {
             pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
@@ -2657,19 +2657,27 @@ fn append_instance_items(
     Ok(())
 }
 
-fn qualify_expr_ctors_for_instance_import(expr: ast::Expr, impl_name: &str) -> ast::Expr {
-    // The generated impl binding name is stable and contains the import qualifier:
-    // `__inst_<Class>_<Qual>_<Ty>_<method>`.
-    // We only need <Qual> here.
-    let Some(rest) = impl_name.strip_prefix("__inst_") else {
+fn qualify_expr_ctors_for_instance_import(expr: ast::Expr, inst: &ast::InstanceDecl) -> ast::Expr {
+    // Only qualify constructors when the instance head type itself is qualified (imported
+    // qualified / aliased). For local instances like `instance Applicative Maybe`, we must
+    // not rewrite `Nothing` into `Maybe.Nothing`.
+    fn instance_head_qual(inst: &ast::InstanceDecl) -> Option<&str> {
+        let ast::Type::Var(h) = instance_head(inst)? else {
+            return None;
+        };
+        h.split_once('.').map(|(q, _)| q)
+    }
+
+    fn instance_head(inst: &ast::InstanceDecl) -> Option<&ast::Type> {
+        match &inst.ty {
+            ast::Type::App { head, .. } => Some(head),
+            t => Some(t),
+        }
+    }
+
+    let Some(qual) = instance_head_qual(inst) else {
         return expr;
     };
-    let parts: Vec<&str> = rest.split('_').collect();
-    if parts.len() < 4 {
-        return expr;
-    }
-    // parts[0]=Class, parts[1]=Qual, parts[2]=Ty, parts[3]=method...
-    let qual = parts[1];
     if qual.is_empty() {
         return expr;
     }
@@ -2755,12 +2763,6 @@ fn qualify_expr_ctors_for_instance_import(expr: ast::Expr, impl_name: &str) -> a
             _ => {}
         }
         e
-    }
-
-    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-        eprintln!(
-            "[KSCR_DEBUG_IMPORTS] qualify_expr_ctors_for_instance_import: impl={impl_name} qual={qual}",
-        );
     }
 
     go(expr, qual)
