@@ -2187,6 +2187,10 @@ struct ClassEnv {
     /// Non-ground instances (dictionary passing). These are selected by unification on the
     /// instance head pattern, and require dictionaries for their context predicates.
     poly_instances: Vec<PolyInstance>,
+
+    // Type aliases in scope when this env was collected.
+    // Used to compare method signatures modulo aliases across merges.
+    aliases: HashMap<String, ast::TypeAlias>,
 }
 
 #[derive(Debug, Clone)]
@@ -2268,7 +2272,10 @@ fn mangle_ident(s: &str) -> String {
 }
 
 fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
-    let mut env = ClassEnv::default();
+    let mut env = ClassEnv {
+        aliases: collect_type_aliases(module),
+        ..Default::default()
+    };
     let (class_method_names, class_default_methods) = collect_class_decls(module, &mut env)?;
     reject_ambiguous_method_names(&mut env)?;
     validate_superclass_preds(&env)?;
@@ -4894,12 +4901,11 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
     }
 
     // Compare method signatures modulo type aliases.
-    // During stdlib scanning / merging, different sources may preserve aliases
-    // (`String`) while others are already expanded (`[Char]`). Treat them equal.
+    // Note: different sources may preserve aliases while others are already expanded.
     let normalize_qt = |qt: ast::QualType| -> Result<ast::QualType> {
-        // NOTE: `ast::Type::String` is a built-in surface alias for `[Char]`.
-        // We model it here as a type alias so we can reuse the general alias expander.
         let mut aliases: HashMap<String, ast::TypeAlias> = HashMap::new();
+
+        // Built-in surface alias: String = [Char].
         aliases.insert(
             "String".to_string(),
             ast::TypeAlias {
@@ -4908,6 +4914,14 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
                 ty: ast::Type::List(Box::new(ast::Type::Char)),
             },
         );
+
+        // Also include aliases from both envs.
+        // If there are name conflicts, prefer the destination env.
+        aliases.extend(src.aliases.iter().map(|(k, v)| (k.clone(), v.clone())));
+        for (k, v) in &dst.aliases {
+            aliases.insert(k.clone(), v.clone());
+        }
+
         expand_qual_type(qt, &aliases)
     };
 
