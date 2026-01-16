@@ -38,13 +38,10 @@ jobs:
         run: cargo fmt -- --check
 
       - name: cargo clippy (deny warnings)
-        run: cargo clippy --all-features -- -D warnings
+        run: cargo clippy --all-features -- -D warnings -D clippy::too_many_lines -D clippy::cognitive_complexity
 
       - name: file size ratchet
         run: bash tools/ci/check_file_size_ratchet.sh
-
-      - name: clippy metrics ratchet
-        run: python3 tools/ci/check_clippy_metrics_ratchet.py
 
       - name: Install cargo-geiger
         run: cargo install cargo-geiger --locked --version 0.13.0

@@ -25,18 +25,7 @@ bash tools/ci/update_file_size_baseline.sh
 
 ## Clippy metrics ratchet
 
-- Script: `tools/ci/check_clippy_metrics_ratchet.py`
-- Baseline: `tools/ci/clippy_metrics_baseline.json`
+Status:
 
-Policy:
-
-- The number of warnings for:
-  - `clippy::cognitive_complexity`
-  - `clippy::too_many_lines`
-  must **not increase** compared to the baseline.
-
-Update baseline (only when intentionally resetting after refactors):
-
-```bash
-python3 tools/ci/update_clippy_metrics_baseline.py
-```
+- Deprecated: we now treat `clippy::too_many_lines` and `clippy::cognitive_complexity` as **hard gates** in CI (deny).
+- This ratchet mechanism is kept only for historical reference; it is no longer run in CI.

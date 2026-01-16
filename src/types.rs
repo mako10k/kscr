@@ -704,8 +704,7 @@ fn infer_pat_in(
             binds.push((name.clone(), t.clone()));
             Ok(t)
         }
-        PatternKind::Wildcard => Ok(cx.fresh()),
-        PatternKind::Hole(_) => Ok(cx.fresh()),
+        PatternKind::Wildcard | PatternKind::Hole(_) => Ok(cx.fresh()),
         PatternKind::Literal(e) => Ok(match &e.kind {
             ExprKind::Unit => Ty::Con("Unit".to_string()),
             ExprKind::Integer(_) => Ty::Con("Integer".to_string()),
@@ -958,12 +957,7 @@ fn collect_deps_in_pattern(
                 collect_deps_in_pattern(p, name_to_binding, bound, out);
             }
         }
-        PatternKind::Record(fs) => {
-            for (_, p) in fs {
-                collect_deps_in_pattern(p, name_to_binding, bound, out);
-            }
-        }
-        PatternKind::RecordLoose(fs, _) => {
+        PatternKind::Record(fs) | PatternKind::RecordLoose(fs, _) => {
             for (_, p) in fs {
                 collect_deps_in_pattern(p, name_to_binding, bound, out);
             }
@@ -1019,7 +1013,13 @@ fn collect_deps_in_expr(
                 }
             }
         }
-        ExprKind::Ctor(_) => {}
+        ExprKind::Ctor(_)
+        | ExprKind::Unit
+        | ExprKind::Integer(_)
+        | ExprKind::Float64(_)
+        | ExprKind::Bool(_)
+        | ExprKind::String(_)
+        | ExprKind::Char(_) => {}
         ExprKind::Lambda { params, body } => {
             let mut bound2 = bound.clone();
             for p in params {
@@ -1111,12 +1111,6 @@ fn collect_deps_in_expr(
                 collect_deps_in_expr(e, name_to_binding, bound, out);
             }
         }
-        ExprKind::Unit
-        | ExprKind::Integer(_)
-        | ExprKind::Float64(_)
-        | ExprKind::Bool(_)
-        | ExprKind::String(_)
-        | ExprKind::Char(_) => {}
     }
 }
 
@@ -4330,9 +4324,7 @@ impl ModuleLoader {
             // - `import M as Q` is unqualified, but must still allow `Q.x` dotted refs.
             //   For that, we also emit qualified bindings under the alias.
             // - Plain `import M` uses the canonical qualifier only.
-            let quals: Vec<&str> = if id.qualified {
-                vec![primary_qual]
-            } else if id.as_name.is_some() {
+            let quals: Vec<&str> = if id.qualified || id.as_name.is_some() {
                 vec![primary_qual]
             } else {
                 vec![canonical_qual]

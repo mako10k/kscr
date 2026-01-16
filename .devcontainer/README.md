@@ -14,7 +14,7 @@ Useful commands:
 
 ```bash
 cargo test
-cargo clippy -- -D warnings
+cargo clippy -- -D warnings -D clippy::too_many_lines -D clippy::cognitive_complexity
 cargo fmt -- --check
 cargo geiger
 cargo +nightly udeps

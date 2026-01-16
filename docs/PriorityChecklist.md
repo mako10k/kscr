@@ -208,7 +208,7 @@ Status: Complete (MVP)
 - [x] Added smoke tests with the feature enabled.
 
 Operation (gates):
-- Default mandatory: `cargo test && cargo clippy -- -D warnings && cargo geiger && cargo +nightly udeps`.
+- Default mandatory: `cargo test && cargo clippy -- -D warnings -D clippy::too_many_lines -D clippy::cognitive_complexity && cargo geiger && cargo +nightly udeps`.
 - Optional (with unsafe_ffi enabled): `cargo test --features unsafe_ffi` / `cargo geiger --features unsafe_ffi`.
 
 ## P10 — Unsafe features gate policy
@@ -217,7 +217,7 @@ Purpose: Establish CI/operational rules for verifying **unsafe features** like `
 Policy (MVP):
 - Default build (no features):
   - `kscr` main crate is marked with `#![forbid(unsafe_code)]`, prohibiting unsafe code entirely.
-  - Mandatory gates: `cargo test && cargo clippy -- -D warnings && cargo geiger && cargo +nightly udeps`.
+  - Mandatory gates: `cargo test && cargo clippy -- -D warnings -D clippy::too_many_lines -D clippy::cognitive_complexity && cargo geiger && cargo +nightly udeps`.
 - Unsafe features (e.g., `unsafe_ffi` / `unsafe_bigint`):
   - Isolate unsafe into separate crates (optional dependencies).
   - Run separate jobs for `cargo test --features ...`.

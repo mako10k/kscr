@@ -126,7 +126,7 @@ Last updated: 2026-01-15
 ## Release checklist (each bump)
 
 1. `cargo test`
-2. `cargo clippy -- -D warnings`
+2. `cargo clippy -- -D warnings -D clippy::too_many_lines -D clippy::cognitive_complexity`
 3. `cargo geiger`
 4. LSP manual smoke:
    - `cd crates/kscr_lsp && cargo test && bash test_lsp.sh`

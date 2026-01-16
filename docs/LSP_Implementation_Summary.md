@@ -196,7 +196,7 @@ To contribute to the LSP implementation:
 1. Read `docs/LSPDesign.md` for the overall design
 2. Check the source code in `crates/kscr_lsp/src/`
 3. Add tests for new features
-4. Ensure `cargo clippy -- -D warnings` passes
+4. Ensure `cargo clippy -- -D warnings -D clippy::too_many_lines -D clippy::cognitive_complexity` passes
 5. Update documentation
 
 ## References
