@@ -1554,102 +1554,24 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
             ),
         },
     );
-}
-
-fn add_string_primitives(_cx: &mut InferCtx, _env: &mut TypeEnv) {
-    // Filled by remaining original code below (kept minimal here).
-}
-
-fn add_io_primitives(_cx: &mut InferCtx, _env: &mut TypeEnv) {
-    // Filled by remaining original code below (kept minimal here).
-}
-
-fn add_misc_builtins(_cx: &mut InferCtx, _env: &mut TypeEnv) {
-    // Filled by remaining original code below (kept minimal here).
-}
-
-fn add_ffi_primitives(_env: &mut TypeEnv) {
-    // Filled by remaining original code below (kept minimal here).
-}
-
-fn collect_ctor_env_with_class_env(
-    cx: &mut InferCtx,
-    module: &ast::Module,
-    class_env: &ClassEnv,
-) -> Result<TypeEnv> {
-    let mut env = TypeEnv::new();
-
-    add_minimal_prelude_types(cx, &mut env);
-    add_integer_primitives(&mut env);
-    add_bool_primitives(cx, &mut env);
-    add_string_primitives(cx, &mut env);
-    add_io_primitives(cx, &mut env);
-    add_misc_builtins(cx, &mut env);
-    add_ffi_primitives(&mut env);
 
     // < :: Integer -> Integer -> Bool
-    env.insert(
-        "<".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Func(
+    for name in ["<", "<=", ">", ">="] {
+        env.insert(
+            name.to_string(),
+            Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
                     Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Con("Bool".to_string())),
-                )),
-            ),
-        },
-    );
-
-    // <= :: Integer -> Integer -> Bool
-    env.insert(
-        "<=".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Func(
-                    Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Con("Bool".to_string())),
-                )),
-            ),
-        },
-    );
-
-    // > :: Integer -> Integer -> Bool
-    env.insert(
-        ">".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Func(
-                    Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Con("Bool".to_string())),
-                )),
-            ),
-        },
-    );
-
-    // >= :: Integer -> Integer -> Bool
-    env.insert(
-        ">=".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Func(
-                    Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Con("Bool".to_string())),
-                )),
-            ),
-        },
-    );
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("Integer".to_string())),
+                        Box::new(Ty::Con("Bool".to_string())),
+                    )),
+                ),
+            },
+        );
+    }
 
     // /= :: Eq a => a -> a -> Bool
     let Ty::Var(v) = cx.fresh() else {
@@ -1671,36 +1593,22 @@ fn collect_ctor_env_with_class_env(
     );
 
     // && :: Bool -> Bool -> Bool
-    env.insert(
-        "&&".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Bool".to_string())),
-                Box::new(Ty::Func(
+    for name in ["&&", "||"] {
+        env.insert(
+            name.to_string(),
+            Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
                     Box::new(Ty::Con("Bool".to_string())),
-                    Box::new(Ty::Con("Bool".to_string())),
-                )),
-            ),
-        },
-    );
-
-    // || :: Bool -> Bool -> Bool
-    env.insert(
-        "||".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Bool".to_string())),
-                Box::new(Ty::Func(
-                    Box::new(Ty::Con("Bool".to_string())),
-                    Box::new(Ty::Con("Bool".to_string())),
-                )),
-            ),
-        },
-    );
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("Bool".to_string())),
+                        Box::new(Ty::Con("Bool".to_string())),
+                    )),
+                ),
+            },
+        );
+    }
 
     // not :: Bool -> Bool
     env.insert(
@@ -1714,7 +1622,9 @@ fn collect_ctor_env_with_class_env(
             ),
         },
     );
+}
 
+fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     let char_list = Ty::List(Box::new(Ty::Con("Char".to_string())));
 
     // intToString :: Integer -> [Char]
@@ -1736,10 +1646,7 @@ fn collect_ctor_env_with_class_env(
         Scheme {
             vars: vec![],
             constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Bool".to_string())),
-                Box::new(char_list.clone()),
-            ),
+            ty: Ty::Func(Box::new(Ty::Con("Bool".to_string())), Box::new(char_list.clone())),
         },
     );
 
@@ -1785,9 +1692,12 @@ fn collect_ctor_env_with_class_env(
             ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
         },
     );
+}
+
+fn add_io_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
+    let char_list = Ty::List(Box::new(Ty::Con("Char".to_string())));
 
     // stdoutWrite :: [Char] -> IO Unit
-    // Low-level IO primitive used as a building block for higher-level IO.
     env.insert(
         "stdoutWrite".to_string(),
         Scheme {
@@ -1804,7 +1714,6 @@ fn collect_ctor_env_with_class_env(
     );
 
     // stdinReadLine :: IO [Char]
-    // Low-level IO primitive used as a building block for higher-level IO.
     env.insert(
         "stdinReadLine".to_string(),
         Scheme {
@@ -1818,9 +1727,6 @@ fn collect_ctor_env_with_class_env(
     );
 
     // readLine :: IO [Char]
-    // NOTE: currently a builtin for early ergonomics.
-    // In the future, `readLine` should become a library function built on top of IO primitives
-    // such as `stdinReadLine`.
     env.insert(
         "readLine".to_string(),
         Scheme {
@@ -1834,9 +1740,6 @@ fn collect_ctor_env_with_class_env(
     );
 
     // print :: [Char] -> IO Unit
-    // NOTE: currently a builtin for observability.
-    // In the future, `print` should become a library function built on top of IO primitives
-    // such as `stdoutWrite`.
     env.insert(
         "print".to_string(),
         Scheme {
@@ -1849,20 +1752,6 @@ fn collect_ctor_env_with_class_env(
                     args: vec![Ty::Con("Unit".to_string())],
                 }),
             ),
-        },
-    );
-
-    // error :: forall a. [Char] -> a
-    // Pure bottom value used for explicit partiality / testing laziness.
-    let Ty::Var(a) = cx.fresh() else {
-        unreachable!()
-    };
-    env.insert(
-        "error".to_string(),
-        Scheme {
-            vars: vec![a],
-            constraints: vec![],
-            ty: Ty::Func(Box::new(char_list.clone()), Box::new(Ty::Var(a))),
         },
     );
 
@@ -1932,7 +1821,26 @@ fn collect_ctor_env_with_class_env(
             ),
         },
     );
+}
 
+fn add_misc_builtins(cx: &mut InferCtx, env: &mut TypeEnv) {
+    let char_list = Ty::List(Box::new(Ty::Con("Char".to_string())));
+
+    // error :: forall a. [Char] -> a
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
+    env.insert(
+        "error".to_string(),
+        Scheme {
+            vars: vec![a],
+            constraints: vec![],
+            ty: Ty::Func(Box::new(char_list.clone()), Box::new(Ty::Var(a))),
+        },
+    );
+}
+
+fn add_ffi_primitives(env: &mut TypeEnv) {
     // P6: unsafe-free "FFI" boundary scaffolding.
     // ffiAddI32 :: i32 -> i32 -> i32
     env.insert(
@@ -1983,6 +1891,22 @@ fn collect_ctor_env_with_class_env(
             ),
         },
     );
+}
+
+fn collect_ctor_env_with_class_env(
+    cx: &mut InferCtx,
+    module: &ast::Module,
+    class_env: &ClassEnv,
+) -> Result<TypeEnv> {
+    let mut env = TypeEnv::new();
+
+    add_minimal_prelude_types(cx, &mut env);
+    add_integer_primitives(&mut env);
+    add_bool_primitives(cx, &mut env);
+    add_string_primitives(cx, &mut env);
+    add_io_primitives(cx, &mut env);
+    add_misc_builtins(cx, &mut env);
+    add_ffi_primitives(&mut env);
 
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
