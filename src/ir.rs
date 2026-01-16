@@ -54,20 +54,20 @@ fn collect_ctor_aliases(module: &ast::Module) -> std::collections::HashMap<Strin
         let ast::PatternKind::Var(name) = &b.pat.kind else {
             continue;
         };
-            match &b.expr.kind {
-                ast::ExprKind::Var(v) => {
-                    if v.contains('.') {
-                        out.insert(name.clone(), v.clone());
-                    }
+        match &b.expr.kind {
+            ast::ExprKind::Var(v) => {
+                if v.contains('.') {
+                    out.insert(name.clone(), v.clone());
                 }
-                ast::ExprKind::Ctor(v) => {
-                    let v = v.qualified_text();
-                    if v.contains('.') {
-                        out.insert(name.clone(), v.clone());
-                    }
-                }
-                _ => {}
             }
+            ast::ExprKind::Ctor(v) => {
+                let v = v.qualified_text();
+                if v.contains('.') {
+                    out.insert(name.clone(), v.clone());
+                }
+            }
+            _ => {}
+        }
     }
     out
 }
@@ -368,7 +368,7 @@ fn lower_expr(
         ExprKind::String(s) => IrExpr::String(s.clone()),
         ExprKind::Char(c) => IrExpr::Char(*c),
         ExprKind::Var(v) => IrExpr::Var(v.clone()),
-          ExprKind::Ctor(v) => IrExpr::Var(v.qualified_text()),
+        ExprKind::Ctor(v) => IrExpr::Var(v.qualified_text()),
         ExprKind::Lambda { params, body } => IrExpr::Lambda {
             params: params.clone(),
             body: Box::new(lower_expr(body, fresh, ctor_aliases)?),

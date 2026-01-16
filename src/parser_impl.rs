@@ -1267,7 +1267,7 @@ fn is_ctor_symbol(op: &str) -> bool {
 
 fn op_expr_kind(op: String) -> ast::ExprKind {
     if is_ctor_symbol(&op) || is_upper_by_last_segment(&op) {
-                ast::ExprKind::Ctor(ast::ResolvedName::Unresolved(op))
+        ast::ExprKind::Ctor(ast::ResolvedName::Unresolved(op))
     } else {
         ast::ExprKind::Var(op)
     }

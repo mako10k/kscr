@@ -1077,19 +1077,17 @@ fn infer_pat_in(
         PatternKind::View(p, e) => {
             infer_pat_view(cx, data_env, subst, env, p, e, binds, seen, cs_out)
         }
-        PatternKind::Constructor { name, args } => {
-            infer_pat_constructor(
-                cx,
-                data_env,
-                subst,
-                env,
-                &name.qualified_text(),
-                args,
-                binds,
-                seen,
-                cs_out,
-            )
-        }
+        PatternKind::Constructor { name, args } => infer_pat_constructor(
+            cx,
+            data_env,
+            subst,
+            env,
+            &name.qualified_text(),
+            args,
+            binds,
+            seen,
+            cs_out,
+        ),
     }
 }
 
@@ -2682,90 +2680,90 @@ fn qualify_expr_ctors_for_instance_import(expr: ast::Expr, inst: &ast::InstanceD
         return expr;
     }
 
-    fn go(mut e: ast::Expr, qual: &str) -> ast::Expr {
-        match &mut e.kind {
-            ast::ExprKind::Ctor(n) => {
-                if n.is_unresolved_eq("Nothing") {
-                    *n = ast::ResolvedName::unresolved(format!("{qual}.Nothing"));
-                }
-                if n.is_unresolved_eq("Just") {
-                    *n = ast::ResolvedName::unresolved(format!("{qual}.Just"));
-                }
-            }
-            ast::ExprKind::Lambda { body, .. } => {
-                **body = go((**body).clone(), qual);
-            }
-            ast::ExprKind::Apply { func, args } => {
-                **func = go((**func).clone(), qual);
-                for a in args {
-                    *a = go(a.clone(), qual);
-                }
-            }
-            ast::ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                **cond = go((**cond).clone(), qual);
-                **then_branch = go((**then_branch).clone(), qual);
-                **else_branch = go((**else_branch).clone(), qual);
-            }
-            ast::ExprKind::Let { bindings, body } => {
-                for b in bindings {
-                    b.expr = go(b.expr.clone(), qual);
-                }
-                **body = go((**body).clone(), qual);
-            }
-            ast::ExprKind::Where { expr, bindings } => {
-                for b in bindings {
-                    b.expr = go(b.expr.clone(), qual);
-                }
-                **expr = go((**expr).clone(), qual);
-            }
-            ast::ExprKind::Annot { expr, .. } => {
-                **expr = go((**expr).clone(), qual);
-            }
-            ast::ExprKind::Do(stmts) => {
-                for s in stmts {
-                    match s {
-                        ast::DoStmt::Bind { pat: _, expr } => {
-                            *expr = go(expr.clone(), qual);
-                        }
-                        ast::DoStmt::Expr(e) => {
-                            *e = go(e.clone(), qual);
-                        }
-                    }
-                }
-            }
-            ast::ExprKind::Case { expr, arms } => {
-                **expr = go((**expr).clone(), qual);
-                for a in arms {
-                    if let Some(g) = &mut a.guard {
-                        *g = go(g.clone(), qual);
-                    }
-                    a.body = go(a.body.clone(), qual);
-                }
-            }
-            ast::ExprKind::Cons { head, tail } => {
-                **head = go((**head).clone(), qual);
-                **tail = go((**tail).clone(), qual);
-            }
-            ast::ExprKind::List(es) | ast::ExprKind::Tuple(es) => {
-                for x in es {
-                    *x = go(x.clone(), qual);
-                }
-            }
-            ast::ExprKind::Record(fields) => {
-                for (_, v) in fields {
-                    *v = go(v.clone(), qual);
-                }
-            }
-            _ => {}
-        }
-        e
-    }
+    qualify_expr_ctors_recursive(expr, qual)
+}
 
-    go(expr, qual)
+fn qualify_expr_ctors_recursive(mut e: ast::Expr, qual: &str) -> ast::Expr {
+    match &mut e.kind {
+        ast::ExprKind::Ctor(n) => {
+            if n.is_unresolved_eq("Nothing") {
+                *n = ast::ResolvedName::unresolved(format!("{qual}.Nothing"));
+            }
+            if n.is_unresolved_eq("Just") {
+                *n = ast::ResolvedName::unresolved(format!("{qual}.Just"));
+            }
+        }
+        ast::ExprKind::Lambda { body, .. } => {
+            **body = qualify_expr_ctors_recursive((**body).clone(), qual);
+        }
+        ast::ExprKind::Apply { func, args } => {
+            **func = qualify_expr_ctors_recursive((**func).clone(), qual);
+            for a in args {
+                *a = qualify_expr_ctors_recursive(a.clone(), qual);
+            }
+        }
+        ast::ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            **cond = qualify_expr_ctors_recursive((**cond).clone(), qual);
+            **then_branch = qualify_expr_ctors_recursive((**then_branch).clone(), qual);
+            **else_branch = qualify_expr_ctors_recursive((**else_branch).clone(), qual);
+        }
+        ast::ExprKind::Let { bindings, body } => {
+            for b in bindings {
+                b.expr = qualify_expr_ctors_recursive(b.expr.clone(), qual);
+            }
+            **body = qualify_expr_ctors_recursive((**body).clone(), qual);
+        }
+        ast::ExprKind::Where { expr, bindings } => {
+            for b in bindings {
+                b.expr = qualify_expr_ctors_recursive(b.expr.clone(), qual);
+            }
+            **expr = qualify_expr_ctors_recursive((**expr).clone(), qual);
+        }
+        ast::ExprKind::Annot { expr, .. } => {
+            **expr = qualify_expr_ctors_recursive((**expr).clone(), qual);
+        }
+        ast::ExprKind::Do(stmts) => {
+            for s in stmts {
+                match s {
+                    ast::DoStmt::Bind { pat: _, expr } => {
+                        *expr = qualify_expr_ctors_recursive(expr.clone(), qual);
+                    }
+                    ast::DoStmt::Expr(e) => {
+                        *e = qualify_expr_ctors_recursive(e.clone(), qual);
+                    }
+                }
+            }
+        }
+        ast::ExprKind::Case { expr, arms } => {
+            **expr = qualify_expr_ctors_recursive((**expr).clone(), qual);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    *g = qualify_expr_ctors_recursive(g.clone(), qual);
+                }
+                a.body = qualify_expr_ctors_recursive(a.body.clone(), qual);
+            }
+        }
+        ast::ExprKind::Cons { head, tail } => {
+            **head = qualify_expr_ctors_recursive((**head).clone(), qual);
+            **tail = qualify_expr_ctors_recursive((**tail).clone(), qual);
+        }
+        ast::ExprKind::List(es) | ast::ExprKind::Tuple(es) => {
+            for x in es {
+                *x = qualify_expr_ctors_recursive(x.clone(), qual);
+            }
+        }
+        ast::ExprKind::Record(fields) => {
+            for (_, v) in fields {
+                *v = qualify_expr_ctors_recursive(v.clone(), qual);
+            }
+        }
+        _ => {}
+    }
+    e
 }
 
 fn resolve_instance_dict_name(
@@ -2994,9 +2992,10 @@ fn case_collect_top_alts(p: &ast::Pattern, out: &mut Vec<String>) {
             case_collect_top_alts(a, out);
             case_collect_top_alts(b, out);
         }
-        PatternKind::Constructor { name, .. } => {
-            out.push(format!("ctor:{}", unqual_name_last_segment(&name.qualified_text())))
-        }
+        PatternKind::Constructor { name, .. } => out.push(format!(
+            "ctor:{}",
+            unqual_name_last_segment(&name.qualified_text())
+        )),
         PatternKind::Cons(_, _) if case_pat_is_list_cons_all(p) => {
             out.push("list:cons_all".to_string())
         }
@@ -3875,16 +3874,14 @@ fn infer_expr_in(
 
         ExprKind::Ctor(name) => {
             let key = name.qualified_text();
-            let s = env
-                .get(&key)
-                .ok_or_else(|| {
-                    let hint = if key.contains('.') {
-                        " (hint: check qualified imports / aliasing)"
-                    } else {
-                        ""
-                    };
-                    Error::msg_with_span(format!("unknown constructor: {key}{hint}"), span)
-                })?;
+            let s = env.get(&key).ok_or_else(|| {
+                let hint = if key.contains('.') {
+                    " (hint: check qualified imports / aliasing)"
+                } else {
+                    ""
+                };
+                Error::msg_with_span(format!("unknown constructor: {key}{hint}"), span)
+            })?;
             let (cs, ty) = instantiate_qual(cx, s);
             Ok((Subst::new(), cs, ty))
         }
@@ -4068,7 +4065,7 @@ fn infer_expr_if(
         Ty::Con("Bool".to_string()),
         "infer_expr_if:cond",
     )
-        .map_err(|e| e.with_context("in if cond"))?;
+    .map_err(|e| e.with_context("in if cond"))?;
     let mut s = compose(&s_bool, &s_cond);
     let mut cs = apply_constraints(&s, cs_cond);
 
@@ -4091,7 +4088,7 @@ fn infer_expr_if(
         apply(&s, t_else),
         "infer_expr_if:branches",
     )
-        .map_err(|e| e.with_context("in if branches"))?;
+    .map_err(|e| e.with_context("in if branches"))?;
     s = compose(&s_res, &s);
     cs = apply_constraints(&s, cs);
     Ok((s.clone(), cs, apply(&s, apply(&s, t_then))))
@@ -4284,7 +4281,7 @@ fn infer_expr_case(
                 Ty::Con("Bool".to_string()),
                 &format!("infer_expr_case:arm {arm_no}:guard_bool"),
             )
-                .map_err(|e| e.with_context(format!("in case arm {arm_no} guard")))?;
+            .map_err(|e| e.with_context(format!("in case arm {arm_no} guard")))?;
             s = compose(&su_g, &s);
             cs = apply_constraints(&s, cs);
             env_arm = apply_env(&s, &env_arm);
@@ -4301,7 +4298,7 @@ fn infer_expr_case(
             apply(&s, arm_ty),
             &format!("infer_expr_case:arm {arm_no}:out"),
         )
-            .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
+        .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
         s = compose(&su_out, &s);
         cs = apply_constraints(&s, cs);
         out_ty = apply(&s, out_ty);
@@ -4378,7 +4375,7 @@ fn infer_expr_do(
                     apply(&s, io_r.clone()),
                     &format!("infer_expr_do:stmt {stmt_no}:bind_pat"),
                 )
-                    .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
+                .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
                 s = compose(&su_pat, &s);
                 cs = apply_constraints(&s, cs);
                 cs.extend(apply_constraints(&s, cs_pat));
@@ -4859,9 +4856,9 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
             }
 
             // Load AST via the loader so stdlib cache and parsing stays consistent.
-            let parsed = loader
-                .load_ast(&path)
-                .map_err(|e| e.with_context(format!("while loading stdlib module {}", path.display())))?;
+            let parsed = loader.load_ast(&path).map_err(|e| {
+                e.with_context(format!("while loading stdlib module {}", path.display()))
+            })?;
             for it in parsed.items {
                 if matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)) {
                     m.items.push(it);
@@ -4870,8 +4867,7 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
         }
     }
 
-    desugar_typeclasses(&mut m)
-        .map_err(|e| e.with_context("while desugaring stdlib typeclasses"))
+    desugar_typeclasses(&mut m).map_err(|e| e.with_context("while desugaring stdlib typeclasses"))
 }
 
 fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
@@ -4980,7 +4976,7 @@ struct QualEnv {
 fn module_qual_env(module: &ast::Module) -> QualEnv {
     let mut env = QualEnv::default();
     let mut module_counts: HashMap<String, usize> = HashMap::new();
-    
+
     // Always allow the module's own canonical qualifier, so internal references like
     // `Prelude.Nothing` remain valid even after import lowering.
     if let Some(name) = module.name.as_ref() {
@@ -5232,7 +5228,10 @@ fn desugar_qualified_pattern(p: ast::Pattern, env: &QualEnv) -> Result<ast::Patt
             Box::new(desugar_qualified_expr(*e, env)?),
         ),
         PatternKind::Constructor { name, args } => PatternKind::Constructor {
-            name: ast::ResolvedName::unresolved(desugar_qualified_ref(&name.qualified_text(), env)?),
+            name: ast::ResolvedName::unresolved(desugar_qualified_ref(
+                &name.qualified_text(),
+                env,
+            )?),
             args: args
                 .into_iter()
                 .map(|p| desugar_qualified_pattern(p, env))
@@ -5400,6 +5399,129 @@ impl ModuleLoader {
         Ok(m)
     }
 
+    fn validate_import_cyclic(&self, p: &Path) -> Result<()> {
+        if let Some(pos) = self.stack.iter().position(|x| x == p) {
+            let mut chain: Vec<String> = self.stack[pos..]
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
+            chain.push(p.display().to_string());
+            return Err(Error::msg(format!(
+                "cyclic imports: {}",
+                chain.join(" -> ")
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_imported_module(
+        &self,
+        imported: &ast::Module,
+        import_decl: &ast::ImportDecl,
+    ) -> Result<()> {
+        let Some(name) = &imported.name else {
+            return Err(Error::msg(format!(
+                "imported module {} must have a module header",
+                import_decl.module
+            )));
+        };
+        if name != &import_decl.module {
+            return Err(Error::msg(format!(
+                "module name mismatch: import {} but file declares module {}",
+                import_decl.module, name
+            )));
+        }
+        Ok(())
+    }
+
+    fn debug_print_exports(
+        &self,
+        debug_imports: bool,
+        id: &ast::ImportDecl,
+        exports: &HashSet<String>,
+    ) {
+        if !debug_imports || (id.module != "Prelude" && id.module != "Prelude.List") {
+            return;
+        }
+        let mut xs: Vec<&str> = exports.iter().map(|s| s.as_str()).collect();
+        xs.sort_unstable();
+        let has_from_to = exports.contains("enumFromTo");
+        let has_from_then_to = exports.contains("enumFromThenTo");
+        eprintln!(
+            "[KSCR_DEBUG_IMPORTS] exports for module {}: count={} enumFromTo={} enumFromThenTo={}",
+            id.module,
+            exports.len(),
+            has_from_to,
+            has_from_then_to
+        );
+        if !has_from_to || !has_from_then_to {
+            eprintln!(
+                "[KSCR_DEBUG_IMPORTS]   first exports: {:?}",
+                xs.into_iter().take(40).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    fn emit_qualified_imports(
+        &mut self,
+        p: &Path,
+        id: &ast::ImportDecl,
+        imported: &ast::Module,
+        exports: &HashSet<String>,
+        local_emitted_qualified: &mut HashSet<ImportQualKey>,
+        out: &mut Vec<ast::Item>,
+    ) -> Result<()> {
+        let debug_imports = std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some();
+        let primary_qual = id.as_name.as_deref().unwrap_or(&id.module);
+        let canonical_qual = id.module.as_str();
+
+        let quals: Vec<&str> = if id.qualified {
+            vec![primary_qual]
+        } else if id.as_name.is_some() {
+            vec![canonical_qual, primary_qual]
+        } else {
+            vec![canonical_qual]
+        };
+
+        for qual in quals {
+            let key = ImportQualKey {
+                path: p.to_path_buf(),
+                qual: qual.to_string(),
+            };
+            if local_emitted_qualified.insert(key.clone()) && self.emitted_qualified.insert(key) {
+                let items = import_qualified_items_for_decl(imported, qual, exports)?;
+                if debug_imports {
+                    self.debug_qualified_items(&items, &id.module, qual);
+                }
+                out.extend(items);
+            }
+        }
+        Ok(())
+    }
+
+    fn debug_qualified_items(&self, items: &[ast::Item], module: &str, qual: &str) {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for it in items {
+            let mut names = HashSet::new();
+            item_defined_names(it, &mut names);
+            for n in names {
+                *counts.entry(n).or_insert(0) += 1;
+            }
+        }
+        if let Some(k) = counts.get("L.null") {
+            eprintln!(
+                "[KSCR_DEBUG_IMPORTS] import_qualified_items_for_decl produced L.null x{k} for module {module} as {qual}"
+            );
+            for it in items {
+                let mut names = HashSet::new();
+                item_defined_names(it, &mut names);
+                if names.contains("L.null") {
+                    eprintln!("[KSCR_DEBUG_IMPORTS]   L.null item: {it:?}");
+                }
+            }
+        }
+    }
+
     fn collect_imports(
         &mut self,
         module: &ast::Module,
@@ -5407,10 +5529,6 @@ impl ModuleLoader {
         out: &mut Vec<ast::Item>,
     ) -> Result<()> {
         let debug_imports = std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some();
-
-        // Track `(imported file, qualifier)` pairs emitted during this single call.
-        // This avoids duplicates when the same import is syntactically present multiple times
-        // in one module (directly or via desugaring).
         let mut local_emitted_qualified: HashSet<ImportQualKey> = HashSet::new();
 
         for it in &module.items {
@@ -5420,39 +5538,11 @@ impl ModuleLoader {
 
             self.debug_print_import(debug_imports, id);
 
-            let primary_qual = id.as_name.as_deref().unwrap_or(&id.module);
-            let canonical_qual = id.module.as_str();
-
-            // NOTE: For `import qualified M as Q`, we only need to emit a single qualified
-            // forwarder set. Emitting more than one can create duplicate names like `Q.x`.
-
             let p = self.resolve_import_path(dir, &id.module)?;
-
-            if let Some(pos) = self.stack.iter().position(|x| x == &p) {
-                let mut chain: Vec<String> = self.stack[pos..]
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect();
-                chain.push(p.display().to_string());
-                return Err(Error::msg(format!(
-                    "cyclic imports: {}",
-                    chain.join(" -> ")
-                )));
-            }
+            self.validate_import_cyclic(&p)?;
 
             let imported = self.load_ast(&p)?;
-            let Some(name) = &imported.name else {
-                return Err(Error::msg(format!(
-                    "imported module {} must have a module header",
-                    id.module
-                )));
-            };
-            if name != &id.module {
-                return Err(Error::msg(format!(
-                    "module name mismatch: import {} but file declares module {}",
-                    id.module, name
-                )));
-            }
+            self.validate_imported_module(&imported, id)?;
 
             self.stack.push(p.clone());
             let imported_dir = p.parent().unwrap_or(dir);
@@ -5460,91 +5550,20 @@ impl ModuleLoader {
             self.stack.pop();
 
             let exports = module_exported_names(&imported)?;
-            if debug_imports && (id.module == "Prelude" || id.module == "Prelude.List") {
-                let mut xs: Vec<&str> = exports.iter().map(|s| s.as_str()).collect();
-                xs.sort_unstable();
-                let has_from_to = exports.contains("enumFromTo");
-                let has_from_then_to = exports.contains("enumFromThenTo");
-                eprintln!(
-                    "[KSCR_DEBUG_IMPORTS] exports for module {}: count={} enumFromTo={} enumFromThenTo={}",
-                    id.module,
-                    exports.len(),
-                    has_from_to,
-                    has_from_then_to
-                );
-                if !has_from_to || !has_from_then_to {
-                    // Print a small prefix to avoid spamming.
-                    eprintln!(
-                        "[KSCR_DEBUG_IMPORTS]   first exports: {:?}",
-                        xs.into_iter().take(40).collect::<Vec<_>>()
-                    );
-                }
-            }
+            self.debug_print_exports(debug_imports, id, &exports);
 
-            // Emit qualified bindings for each (module file, qualifier) pair.
-            // IMPORTANT:
-            // - `import qualified M as Q` creates bindings `Q.x`.
-            // - `import M as Q` is unqualified, but must still allow `Q.x` dotted refs.
-            //   For that, we also emit qualified bindings under the alias.
-            // - Plain `import M` uses the canonical qualifier only.
-            let quals: Vec<&str> = if id.qualified {
-                vec![primary_qual]
-            } else if id.as_name.is_some() {
-                // `import M as Q` is unqualified (brings `x`), but must also allow dotted refs `Q.x`.
-                vec![canonical_qual, primary_qual]
-            } else {
-                vec![canonical_qual]
-            };
+            self.emit_qualified_imports(
+                &p,
+                id,
+                &imported,
+                &exports,
+                &mut local_emitted_qualified,
+                out,
+            )?;
 
-            for qual in quals {
-                let key = ImportQualKey {
-                    path: p.clone(),
-                    qual: qual.to_string(),
-                };
-                if local_emitted_qualified.insert(key.clone()) && self.emitted_qualified.insert(key)
-                {
-                    let items = import_qualified_items_for_decl(&imported, qual, &exports)?;
-                    if debug_imports {
-                        let mut counts: HashMap<String, usize> = HashMap::new();
-                        for it in &items {
-                            let mut names = HashSet::new();
-                            item_defined_names(it, &mut names);
-                            for n in names {
-                                *counts.entry(n).or_insert(0) += 1;
-                            }
-                        }
-                        if let Some(k) = counts.get("L.null") {
-                            eprintln!(
-                                "[KSCR_DEBUG_IMPORTS] import_qualified_items_for_decl produced L.null x{k} for module {} as {qual}",
-                                id.module
-                            );
-                            for it in &items {
-                                let mut names = HashSet::new();
-                                item_defined_names(it, &mut names);
-                                if names.contains("L.null") {
-                                    eprintln!("[KSCR_DEBUG_IMPORTS]   L.null item: {it:?}");
-                                }
-                            }
-                        }
-                    }
-                    out.extend(items);
-                }
-            }
-
-            // Emit unqualified forwarders.
-            //
-            // IMPORTANT: `emitted_unqualified` must key by BOTH `(module file, qual)`.
-            //
-            // Semantics:
-            // - `import M` brings M's exports into the unqualified namespace.
-            // - `import M as Q` should be qualified-only (no unqualified forwarders).
-            //   Desugaring/instance code must then refer to constructors via the qualified
-            //   alias (e.g. `Q.Just`), not via unqualified `Just`.
+            // Emit unqualified forwarders for non-qualified imports
             if !id.qualified {
-                // Unqualified imports should forward values/types under the import's *primary*
-                // qualifier. When `import Model as M`, we want unqualified forwarding to use
-                // `M` so that type names remain stable (`M.Opt`) and don't unexpectedly show
-                // up as `Model.Opt` in the environment.
+                let primary_qual = id.as_name.as_deref().unwrap_or(&id.module);
                 let key = ImportQualKey {
                     path: p.clone(),
                     qual: primary_qual.to_string(),
@@ -5561,7 +5580,6 @@ impl ModuleLoader {
                             defined_names.contains("enumFromTo"),
                             defined_names.contains("enumFromThenTo")
                         );
-                        // Also show the target qualifier used.
                         eprintln!(
                             "[KSCR_DEBUG_IMPORTS]   Prelude forwarder qual used: {}",
                             primary_qual
@@ -6358,19 +6376,14 @@ fn qualify_item(
     })
 }
 
-fn qualify_ctor_if_imported(
-    name: String,
-    ctor_map: &HashMap<String, String>,
-) -> String {
+fn qualify_ctor_if_imported(name: String, ctor_map: &HashMap<String, String>) -> String {
     // If a constructor name is unqualified (no dot) but it is exported by the imported
     // module, rewrite to the qualified ctor name. This is crucial for Haskell-like
     // `import qualified`, where unqualified names are not brought into scope.
     if !name.contains('.') {
         if let Some(q) = ctor_map.get(&name) {
             if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                eprintln!(
-                    "[KSCR_DEBUG_IMPORTS] qualify_ctor_if_imported: {name} -> {q}"
-                );
+                eprintln!("[KSCR_DEBUG_IMPORTS] qualify_ctor_if_imported: {name} -> {q}");
             }
             return q.clone();
         }
@@ -6720,7 +6733,10 @@ fn qualify_pat_nonbinders(
         PatternKind::Constructor { name, args } => Pattern::new(
             span,
             PatternKind::Constructor {
-                name: ast::ResolvedName::unresolved(qualify_ctor_if_imported(name.qualified_text(), ctor_map)),
+                name: ast::ResolvedName::unresolved(qualify_ctor_if_imported(
+                    name.qualified_text(),
+                    ctor_map,
+                )),
                 args: args
                     .into_iter()
                     .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
@@ -8082,29 +8098,36 @@ fn inject_class_method_value_bindings(
     class_env: &ClassEnv,
     inferred: &HashMap<String, Scheme>,
 ) {
-    use ast::{Binding, Expr, ExprKind, Pattern, PatternKind};
+    let defined = collect_defined_names(module);
+    let methods = collect_sorted_methods(class_env);
+    let injected = create_method_bindings(methods, &defined);
 
-    // Ensure every class method name exists as a top-level value binding.
-    // We implement "methods are values" as a dictionary-function:
-    //
-    //   m = \__dict_C -> (__recordGet __dict_C "m")
-    //
-    // NOTE: the projected method is already a function that expects the
-    // class parameter(s); we do NOT apply it to the dictionary here.
-    //
-    // If a method name is already defined in the module (e.g. an explicit wrapper),
-    // we keep the user-defined one.
-    let mut defined: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if std::env::var("KSCR_DEBUG_METHOD_VALUES").ok().as_deref() == Some("1") {
+        debug_print_method_injection(class_env, inferred, &injected);
+    }
+
+    if !injected.is_empty() {
+        // Prepend so later passes can treat them as ordinary globals.
+        let mut all_items = injected;
+        all_items.append(&mut module.items);
+        module.items = all_items;
+    }
+}
+
+fn collect_defined_names(module: &ast::Module) -> std::collections::HashSet<String> {
+    let mut defined = std::collections::HashSet::new();
     for it in &module.items {
         let ast::Item::Binding(b) = it else {
             continue;
         };
-        if let PatternKind::Var(name) = &b.pat.kind {
+        if let ast::PatternKind::Var(name) = &b.pat.kind {
             defined.insert(name.clone());
         }
     }
+    defined
+}
 
-    // Deterministic order for reproducible output.
+fn collect_sorted_methods(class_env: &ClassEnv) -> Vec<(String, String)> {
     let mut methods: Vec<(String, String)> = Vec::new();
     for (mname, classes) in &class_env.method_classes {
         let Some(class) = classes.first() else {
@@ -8113,66 +8136,57 @@ fn inject_class_method_value_bindings(
         methods.push((mname.clone(), class.clone()));
     }
     methods.sort_by(|(a, ca), (b, cb)| (a, ca).cmp(&(b, cb)));
+    methods
+}
+
+fn create_method_bindings(
+    methods: Vec<(String, String)>,
+    defined: &std::collections::HashSet<String>,
+) -> Vec<ast::Item> {
+    use ast::{Binding, Expr, ExprKind, Pattern, PatternKind};
 
     let mut injected: Vec<ast::Item> = Vec::new();
 
     for (mname, class) in methods {
-        if defined.contains(&mname) {
+        if defined.contains(&mname) || class != "Enum" {
             continue;
         }
 
-        // Inject top-level method values as dictionary-parameter lambdas.
-        // The method value itself should accept the class parameter(s) (e.g. `a`), not a
-        // dictionary. We therefore index into the *instance dictionary* for the argument type.
-        //
-        // For now we support the `Enum Integer` path needed by list range sugar.
-        // Instance dictionaries are named like `__dict_<Class>_<Ty>`.
-        if class != "Enum" {
-            continue;
-        }
         let inst_name = "__dict_Enum_Integer".to_string();
-        let inst = Expr::new(ast::dummy_span(), ExprKind::Var(inst_name));
-        let get = Expr::new(ast::dummy_span(), ExprKind::Var("__recordGet".to_string()));
-        let method_fn = Expr::new(
-            ast::dummy_span(),
-            ExprKind::Apply {
-                func: Box::new(get),
-                args: vec![
-                    inst,
-                    Expr::new(ast::dummy_span(), ExprKind::String(mname.clone())),
-                ],
-            },
-        );
-
-        let a0 = "_a0".to_string();
-        let a1 = "_a1".to_string();
-        let a2 = "_a2".to_string();
-
-        // NOTE: Instance method implementations are lowered as lambdas
-        // whose first parameter is the class dictionary (e.g. "__dict_Enum").
-        // Therefore, when we project the method function out of an instance
-        // dictionary record, we must also pass the instance dictionary as the
-        // first argument.
+        let method_fn = create_record_get_expr(&inst_name, &mname);
         let dict_arg = Expr::new(
             ast::dummy_span(),
             ExprKind::Var("__dict_Enum_Integer".to_string()),
         );
-        let args = match mname.as_str() {
-            "enumFromTo" => vec![
-                dict_arg.clone(),
-                Expr::new(ast::dummy_span(), ExprKind::Var(a0.clone())),
-                Expr::new(ast::dummy_span(), ExprKind::Var(a1.clone())),
-            ],
-            "enumFromThenTo" => vec![
-                dict_arg.clone(),
-                Expr::new(ast::dummy_span(), ExprKind::Var(a0.clone())),
-                Expr::new(ast::dummy_span(), ExprKind::Var(a1.clone())),
-                Expr::new(ast::dummy_span(), ExprKind::Var(a2.clone())),
-            ],
-            _ => {
-                // Other Enum methods aren't needed for the failing tests.
-                continue;
+
+        let (params, args) = match mname.as_str() {
+            "enumFromTo" => {
+                let a0 = "_a0".to_string();
+                let a1 = "_a1".to_string();
+                (
+                    vec![a0.clone(), a1.clone()],
+                    vec![
+                        dict_arg,
+                        Expr::new(ast::dummy_span(), ExprKind::Var(a0)),
+                        Expr::new(ast::dummy_span(), ExprKind::Var(a1)),
+                    ],
+                )
             }
+            "enumFromThenTo" => {
+                let a0 = "_a0".to_string();
+                let a1 = "_a1".to_string();
+                let a2 = "_a2".to_string();
+                (
+                    vec![a0.clone(), a1.clone(), a2.clone()],
+                    vec![
+                        dict_arg,
+                        Expr::new(ast::dummy_span(), ExprKind::Var(a0)),
+                        Expr::new(ast::dummy_span(), ExprKind::Var(a1)),
+                        Expr::new(ast::dummy_span(), ExprKind::Var(a2)),
+                    ],
+                )
+            }
+            _ => continue,
         };
 
         let body = Expr::new(
@@ -8183,11 +8197,6 @@ fn inject_class_method_value_bindings(
             },
         );
 
-        let params = match mname.as_str() {
-            "enumFromTo" => vec![a0, a1],
-            "enumFromThenTo" => vec![a0, a1, a2],
-            _ => Vec::new(),
-        };
         let expr = Expr::new(
             ast::dummy_span(),
             ExprKind::Lambda {
@@ -8205,44 +8214,62 @@ fn inject_class_method_value_bindings(
         }));
     }
 
-    if std::env::var("KSCR_DEBUG_METHOD_VALUES").ok().as_deref() == Some("1") {
-        eprintln!(
-            "[KSCR_DEBUG_METHOD_VALUES] inject pass: method_classes keys sample: {:?}",
-            class_env
-                .method_classes
-                .keys()
-                .take(10)
-                .cloned()
-                .collect::<Vec<_>>()
-        );
-        eprintln!(
-            "[KSCR_DEBUG_METHOD_VALUES] inject pass: inferred has enumFromTo={} enumFromThenTo={}",
-            inferred.contains_key("enumFromTo"),
-            inferred.contains_key("enumFromThenTo")
-        );
-        let mut has_from_to = false;
-        let mut has_from_then_to = false;
-        for it in &injected {
-            let ast::Item::Binding(b) = it else {
-                continue;
-            };
-            if let ast::PatternKind::Var(n) = &b.pat.kind {
-                if n == "enumFromTo" {
-                    has_from_to = true;
-                }
-                if n == "enumFromThenTo" {
-                    has_from_then_to = true;
-                }
+    injected
+}
+
+fn create_record_get_expr(inst_name: &str, field_name: &str) -> ast::Expr {
+    use ast::{Expr, ExprKind};
+
+    let inst = Expr::new(ast::dummy_span(), ExprKind::Var(inst_name.to_string()));
+    let get = Expr::new(ast::dummy_span(), ExprKind::Var("__recordGet".to_string()));
+    Expr::new(
+        ast::dummy_span(),
+        ExprKind::Apply {
+            func: Box::new(get),
+            args: vec![
+                inst,
+                Expr::new(ast::dummy_span(), ExprKind::String(field_name.to_string())),
+            ],
+        },
+    )
+}
+
+fn debug_print_method_injection(
+    class_env: &ClassEnv,
+    inferred: &HashMap<String, Scheme>,
+    injected: &[ast::Item],
+) {
+    eprintln!(
+        "[KSCR_DEBUG_METHOD_VALUES] inject pass: method_classes keys sample: {:?}",
+        class_env
+            .method_classes
+            .keys()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    eprintln!(
+        "[KSCR_DEBUG_METHOD_VALUES] inject pass: inferred has enumFromTo={} enumFromThenTo={}",
+        inferred.contains_key("enumFromTo"),
+        inferred.contains_key("enumFromThenTo")
+    );
+
+    let mut has_from_to = false;
+    let mut has_from_then_to = false;
+    for it in injected {
+        let ast::Item::Binding(b) = it else {
+            continue;
+        };
+        if let ast::PatternKind::Var(n) = &b.pat.kind {
+            if n == "enumFromTo" {
+                has_from_to = true;
+            }
+            if n == "enumFromThenTo" {
+                has_from_then_to = true;
             }
         }
-        eprintln!("[KSCR_DEBUG_METHOD_VALUES] injected method bindings: enumFromTo={has_from_to} enumFromThenTo={has_from_then_to} total={}", injected.len());
     }
-
-    if !injected.is_empty() {
-        // Prepend so later passes can treat them as ordinary globals.
-        injected.append(&mut module.items);
-        module.items = injected;
-    }
+    eprintln!("[KSCR_DEBUG_METHOD_VALUES] injected method bindings: enumFromTo={has_from_to} enumFromThenTo={has_from_then_to} total={}", injected.len());
 }
 
 fn expr_contains_var(e: &ast::Expr, name: &str) -> bool {

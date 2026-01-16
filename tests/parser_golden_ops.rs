@@ -9,16 +9,18 @@ fn parser_ctor_exprs() {
     let Item::Binding(b0) = &module.items[0] else {
         panic!("expected binding");
     };
-        assert!(matches!(
-            &b0.expr.kind,
-            ExprKind::Apply { func, args }
-                if matches!(&func.as_ref().kind, ExprKind::Ctor(kscr::ast::ResolvedName::Unresolved(s)) if s == "Just") && args.len() == 1
-        ));
+    assert!(matches!(
+        &b0.expr.kind,
+        ExprKind::Apply { func, args }
+            if matches!(&func.as_ref().kind, ExprKind::Ctor(kscr::ast::ResolvedName::Unresolved(s)) if s == "Just") && args.len() == 1
+    ));
 
     let Item::Binding(b1) = &module.items[1] else {
         panic!("expected binding");
     };
-        assert!(matches!(&b1.expr.kind, ExprKind::Ctor(kscr::ast::ResolvedName::Unresolved(s)) if s == "Nothing"));
+    assert!(
+        matches!(&b1.expr.kind, ExprKind::Ctor(kscr::ast::ResolvedName::Unresolved(s)) if s == "Nothing")
+    );
 }
 
 #[test]
