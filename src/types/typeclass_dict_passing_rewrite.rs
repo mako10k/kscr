@@ -21,6 +21,22 @@ fn rewrite_expr_cx(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
     rewrite_expr_impl(cx, expr)
 }
 
+fn resolve_dict_arg_from_scope(
+    span: ast::Span,
+    class_env: &ClassEnv,
+    dicts_in_scope: &HashSet<String>,
+    class: &str,
+) -> Option<ast::Expr> {
+    use ast::{Expr, ExprKind};
+
+    let param = common::dict_param_name(class);
+    if dicts_in_scope.contains(&param) {
+        return Some(Expr::new(span, ExprKind::Var(param)));
+    }
+
+    common::derive_dict_from_scope(span, class_env, dicts_in_scope, class)
+}
+
 fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
 
@@ -44,18 +60,10 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
 
     let mut dict_args: Vec<ast::Expr> = Vec::new();
     for class in classes {
-        let param = common::dict_param_name(class);
-        if dicts_in_scope.contains(&param) {
-            dict_args.push(Expr::new(span, ExprKind::Var(param)));
-            continue;
-        }
-
-        if let Some(d) = common::derive_dict_from_scope(span, class_env, dicts_in_scope, class) {
-            dict_args.push(d);
-            continue;
-        }
-
-        break;
+        let Some(d) = resolve_dict_arg_from_scope(span, class_env, dicts_in_scope, class) else {
+            break;
+        };
+        dict_args.push(d);
     }
 
     if dict_args.is_empty() {
@@ -216,8 +224,6 @@ fn rewrite_apply_func_var(
     func_name: &str,
     args: &mut Vec<ast::Expr>,
 ) -> Result<()> {
-    use ast::{Expr, ExprKind};
-
     let module_snapshot = cx.module_snapshot;
     let class_env = cx.class_env;
     let inferred = cx.inferred;
@@ -240,13 +246,7 @@ fn rewrite_apply_func_var(
 
     let mut dict_args: Vec<ast::Expr> = Vec::new();
     for class in classes {
-        let param = common::dict_param_name(class);
-        if dicts_in_scope.contains(&param) {
-            dict_args.push(Expr::new(span, ExprKind::Var(param)));
-            continue;
-        }
-
-        if let Some(d) = common::derive_dict_from_scope(span, class_env, dicts_in_scope, class) {
+        if let Some(d) = resolve_dict_arg_from_scope(span, class_env, dicts_in_scope, class) {
             dict_args.push(d);
             continue;
         }
@@ -457,14 +457,11 @@ fn compute_local_needs(
     local_needs
 }
 
-fn rewrite_let(
+fn with_extended_binding_scope<R>(
     cx: RewriteCx<'_>,
-    span: ast::Span,
     bindings: Vec<ast::Binding>,
-    body: ast::Expr,
-) -> Result<ast::Expr> {
-    use ast::{Expr, ExprKind, PatternKind};
-
+    f: impl FnOnce(RewriteCx<'_>, &HashMap<String, Vec<String>>, Vec<ast::Binding>) -> Result<R>,
+) -> Result<R> {
     let class_env = cx.class_env;
     let needs_dicts_global = cx.needs_dicts_global;
     let needs_dicts_local = cx.needs_dicts_local;
@@ -499,27 +496,50 @@ fn rewrite_let(
         ..cx
     };
 
-    Ok(Expr::new(
-        span,
-        ExprKind::Let {
-            bindings: bindings
-                .into_iter()
-                .map(|b| {
-                    let mut expr = b.expr;
-                    if let PatternKind::Var(name) = &b.pat.kind {
-                        if let Some(classes) = local_needs.get(name) {
-                            expr = common::add_dict_params_to_expr(expr.span, expr, classes);
-                        }
-                    }
-                    Ok(ast::Binding {
-                        pat: b.pat,
-                        expr: rewrite_expr_cx(inner_cx, expr)?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-            body: Box::new(rewrite_expr_cx(inner_cx, body)?),
-        },
-    ))
+    f(inner_cx, &local_needs, bindings)
+}
+
+fn rewrite_scoped_bindings(
+    inner_cx: RewriteCx<'_>,
+    local_needs: &HashMap<String, Vec<String>>,
+    bindings: Vec<ast::Binding>,
+) -> Result<Vec<ast::Binding>> {
+    use ast::PatternKind;
+
+    bindings
+        .into_iter()
+        .map(|b| {
+            let mut expr = b.expr;
+            if let PatternKind::Var(name) = &b.pat.kind {
+                if let Some(classes) = local_needs.get(name) {
+                    expr = common::add_dict_params_to_expr(expr.span, expr, classes);
+                }
+            }
+            Ok(ast::Binding {
+                pat: b.pat,
+                expr: rewrite_expr_cx(inner_cx, expr)?,
+            })
+        })
+        .collect()
+}
+
+fn rewrite_let(
+    cx: RewriteCx<'_>,
+    span: ast::Span,
+    bindings: Vec<ast::Binding>,
+    body: ast::Expr,
+) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
+
+    with_extended_binding_scope(cx, bindings, |inner_cx, local_needs, bindings| {
+        Ok(Expr::new(
+            span,
+            ExprKind::Let {
+                bindings: rewrite_scoped_bindings(inner_cx, local_needs, bindings)?,
+                body: Box::new(rewrite_expr_cx(inner_cx, body)?),
+            },
+        ))
+    })
 }
 
 fn rewrite_where(
@@ -528,63 +548,17 @@ fn rewrite_where(
     expr: ast::Expr,
     bindings: Vec<ast::Binding>,
 ) -> Result<ast::Expr> {
-    use ast::{Expr, ExprKind, PatternKind};
+    use ast::{Expr, ExprKind};
 
-    let class_env = cx.class_env;
-    let needs_dicts_global = cx.needs_dicts_global;
-    let needs_dicts_local = cx.needs_dicts_local;
-    let dicts_in_scope = cx.dicts_in_scope;
-    let shadowed_in_scope = cx.shadowed_in_scope;
-
-    let mut scope = dicts_in_scope.clone();
-    let mut shadowed = shadowed_in_scope.clone();
-    for b in &bindings {
-        let mut names = HashSet::new();
-        pat_defined_names(&b.pat, &mut names);
-        for n in names {
-            shadowed.insert(n.clone());
-            if n.starts_with("__dict_") {
-                scope.insert(n);
-            }
-        }
-    }
-
-    let local_needs =
-        compute_local_needs(class_env, needs_dicts_global, needs_dicts_local, &bindings);
-
-    let mut local2: HashMap<String, Vec<String>> = needs_dicts_local.clone();
-    for (k, v) in &local_needs {
-        local2.insert(k.clone(), v.clone());
-    }
-
-    let inner_cx = RewriteCx {
-        needs_dicts_local: &local2,
-        dicts_in_scope: &scope,
-        shadowed_in_scope: &shadowed,
-        ..cx
-    };
-
-    Ok(Expr::new(
-        span,
-        ExprKind::Where {
-            expr: Box::new(rewrite_expr_cx(inner_cx, expr)?),
-            bindings: bindings
-                .into_iter()
-                .map(|b| {
-                    let mut expr = b.expr;
-                    if let PatternKind::Var(name) = &b.pat.kind {
-                        if let Some(classes) = local_needs.get(name) {
-                            expr = common::add_dict_params_to_expr(expr.span, expr, classes);
-                        }
-                    }
-                    Ok(ast::Binding {
-                        pat: b.pat,
-                        expr: rewrite_expr_cx(inner_cx, expr)?,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
-        },
-    ))
+    with_extended_binding_scope(cx, bindings, |inner_cx, local_needs, bindings| {
+        Ok(Expr::new(
+            span,
+            ExprKind::Where {
+                expr: Box::new(rewrite_expr_cx(inner_cx, expr)?),
+                bindings: rewrite_scoped_bindings(inner_cx, local_needs, bindings)?,
+            },
+        ))
+    })
 }
 
 fn rewrite_do(cx: RewriteCx<'_>, span: ast::Span, stmts: Vec<ast::DoStmt>) -> Result<ast::Expr> {

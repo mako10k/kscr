@@ -139,15 +139,11 @@ impl Integer {
         limbs
     }
 
-    fn div_mod_small_abs(&self, d: u64) -> (Self, u64) {
-        debug_assert!(self.sign >= 0);
+    fn div_mod_u64_abs(u: &[u64], d: u64) -> (Vec<u64>, u64) {
         debug_assert!(d != 0);
-        if self.sign == 0 {
-            return (Self::zero(), 0);
-        }
-        let mut q = Vec::with_capacity(self.limbs.len());
+        let mut q = Vec::with_capacity(u.len());
         let mut rem: u128 = 0;
-        for &x in self.limbs.iter().rev() {
+        for &x in u.iter().rev() {
             let acc = (rem << 64) + x as u128;
             let qq = acc / d as u128;
             rem = acc % d as u128;
@@ -157,12 +153,23 @@ impl Integer {
         while q.last() == Some(&0) {
             q.pop();
         }
+        (q, rem as u64)
+    }
+
+    fn div_mod_small_abs(&self, d: u64) -> (Self, u64) {
+        debug_assert!(self.sign >= 0);
+        debug_assert!(d != 0);
+        if self.sign == 0 {
+            return (Self::zero(), 0);
+        }
+
+        let (q, rem) = Self::div_mod_u64_abs(&self.limbs, d);
         let mut qn = Self {
             sign: if q.is_empty() { 0 } else { 1 },
             limbs: q,
         };
         qn.normalize();
-        (qn, rem as u64)
+        (qn, rem)
     }
 
     fn div_mod_abs(u: &[u64], v: &[u64]) -> (Vec<u64>, Vec<u64>) {
@@ -175,24 +182,8 @@ impl Integer {
             return (Vec::new(), u.to_vec());
         }
         if v.len() == 1 {
-            let d = v[0];
-            let mut q = Vec::with_capacity(u.len());
-            let mut rem: u128 = 0;
-            for &x in u.iter().rev() {
-                let acc = (rem << 64) + x as u128;
-                let qq = acc / d as u128;
-                rem = acc % d as u128;
-                q.push(qq as u64);
-            }
-            q.reverse();
-            while q.last() == Some(&0) {
-                q.pop();
-            }
-            let r = if rem == 0 {
-                Vec::new()
-            } else {
-                vec![rem as u64]
-            };
+            let (q, rem) = Self::div_mod_u64_abs(u, v[0]);
+            let r = if rem == 0 { Vec::new() } else { vec![rem] };
             return (q, r);
         }
 
