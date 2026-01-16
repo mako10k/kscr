@@ -6392,6 +6392,29 @@ fn rewrite_class_method_calls_in_module(
     class_env: &ClassEnv,
     inferred: &HashMap<String, Scheme>,
 ) -> Result<()> {
+    struct RewriteClassMethodCallsCtx<'a> {
+        module_snapshot: &'a ast::Module,
+        class_env: &'a ClassEnv,
+        inferred: &'a HashMap<String, Scheme>,
+    }
+
+    impl<'a> RewriteClassMethodCallsCtx<'a> {
+        fn rewrite_expr(
+            &self,
+            dicts_in_scope: &HashSet<String>,
+            known_dicts_in_scope: &HashMap<String, String>,
+            expr: ast::Expr,
+        ) -> Result<ast::Expr> {
+            rewrite_expr(
+                self.module_snapshot,
+                self.class_env,
+                self.inferred,
+                dicts_in_scope,
+                known_dicts_in_scope,
+                expr,
+            )
+        }
+    }
     fn instance_head_key_ty_for_class(class: &str, ty: &Ty) -> Result<String> {
         // MVP: higher-kinded classes select instances by the type constructor head.
         // e.g. `Functor` instance is declared for `Maybe`, but call sites see `Maybe a`.
@@ -6416,6 +6439,396 @@ fn rewrite_class_method_calls_in_module(
         instance_head_key_ty(ty)
     }
 
+    fn super_field_name(class: &str) -> String {
+        format!("__super_{}", mangle_ident(class))
+    }
+
+    fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Option<Vec<String>> {
+        use std::collections::{HashMap, VecDeque};
+
+        if from == to {
+            return None;
+        }
+
+        let mut q: VecDeque<String> = VecDeque::new();
+        let mut prev: HashMap<String, String> = HashMap::new();
+        q.push_back(from.to_string());
+        prev.insert(from.to_string(), "".to_string());
+
+        while let Some(c) = q.pop_front() {
+            let Some(supers) = class_env.class_supers.get(&c) else {
+                continue;
+            };
+            for p in supers {
+                let ast::Predicate::Class { class: sup, .. } = p else {
+                    continue;
+                };
+                if prev.contains_key(sup) {
+                    continue;
+                }
+                prev.insert(sup.clone(), c.clone());
+                if sup == to {
+                    let mut path: Vec<String> = Vec::new();
+                    let mut cur = to.to_string();
+                    while cur != from {
+                        path.push(cur.clone());
+                        cur = prev.get(&cur)?.clone();
+                    }
+                    path.reverse();
+                    return Some(path);
+                }
+                q.push_back(sup.clone());
+            }
+        }
+
+        None
+    }
+
+    fn project_dict_along_path(span: ast::Span, mut base: ast::Expr, path: &[String]) -> ast::Expr {
+        for sup in path {
+            let get = ast::Expr::new(span, ast::ExprKind::Var("__recordGet".to_string()));
+            base = ast::Expr::new(
+                span,
+                ast::ExprKind::Apply {
+                    func: Box::new(get),
+                    args: vec![
+                        base,
+                        ast::Expr::new(span, ast::ExprKind::String(super_field_name(sup))),
+                    ],
+                },
+            );
+        }
+        base
+    }
+
+    fn derive_dict_expr_from_candidates(
+        span: ast::Span,
+        class_env: &ClassEnv,
+        wanted_class: &str,
+        dicts_in_scope: &HashSet<String>,
+        known_dicts_in_scope: &HashMap<String, String>,
+    ) -> Option<ast::Expr> {
+        // Candidates from in-scope dictionary parameters.
+        let mut param_candidates: Vec<(String, ast::Expr)> = dicts_in_scope
+            .iter()
+            .filter_map(|name| {
+                let c = name.strip_prefix("__dict_")?.to_string();
+                Some((c, ast::Expr::new(span, ast::ExprKind::Var(name.clone()))))
+            })
+            .collect();
+        param_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        // Candidates from previously chosen concrete dictionaries.
+        let mut known_candidates: Vec<(String, ast::Expr)> = known_dicts_in_scope
+            .iter()
+            .map(|(c, n)| (c.clone(), ast::Expr::new(span, ast::ExprKind::Var(n.clone()))))
+            .collect();
+        known_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        for (base_class, base_expr) in param_candidates.into_iter().chain(known_candidates) {
+            let Some(path) = find_super_path(class_env, &base_class, wanted_class) else {
+                continue;
+            };
+            return Some(project_dict_along_path(span, base_expr, &path));
+        }
+
+        None
+    }
+
+    fn rewrite_class_method_var(
+        class_env: &ClassEnv,
+        dicts_in_scope: &HashSet<String>,
+        known_dicts_in_scope: &HashMap<String, String>,
+        span: ast::Span,
+        mname: String,
+    ) -> Result<ast::Expr> {
+        use ast::{Expr, ExprKind};
+
+        if let Some(classes) = class_env.method_classes.get(&mname) {
+            let Some(class) = classes.first() else {
+                return Err(Error::msg("internal: empty method class list"));
+            };
+
+            let dict_var = format!("__dict_{class}");
+
+            let dict_expr: Option<ast::Expr> = if dicts_in_scope.contains(&dict_var) {
+                Some(Expr::new(span, ExprKind::Var(dict_var.clone())))
+            } else if let Some(d) = known_dicts_in_scope.get(class) {
+                Some(Expr::new(span, ExprKind::Var(d.clone())))
+            } else {
+                derive_dict_expr_from_candidates(span, class_env, class, dicts_in_scope, known_dicts_in_scope)
+            };
+
+            let make_method_value = |dict_expr: ast::Expr| {
+                let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
+                let method_fn = Expr::new(
+                    span,
+                    ExprKind::Apply {
+                        func: Box::new(get),
+                        args: vec![
+                            dict_expr.clone(),
+                            Expr::new(span, ExprKind::String(mname.clone())),
+                        ],
+                    },
+                );
+                Expr::new(
+                    span,
+                    ExprKind::Apply {
+                        func: Box::new(method_fn),
+                        args: vec![dict_expr],
+                    },
+                )
+            };
+
+            Ok(if let Some(dict_expr) = dict_expr {
+                make_method_value(dict_expr)
+            } else {
+                let param = dict_var;
+                let dict_expr = Expr::new(span, ExprKind::Var(param.clone()));
+                Expr::new(
+                    span,
+                    ExprKind::Lambda {
+                        params: vec![param],
+                        body: Box::new(make_method_value(dict_expr)),
+                    },
+                )
+            })
+        } else {
+            Ok(Expr::new(span, ExprKind::Var(mname)))
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rewrite_class_method_lambda(
+        module_snapshot: &ast::Module,
+        class_env: &ClassEnv,
+        inferred: &HashMap<String, Scheme>,
+        dicts_in_scope: &HashSet<String>,
+        known_dicts_in_scope: &HashMap<String, String>,
+        span: ast::Span,
+        params: Vec<String>,
+        body: ast::Expr,
+    ) -> Result<ast::Expr> {
+        use ast::{Expr, ExprKind};
+
+        let mut scope = dicts_in_scope.clone();
+        for p in &params {
+            if p.starts_with("__dict_") {
+                scope.insert(p.clone());
+            }
+        }
+        Ok(Expr::new(
+            span,
+            ExprKind::Lambda {
+                params,
+                body: Box::new(rewrite_expr(
+                    module_snapshot,
+                    class_env,
+                    inferred,
+                    &scope,
+                    known_dicts_in_scope,
+                    body,
+                )?),
+            },
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rewrite_class_method_apply(
+        module_snapshot: &ast::Module,
+        class_env: &ClassEnv,
+        inferred: &HashMap<String, Scheme>,
+        dicts_in_scope: &HashSet<String>,
+        known_dicts_in_scope: &HashMap<String, String>,
+        span: ast::Span,
+        func: ast::Expr,
+        args: Vec<ast::Expr>,
+    ) -> Result<ast::Expr> {
+        use ast::{Expr, ExprKind};
+
+        if let ExprKind::Var(mname) = &func.kind {
+            if let Some(classes) = class_env.method_classes.get(mname) {
+                let Some(class) = classes.first() else {
+                    return Err(Error::msg("internal: empty method class list"));
+                };
+
+                let dict_var = format!("__dict_{class}");
+                let mut chosen_name_for_known: Option<String> = None;
+
+                let dict_expr: ast::Expr = if dicts_in_scope.contains(&dict_var) {
+                    chosen_name_for_known = Some(dict_var.clone());
+                    Expr::new(span, ExprKind::Var(dict_var))
+                } else {
+                    let mut first_non_ground: Option<Ty> = None;
+                    let mut first_missing_instance: Option<Ty> = None;
+                    let mut dict_name: Option<String> = None;
+
+                    if class == "Monad" {
+                        fn monad_syntactic_head(e: &ast::Expr) -> Option<String> {
+                            match &e.kind {
+                                ast::ExprKind::Ctor(n) => Some(n.clone()),
+                                ast::ExprKind::Apply { func, .. } => match &func.kind {
+                                    ast::ExprKind::Ctor(n) => Some(n.clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            }
+                        }
+
+                        for a in &args {
+                            if let Some(head) = monad_syntactic_head(a) {
+                                let key = (class.clone(), head);
+                                if let Some(d) = class_env.instances.get(&key) {
+                                    dict_name = Some(d.clone());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if dict_name.is_none() {
+                        for a in &args {
+                            let Ok(a_ty) = infer_in_module_with_class_env(
+                                module_snapshot,
+                                class_env,
+                                inferred,
+                                a.clone(),
+                            ) else {
+                                continue;
+                            };
+
+                            if !ftv_ty(&a_ty).is_empty() {
+                                if first_non_ground.is_none() {
+                                    first_non_ground = Some(a_ty.clone());
+                                }
+                                if class != "Monad" {
+                                    continue;
+                                }
+                            }
+
+                            let Ok(head) = instance_head_key_ty_for_class(class, &a_ty) else {
+                                continue;
+                            };
+
+                            let key = (class.clone(), head);
+                            if let Some(d) = class_env.instances.get(&key) {
+                                dict_name = Some(d.clone());
+                                break;
+                            }
+
+                            if first_missing_instance.is_none() {
+                                first_missing_instance = Some(a_ty);
+                            }
+                        }
+                    }
+
+                    if let Some(dict_name) = dict_name {
+                        chosen_name_for_known = Some(dict_name.clone());
+                        Expr::new(span, ExprKind::Var(dict_name))
+                    } else if let Some(d) = known_dicts_in_scope.get(class) {
+                        chosen_name_for_known = Some(d.clone());
+                        Expr::new(span, ExprKind::Var(d.clone()))
+                    } else if let Some(d) = derive_dict_expr_from_candidates(
+                        span,
+                        class_env,
+                        class,
+                        dicts_in_scope,
+                        known_dicts_in_scope,
+                    ) {
+                        d
+                    } else {
+                        if let Some(ty) = first_missing_instance {
+                            return Err(Error::msg(format!(
+                                "no instance found for method call `{mname}`: {class} {ty}"
+                            )));
+                        }
+
+                        let ty_hint = first_non_ground.unwrap_or_else(|| {
+                            args.first()
+                                .and_then(|a0| {
+                                    infer_in_module_with_class_env(
+                                        module_snapshot,
+                                        class_env,
+                                        inferred,
+                                        a0.clone(),
+                                    )
+                                    .ok()
+                                })
+                                .unwrap_or(Ty::Con("<unknown>".to_string()))
+                        });
+
+                        return Err(Error::msg(format!(
+                            "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
+                        )));
+                    }
+                };
+
+                let mut known = known_dicts_in_scope.clone();
+                if let Some(chosen) = chosen_name_for_known.clone() {
+                    known.insert(class.clone(), chosen);
+                }
+
+                let new_args: Vec<_> = args
+                    .into_iter()
+                    .map(|a| rewrite_expr(module_snapshot, class_env, inferred, dicts_in_scope, &known, a))
+                    .collect::<Result<Vec<_>>>()?;
+
+                let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
+                let method_fn = Expr::new(
+                    span,
+                    ExprKind::Apply {
+                        func: Box::new(get),
+                        args: vec![
+                            dict_expr.clone(),
+                            Expr::new(span, ExprKind::String(mname.clone())),
+                        ],
+                    },
+                );
+
+                let mut call_args = Vec::with_capacity(1 + new_args.len());
+                call_args.push(dict_expr);
+                call_args.extend(new_args);
+
+                return Ok(Expr::new(
+                    span,
+                    ExprKind::Apply {
+                        func: Box::new(method_fn),
+                        args: call_args,
+                    },
+                ));
+            }
+        }
+
+        let func = rewrite_expr(
+            module_snapshot,
+            class_env,
+            inferred,
+            dicts_in_scope,
+            known_dicts_in_scope,
+            func,
+        )?;
+        let args: Vec<_> = args
+            .into_iter()
+            .map(|a| {
+                rewrite_expr(
+                    module_snapshot,
+                    class_env,
+                    inferred,
+                    dicts_in_scope,
+                    known_dicts_in_scope,
+                    a,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Expr::new(
+            span,
+            ExprKind::Apply {
+                func: Box::new(func),
+                args,
+            },
+        ))
+    }
+
     fn rewrite_expr(
         module_snapshot: &ast::Module,
         class_env: &ClassEnv,
@@ -6425,450 +6838,35 @@ fn rewrite_class_method_calls_in_module(
         expr: ast::Expr,
     ) -> Result<ast::Expr> {
         use ast::{Expr, ExprKind};
-
-        fn super_field_name(class: &str) -> String {
-            format!("__super_{}", mangle_ident(class))
-        }
-
-        fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Option<Vec<String>> {
-            use std::collections::{HashMap, VecDeque};
-
-            if from == to {
-                return None;
-            }
-
-            let mut q: VecDeque<String> = VecDeque::new();
-            let mut prev: HashMap<String, String> = HashMap::new();
-            q.push_back(from.to_string());
-            prev.insert(from.to_string(), "".to_string());
-
-            while let Some(c) = q.pop_front() {
-                let Some(supers) = class_env.class_supers.get(&c) else {
-                    continue;
-                };
-                for p in supers {
-                    let ast::Predicate::Class { class: sup, .. } = p else {
-                        continue;
-                    };
-                    if prev.contains_key(sup) {
-                        continue;
-                    }
-                    prev.insert(sup.clone(), c.clone());
-                    if sup == to {
-                        let mut path: Vec<String> = Vec::new();
-                        let mut cur = to.to_string();
-                        while cur != from {
-                            path.push(cur.clone());
-                            cur = prev.get(&cur)?.clone();
-                        }
-                        path.reverse();
-                        return Some(path);
-                    }
-                    q.push_back(sup.clone());
-                }
-            }
-
-            None
-        }
-
-        fn project_dict_along_path(
-            span: ast::Span,
-            mut base: ast::Expr,
-            path: &[String],
-        ) -> ast::Expr {
-            for sup in path {
-                let get = ast::Expr::new(span, ast::ExprKind::Var("__recordGet".to_string()));
-                base = ast::Expr::new(
-                    span,
-                    ast::ExprKind::Apply {
-                        func: Box::new(get),
-                        args: vec![
-                            base,
-                            ast::Expr::new(span, ast::ExprKind::String(super_field_name(sup))),
-                        ],
-                    },
-                );
-            }
-            base
-        }
-
-        fn derive_dict_expr_from_candidates(
-            span: ast::Span,
-            class_env: &ClassEnv,
-            wanted_class: &str,
-            dicts_in_scope: &HashSet<String>,
-            known_dicts_in_scope: &HashMap<String, String>,
-        ) -> Option<ast::Expr> {
-            // Candidates from in-scope dictionary parameters.
-            let mut param_candidates: Vec<(String, ast::Expr)> = dicts_in_scope
-                .iter()
-                .filter_map(|name| {
-                    let c = name.strip_prefix("__dict_")?.to_string();
-                    Some((c, ast::Expr::new(span, ast::ExprKind::Var(name.clone()))))
-                })
-                .collect();
-            param_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
-
-            // Candidates from previously chosen concrete dictionaries.
-            let mut known_candidates: Vec<(String, ast::Expr)> = known_dicts_in_scope
-                .iter()
-                .map(|(c, n)| {
-                    (
-                        c.clone(),
-                        ast::Expr::new(span, ast::ExprKind::Var(n.clone())),
-                    )
-                })
-                .collect();
-            known_candidates.sort_by(|(a, _), (b, _)| a.cmp(b));
-
-            for (base_class, base_expr) in param_candidates.into_iter().chain(known_candidates) {
-                let Some(path) = find_super_path(class_env, &base_class, wanted_class) else {
-                    continue;
-                };
-                return Some(project_dict_along_path(span, base_expr, &path));
-            }
-
-            None
-        }
-
         let span = expr.span;
         Ok(match expr.kind {
-            ExprKind::Var(mname) => {
-                // Class method used as a value.
-                // Rewrite `m` into a dictionary-projected function value.
-                if let Some(classes) = class_env.method_classes.get(&mname) {
-                    let Some(class) = classes.first() else {
-                        return Err(Error::msg("internal: empty method class list"));
-                    };
-
-                    let dict_var = format!("__dict_{class}");
-
-                    // Prefer in-scope dictionary params; otherwise reuse/derive from known dicts.
-                    // If none are available, fall back to a lambda that takes the dictionary.
-                    let dict_expr: Option<ast::Expr> = if dicts_in_scope.contains(&dict_var) {
-                        Some(Expr::new(span, ExprKind::Var(dict_var.clone())))
-                    } else if let Some(d) = known_dicts_in_scope.get(class) {
-                        Some(Expr::new(span, ExprKind::Var(d.clone())))
-                    } else {
-                        derive_dict_expr_from_candidates(
-                            span,
-                            class_env,
-                            class,
-                            dicts_in_scope,
-                            known_dicts_in_scope,
-                        )
-                    };
-
-                    let make_method_value = |dict_expr: ast::Expr| {
-                        let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
-                        let method_fn = Expr::new(
-                            span,
-                            ExprKind::Apply {
-                                func: Box::new(get),
-                                args: vec![
-                                    dict_expr.clone(),
-                                    Expr::new(span, ExprKind::String(mname.clone())),
-                                ],
-                            },
-                        );
-                        // Stored methods expect the dictionary as an explicit first argument.
-                        Expr::new(
-                            span,
-                            ExprKind::Apply {
-                                func: Box::new(method_fn),
-                                args: vec![dict_expr],
-                            },
-                        )
-                    };
-
-                    if let Some(dict_expr) = dict_expr {
-                        make_method_value(dict_expr)
-                    } else {
-                        let param = dict_var;
-                        let dict_expr = Expr::new(span, ExprKind::Var(param.clone()));
-                        Expr::new(
-                            span,
-                            ExprKind::Lambda {
-                                params: vec![param],
-                                body: Box::new(make_method_value(dict_expr)),
-                            },
-                        )
-                    }
-                } else {
-                    Expr::new(span, ExprKind::Var(mname))
-                }
-            }
-            ExprKind::Lambda { params, body } => {
-                let mut scope = dicts_in_scope.clone();
-                for p in &params {
-                    if p.starts_with("__dict_") {
-                        scope.insert(p.clone());
-                    }
-                }
-                Expr::new(
-                    span,
-                    ExprKind::Lambda {
-                        params,
-                        body: Box::new(rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            &scope,
-                            known_dicts_in_scope,
-                            *body,
-                        )?),
-                    },
-                )
-            }
-            ExprKind::Apply { func, args } => {
-                // Fast path for class method calls so we can propagate chosen dictionaries into
-                // nested expressions (notably useful for `Monad.return` inside `do`).
-                if let ExprKind::Var(mname) = &func.kind {
-                    if let Some(classes) = class_env.method_classes.get(mname) {
-                        let Some(class) = classes.first() else {
-                            return Err(Error::msg("internal: empty method class list"));
-                        };
-
-                        let dict_var = format!("__dict_{class}");
-                        let mut chosen_name_for_known: Option<String> = None;
-
-                        // Dictionary resolution order (important):
-                        // 1) Explicit in-scope dictionary parameters.
-                        // 2) Resolve by argument types (when possible).
-                        // 3) Reuse/derive from previously chosen dictionaries (helps `return` in `do`).
-                        //
-                        // Without (2) before (3), a surrounding `Monad IO` call can incorrectly
-                        // force unrelated nested calls like `fmap ... (Just 1)` to use `Functor IO`.
-                        let dict_expr: ast::Expr = if dicts_in_scope.contains(&dict_var) {
-                            chosen_name_for_known = Some(dict_var.clone());
-                            Expr::new(span, ExprKind::Var(dict_var))
-                        } else {
-                            // Resolve dictionary by any usable argument type.
-                            // This helps cases like `eq x 1` where `x` isn't ground but `1` is.
-                            let mut first_non_ground: Option<Ty> = None;
-                            let mut first_missing_instance: Option<Ty> = None;
-                            let mut dict_name: Option<String> = None;
-
-                            // Syntactic fallback (important for `do` desugaring): for `Monad`,
-                            // we can often pick the instance by the type constructor head even
-                            // if type inference for the argument fails.
-                            if class == "Monad" {
-                                fn monad_syntactic_head(e: &ast::Expr) -> Option<String> {
-                                    match &e.kind {
-                                        ast::ExprKind::Ctor(n) => Some(n.clone()),
-                                        ast::ExprKind::Apply { func, .. } => match &func.kind {
-                                            ast::ExprKind::Ctor(n) => Some(n.clone()),
-                                            _ => None,
-                                        },
-                                        _ => None,
-                                    }
-                                }
-
-                                for a in &args {
-                                    if let Some(head) = monad_syntactic_head(a) {
-                                        let key = (class.clone(), head);
-                                        if let Some(d) = class_env.instances.get(&key) {
-                                            dict_name = Some(d.clone());
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-
-                            if dict_name.is_none() {
-                                for a in &args {
-                                    let Ok(a_ty) = infer_in_module_with_class_env(
-                                        module_snapshot,
-                                        class_env,
-                                        inferred,
-                                        a.clone(),
-                                    ) else {
-                                        continue;
-                                    };
-
-                                    if !ftv_ty(&a_ty).is_empty() {
-                                        if first_non_ground.is_none() {
-                                            first_non_ground = Some(a_ty.clone());
-                                        }
-                                        // For most classes we require a ground type to pick an
-                                        // instance. `Monad` is special: we can pick the instance by
-                                        // the type constructor head (e.g. `IO` from `IO a`) even when
-                                        // `a` is unknown.
-                                        if class != "Monad" {
-                                            continue;
-                                        }
-                                    }
-
-                                    let Ok(head) = instance_head_key_ty_for_class(class, &a_ty)
-                                    else {
-                                        // This argument is ground but isn't a supported instance head.
-                                        // Keep searching other arguments that might yield an instance.
-                                        continue;
-                                    };
-
-                                    let key = (class.clone(), head);
-                                    if let Some(d) = class_env.instances.get(&key) {
-                                        dict_name = Some(d.clone());
-                                        break;
-                                    }
-
-                                    if first_missing_instance.is_none() {
-                                        first_missing_instance = Some(a_ty);
-                                    }
-                                }
-                            }
-
-                            if let Some(dict_name) = dict_name {
-                                chosen_name_for_known = Some(dict_name.clone());
-                                Expr::new(span, ExprKind::Var(dict_name))
-                            } else if let Some(d) = known_dicts_in_scope.get(class) {
-                                chosen_name_for_known = Some(d.clone());
-                                Expr::new(span, ExprKind::Var(d.clone()))
-                            } else if let Some(d) = derive_dict_expr_from_candidates(
-                                span,
-                                class_env,
-                                class,
-                                dicts_in_scope,
-                                known_dicts_in_scope,
-                            ) {
-                                d
-                            } else {
-                                if let Some(ty) = first_missing_instance {
-                                    return Err(Error::msg(format!(
-                                        "no instance found for method call `{mname}`: {class} {ty}"
-                                    )));
-                                }
-
-                                let ty_hint = first_non_ground.unwrap_or_else(|| {
-                                    args.first()
-                                        .and_then(|a0| {
-                                            infer_in_module_with_class_env(
-                                                module_snapshot,
-                                                class_env,
-                                                inferred,
-                                                a0.clone(),
-                                            )
-                                            .ok()
-                                        })
-                                        .unwrap_or(Ty::Con("<unknown>".to_string()))
-                                });
-
-                                return Err(Error::msg(format!(
-                                    "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
-                                )));
-                            }
-                        };
-
-                        // Propagate the chosen dictionary name to nested expressions, so that
-                        // subsequent method calls (e.g. `return`) can reuse it.
-                        let mut known = known_dicts_in_scope.clone();
-                        if let Some(chosen) = chosen_name_for_known.clone() {
-                            known.insert(class.clone(), chosen);
-                        }
-
-                        let new_args: Vec<_> = args
-                            .into_iter()
-                            .map(|a| {
-                                rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    dicts_in_scope,
-                                    &known,
-                                    a,
-                                )
-                            })
-                            .collect::<Result<Vec<_>>>()?;
-
-                        let get = Expr::new(span, ExprKind::Var("__recordGet".to_string()));
-                        let method_fn = Expr::new(
-                            span,
-                            ExprKind::Apply {
-                                func: Box::new(get),
-                                args: vec![
-                                    dict_expr.clone(),
-                                    Expr::new(span, ExprKind::String(mname.clone())),
-                                ],
-                            },
-                        );
-
-                        // Stored methods expect the dictionary as an explicit first argument.
-                        let mut call_args = Vec::with_capacity(1 + new_args.len());
-                        call_args.push(dict_expr);
-                        call_args.extend(new_args);
-
-                        return Ok(Expr::new(
-                            span,
-                            ExprKind::Apply {
-                                func: Box::new(method_fn),
-                                args: call_args,
-                            },
-                        ));
-                    }
-                }
-
-                let func = rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    dicts_in_scope,
-                    known_dicts_in_scope,
-                    *func,
-                )?;
-                let args: Vec<_> = args
-                    .into_iter()
-                    .map(|a| {
-                        rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            dicts_in_scope,
-                            known_dicts_in_scope,
-                            a,
-                        )
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Expr::new(
-                    span,
-                    ExprKind::Apply {
-                        func: Box::new(func),
-                        args,
-                    },
-                )
-            }
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => Expr::new(
+            ExprKind::Var(mname) => rewrite_class_method_var(
+                class_env,
+                dicts_in_scope,
+                known_dicts_in_scope,
                 span,
-                ExprKind::If {
-                    cond: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *cond,
-                    )?),
-                    then_branch: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *then_branch,
-                    )?),
-                    else_branch: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        dicts_in_scope,
-                        known_dicts_in_scope,
-                        *else_branch,
-                    )?),
-                },
-            ),
+                mname,
+            )?,
+            ExprKind::Lambda { params, body } => rewrite_class_method_lambda(
+                module_snapshot,
+                class_env,
+                inferred,
+                dicts_in_scope,
+                known_dicts_in_scope,
+                span,
+                params,
+                *body,
+            )?,
+            ExprKind::Apply { func, args } => rewrite_class_method_apply(
+                module_snapshot,
+                class_env,
+                inferred,
+                dicts_in_scope,
+                known_dicts_in_scope,
+                span,
+                *func,
+                args,
+            )?,
             ExprKind::Let { bindings, body } => Expr::new(
                 span,
                 ExprKind::Let {
@@ -7095,6 +7093,11 @@ fn rewrite_class_method_calls_in_module(
     }
 
     let snapshot = module.clone();
+    let ctx = RewriteClassMethodCallsCtx {
+        module_snapshot: &snapshot,
+        class_env,
+        inferred,
+    };
     let empty_scope: HashSet<String> = HashSet::new();
     let empty_known: HashMap<String, String> = HashMap::new();
     module.items = module
@@ -7104,14 +7107,7 @@ fn rewrite_class_method_calls_in_module(
             Ok(match it {
                 ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
                     pat: b.pat,
-                    expr: rewrite_expr(
-                        &snapshot,
-                        class_env,
-                        inferred,
-                        &empty_scope,
-                        &empty_known,
-                        b.expr,
-                    )?,
+                    expr: ctx.rewrite_expr(&empty_scope, &empty_known, b.expr)?,
                 }),
                 other => other,
             })
