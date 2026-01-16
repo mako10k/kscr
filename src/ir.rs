@@ -1026,124 +1026,149 @@ fn eval_ir_io_then(
 fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
     match action {
         IoAction::Pure(v) => Ok(IoOutcome::Value(force_value(g, v)?)),
-        IoAction::StdoutWrite(s) => {
-            use std::io::Write;
-            print!("{s}");
-            std::io::stdout().flush().ok();
-            Ok(IoOutcome::Value(Value::Unit))
-        }
-        IoAction::StdinReadLine => {
-            use std::io::BufRead;
-            let mut s = String::new();
-            std::io::stdin().lock().read_line(&mut s)?;
-            while s.ends_with(['\n', '\r']) {
-                s.pop();
-            }
-            Ok(IoOutcome::Value(string_to_char_list(&s)))
-        }
+        IoAction::StdoutWrite(s) => run_io_stdout_write(s),
+        IoAction::StdinReadLine => run_io_stdin_readline(),
 
         #[cfg(feature = "unsafe_ffi")]
-        IoAction::FfiPuts(s) => {
-            crate::debug::unsafe_used("ffiPuts");
-            let rc = kscr_unsafe_ffi::puts_checked(&s)
-                .map_err(|_| Error::msg("ffiPuts: string contains NUL"))?;
-            Ok(IoOutcome::Value(Value::Integer(int_from_i64(rc as i64))))
-        }
+        IoAction::FfiPuts(s) => run_io_ffi_puts(&s),
 
         IoAction::Throw(e) => Ok(IoOutcome::Thrown(e)),
-        IoAction::Catch { action, handler } => match run_io(g, *action)? {
-            IoOutcome::Value(v) => Ok(IoOutcome::Value(v)),
-            IoOutcome::Thrown(e) => {
-                let h = force_value(g, handler)?;
-                let act = apply_one(g, h, string_to_char_list(&e))?;
-                let Value::IoAction(act) = act else {
-                    return Err(Error::msg("catch handler did not evaluate to an IO action"));
-                };
-                run_io(g, *act)
-            }
-        },
-        IoAction::Try { action } => match run_io(g, *action)? {
-            IoOutcome::Value(v) => {
-                let ctor = eval_var(g, &std::collections::HashMap::new(), "Right")?;
-                Ok(IoOutcome::Value(apply_one(g, ctor, v)?))
-            }
-            IoOutcome::Thrown(e) => {
-                let ctor = eval_var(g, &std::collections::HashMap::new(), "Left")?;
-                Ok(IoOutcome::Value(apply_one(
-                    g,
-                    ctor,
-                    string_to_char_list(&e),
-                )?))
-            }
-        },
+        IoAction::Catch { action, handler } => run_io_catch(g, *action, handler),
+        IoAction::Try { action } => run_io_try(g, *action),
 
-        IoAction::BindValue { action, func } => {
-            let v = match run_io(g, *action)? {
-                IoOutcome::Value(v) => v,
-                IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
-            };
-            let func = force_value(g, func)?;
-            let act = apply_one(g, func, v)?;
-            let Value::IoAction(act) = act else {
-                return Err(Error::msg(
-                    "__ioBind: body did not evaluate to an IO action",
-                ));
-            };
-            run_io(g, *act)
-        }
-        IoAction::ThenValue { first, then_action } => {
-            match run_io(g, *first)? {
-                IoOutcome::Value(_) => {}
-                IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
-            }
-            run_io(g, *then_action)
-        }
+        IoAction::BindValue { action, func } => run_io_bind_value(g, *action, func),
+        IoAction::ThenValue { first, then_action } => run_io_then_value(g, *first, *then_action),
 
         IoAction::Bind {
             action,
             param,
             body,
-            mut env,
-        } => {
-            let v = match run_io(g, *action)? {
-                IoOutcome::Value(v) => v,
-                IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
-            };
-            env.insert(param, v);
-            let act = eval_expr(g, &env, &body)?;
-            let Value::IoAction(act) = act else {
-                return Err(Error::msg("IoBind body did not evaluate to an IO action"));
-            };
-            run_io(g, *act)
-        }
+            env,
+        } => run_io_bind(g, *action, param, *body, env),
         IoAction::Then {
             first,
             then_expr,
             env,
-        } => {
-            match run_io(g, *first)? {
-                IoOutcome::Value(_) => {}
-                IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
-            }
-            let act = eval_expr(g, &env, &then_expr)?;
+        } => run_io_then(g, *first, *then_expr, env),
+    }
+}
+
+fn run_io_stdout_write(s: String) -> Result<IoOutcome> {
+    use std::io::Write;
+    print!("{s}");
+    std::io::stdout().flush().ok();
+    Ok(IoOutcome::Value(Value::Unit))
+}
+
+fn run_io_stdin_readline() -> Result<IoOutcome> {
+    use std::io::BufRead;
+    let mut s = String::new();
+    std::io::stdin().lock().read_line(&mut s)?;
+    while s.ends_with(['\n', '\r']) {
+        s.pop();
+    }
+    Ok(IoOutcome::Value(string_to_char_list(&s)))
+}
+
+#[cfg(feature = "unsafe_ffi")]
+fn run_io_ffi_puts(s: &str) -> Result<IoOutcome> {
+    crate::debug::unsafe_used("ffiPuts");
+    let rc = kscr_unsafe_ffi::puts_checked(s)
+        .map_err(|_| Error::msg("ffiPuts: string contains NUL"))?;
+    Ok(IoOutcome::Value(Value::Integer(int_from_i64(rc as i64))))
+}
+
+fn run_io_catch(g: &Globals, action: IoAction, handler: Value) -> Result<IoOutcome> {
+    match run_io(g, action)? {
+        IoOutcome::Value(v) => Ok(IoOutcome::Value(v)),
+        IoOutcome::Thrown(e) => {
+            let h = force_value(g, handler)?;
+            let act = apply_one(g, h, string_to_char_list(&e))?;
             let Value::IoAction(act) = act else {
-                return Err(Error::msg("IoThen body did not evaluate to an IO action"));
+                return Err(Error::msg("catch handler did not evaluate to an IO action"));
             };
             run_io(g, *act)
         }
     }
 }
 
+fn run_io_try(g: &Globals, action: IoAction) -> Result<IoOutcome> {
+    match run_io(g, action)? {
+        IoOutcome::Value(v) => {
+            let ctor = eval_var(g, &std::collections::HashMap::new(), "Right")?;
+            Ok(IoOutcome::Value(apply_one(g, ctor, v)?))
+        }
+        IoOutcome::Thrown(e) => {
+            let ctor = eval_var(g, &std::collections::HashMap::new(), "Left")?;
+            Ok(IoOutcome::Value(apply_one(g, ctor, string_to_char_list(&e))?))
+        }
+    }
+}
+
+fn run_io_bind_value(g: &Globals, action: IoAction, func: Value) -> Result<IoOutcome> {
+    let v = match run_io(g, action)? {
+        IoOutcome::Value(v) => v,
+        IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
+    };
+    let func = force_value(g, func)?;
+    let act = apply_one(g, func, v)?;
+    let Value::IoAction(act) = act else {
+        return Err(Error::msg("__ioBind: body did not evaluate to an IO action"));
+    };
+    run_io(g, *act)
+}
+
+fn run_io_then_value(g: &Globals, first: IoAction, then_action: IoAction) -> Result<IoOutcome> {
+    match run_io(g, first)? {
+        IoOutcome::Value(_) => {}
+        IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
+    }
+    run_io(g, then_action)
+}
+
+fn run_io_bind(
+    g: &Globals,
+    action: IoAction,
+    param: String,
+    body: IrExpr,
+    mut env: std::collections::HashMap<String, Value>,
+) -> Result<IoOutcome> {
+    let v = match run_io(g, action)? {
+        IoOutcome::Value(v) => v,
+        IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
+    };
+    env.insert(param, v);
+    let act = eval_expr(g, &env, &body)?;
+    let Value::IoAction(act) = act else {
+        return Err(Error::msg("IoBind body did not evaluate to an IO action"));
+    };
+    run_io(g, *act)
+}
+
+fn run_io_then(
+    g: &Globals,
+    first: IoAction,
+    then_expr: IrExpr,
+    env: std::collections::HashMap<String, Value>,
+) -> Result<IoOutcome> {
+    match run_io(g, first)? {
+        IoOutcome::Value(_) => {}
+        IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
+    }
+    let act = eval_expr(g, &env, &then_expr)?;
+    let Value::IoAction(act) = act else {
+        return Err(Error::msg("IoThen body did not evaluate to an IO action"));
+    };
+    run_io(g, *act)
+}
+
 fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
     match fun {
         Value::IoCtor => Ok(Value::IoAction(Box::new(IoAction::Pure(arg)))),
-        Value::BuiltinStdoutWrite => {
-            let arg = force_value(g, arg)?;
-            let s = value_to_string(g, arg)?;
-            Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
-        }
+        Value::BuiltinStdoutWrite => apply_builtin_stdout_write(g, arg),
         Value::BuiltinConcatMap => Ok(Value::BuiltinConcatMap1(Box::new(arg))),
         Value::BuiltinConcatMap1(f) => concat_map(g, *f, arg),
+
         Value::BuiltinAdd => Ok(Value::BuiltinAdd1(Box::new(arg))),
         Value::BuiltinAdd1(a) => add_int(g, *a, arg),
         Value::BuiltinSub => Ok(Value::BuiltinSub1(Box::new(arg))),
@@ -1161,6 +1186,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinDivInt1(a) => div_floor_int(g, *a, arg),
         Value::BuiltinModInt => Ok(Value::BuiltinModInt1(Box::new(arg))),
         Value::BuiltinModInt1(a) => mod_floor_int(g, *a, arg),
+
         Value::BuiltinEq => Ok(Value::BuiltinEq1(Box::new(arg))),
         Value::BuiltinEq1(a) => eq_value(g, *a, arg),
         Value::BuiltinEqInt => Ok(Value::BuiltinEqInt1(Box::new(arg))),
@@ -1177,11 +1203,13 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinNe1(a) => ne_value(g, *a, arg),
         Value::BuiltinNeInt => Ok(Value::BuiltinNeInt1(Box::new(arg))),
         Value::BuiltinNeInt1(a) => ne_int(g, *a, arg),
+
         Value::BuiltinAnd => Ok(Value::BuiltinAnd1(Box::new(arg))),
         Value::BuiltinAnd1(a) => and_bool(g, *a, arg),
         Value::BuiltinOr => Ok(Value::BuiltinOr1(Box::new(arg))),
         Value::BuiltinOr1(a) => or_bool(g, *a, arg),
         Value::BuiltinNot => not_bool(g, arg),
+
         Value::BuiltinIntToString => int_to_string(g, arg),
         Value::BuiltinBoolToString => bool_to_string(g, arg),
         Value::BuiltinListAppend => Ok(Value::BuiltinListAppend1(Box::new(arg))),
@@ -1194,89 +1222,29 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinRecordGet => Ok(Value::BuiltinRecordGet1(Box::new(arg))),
         Value::BuiltinRecordGet1(d) => record_get(g, *d, arg),
         Value::BuiltinShow => show_to_string(g, arg),
-        Value::BuiltinError => {
-            let arg = force_value(g, arg)?;
-            let s = value_to_string(g, arg)?;
-            Err(Error::msg(format!("error: {s}")))
-        }
-        Value::BuiltinThrow => {
-            let arg = force_value(g, arg)?;
-            let s = value_to_string(g, arg)?;
-            Ok(Value::IoAction(Box::new(IoAction::Throw(s))))
-        }
+
+        Value::BuiltinError => builtin_error(g, arg),
+        Value::BuiltinThrow => builtin_throw(g, arg),
         Value::BuiltinCatch => Ok(Value::BuiltinCatch1(Box::new(arg))),
-        Value::BuiltinCatch1(act) => {
-            let act = force_value(g, *act)?;
-            let Value::IoAction(act) = act else {
-                return Err(Error::msg("catch expects IO action"));
-            };
-            let handler = force_value(g, arg)?;
-            Ok(Value::IoAction(Box::new(IoAction::Catch {
-                action: act,
-                handler,
-            })))
-        }
-        Value::BuiltinTry => {
-            let act = force_value(g, arg)?;
-            let Value::IoAction(act) = act else {
-                return Err(Error::msg("try expects IO action"));
-            };
-            Ok(Value::IoAction(Box::new(IoAction::Try { action: act })))
-        }
+        Value::BuiltinCatch1(act) => builtin_catch1(g, *act, arg),
+        Value::BuiltinTry => builtin_try(g, arg),
 
         Value::BuiltinIoBind => Ok(Value::BuiltinIoBind1(Box::new(arg))),
-        Value::BuiltinIoBind1(act) => {
-            let act = force_value(g, *act)?;
-            let Value::IoAction(act) = act else {
-                return Err(Error::msg("__ioBind expects IO action"));
-            };
-            Ok(Value::IoAction(Box::new(IoAction::BindValue {
-                action: act,
-                func: arg,
-            })))
-        }
+        Value::BuiltinIoBind1(act) => builtin_io_bind1(g, *act, arg),
 
         Value::BuiltinIoThen => Ok(Value::BuiltinIoThen1(Box::new(arg))),
-        Value::BuiltinIoThen1(first) => {
-            let first = force_value(g, *first)?;
-            let Value::IoAction(first) = first else {
-                return Err(Error::msg("__ioThen expects IO action"));
-            };
-            let then_action = force_value(g, arg)?;
-            let Value::IoAction(then_action) = then_action else {
-                return Err(Error::msg("__ioThen expects IO action"));
-            };
-            Ok(Value::IoAction(Box::new(IoAction::ThenValue {
-                first,
-                then_action,
-            })))
-        }
+        Value::BuiltinIoThen1(first) => builtin_io_then1(g, *first, arg),
+
         Value::BuiltinFfiAddI32 => Ok(Value::BuiltinFfiAddI32_1(Box::new(arg))),
         Value::BuiltinFfiAddI32_1(a) => ffi_add_i32(g, *a, arg),
         Value::BuiltinFfiAddF32 => Ok(Value::BuiltinFfiAddF32_1(Box::new(arg))),
         Value::BuiltinFfiAddF32_1(a) => ffi_add_f32(g, *a, arg),
+
         #[cfg(feature = "unsafe_ffi")]
-        Value::BuiltinFfiPuts => {
-            let arg = force_value(g, arg)?;
-            let s = value_to_string(g, arg)?;
-            Ok(Value::IoAction(Box::new(IoAction::FfiPuts(s))))
-        }
-        Value::Closure {
-            mut params,
-            body,
-            mut env,
-        } => {
-            let Some(p) = params.first().cloned() else {
-                return Err(Error::msg("cannot apply function with no params"));
-            };
-            params.remove(0);
-            env.insert(p, arg);
-            if params.is_empty() {
-                eval_expr(g, &env, &body)
-            } else {
-                Ok(Value::Closure { params, body, env })
-            }
-        }
+        Value::BuiltinFfiPuts => builtin_ffi_puts(g, arg),
+
+        Value::Closure { params, body, env } => apply_closure(g, params, body, env, arg),
+
         Value::Integer(_)
         | Value::Float64(_)
         | Value::Bool(_)
@@ -1289,6 +1257,99 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         | Value::Record(_)
         | Value::Thunk(_)
         | Value::IoAction(_) => Err(Error::msg("attempted to apply a non-function")),
+    }
+}
+
+fn apply_builtin_stdout_write(g: &Globals, arg: Value) -> Result<Value> {
+    let arg = force_value(g, arg)?;
+    let s = value_to_string(g, arg)?;
+    Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
+}
+
+fn builtin_error(g: &Globals, arg: Value) -> Result<Value> {
+    let arg = force_value(g, arg)?;
+    let s = value_to_string(g, arg)?;
+    Err(Error::msg(format!("error: {s}")))
+}
+
+fn builtin_throw(g: &Globals, arg: Value) -> Result<Value> {
+    let arg = force_value(g, arg)?;
+    let s = value_to_string(g, arg)?;
+    Ok(Value::IoAction(Box::new(IoAction::Throw(s))))
+}
+
+fn builtin_catch1(g: &Globals, act: Value, handler: Value) -> Result<Value> {
+    let act = force_value(g, act)?;
+    let Value::IoAction(act) = act else {
+        return Err(Error::msg("catch expects IO action"));
+    };
+    let handler = force_value(g, handler)?;
+    Ok(Value::IoAction(Box::new(IoAction::Catch {
+        action: act,
+        handler,
+    })))
+}
+
+fn builtin_try(g: &Globals, arg: Value) -> Result<Value> {
+    let act = force_value(g, arg)?;
+    let Value::IoAction(act) = act else {
+        return Err(Error::msg("try expects IO action"));
+    };
+    Ok(Value::IoAction(Box::new(IoAction::Try { action: act })))
+}
+
+fn builtin_io_bind1(g: &Globals, act: Value, func: Value) -> Result<Value> {
+    let act = force_value(g, act)?;
+    let Value::IoAction(act) = act else {
+        return Err(Error::msg("__ioBind expects IO action"));
+    };
+    Ok(Value::IoAction(Box::new(IoAction::BindValue {
+        action: act,
+        func,
+    })))
+}
+
+fn builtin_io_then1(g: &Globals, first: Value, then_action: Value) -> Result<Value> {
+    let first = force_value(g, first)?;
+    let Value::IoAction(first) = first else {
+        return Err(Error::msg("__ioThen expects IO action"));
+    };
+    let then_action = force_value(g, then_action)?;
+    let Value::IoAction(then_action) = then_action else {
+        return Err(Error::msg("__ioThen expects IO action"));
+    };
+    Ok(Value::IoAction(Box::new(IoAction::ThenValue {
+        first,
+        then_action,
+    })))
+}
+
+#[cfg(feature = "unsafe_ffi")]
+fn builtin_ffi_puts(g: &Globals, arg: Value) -> Result<Value> {
+    let arg = force_value(g, arg)?;
+    let s = value_to_string(g, arg)?;
+    Ok(Value::IoAction(Box::new(IoAction::FfiPuts(s))))
+}
+
+fn apply_closure(
+    g: &Globals,
+    params: Vec<String>,
+    body: Box<IrExpr>,
+    env: std::collections::HashMap<String, Value>,
+    arg: Value,
+) -> Result<Value> {
+    if params.is_empty() {
+        return Err(Error::msg("cannot apply function with no params"));
+    }
+
+    let mut params = params;
+    let mut env = env;
+    let p = params.remove(0);
+    env.insert(p, arg);
+    if params.is_empty() {
+        eval_expr(g, &env, &body)
+    } else {
+        Ok(Value::Closure { params, body, env })
     }
 }
 
@@ -2088,6 +2149,217 @@ fn eq_with_dict(g: &Globals, dict: Value, a: Value, b: Value) -> Result<Value> {
     apply_one(g, f, b)
 }
 
+fn match_pat_trivial(
+    pat: &IrPattern,
+    val: &Value,
+) -> Option<std::collections::HashMap<String, Value>> {
+    use IrPattern as P;
+    match pat {
+        P::Wildcard => Some(std::collections::HashMap::new()),
+        P::Var(n) => {
+            let mut m = std::collections::HashMap::new();
+            m.insert(n.clone(), val.clone());
+            Some(m)
+        }
+        _ => None,
+    }
+}
+
+fn match_pat_literal(l: &IrLiteral, v: &Value) -> Result<bool> {
+    Ok(match (l, v) {
+        (IrLiteral::Unit, Value::Unit) => true,
+        (IrLiteral::Integer(a), Value::Integer(b)) => {
+            let aa = parse_integer(a)?;
+            #[cfg(feature = "unsafe_bigint")]
+            {
+                aa == b.clone()
+            }
+            #[cfg(not(feature = "unsafe_bigint"))]
+            {
+                aa == *b
+            }
+        }
+        (IrLiteral::Float64(a), Value::Float64(b)) => parse_f64(a)? == *b,
+        (IrLiteral::Bool(a), Value::Bool(b)) => a == b,
+        (IrLiteral::String(a), Value::String(b)) => a == b,
+        (IrLiteral::Char(a), Value::Char(b)) => a == b,
+        _ => false,
+    })
+}
+
+fn match_pat_tuple(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    ps: &[IrPattern],
+    vs: &[Value],
+) -> Result<Option<std::collections::HashMap<String, Value>>> {
+    if ps.len() != vs.len() {
+        return Ok(None);
+    }
+    let mut out = std::collections::HashMap::new();
+    for (p, v) in ps.iter().zip(vs.iter()) {
+        let Some(b) = match_pat(g, env, p, v)? else {
+            return Ok(None);
+        };
+        out.extend(b);
+    }
+    Ok(Some(out))
+}
+
+fn match_pat_list(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    ps: &[IrPattern],
+    v: &Value,
+) -> Result<Option<std::collections::HashMap<String, Value>>> {
+    let mut out = std::collections::HashMap::new();
+    let mut cur = v.clone();
+    for p in ps.iter() {
+        let cur_forced = force_value(g, cur)?;
+        let Value::ListCons(h, t) = cur_forced else {
+            return Ok(None);
+        };
+        let Some(b) = match_pat(g, env, p, &h)? else {
+            return Ok(None);
+        };
+        out.extend(b);
+        cur = *t;
+    }
+    let cur = force_value(g, cur)?;
+    if matches!(cur, Value::ListNil) {
+        Ok(Some(out))
+    } else {
+        Ok(None)
+    }
+}
+
+fn match_pat_cons(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    hd: &IrPattern,
+    tl: &IrPattern,
+    v: &Value,
+) -> Result<Option<std::collections::HashMap<String, Value>>> {
+    let v = force_value(g, v.clone())?;
+    let Value::ListCons(h, t) = v else {
+        return Ok(None);
+    };
+    let mut out = std::collections::HashMap::new();
+    let Some(b_hd) = match_pat(g, env, hd, &h)? else {
+        return Ok(None);
+    };
+    out.extend(b_hd);
+    let Some(b_tl) = match_pat(g, env, tl, &t)? else {
+        return Ok(None);
+    };
+    out.extend(b_tl);
+    Ok(Some(out))
+}
+
+fn match_pat_record(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    fs: &[(String, IrPattern)],
+    vs: &[(String, Value)],
+) -> Result<Option<std::collections::HashMap<String, Value>>> {
+    if fs.len() != vs.len() {
+        return Ok(None);
+    }
+    let mut out = std::collections::HashMap::new();
+    for (name, p) in fs {
+        let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
+            return Ok(None);
+        };
+        let Some(b) = match_pat(g, env, p, v)? else {
+            return Ok(None);
+        };
+        out.extend(b);
+    }
+    Ok(Some(out))
+}
+
+fn match_pat_record_loose(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    fs: &[(String, IrPattern)],
+    rest: &Option<String>,
+    vs: &[(String, Value)],
+) -> Result<Option<std::collections::HashMap<String, Value>>> {
+    let mut out = std::collections::HashMap::new();
+    let mut required = std::collections::HashSet::new();
+
+    for (name, p) in fs {
+        required.insert(name.clone());
+        let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
+            return Ok(None);
+        };
+        let Some(b) = match_pat(g, env, p, v)? else {
+            return Ok(None);
+        };
+        out.extend(b);
+    }
+
+    if let Some(rest) = rest {
+        let rest_fields: Vec<(String, Value)> = vs
+            .iter()
+            .filter(|(k, _)| !required.contains(k))
+            .cloned()
+            .collect();
+        out.insert(rest.clone(), Value::Record(rest_fields));
+    }
+
+    Ok(Some(out))
+}
+
+fn match_pat_constructor(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    name: &str,
+    args: &[IrPattern],
+    vs: &[(String, Value)],
+) -> Result<Option<std::collections::HashMap<String, Value>>> {
+    let Some((_, ctor_v)) = vs.iter().find(|(n, _)| n == "__ctor") else {
+        return Ok(None);
+    };
+    let ctor_v = force_value(g, ctor_v.clone())?;
+    let Value::String(ctor_name) = ctor_v else {
+        return Ok(None);
+    };
+    if ctor_name != name {
+        return Ok(None);
+    }
+
+    let Some((_, args_v)) = vs.iter().find(|(n, _)| n == "__args") else {
+        return Ok(None);
+    };
+    let args_v = force_value(g, args_v.clone())?;
+    let vs = list_to_vec(g, args_v)?;
+    if args.len() != vs.len() {
+        return Ok(None);
+    }
+
+    let mut out = std::collections::HashMap::new();
+    for (p, v) in args.iter().zip(vs.iter()) {
+        let Some(b) = match_pat(g, env, p, v)? else {
+            return Ok(None);
+        };
+        out.extend(b);
+    }
+    Ok(Some(out))
+}
+
+fn match_pat_view(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    p: &IrPattern,
+    e: &IrExpr,
+    v: &Value,
+) -> Result<Option<std::collections::HashMap<String, Value>>> {
+    let fv = eval_expr(g, env, e)?;
+    let v2 = apply_one(g, fv, v.clone())?;
+    match_pat(g, env, p, &v2)
+}
+
 fn match_pat(
     g: &Globals,
     env: &std::collections::HashMap<String, Value>,
@@ -2096,185 +2368,46 @@ fn match_pat(
 ) -> Result<Option<std::collections::HashMap<String, Value>>> {
     use IrPattern as P;
 
-    match pat {
-        P::Wildcard => return Ok(Some(std::collections::HashMap::new())),
-        P::Var(n) => {
-            let mut m = std::collections::HashMap::new();
-            m.insert(n.clone(), val.clone());
-            return Ok(Some(m));
-        }
-        _ => {}
+    if let Some(binds) = match_pat_trivial(pat, val) {
+        return Ok(Some(binds));
     }
 
     let val = force_value(g, val.clone())?;
-    Ok(match (pat, &val) {
+    match (pat, &val) {
         (P::Literal(l), v) => {
-            let ok = match (l, v) {
-                (IrLiteral::Unit, Value::Unit) => true,
-                (IrLiteral::Integer(a), Value::Integer(b)) => {
-                    let aa = parse_integer(a)?;
-                    #[cfg(feature = "unsafe_bigint")]
-                    {
-                        aa == b.clone()
-                    }
-                    #[cfg(not(feature = "unsafe_bigint"))]
-                    {
-                        aa == *b
-                    }
-                }
-                (IrLiteral::Float64(a), Value::Float64(b)) => parse_f64(a)? == *b,
-                (IrLiteral::Bool(a), Value::Bool(b)) => a == b,
-                (IrLiteral::String(a), Value::String(b)) => a == b,
-                (IrLiteral::Char(a), Value::Char(b)) => a == b,
-                _ => false,
-            };
-            if ok {
-                Some(std::collections::HashMap::new())
+            if match_pat_literal(l, v)? {
+                Ok(Some(std::collections::HashMap::new()))
             } else {
-                None
+                Ok(None)
             }
         }
-        (P::Tuple(ps), Value::Tuple(vs)) if ps.len() == vs.len() => {
-            let mut out = std::collections::HashMap::new();
-            for (p, v) in ps.iter().zip(vs.iter()) {
-                let Some(b) = match_pat(g, env, p, v)? else {
-                    return Ok(None);
-                };
-                out.extend(b);
-            }
-            Some(out)
-        }
-        (P::List(ps), v) => {
-            let mut out = std::collections::HashMap::new();
-            let mut cur = v.clone();
-            for p in ps.iter() {
-                let cur_forced = force_value(g, cur)?;
-                let Value::ListCons(h, t) = cur_forced else {
-                    return Ok(None);
-                };
-                let Some(b) = match_pat(g, env, p, &h)? else {
-                    return Ok(None);
-                };
-                out.extend(b);
-                cur = *t;
-            }
-            let cur = force_value(g, cur)?;
-            if matches!(cur, Value::ListNil) {
-                Some(out)
-            } else {
-                None
-            }
-        }
-        (P::Cons(hd, tl), v) => {
-            let v = v.clone();
-            let v = force_value(g, v)?;
-            let Value::ListCons(h, t) = v else {
-                return Ok(None);
-            };
-            let mut out = std::collections::HashMap::new();
-            let Some(b_hd) = match_pat(g, env, hd, &h)? else {
-                return Ok(None);
-            };
-            out.extend(b_hd);
-            let Some(b_tl) = match_pat(g, env, tl, &t)? else {
-                return Ok(None);
-            };
-            out.extend(b_tl);
-            Some(out)
-        }
-        (P::Record(fs), Value::Record(vs)) => {
-            if fs.len() != vs.len() {
-                return Ok(None);
-            }
-            let mut out = std::collections::HashMap::new();
-            for (name, p) in fs {
-                let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
-                    return Ok(None);
-                };
-                let Some(b) = match_pat(g, env, p, v)? else {
-                    return Ok(None);
-                };
-                out.extend(b);
-            }
-            Some(out)
-        }
+        (P::Tuple(ps), Value::Tuple(vs)) => match_pat_tuple(g, env, ps, vs),
+        (P::List(ps), v) => match_pat_list(g, env, ps, v),
+        (P::Cons(hd, tl), v) => match_pat_cons(g, env, hd, tl, v),
+        (P::Record(fs), Value::Record(vs)) => match_pat_record(g, env, fs, vs),
         (P::RecordLoose(fs, rest), Value::Record(vs)) => {
-            let mut out = std::collections::HashMap::new();
-
-            let mut required = std::collections::HashSet::new();
-            for (name, p) in fs {
-                required.insert(name.clone());
-                let Some((_, v)) = vs.iter().find(|(n, _)| n == name) else {
-                    return Ok(None);
-                };
-                let Some(b) = match_pat(g, env, p, v)? else {
-                    return Ok(None);
-                };
-                out.extend(b);
-            }
-
-            if let Some(rest) = rest {
-                let rest_fields: Vec<(String, Value)> = vs
-                    .iter()
-                    .filter(|(k, _)| !required.contains(k))
-                    .cloned()
-                    .collect();
-                out.insert(rest.clone(), Value::Record(rest_fields));
-            }
-
-            Some(out)
+            match_pat_record_loose(g, env, fs, rest, vs)
         }
         (P::As(n, p), v) => {
             let Some(mut b) = match_pat(g, env, p, v)? else {
                 return Ok(None);
             };
             b.insert(n.clone(), v.clone());
-            Some(b)
+            Ok(Some(b))
         }
         (P::Or(a, b), v) => {
             if let Some(binds) = match_pat(g, env, a, v)? {
-                Some(binds)
+                Ok(Some(binds))
             } else {
-                match_pat(g, env, b, v)?
+                match_pat(g, env, b, v)
             }
         }
         (P::Constructor { name, args }, Value::Record(vs)) => {
-            let Some((_, ctor_v)) = vs.iter().find(|(n, _)| n == "__ctor") else {
-                return Ok(None);
-            };
-            let ctor_v = force_value(g, ctor_v.clone())?;
-            let Value::String(ctor_name) = ctor_v else {
-                return Ok(None);
-            };
-            if &ctor_name != name {
-                return Ok(None);
-            }
-
-            let Some((_, args_v)) = vs.iter().find(|(n, _)| n == "__args") else {
-                return Ok(None);
-            };
-            let args_v = force_value(g, args_v.clone())?;
-            let vs = list_to_vec(g, args_v)?;
-            if args.len() != vs.len() {
-                return Ok(None);
-            }
-
-            let mut out = std::collections::HashMap::new();
-            for (p, v) in args.iter().zip(vs.iter()) {
-                let Some(b) = match_pat(g, env, p, v)? else {
-                    return Ok(None);
-                };
-                out.extend(b);
-            }
-            Some(out)
+            match_pat_constructor(g, env, name, args, vs)
         }
-        (P::View(p, e), v) => {
-            let fv = eval_expr(g, env, e)?;
-            let v2 = apply_one(g, fv, v.clone())?;
-            match_pat(g, env, p, &v2)?
-        }
-        _ => None,
-    })
+        (P::View(p, e), v) => match_pat_view(g, env, p, e, v),
+        _ => Ok(None),
+    }
 }
 
 #[cfg(test)]
