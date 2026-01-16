@@ -4300,11 +4300,25 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
 
     // Load via ModuleLoader so stdlib cache + qualified-name desugaring stays consistent.
     let mut entry_mod = loader.load_ast(&entry)?;
-    entry_mod = ensure_implicit_prelude_import(entry_mod);
+
+    // Do not inject implicit Prelude for stdlib files themselves.
+    // Otherwise, opening e.g. `stdlib/Prelude/Functor.ks` causes an injected
+    // `import Prelude`, and Prelude imports `Prelude.Functor`, creating a
+    // spurious cyclic import.
+    if !is_stdlib_path(&entry) {
+        entry_mod = ensure_implicit_prelude_import(entry_mod);
+    }
 
     let module =
         load_module_with_imports_ast_with_loader(&mut loader, &entry, entry_dir, &entry_mod)?;
     typecheck_with_stdlib_class_env(module)
+}
+
+fn is_stdlib_path(path: &Path) -> bool {
+    let Ok(path) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    path.starts_with(stdlib_root())
 }
 
 fn load_module_with_imports_ast_with_loader(

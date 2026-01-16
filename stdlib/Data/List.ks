@@ -1,8 +1,10 @@
 module Data.List where
-  export List, null, singleton, head, tail, map, filter, append, concat, concatMap, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip
+  export List, Maybe(..), null, singleton, head, tail, map, filter, append, concat, concatMap, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip
 
   -- Haskell-like alias: List a ~ [a]
   type List a = [a]
+
+  data Maybe a = Nothing | Just a
 
   null [] = True
   null _:_ = False

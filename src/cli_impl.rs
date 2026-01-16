@@ -647,7 +647,7 @@ mod tests {
         let path = std::env::temp_dir().join("kscr_cli_run_import_data_list_stdlib_smoke.ks");
         std::fs::write(
             &path,
-            "module Main where\n  import Prelude\n  import qualified Data.List as L\n  main = do\n    print (show (L.map (\\x -> x + 1) [1, 2, 3]))\n    print (show (L.filter (\\x -> x == 2) [1, 2, 3]))\n    print (show (L.concat [[1], [2, 3]]))\n    print (show (L.append [1, 2] [3]))\n    print (show (L.length [1, 2, 3]))\n    print (show (L.take 2 [1, 2, 3, 4]))\n    print (show (L.drop 2 [1, 2, 3, 4]))\n    print (show (L.reverse [1, 2, 3]))\n    print (show (L.foldr (\\x -> \\acc -> x + acc) 0 [1, 2, 3]))\n    print (show (L.elem 2 [1, 2, 3]))\n    print (show (L.find (\\x -> x == 2) [1, 2, 3]))\n    putStrLn \"list ok\"\n",
+            "module Main where\n  import Prelude\n  import qualified Data.List as L\n  main = do\n    print (show (L.map (\\x -> x + 1) [1, 2, 3]))\n    print (show (L.filter (\\x -> x == 2) [1, 2, 3]))\n    print (show (L.concat [[1], [2, 3]]))\n    print (show (L.append [1, 2] [3]))\n    print (show (L.length [1, 2, 3]))\n    print (show (L.take 2 [1, 2, 3, 4]))\n    print (show (L.drop 2 [1, 2, 3, 4]))\n    print (show (L.reverse [1, 2, 3]))\n    print (show (L.foldr (\\x -> \\acc -> x + acc) 0 [1, 2, 3]))\n    print (show (L.elem 2 [1, 2, 3]))\n    case L.find (\\x -> x == 2) [1, 2, 3] of\n      L.Nothing -> putStrLn \"nothing\"\n      L.Just x -> print (show x)\n    putStrLn \"list ok\"\n",
         )
         .unwrap();
         let args = vec![
@@ -746,7 +746,7 @@ mod tests {
 
     #[test]
     fn cli_run_import_data_maybe_stdlib_smoke() {
-        let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe as M\n  main = do\n    print (show (M.fromMaybe 0 (Just 1)))\n    print (show (M.fromMaybe 0 Nothing))\n    print (show (M.isJust (Just 1)))\n    print (show (M.isNothing Nothing))\n    putStrLn \"maybe ok\"\n";
+        let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe as M\n  main = do\n    print (show (M.fromMaybe 0 (M.Just 1)))\n    print (show (M.fromMaybe 0 M.Nothing))\n    print (show (M.isJust (M.Just 1)))\n    print (show (M.isNothing M.Nothing))\n    putStrLn \"maybe ok\"\n";
         let mut attempt: u8 = 0;
         loop {
             match run_main_in_temp_dir("cli_run_import_data_maybe_stdlib_smoke", src) {

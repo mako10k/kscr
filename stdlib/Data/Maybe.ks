@@ -1,7 +1,15 @@
 module Data.Maybe where
-  export maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export Maybe(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
-  import Prelude
+  -- No Prelude import here to avoid name conflicts with Prelude's `maybe`.
+
+  data Maybe a = Nothing | Just a
+
+  id x = x
+
+  concatMap f xs = case xs of
+    [] -> []
+    x:xt -> f x ++ concatMap f xt
 
   maybe d f m = case m of
     Nothing -> d

@@ -1330,7 +1330,7 @@ fn try_parse_funclause_paren_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
 
     let mut args = Vec::new();
     while can_start_pattern_atom(ts.peek_kind()) {
-        args.push(pattern::parse_pattern_atom(ts)?);
+        args.push(pattern::parse_pattern(ts)?);
     }
     if args.is_empty() {
         (ts.i, ts.last_span_end) = save;
@@ -1348,7 +1348,7 @@ fn try_parse_funclause_paren_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
 
 fn try_parse_funclause_infix_op(ts: &mut TokenStream, stop: Stop) -> Result<Option<ParsedBind>> {
     let save = (ts.i, ts.last_span_end);
-    let lhs_pat = match pattern::parse_pattern_atom(ts) {
+    let lhs_pat = match pattern::parse_pattern(ts) {
         Ok(p) => p,
         Err(_) => {
             (ts.i, ts.last_span_end) = save;
@@ -1371,7 +1371,7 @@ fn try_parse_funclause_infix_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
         return Ok(None);
     }
 
-    let rhs_pat = pattern::parse_pattern_atom(ts)?;
+    let rhs_pat = pattern::parse_pattern(ts)?;
     let (guard, body) = parse_guard_and_body(ts, stop)?;
     Ok(Some(ParsedBind::FunClause(FunClause {
         name: op,
@@ -1405,7 +1405,7 @@ fn try_parse_funclause_prefix_ident(
 
     let mut args = Vec::new();
     while can_start_pattern_atom(ts.peek_kind()) {
-        args.push(pattern::parse_pattern_atom(ts)?);
+        args.push(pattern::parse_pattern(ts)?);
     }
     if args.is_empty() {
         (ts.i, ts.last_span_end) = save;
