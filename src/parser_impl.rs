@@ -30,6 +30,60 @@ enum StopAt {
     Eof,
 }
 
+fn is_stop_at_bound(ts: &TokenStream, stop_at: StopAt) -> bool {
+    // When parsing a top-level item list, a trailing layout `Dedent` can appear
+    // right at EOF. Treat it as EOF here too.
+    if matches!(stop_at, StopAt::Eof) && matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+        return true;
+    }
+    if ts.is_eof() {
+        return true;
+    }
+    matches!(stop_at, StopAt::Dedent) && matches!(ts.peek_kind(), Some(TokenKind::Dedent))
+}
+
+fn should_skip_newlines(ts: &TokenStream, stop_at: StopAt) -> bool {
+    // When ending a layout block at EOF, the lexer can emit a bare `Dedent`.
+    // Don't skip over it here; allow the caller to see it.
+    !(matches!(stop_at, StopAt::Dedent) && matches!(ts.peek_kind(), Some(TokenKind::Dedent)))
+}
+
+fn err_if_sig_would_cross_decl(
+    ts: &TokenStream,
+    signature_buf: &HashMap<String, ast::QualType>,
+) -> Result<()> {
+    if signature_buf.is_empty() {
+        return Ok(());
+    }
+    match ts.peek_kind() {
+        Some(TokenKind::KwImport)
+        | Some(TokenKind::KwExport)
+        | Some(TokenKind::KwInfix)
+        | Some(TokenKind::KwInfixl)
+        | Some(TokenKind::KwInfixr)
+        | Some(TokenKind::KwData)
+        | Some(TokenKind::KwType)
+        | Some(TokenKind::KwClass)
+        | Some(TokenKind::KwInstance) => {
+            Err(ts.err_here("type signature must be followed by a binding"))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn try_consume_sig_line(
+    ts: &mut TokenStream,
+    signature_buf: &mut HashMap<String, ast::QualType>,
+) -> Result<bool> {
+    let save = (ts.i, ts.last_span_end);
+    if let Some((name, ty)) = try_parse_toplevel_sig_line(ts)? {
+        signature_buf.insert(name, ty);
+        return Ok(true);
+    }
+    (ts.i, ts.last_span_end) = save;
+    Ok(false)
+}
+
 fn collect_fixities(tokens: &[lexer::Token]) -> HashMap<String, Fixity> {
     // Default fixities.
     let mut m: HashMap<String, Fixity> = HashMap::new();
@@ -114,42 +168,16 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
     };
 
     loop {
-        // When parsing a top-level item list, a trailing layout `Dedent` can appear
-        // right at EOF. Treat it as EOF here too.
-        if matches!(stop_at, StopAt::Eof) && matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
+        if is_stop_at_bound(ts, stop_at) {
             break;
         }
-        // When ending a layout block at EOF, the lexer can emit a bare `Dedent`.
-        // Don't skip over it here; allow the caller to see it.
-        if !(matches!(stop_at, StopAt::Dedent) && matches!(ts.peek_kind(), Some(TokenKind::Dedent))) {
+        if should_skip_newlines(ts, stop_at) {
             ts.skip_newlines();
         }
-        // If we're parsing an indent-scoped item list, allow `Dedent` to terminate
-        // even when it appears at EOF (common in files ending with a layout block).
-        if ts.is_eof() {
+        if is_stop_at_bound(ts, stop_at) {
             break;
         }
-        if matches!(stop_at, StopAt::Dedent) && matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
-            break;
-        }
-
-        // Signatures must not cross declaration boundaries.
-        if !signature_buf.is_empty() {
-            match ts.peek_kind() {
-                Some(TokenKind::KwImport)
-                | Some(TokenKind::KwExport)
-                | Some(TokenKind::KwInfix)
-                | Some(TokenKind::KwInfixl)
-                | Some(TokenKind::KwInfixr)
-                | Some(TokenKind::KwData)
-                | Some(TokenKind::KwType)
-                | Some(TokenKind::KwClass)
-                | Some(TokenKind::KwInstance) => {
-                    return Err(ts.err_here("type signature must be followed by a binding"));
-                }
-                _ => {}
-            }
-        }
+        err_if_sig_would_cross_decl(ts, &signature_buf)?;
 
         let tok = ts.peek_kind().cloned();
         match tok {
@@ -183,12 +211,9 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
             }
             Some(TokenKind::Ident(_)) | Some(TokenKind::LParen) | Some(TokenKind::Question) | Some(TokenKind::LBrace) => {
                 // Either a signature line `x :: ...` or a binding/fun-clause.
-                let save = (ts.i, ts.last_span_end);
-                if let Some((name, ty)) = try_parse_toplevel_sig_line(ts)? {
-                    signature_buf.insert(name, ty);
+                if try_consume_sig_line(ts, &mut signature_buf)? {
                     continue;
                 }
-                (ts.i, ts.last_span_end) = save;
 
                 match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
                     ParsedBind::Binding(b) => {
