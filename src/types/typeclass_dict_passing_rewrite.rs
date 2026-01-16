@@ -18,18 +18,10 @@ struct RewriteCx<'a> {
 }
 
 fn rewrite_expr_cx(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
-    rewrite_expr(
-        cx.module_snapshot,
-        cx.class_env,
-        cx.inferred,
-        cx.needs_dicts_global,
-        cx.needs_dicts_local,
-        cx.dicts_in_scope,
-        cx.shadowed_in_scope,
-        expr,
-    )
+    rewrite_expr_impl(cx, expr)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn rewrite_expr(
     module_snapshot: &ast::Module,
     class_env: &ClassEnv,
@@ -40,8 +32,6 @@ pub(super) fn rewrite_expr(
     shadowed_in_scope: &HashSet<String>,
     expr: ast::Expr,
 ) -> Result<ast::Expr> {
-    use ast::{Expr, ExprKind, PatternKind};
-
     let cx = RewriteCx {
         module_snapshot,
         class_env,
@@ -51,6 +41,21 @@ pub(super) fn rewrite_expr(
         dicts_in_scope,
         shadowed_in_scope,
     };
+
+    rewrite_expr_impl(cx, expr)
+}
+
+
+fn rewrite_expr_impl(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind, PatternKind};
+
+    let module_snapshot = cx.module_snapshot;
+    let class_env = cx.class_env;
+    let inferred = cx.inferred;
+    let needs_dicts_global = cx.needs_dicts_global;
+    let needs_dicts_local = cx.needs_dicts_local;
+    let dicts_in_scope = cx.dicts_in_scope;
+    let shadowed_in_scope = cx.shadowed_in_scope;
 
     let span = expr.span;
 
