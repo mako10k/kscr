@@ -2745,3 +2745,35 @@ module Main where
     assert!(result_orig.is_ok());
     assert!(result_opt.is_ok());
 }
+
+#[test]
+fn ir_optimize_api_example() {
+    // Example showing how to use the optimization API
+    let src = r#"
+module Main where
+  unused1 = 100
+  unused2 = 200
+  used = 42
+  result = if True then used else 0
+  main = IO ()
+"#;
+    let ast = crate::parser::parse_module(src).unwrap();
+    let typed = crate::types::typecheck(ast).unwrap();
+    let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
+    
+    // Count items before optimization
+    let before_count = ir.items.len();
+    
+    // Apply default optimization passes
+    let optimized = crate::ir::optimize_ir(&ir);
+    
+    // Count items after optimization
+    let after_count = optimized.items.len();
+    
+    // Should have removed unused bindings
+    assert!(after_count < before_count, "Expected optimization to remove unused code");
+    
+    // Both should execute successfully
+    assert!(crate::ir::run_main(&ir).is_ok());
+    assert!(crate::ir::run_main(&optimized).is_ok());
+}
