@@ -844,17 +844,7 @@ fn eval_expr(
             body: body.clone(),
             env: env.clone(),
         },
-        IrExpr::Apply { func, args } => {
-            let mut f = eval_expr(g, env, func)?;
-            for a in args {
-                let t = std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
-                    expr: a.clone(),
-                    env: env.clone(),
-                }));
-                f = apply_one(g, f, Value::Thunk(t))?;
-            }
-            f
-        }
+        IrExpr::Apply { func, args } => eval_apply(g, env, func, args)?,
         IrExpr::If {
             cond,
             then_branch,
@@ -869,137 +859,168 @@ fn eval_expr(
                 eval_expr(g, env, else_branch)?
             }
         }
-        IrExpr::Let { bindings, body } => {
-            // Recursive, order-independent let-bindings.
-            // Allocate thunks first so each RHS sees the full environment.
-            let mut env2 = env.clone();
-            let mut thunks: Vec<(std::rc::Rc<std::cell::RefCell<ThunkState>>, IrExpr)> = Vec::new();
-
-            for (name, e) in bindings {
-                let t = std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
-                    expr: IrExpr::Unit,
-                    env: std::collections::HashMap::new(),
-                }));
-                env2.insert(name.clone(), Value::Thunk(t.clone()));
-                thunks.push((t, e.clone()));
-            }
-
-            for (t, e) in thunks {
-                *t.borrow_mut() = ThunkState::Unevaluated {
-                    expr: e,
-                    env: env2.clone(),
-                };
-            }
-
-            eval_expr(g, &env2, body)?
-        }
-        IrExpr::Cons { head, tail } => {
-            let hd = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
-                ThunkState::Unevaluated {
-                    expr: (**head).clone(),
-                    env: env.clone(),
-                },
-            )));
-            let tl = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
-                ThunkState::Unevaluated {
-                    expr: (**tail).clone(),
-                    env: env.clone(),
-                },
-            )));
-            Value::ListCons(Box::new(hd), Box::new(tl))
-        }
-        IrExpr::List(es) => {
-            let mut out = Value::ListNil;
-            for e in es.iter().rev() {
-                let hd = Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
-                    ThunkState::Unevaluated {
-                        expr: e.clone(),
-                        env: env.clone(),
-                    },
-                )));
-                out = Value::ListCons(Box::new(hd), Box::new(out));
-            }
-            out
-        }
-        IrExpr::Tuple(es) => Value::Tuple(
-            es.iter()
-                .map(|e| {
-                    Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
-                        ThunkState::Unevaluated {
-                            expr: e.clone(),
-                            env: env.clone(),
-                        },
-                    )))
-                })
-                .collect(),
-        ),
-        IrExpr::Record(fields) => Value::Record(
-            fields
-                .iter()
-                .map(|(n, e)| {
-                    (
-                        n.clone(),
-                        Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
-                            ThunkState::Unevaluated {
-                                expr: e.clone(),
-                                env: env.clone(),
-                            },
-                        ))),
-                    )
-                })
-                .collect(),
-        ),
+        IrExpr::Let { bindings, body } => eval_let(g, env, bindings, body)?,
+        IrExpr::Cons { head, tail } => eval_cons(env, head, tail),
+        IrExpr::List(es) => eval_list(env, es),
+        IrExpr::Tuple(es) => eval_tuple(env, es),
+        IrExpr::Record(fields) => eval_record(env, fields),
         IrExpr::CheckedCast { expr, target } => {
             let v = eval_expr(g, env, expr)?;
             checked_cast(g, v, *target)?
         }
-        IrExpr::Case { expr, arms } => {
-            let scrut = eval_expr(g, env, expr)?;
-            for arm in arms {
-                if let Some(binds) = match_pat(g, env, &arm.pat, &scrut)? {
-                    let mut env_arm = env.clone();
-                    env_arm.extend(binds);
-                    if let Some(guard) = &arm.guard {
-                        let Value::Bool(b) = eval_expr(g, &env_arm, guard)? else {
-                            return Err(Error::msg("case guard did not evaluate to Bool"));
-                        };
-                        if !b {
-                            continue;
-                        }
-                    }
-                    return eval_expr(g, &env_arm, &arm.body);
-                }
-            }
-            return Err(Error::msg("non-exhaustive case"));
-        }
+        IrExpr::Case { expr, arms } => eval_case(g, env, expr, arms)?,
         IrExpr::IoBind {
             action,
             param,
             body,
-        } => {
-            let act = eval_expr(g, env, action)?;
-            let Value::IoAction(act) = act else {
-                return Err(Error::msg("IoBind action did not evaluate to an IO action"));
-            };
-            Value::IoAction(Box::new(IoAction::Bind {
-                action: act,
-                param: param.clone(),
-                body: body.clone(),
-                env: env.clone(),
-            }))
-        }
-        IrExpr::IoThen { first, then_expr } => {
-            let act = eval_expr(g, env, first)?;
-            let Value::IoAction(act) = act else {
-                return Err(Error::msg("IoThen first did not evaluate to an IO action"));
-            };
-            Value::IoAction(Box::new(IoAction::Then {
-                first: act,
-                then_expr: then_expr.clone(),
-                env: env.clone(),
-            }))
-        }
+        } => eval_ir_io_bind(g, env, action, param, body)?,
+        IrExpr::IoThen { first, then_expr } => eval_ir_io_then(g, env, first, then_expr)?,
     })
+}
+
+fn mk_thunk(env: &std::collections::HashMap<String, Value>, expr: IrExpr) -> Value {
+    Value::Thunk(std::rc::Rc::new(std::cell::RefCell::new(
+        ThunkState::Unevaluated {
+            expr,
+            env: env.clone(),
+        },
+    )))
+}
+
+fn eval_apply(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    func: &IrExpr,
+    args: &[IrExpr],
+) -> Result<Value> {
+    let mut f = eval_expr(g, env, func)?;
+    for a in args {
+        f = apply_one(g, f, mk_thunk(env, a.clone()))?;
+    }
+    Ok(f)
+}
+
+fn eval_let(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    bindings: &[(String, IrExpr)],
+    body: &IrExpr,
+) -> Result<Value> {
+    // Recursive, order-independent let-bindings.
+    // Allocate thunks first so each RHS sees the full environment.
+    let mut env2 = env.clone();
+    let mut thunks: Vec<(std::rc::Rc<std::cell::RefCell<ThunkState>>, IrExpr)> = Vec::new();
+
+    for (name, e) in bindings {
+        let t = std::rc::Rc::new(std::cell::RefCell::new(ThunkState::Unevaluated {
+            expr: IrExpr::Unit,
+            env: std::collections::HashMap::new(),
+        }));
+        env2.insert(name.clone(), Value::Thunk(t.clone()));
+        thunks.push((t, e.clone()));
+    }
+
+    for (t, e) in thunks {
+        *t.borrow_mut() = ThunkState::Unevaluated {
+            expr: e,
+            env: env2.clone(),
+        };
+    }
+
+    eval_expr(g, &env2, body)
+}
+
+fn eval_cons(
+    env: &std::collections::HashMap<String, Value>,
+    head: &IrExpr,
+    tail: &IrExpr,
+) -> Value {
+    let hd = mk_thunk(env, head.clone());
+    let tl = mk_thunk(env, tail.clone());
+    Value::ListCons(Box::new(hd), Box::new(tl))
+}
+
+fn eval_list(env: &std::collections::HashMap<String, Value>, es: &[IrExpr]) -> Value {
+    let mut out = Value::ListNil;
+    for e in es.iter().rev() {
+        let hd = mk_thunk(env, e.clone());
+        out = Value::ListCons(Box::new(hd), Box::new(out));
+    }
+    out
+}
+
+fn eval_tuple(env: &std::collections::HashMap<String, Value>, es: &[IrExpr]) -> Value {
+    Value::Tuple(es.iter().map(|e| mk_thunk(env, e.clone())).collect())
+}
+
+fn eval_record(env: &std::collections::HashMap<String, Value>, fields: &[(String, IrExpr)]) -> Value {
+    Value::Record(
+        fields
+            .iter()
+            .map(|(n, e)| (n.clone(), mk_thunk(env, e.clone())))
+            .collect(),
+    )
+}
+
+fn eval_case(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    expr: &IrExpr,
+    arms: &[IrCaseArm],
+) -> Result<Value> {
+    let scrut = eval_expr(g, env, expr)?;
+    for arm in arms {
+        if let Some(binds) = match_pat(g, env, &arm.pat, &scrut)? {
+            let mut env_arm = env.clone();
+            env_arm.extend(binds);
+            if let Some(guard) = &arm.guard {
+                let Value::Bool(b) = eval_expr(g, &env_arm, guard)? else {
+                    return Err(Error::msg("case guard did not evaluate to Bool"));
+                };
+                if !b {
+                    continue;
+                }
+            }
+            return eval_expr(g, &env_arm, &arm.body);
+        }
+    }
+    Err(Error::msg("non-exhaustive case"))
+}
+
+fn eval_ir_io_bind(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    action: &IrExpr,
+    param: &str,
+    body: &IrExpr,
+) -> Result<Value> {
+    let act = eval_expr(g, env, action)?;
+    let Value::IoAction(act) = act else {
+        return Err(Error::msg("IoBind action did not evaluate to an IO action"));
+    };
+    Ok(Value::IoAction(Box::new(IoAction::Bind {
+        action: act,
+        param: param.to_string(),
+        body: Box::new(body.clone()),
+        env: env.clone(),
+    })))
+}
+
+fn eval_ir_io_then(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    first: &IrExpr,
+    then_expr: &IrExpr,
+) -> Result<Value> {
+    let act = eval_expr(g, env, first)?;
+    let Value::IoAction(act) = act else {
+        return Err(Error::msg("IoThen first did not evaluate to an IO action"));
+    };
+    Ok(Value::IoAction(Box::new(IoAction::Then {
+        first: act,
+        then_expr: Box::new(then_expr.clone()),
+        env: env.clone(),
+    })))
 }
 
 fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
