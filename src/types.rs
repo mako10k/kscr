@@ -4383,7 +4383,7 @@ fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()
 
     let mut merged = Vec::new();
     merged.extend(forwarders);
-    merged.extend(module.items.drain(..));
+    merged.append(&mut module.items);
     module.items = merged;
     Ok(())
 }
@@ -7758,7 +7758,7 @@ fn inject_class_method_value_bindings(
 
     if !injected.is_empty() {
         // Prepend so later passes can treat them as ordinary globals.
-        injected.extend(module.items.drain(..));
+        injected.append(&mut module.items);
         module.items = injected;
     }
 }
@@ -7827,8 +7827,10 @@ fn infer_module_with_class_env(
 ) -> Result<HashMap<String, Scheme>> {
     // Order-independent top-level inference (Haskell-like): compute SCCs of top-level bindings,
     // then typecheck SCCs in dependency order, generalizing non-recursive groups.
-    let mut cx = InferCtx::default();
-    cx.class_env = class_index.clone();
+    let mut cx = InferCtx {
+        class_env: class_index.clone(),
+        ..Default::default()
+    };
     let data_env = collect_data_env(module);
     let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
 

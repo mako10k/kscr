@@ -213,6 +213,16 @@ REPL commands:
 - Multi-file tests verify transitive imports and qualified references.
 - Example: `tests/module_import_export.ks` checks export/import boundaries.
 
+## Dead code / unused imports detection
+
+Use Rust's compiler warnings (and Clippy) instead of JS tooling:
+
+```bash
+cargo check
+cargo test
+cargo clippy -- -D warnings
+```
+
 ## Component map (by file)
 
 | File | Responsibility | Key entry points |

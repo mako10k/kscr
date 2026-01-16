@@ -1,0 +1,13 @@
+{
+  "name": "kscr-tools",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Dev tooling for the kscr repository (knip, jscpd).",
+  "packageManager": "npm@11.7.0",
+  "devDependencies": {
+    "jscpd": "^4.0.5"
+  },
+  "scripts": {
+    "jscpd": "jscpd"
+  }
+}

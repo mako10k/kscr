@@ -1,0 +1,26 @@
+{
+  "threshold": 2,
+  "reporters": [
+    "console"
+  ],
+  "ignore": [
+    "**/target/**",
+    "**/.git/**",
+    "**/node_modules/**",
+    "crates/kscr_lsp/target/**"
+  ],
+  "minTokens": 70,
+  "minLines": 10,
+  "format": [
+    "javascript",
+    "typescript",
+    "rust",
+    "haskell"
+  ],
+  "formats-exts": "haskell:ks",
+  "path": [
+    "src",
+    "crates",
+    "editors"
+  ]
+}
