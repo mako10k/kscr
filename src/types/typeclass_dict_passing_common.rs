@@ -206,49 +206,9 @@ pub(super) fn required_classes_in_expr(
 ) {
     use ast::ExprKind;
     match &expr.kind {
-        ExprKind::Var(name) => {
-            if let Some(classes) = needs_dicts.get(name) {
-                for c in classes {
-                    out.insert(c.clone());
-                }
-            }
-
-            if let Some(classes) = class_env.method_classes.get(name) {
-                for c in classes {
-                    out.insert(c.clone());
-                }
-            }
-        }
+        ExprKind::Var(name) => required_classes_in_var(name, class_env, needs_dicts, out),
         ExprKind::Apply { func, args } => {
-            if let ExprKind::Var(name) = &func.kind {
-                if let Some(classes) = class_env.method_classes.get(name) {
-                    if let Some(arg0) = args.first() {
-                        if !is_syntactically_ground_value(arg0) {
-                            if let Some(c) = classes.first() {
-                                out.insert(c.clone());
-                            }
-                        }
-                    }
-                }
-
-                if let Some(classes) = needs_dicts.get(name) {
-                    match args.first() {
-                        None => {
-                            for c in classes {
-                                out.insert(c.clone());
-                            }
-                        }
-                        Some(arg0) => {
-                            if !is_syntactically_ground_value(arg0) {
-                                for c in classes {
-                                    out.insert(c.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
+            required_classes_in_apply(func, args, class_env, needs_dicts, out);
             required_classes_in_expr(func, class_env, needs_dicts, out);
             for a in args {
                 required_classes_in_expr(a, class_env, needs_dicts, out);
@@ -317,6 +277,63 @@ pub(super) fn required_classes_in_expr(
             }
         }
         _ => {}
+    }
+}
+
+fn insert_all(out: &mut HashSet<String>, classes: &[String]) {
+    for c in classes {
+        out.insert(c.clone());
+    }
+}
+
+fn required_classes_in_var(
+    name: &str,
+    class_env: &ClassEnv,
+    needs_dicts: &HashMap<String, Vec<String>>,
+    out: &mut HashSet<String>,
+) {
+    if let Some(classes) = needs_dicts.get(name) {
+        insert_all(out, classes);
+    }
+    if let Some(classes) = class_env.method_classes.get(name) {
+        insert_all(out, classes);
+    }
+}
+
+fn required_classes_in_apply(
+    func: &ast::Expr,
+    args: &[ast::Expr],
+    class_env: &ClassEnv,
+    needs_dicts: &HashMap<String, Vec<String>>,
+    out: &mut HashSet<String>,
+) {
+    use ast::ExprKind;
+
+    let ExprKind::Var(name) = &func.kind else {
+        return;
+    };
+
+    if let Some(classes) = class_env.method_classes.get(name) {
+        if let Some(arg0) = args.first() {
+            if !is_syntactically_ground_value(arg0) {
+                if let Some(c) = classes.first() {
+                    out.insert(c.clone());
+                }
+            }
+        }
+    }
+
+    let Some(classes) = needs_dicts.get(name) else {
+        return;
+    };
+
+    match args.first() {
+        None => insert_all(out, classes),
+        Some(arg0) => {
+            if !is_syntactically_ground_value(arg0) {
+                insert_all(out, classes);
+            }
+        }
     }
 }
 

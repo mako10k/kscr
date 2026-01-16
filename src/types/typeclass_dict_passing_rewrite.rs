@@ -6,6 +6,30 @@ use super::typeclass_dict_passing_common as common;
 
 use std::collections::{HashMap, HashSet};
 
+#[derive(Clone, Copy)]
+struct RewriteCx<'a> {
+    module_snapshot: &'a ast::Module,
+    class_env: &'a ClassEnv,
+    inferred: &'a HashMap<String, Scheme>,
+    needs_dicts_global: &'a HashMap<String, Vec<String>>,
+    needs_dicts_local: &'a HashMap<String, Vec<String>>,
+    dicts_in_scope: &'a HashSet<String>,
+    shadowed_in_scope: &'a HashSet<String>,
+}
+
+fn rewrite_expr_cx(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
+    rewrite_expr(
+        cx.module_snapshot,
+        cx.class_env,
+        cx.inferred,
+        cx.needs_dicts_global,
+        cx.needs_dicts_local,
+        cx.dicts_in_scope,
+        cx.shadowed_in_scope,
+        expr,
+    )
+}
+
 pub(super) fn rewrite_expr(
     module_snapshot: &ast::Module,
     class_env: &ClassEnv,
@@ -17,6 +41,16 @@ pub(super) fn rewrite_expr(
     expr: ast::Expr,
 ) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind, PatternKind};
+
+    let cx = RewriteCx {
+        module_snapshot,
+        class_env,
+        inferred,
+        needs_dicts_global,
+        needs_dicts_local,
+        dicts_in_scope,
+        shadowed_in_scope,
+    };
 
     let span = expr.span;
 
@@ -71,48 +105,24 @@ pub(super) fn rewrite_expr(
                     scope.insert(p.clone());
                 }
             }
+            let inner_cx = RewriteCx {
+                dicts_in_scope: &scope,
+                shadowed_in_scope: &shadowed,
+                ..cx
+            };
             Expr::new(
                 span,
                 ExprKind::Lambda {
                     params,
-                    body: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        needs_dicts_local,
-                        &scope,
-                        &shadowed,
-                        *body,
-                    )?),
+                    body: Box::new(rewrite_expr_cx(inner_cx, *body)?),
                 },
             )
         }
         ExprKind::Apply { func, args } => {
-            let func = rewrite_expr(
-                module_snapshot,
-                class_env,
-                inferred,
-                needs_dicts_global,
-                needs_dicts_local,
-                dicts_in_scope,
-                shadowed_in_scope,
-                *func,
-            )?;
+            let func = rewrite_expr_cx(cx, *func)?;
             let mut args: Vec<_> = args
                 .into_iter()
-                .map(|a| {
-                    rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        needs_dicts_local,
-                        dicts_in_scope,
-                        shadowed_in_scope,
-                        a,
-                    )
-                })
+                .map(|a| rewrite_expr_cx(cx, a))
                 .collect::<Result<Vec<_>>>()?;
 
             let call_info: Option<CallInfo> = if let ExprKind::Var(callee) = &func.kind {
@@ -330,36 +340,9 @@ pub(super) fn rewrite_expr(
         } => Expr::new(
             span,
             ExprKind::If {
-                cond: Box::new(rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    needs_dicts_global,
-                    needs_dicts_local,
-                    dicts_in_scope,
-                    shadowed_in_scope,
-                    *cond,
-                )?),
-                then_branch: Box::new(rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    needs_dicts_global,
-                    needs_dicts_local,
-                    dicts_in_scope,
-                    shadowed_in_scope,
-                    *then_branch,
-                )?),
-                else_branch: Box::new(rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    needs_dicts_global,
-                    needs_dicts_local,
-                    dicts_in_scope,
-                    shadowed_in_scope,
-                    *else_branch,
-                )?),
+                cond: Box::new(rewrite_expr_cx(cx, *cond)?),
+                then_branch: Box::new(rewrite_expr_cx(cx, *then_branch)?),
+                else_branch: Box::new(rewrite_expr_cx(cx, *else_branch)?),
             },
         ),
         ExprKind::Let { bindings, body } => {
@@ -420,6 +403,13 @@ pub(super) fn rewrite_expr(
                 local2.insert(k.clone(), v.clone());
             }
 
+            let inner_cx = RewriteCx {
+                needs_dicts_local: &local2,
+                dicts_in_scope: &scope,
+                shadowed_in_scope: &shadowed,
+                ..cx
+            };
+
             Expr::new(
                 span,
                 ExprKind::Let {
@@ -434,29 +424,11 @@ pub(super) fn rewrite_expr(
                             }
                             Ok(ast::Binding {
                                 pat: b.pat,
-                                expr: rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    needs_dicts_global,
-                                    &local2,
-                                    &scope,
-                                    &shadowed,
-                                    expr,
-                                )?,
+                                expr: rewrite_expr_cx(inner_cx, expr)?,
                             })
                         })
                         .collect::<Result<Vec<_>>>()?,
-                    body: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        &local2,
-                        &scope,
-                        &shadowed,
-                        *body,
-                    )?),
+                    body: Box::new(rewrite_expr_cx(inner_cx, *body)?),
                 },
             )
         }
@@ -518,19 +490,17 @@ pub(super) fn rewrite_expr(
                 local2.insert(k.clone(), v.clone());
             }
 
+            let inner_cx = RewriteCx {
+                needs_dicts_local: &local2,
+                dicts_in_scope: &scope,
+                shadowed_in_scope: &shadowed,
+                ..cx
+            };
+
             Expr::new(
                 span,
                 ExprKind::Where {
-                    expr: Box::new(rewrite_expr(
-                        module_snapshot,
-                        class_env,
-                        inferred,
-                        needs_dicts_global,
-                        &local2,
-                        &scope,
-                        &shadowed,
-                        *expr,
-                    )?),
+                    expr: Box::new(rewrite_expr_cx(inner_cx, *expr)?),
                     bindings: bindings
                         .into_iter()
                         .map(|b| {
@@ -542,16 +512,7 @@ pub(super) fn rewrite_expr(
                             }
                             Ok(ast::Binding {
                                 pat: b.pat,
-                                expr: rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    needs_dicts_global,
-                                    &local2,
-                                    &scope,
-                                    &shadowed,
-                                    expr,
-                                )?,
+                                expr: rewrite_expr_cx(inner_cx, expr)?,
                             })
                         })
                         .collect::<Result<Vec<_>>>()?,
@@ -561,16 +522,7 @@ pub(super) fn rewrite_expr(
         ExprKind::Annot { expr, ty } => Expr::new(
             span,
             ExprKind::Annot {
-                expr: Box::new(rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    needs_dicts_global,
-                    needs_dicts_local,
-                    dicts_in_scope,
-                    shadowed_in_scope,
-                    *expr,
-                )?),
+                expr: Box::new(rewrite_expr_cx(cx, *expr)?),
                 ty,
             },
         ),
@@ -582,16 +534,12 @@ pub(super) fn rewrite_expr(
             for s in stmts {
                 match s {
                     ast::DoStmt::Bind { pat, expr } => {
-                        let expr = rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            needs_dicts_local,
-                            &scope,
-                            &shadowed,
-                            expr,
-                        )?;
+                        let inner_cx = RewriteCx {
+                            dicts_in_scope: &scope,
+                            shadowed_in_scope: &shadowed,
+                            ..cx
+                        };
+                        let expr = rewrite_expr_cx(inner_cx, expr)?;
 
                         let mut names = HashSet::new();
                         pat_defined_names(&pat, &mut names);
@@ -605,32 +553,19 @@ pub(super) fn rewrite_expr(
                         out.push(ast::DoStmt::Bind { pat, expr });
                     }
                     ast::DoStmt::Expr(e) => {
-                        out.push(ast::DoStmt::Expr(rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            needs_dicts_local,
-                            &scope,
-                            &shadowed,
-                            e,
-                        )?));
+                        let inner_cx = RewriteCx {
+                            dicts_in_scope: &scope,
+                            shadowed_in_scope: &shadowed,
+                            ..cx
+                        };
+                        out.push(ast::DoStmt::Expr(rewrite_expr_cx(inner_cx, e)?));
                     }
                 }
             }
             Expr::new(span, ExprKind::Do(out))
         }
         ExprKind::Case { expr, arms } => {
-            let expr = Box::new(rewrite_expr(
-                module_snapshot,
-                class_env,
-                inferred,
-                needs_dicts_global,
-                needs_dicts_local,
-                dicts_in_scope,
-                shadowed_in_scope,
-                *expr,
-            )?);
+            let expr = Box::new(rewrite_expr_cx(cx, *expr)?);
 
             let arms = arms
                 .into_iter()
@@ -651,28 +586,22 @@ pub(super) fn rewrite_expr(
                         guard: a
                             .guard
                             .map(|g| {
-                                rewrite_expr(
-                                    module_snapshot,
-                                    class_env,
-                                    inferred,
-                                    needs_dicts_global,
-                                    needs_dicts_local,
-                                    &scope,
-                                    &shadowed,
-                                    g,
-                                )
+                                let inner_cx = RewriteCx {
+                                    dicts_in_scope: &scope,
+                                    shadowed_in_scope: &shadowed,
+                                    ..cx
+                                };
+                                rewrite_expr_cx(inner_cx, g)
                             })
                             .transpose()?,
-                        body: rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            needs_dicts_local,
-                            &scope,
-                            &shadowed,
-                            a.body,
-                        )?,
+                        body: {
+                            let inner_cx = RewriteCx {
+                                dicts_in_scope: &scope,
+                                shadowed_in_scope: &shadowed,
+                                ..cx
+                            };
+                            rewrite_expr_cx(inner_cx, a.body)?
+                        },
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
@@ -682,44 +611,15 @@ pub(super) fn rewrite_expr(
         ExprKind::Cons { head, tail } => Expr::new(
             span,
             ExprKind::Cons {
-                head: Box::new(rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    needs_dicts_global,
-                    needs_dicts_local,
-                    dicts_in_scope,
-                    shadowed_in_scope,
-                    *head,
-                )?),
-                tail: Box::new(rewrite_expr(
-                    module_snapshot,
-                    class_env,
-                    inferred,
-                    needs_dicts_global,
-                    needs_dicts_local,
-                    dicts_in_scope,
-                    shadowed_in_scope,
-                    *tail,
-                )?),
+                head: Box::new(rewrite_expr_cx(cx, *head)?),
+                tail: Box::new(rewrite_expr_cx(cx, *tail)?),
             },
         ),
         ExprKind::List(es) => Expr::new(
             span,
             ExprKind::List(
                 es.into_iter()
-                    .map(|e| {
-                        rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            needs_dicts_local,
-                            dicts_in_scope,
-                            shadowed_in_scope,
-                            e,
-                        )
-                    })
+                    .map(|e| rewrite_expr_cx(cx, e))
                     .collect::<Result<Vec<_>>>()?,
             ),
         ),
@@ -727,18 +627,7 @@ pub(super) fn rewrite_expr(
             span,
             ExprKind::Tuple(
                 es.into_iter()
-                    .map(|e| {
-                        rewrite_expr(
-                            module_snapshot,
-                            class_env,
-                            inferred,
-                            needs_dicts_global,
-                            needs_dicts_local,
-                            dicts_in_scope,
-                            shadowed_in_scope,
-                            e,
-                        )
-                    })
+                    .map(|e| rewrite_expr_cx(cx, e))
                     .collect::<Result<Vec<_>>>()?,
             ),
         ),
@@ -750,16 +639,7 @@ pub(super) fn rewrite_expr(
                     .map(|(k, v)| {
                         Ok((
                             k,
-                            rewrite_expr(
-                                module_snapshot,
-                                class_env,
-                                inferred,
-                                needs_dicts_global,
-                                needs_dicts_local,
-                                dicts_in_scope,
-                                shadowed_in_scope,
-                                v,
-                            )?,
+                            rewrite_expr_cx(cx, v)?,
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?,
