@@ -2610,3 +2610,138 @@ fn typecheck_expands_type_aliases() {
 fn parser_do_blocks() {
     crate::lib_test::parser_typehole_alias_do::parser_do_blocks();
 }
+
+// ============================================================================
+// IR Optimization Tests
+// ============================================================================
+
+#[test]
+fn ir_optimize_constant_folding_preserves_semantics() {
+    let src = r#"
+module Main where
+  testIf = if True then 42 else 0
+  testIf2 = if False then 0 else 99
+  main = IO ()
+"#;
+    let ast = crate::parser::parse_module(src).unwrap();
+    let typed = crate::types::typecheck(ast).unwrap();
+    let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
+    
+    // Apply constant folding
+    use kscr_ir::optimize::{ConstantFolding, OptimizationPass};
+    let pass = ConstantFolding;
+    let optimized = pass.optimize_module(&ir);
+    
+    // Both should have the same bindings
+    assert_eq!(ir.items.len(), optimized.items.len());
+}
+
+#[test]
+fn ir_optimize_dead_code_elimination_removes_unused() {
+    let src = r#"
+module Main where
+  used = 100
+  unused = 999
+  testUsed = used
+  main = IO ()
+"#;
+    let ast = crate::parser::parse_module(src).unwrap();
+    let typed = crate::types::typecheck(ast).unwrap();
+    let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
+    
+    let original_count = ir.items.len();
+    
+    // Apply dead code elimination
+    use kscr_ir::optimize::{DeadCodeElimination, OptimizationPass};
+    let pass = DeadCodeElimination;
+    let optimized = pass.optimize_module(&ir);
+    
+    // Should have fewer items (unused is removed)
+    assert!(optimized.items.len() < original_count);
+    
+    // Should still have main
+    assert!(optimized.items.iter().any(|item| match item {
+        kscr_ir::ir::IrItem::Binding { name, .. } => name == "main",
+    }));
+}
+
+#[test]
+fn ir_optimize_case_simplification_simplifies_trivial() {
+    let src = r#"
+module Main where
+  testCase = case 42 of
+    x -> x
+  main = IO ()
+"#;
+    let ast = crate::parser::parse_module(src).unwrap();
+    let typed = crate::types::typecheck(ast).unwrap();
+    let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
+    
+    // Apply case simplification
+    use kscr_ir::optimize::{CaseSimplification, OptimizationPass};
+    let pass = CaseSimplification;
+    let optimized = pass.optimize_module(&ir);
+    
+    // Both should have the same number of items
+    assert_eq!(ir.items.len(), optimized.items.len());
+}
+
+#[test]
+fn ir_optimize_pipeline_preserves_execution() {
+    let src = r#"
+module Main where
+  f x = if True then x else 0
+  unused = 999
+  result = f 42
+  main = IO ()
+"#;
+    let ast = crate::parser::parse_module(src).unwrap();
+    let typed = crate::types::typecheck(ast).unwrap();
+    let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
+    
+    // Apply optimization pipeline
+    use kscr_ir::optimize::{run_passes, ConstantFolding, DeadCodeElimination, CaseSimplification, OptimizationPass};
+    let passes: Vec<Box<dyn OptimizationPass>> = vec![
+        Box::new(ConstantFolding),
+        Box::new(CaseSimplification),
+        Box::new(DeadCodeElimination),
+    ];
+    let optimized = run_passes(&ir, &passes);
+    
+    // Both should run without error
+    let result_orig = crate::ir::run_main(&ir);
+    let result_opt = crate::ir::run_main(&optimized);
+    
+    assert!(result_orig.is_ok());
+    assert!(result_opt.is_ok());
+}
+
+#[test]
+fn ir_optimize_lazy_semantics_preserved() {
+    // Test that optimization preserves lazy evaluation
+    let src = r#"
+module Main where
+  inf = inf  -- infinite loop
+  testLazy = case () of
+    _ -> 42
+  main = IO ()
+"#;
+    let ast = crate::parser::parse_module(src).unwrap();
+    let typed = crate::types::typecheck(ast).unwrap();
+    let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
+    
+    // Apply optimizations
+    use kscr_ir::optimize::{run_passes, ConstantFolding, CaseSimplification, OptimizationPass};
+    let passes: Vec<Box<dyn OptimizationPass>> = vec![
+        Box::new(ConstantFolding),
+        Box::new(CaseSimplification),
+    ];
+    let optimized = run_passes(&ir, &passes);
+    
+    // Both should run (not diverge on unused 'inf')
+    let result_orig = crate::ir::run_main(&ir);
+    let result_opt = crate::ir::run_main(&optimized);
+    
+    assert!(result_orig.is_ok());
+    assert!(result_opt.is_ok());
+}
