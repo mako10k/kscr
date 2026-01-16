@@ -5222,6 +5222,50 @@ fn qualify_item(
     })
 }
 
+fn qualify_expr_boxed(
+    expr: &ast::Expr,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<Box<ast::Expr>> {
+    Ok(Box::new(qualify_expr(expr.clone(), val_map, type_map, ctor_map)?))
+}
+
+fn qualify_expr_vec(
+    exprs: Vec<ast::Expr>,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<Vec<ast::Expr>> {
+    exprs
+        .into_iter()
+        .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
+        .collect()
+}
+
+fn qualify_local_bindings(
+    bindings: Vec<ast::Binding>,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<Vec<ast::Binding>> {
+    bindings
+        .into_iter()
+        .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
+        .collect()
+}
+
+fn qualify_record_fields(
+    fs: Vec<(String, ast::Expr)>,
+    val_map: &HashMap<String, String>,
+    type_map: &HashMap<String, String>,
+    ctor_map: &HashMap<String, String>,
+) -> Result<Vec<(String, ast::Expr)>> {
+    fs.into_iter()
+        .map(|(l, e)| Ok((l, qualify_expr(e, val_map, type_map, ctor_map)?)))
+        .collect()
+}
+
 fn qualify_expr(
     expr: ast::Expr,
     val_map: &HashMap<String, String>,
@@ -5239,17 +5283,14 @@ fn qualify_expr(
             span,
             ExprKind::Lambda {
                 params,
-                body: Box::new(qualify_expr(*body, val_map, type_map, ctor_map)?),
+                body: qualify_expr_boxed(&body, val_map, type_map, ctor_map)?,
             },
         ),
         ExprKind::Apply { func, args } => Expr::new(
             span,
             ExprKind::Apply {
-                func: Box::new(qualify_expr(*func, val_map, type_map, ctor_map)?),
-                args: args
-                    .into_iter()
-                    .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
-                    .collect::<Result<Vec<_>>>()?,
+                func: qualify_expr_boxed(&func, val_map, type_map, ctor_map)?,
+                args: qualify_expr_vec(args, val_map, type_map, ctor_map)?,
             },
         ),
         ExprKind::If {
@@ -5259,35 +5300,29 @@ fn qualify_expr(
         } => Expr::new(
             span,
             ExprKind::If {
-                cond: Box::new(qualify_expr(*cond, val_map, type_map, ctor_map)?),
-                then_branch: Box::new(qualify_expr(*then_branch, val_map, type_map, ctor_map)?),
-                else_branch: Box::new(qualify_expr(*else_branch, val_map, type_map, ctor_map)?),
+                cond: qualify_expr_boxed(&cond, val_map, type_map, ctor_map)?,
+                then_branch: qualify_expr_boxed(&then_branch, val_map, type_map, ctor_map)?,
+                else_branch: qualify_expr_boxed(&else_branch, val_map, type_map, ctor_map)?,
             },
         ),
         ExprKind::Let { bindings, body } => Expr::new(
             span,
             ExprKind::Let {
-                bindings: bindings
-                    .into_iter()
-                    .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
-                    .collect::<Result<Vec<_>>>()?,
-                body: Box::new(qualify_expr(*body, val_map, type_map, ctor_map)?),
+                bindings: qualify_local_bindings(bindings, val_map, type_map, ctor_map)?,
+                body: qualify_expr_boxed(&body, val_map, type_map, ctor_map)?,
             },
         ),
         ExprKind::Where { expr, bindings } => Expr::new(
             span,
             ExprKind::Where {
-                expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
-                bindings: bindings
-                    .into_iter()
-                    .map(|b| qualify_local_binding(b, val_map, type_map, ctor_map))
-                    .collect::<Result<Vec<_>>>()?,
+                expr: qualify_expr_boxed(&expr, val_map, type_map, ctor_map)?,
+                bindings: qualify_local_bindings(bindings, val_map, type_map, ctor_map)?,
             },
         ),
         ExprKind::Annot { expr, ty } => Expr::new(
             span,
             ExprKind::Annot {
-                expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
+                expr: qualify_expr_boxed(&expr, val_map, type_map, ctor_map)?,
                 ty: qualify_qual_type(ty, type_map)?,
             },
         ),
@@ -5303,7 +5338,7 @@ fn qualify_expr(
         ExprKind::Case { expr, arms } => Expr::new(
             span,
             ExprKind::Case {
-                expr: Box::new(qualify_expr(*expr, val_map, type_map, ctor_map)?),
+                expr: qualify_expr_boxed(&expr, val_map, type_map, ctor_map)?,
                 arms: arms
                     .into_iter()
                     .map(|a| qualify_case_arm(a, val_map, type_map, ctor_map))
@@ -5313,33 +5348,15 @@ fn qualify_expr(
         ExprKind::Cons { head, tail } => Expr::new(
             span,
             ExprKind::Cons {
-                head: Box::new(qualify_expr(*head, val_map, type_map, ctor_map)?),
-                tail: Box::new(qualify_expr(*tail, val_map, type_map, ctor_map)?),
+                head: qualify_expr_boxed(&head, val_map, type_map, ctor_map)?,
+                tail: qualify_expr_boxed(&tail, val_map, type_map, ctor_map)?,
             },
         ),
-        ExprKind::List(es) => Expr::new(
-            span,
-            ExprKind::List(
-                es.into_iter()
-                    .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
-                    .collect::<Result<Vec<_>>>()?,
-            ),
-        ),
-        ExprKind::Tuple(es) => Expr::new(
-            span,
-            ExprKind::Tuple(
-                es.into_iter()
-                    .map(|e| qualify_expr(e, val_map, type_map, ctor_map))
-                    .collect::<Result<Vec<_>>>()?,
-            ),
-        ),
+        ExprKind::List(es) => Expr::new(span, ExprKind::List(qualify_expr_vec(es, val_map, type_map, ctor_map)?)),
+        ExprKind::Tuple(es) => Expr::new(span, ExprKind::Tuple(qualify_expr_vec(es, val_map, type_map, ctor_map)?)),
         ExprKind::Record(fs) => Expr::new(
             span,
-            ExprKind::Record(
-                fs.into_iter()
-                    .map(|(l, e)| Ok((l, qualify_expr(e, val_map, type_map, ctor_map)?)))
-                    .collect::<Result<Vec<_>>>()?,
-            ),
+            ExprKind::Record(qualify_record_fields(fs, val_map, type_map, ctor_map)?),
         ),
         other => Expr::new(span, other),
     })
