@@ -10,6 +10,7 @@ use crate::{ast, error::Error, parser, Result};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 mod stdlib_cache;
 mod toposort;
 mod typeclass_dict_passing_common;
@@ -4588,13 +4589,47 @@ fn typecheck_with_stdlib_class_env(mut module: ast::Module) -> Result<TypedModul
     // This path is for import-flattened modules produced by `load_module_with_imports`.
     // We also need a stdlib-derived class environment so that methods can be treated as
     // ordinary values (Haskell-like) even when import-forwarders don't expose them.
+    let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
+
+    let t0 = std::time::Instant::now();
     let stdlib_class_env = load_stdlib_class_env()?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] load_stdlib_class_env: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
     inject_stdlib_class_decls(&mut module)?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] inject_stdlib_class_decls: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
     // Import-flattening qualifies stdlib instance dictionary bindings (e.g. `Prelude.__dict_Monad_IO`).
     // Later rewrites may refer to unqualified ground dictionary names (e.g. `__dict_Monad_IO`),
     // so we inject unqualified forwarders for those dictionaries here.
+    let t0 = std::time::Instant::now();
     inject_stdlib_instance_dict_forwarders(&mut module)?;
-    typecheck_internal(module, Some(&stdlib_class_env))
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] inject_stdlib_instance_dict_forwarders: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    let out = typecheck_internal(module, Some(&stdlib_class_env));
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] typecheck_internal: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+    out
 }
 
 fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()> {
@@ -4643,30 +4678,13 @@ fn inject_stdlib_class_decls(module: &mut ast::Module) -> Result<()> {
         }
     }
 
-    // Collect ClassDecls over stdlib modules (Prelude + Prelude/*).
-    let stdlib = stdlib_root();
     let mut injected: Vec<ast::Item> = Vec::new();
-    let mut stack: Vec<PathBuf> = vec![stdlib];
-    while let Some(dir) = stack.pop() {
-        for ent in std::fs::read_dir(&dir).map_err(Error::Io)? {
-            let ent = ent.map_err(Error::Io)?;
-            let path = ent.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|s| s.to_str()) != Some("ks") {
-                continue;
-            }
-            let src = std::fs::read_to_string(&path).map_err(Error::Io)?;
-            let m = crate::parser::parse_module(&src)?;
-            for it in m.items {
-                if let ast::Item::ClassDecl(c) = &it {
-                    if seen.insert(c.name.clone()) {
-                        injected.push(it);
-                    }
-                }
-            }
+    for it in load_stdlib_class_decl_items()? {
+        let ast::Item::ClassDecl(c) = &it else {
+            continue;
+        };
+        if seen.insert(c.name.clone()) {
+            injected.push(it);
         }
     }
 
@@ -4819,6 +4837,27 @@ fn typecheck_internal(
 }
 
 fn load_stdlib_class_env() -> Result<ClassEnv> {
+    static CACHE: OnceLock<std::sync::Mutex<Option<ClassEnv>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(None));
+
+    if let Ok(guard) = cache.lock() {
+        if let Some(v) = guard.as_ref() {
+            return Ok(v.clone());
+        }
+    }
+
+    let v = load_stdlib_class_env_uncached()?;
+
+    if let Ok(mut guard) = cache.lock() {
+        if guard.is_none() {
+            *guard = Some(v.clone());
+        }
+    }
+
+    Ok(v)
+}
+
+fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
     // Collect class + instance declarations across the whole stdlib.
     //
     // Important: CLI `run`/`typecheck` goes through `typecheck_file()` which flattens imports.
@@ -4826,6 +4865,9 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
     // `import Prelude` (e.g. `do`-notation requires `Monad IO`, arithmetic uses `Ring Integer`).
     // These must be present in the merged `ClassEnv` so `simplify_process_constraint` can
     // discharge ground constraints.
+    let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
+    let t_all = std::time::Instant::now();
+
     let stdlib = stdlib_root();
     let mut m = ast::Module {
         name: Some("<stdlib>".to_string()),
@@ -4842,6 +4884,7 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
         emitted_unqualified: HashSet::new(),
     };
 
+    let t_scan = std::time::Instant::now();
     let mut stack: Vec<PathBuf> = vec![stdlib];
     while let Some(dir) = stack.pop() {
         for ent in std::fs::read_dir(&dir).map_err(Error::Io)? {
@@ -4866,8 +4909,101 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
             }
         }
     }
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] stdlib scan (class/instance): {:.3}s",
+            t_scan.elapsed().as_secs_f64()
+        );
+    }
 
-    desugar_typeclasses(&mut m).map_err(|e| e.with_context("while desugaring stdlib typeclasses"))
+    let t_desugar = std::time::Instant::now();
+    let env = desugar_typeclasses(&mut m)
+        .map_err(|e| e.with_context("while desugaring stdlib typeclasses"))?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] desugar stdlib typeclasses: {:.3}s",
+            t_desugar.elapsed().as_secs_f64()
+        );
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] load_stdlib_class_env total: {:.3}s",
+            t_all.elapsed().as_secs_f64()
+        );
+    }
+    Ok(env)
+}
+
+fn load_stdlib_class_decl_items() -> Result<Vec<ast::Item>> {
+    static CACHE: OnceLock<std::sync::Mutex<Option<Vec<ast::Item>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(None));
+
+    if let Ok(guard) = cache.lock() {
+        if let Some(v) = guard.as_ref() {
+            return Ok(v.clone());
+        }
+    }
+
+    let v = load_stdlib_class_decl_items_uncached()?;
+
+    if let Ok(mut guard) = cache.lock() {
+        if guard.is_none() {
+            *guard = Some(v.clone());
+        }
+    }
+
+    Ok(v)
+}
+
+fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
+    let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
+    let t0 = std::time::Instant::now();
+
+    // Collect ClassDecls over stdlib modules (Prelude + Prelude/*).
+    let stdlib = stdlib_root();
+
+    let mut loader = ModuleLoader {
+        cache: HashMap::new(),
+        stack: Vec::new(),
+        emitted_qualified: HashSet::new(),
+        emitted_unqualified: HashSet::new(),
+    };
+
+    let mut injected: Vec<ast::Item> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let mut stack: Vec<PathBuf> = vec![stdlib];
+    while let Some(dir) = stack.pop() {
+        for ent in std::fs::read_dir(&dir).map_err(Error::Io)? {
+            let ent = ent.map_err(Error::Io)?;
+            let path = ent.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|s| s.to_str()) != Some("ks") {
+                continue;
+            }
+
+            let parsed = loader.load_ast(&path).map_err(|e| {
+                e.with_context(format!("while loading stdlib module {}", path.display()))
+            })?;
+            for it in parsed.items {
+                if let ast::Item::ClassDecl(c) = &it {
+                    if seen.insert(c.name.clone()) {
+                        injected.push(it);
+                    }
+                }
+            }
+        }
+    }
+
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] stdlib scan (class decls): {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    Ok(injected)
 }
 
 fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {

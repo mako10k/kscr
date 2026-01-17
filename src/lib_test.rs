@@ -2626,12 +2626,12 @@ module Main where
     let ast = crate::parser::parse_module(src).unwrap();
     let typed = crate::types::typecheck(ast).unwrap();
     let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
-    
+
     // Apply constant folding
     use kscr_ir::optimize::{ConstantFolding, OptimizationPass};
     let pass = ConstantFolding;
     let optimized = pass.optimize_module(&ir);
-    
+
     // Both should have the same bindings
     assert_eq!(ir.items.len(), optimized.items.len());
 }
@@ -2648,17 +2648,17 @@ module Main where
     let ast = crate::parser::parse_module(src).unwrap();
     let typed = crate::types::typecheck(ast).unwrap();
     let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
-    
+
     let original_count = ir.items.len();
-    
+
     // Apply dead code elimination
     use kscr_ir::optimize::{DeadCodeElimination, OptimizationPass};
     let pass = DeadCodeElimination;
     let optimized = pass.optimize_module(&ir);
-    
+
     // Should have fewer items (unused is removed)
     assert!(optimized.items.len() < original_count);
-    
+
     // Should still have main
     assert!(optimized.items.iter().any(|item| match item {
         kscr_ir::ir::IrItem::Binding { name, .. } => name == "main",
@@ -2676,12 +2676,12 @@ module Main where
     let ast = crate::parser::parse_module(src).unwrap();
     let typed = crate::types::typecheck(ast).unwrap();
     let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
-    
+
     // Apply case simplification
     use kscr_ir::optimize::{CaseSimplification, OptimizationPass};
     let pass = CaseSimplification;
     let optimized = pass.optimize_module(&ir);
-    
+
     // Both should have the same number of items
     assert_eq!(ir.items.len(), optimized.items.len());
 }
@@ -2698,20 +2698,22 @@ module Main where
     let ast = crate::parser::parse_module(src).unwrap();
     let typed = crate::types::typecheck(ast).unwrap();
     let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
-    
+
     // Apply optimization pipeline
-    use kscr_ir::optimize::{run_passes, ConstantFolding, DeadCodeElimination, CaseSimplification, OptimizationPass};
+    use kscr_ir::optimize::{
+        run_passes, CaseSimplification, ConstantFolding, DeadCodeElimination, OptimizationPass,
+    };
     let passes: Vec<Box<dyn OptimizationPass>> = vec![
         Box::new(ConstantFolding),
         Box::new(CaseSimplification),
         Box::new(DeadCodeElimination),
     ];
     let optimized = run_passes(&ir, &passes);
-    
+
     // Both should run without error
     let result_orig = crate::ir::run_main(&ir);
     let result_opt = crate::ir::run_main(&optimized);
-    
+
     assert!(result_orig.is_ok());
     assert!(result_opt.is_ok());
 }
@@ -2729,19 +2731,17 @@ module Main where
     let ast = crate::parser::parse_module(src).unwrap();
     let typed = crate::types::typecheck(ast).unwrap();
     let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
-    
+
     // Apply optimizations
-    use kscr_ir::optimize::{run_passes, ConstantFolding, CaseSimplification, OptimizationPass};
-    let passes: Vec<Box<dyn OptimizationPass>> = vec![
-        Box::new(ConstantFolding),
-        Box::new(CaseSimplification),
-    ];
+    use kscr_ir::optimize::{run_passes, CaseSimplification, ConstantFolding, OptimizationPass};
+    let passes: Vec<Box<dyn OptimizationPass>> =
+        vec![Box::new(ConstantFolding), Box::new(CaseSimplification)];
     let optimized = run_passes(&ir, &passes);
-    
+
     // Both should run (not diverge on unused 'inf')
     let result_orig = crate::ir::run_main(&ir);
     let result_opt = crate::ir::run_main(&optimized);
-    
+
     assert!(result_orig.is_ok());
     assert!(result_opt.is_ok());
 }
@@ -2760,19 +2760,22 @@ module Main where
     let ast = crate::parser::parse_module(src).unwrap();
     let typed = crate::types::typecheck(ast).unwrap();
     let ir = crate::ir::lower_to_ir(&typed.module).unwrap();
-    
+
     // Count items before optimization
     let before_count = ir.items.len();
-    
+
     // Apply default optimization passes
     let optimized = crate::ir::optimize_ir(&ir);
-    
+
     // Count items after optimization
     let after_count = optimized.items.len();
-    
+
     // Should have removed unused bindings
-    assert!(after_count < before_count, "Expected optimization to remove unused code");
-    
+    assert!(
+        after_count < before_count,
+        "Expected optimization to remove unused code"
+    );
+
     // Both should execute successfully
     assert!(crate::ir::run_main(&ir).is_ok());
     assert!(crate::ir::run_main(&optimized).is_ok());
