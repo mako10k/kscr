@@ -193,7 +193,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable via clang\n                   Default: embeds packed IR and runs via Rust executor\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :load <path>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable via clang\n                   Default: embeds packed IR and runs via Rust executor\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
     );
 }
 
@@ -253,25 +253,37 @@ impl ReplState {
     }
 
     fn modules_string(&self) -> String {
-        if self.loaded_modules.is_empty() {
-            return "(none)".to_string();
-        }
-        self.loaded_modules.join(", ")
+        let mut ms = Vec::new();
+        ms.push("Prelude".to_string());
+        ms.extend(self.loaded_modules.iter().cloned());
+        ms.sort();
+        ms.dedup();
+        ms.join(", ")
     }
 
-    fn write_src(&self, expr: Option<&str>, main_src: Option<&str>) -> Result<()> {
+    fn write_src(&self, expr: Option<&str>, main_src: Option<&str>) -> Result<String> {
         let src = build_repl_module_src(&self.defs, &self.loaded_modules, expr, main_src);
-        std::fs::write(&self.repl_path, src)?;
-        Ok(())
+        std::fs::write(&self.repl_path, &src)?;
+        Ok(src)
     }
 
-    fn type_of(&self, expr: &str) -> Result<String> {
-        self.write_src(Some(expr), None)?;
+    fn scheme_of(&self, expr: &str) -> Result<types::Scheme> {
+        let _src = self.write_src(Some(expr), None)?;
         let tm = types::typecheck_file(&self.repl_path)?;
         let Some(s) = tm.inferred.get("it") else {
             return Err(crate::error::Error::msg("internal: missing it"));
         };
+        Ok(s.clone())
+    }
+
+    fn type_of(&self, expr: &str) -> Result<String> {
+        let s = self.scheme_of(expr)?;
         Ok(format!("it : {s}"))
+    }
+
+    fn info_of(&self, name: &str) -> Result<String> {
+        let s = self.scheme_of(name)?;
+        Ok(format!("{name} : {s}"))
     }
 
     fn eval_expr(&self, expr: &str) -> Result<()> {
@@ -292,7 +304,7 @@ impl ReplState {
         }
 
         // Phase 1: typecheck `it` without forcing a printing strategy.
-        self.write_src(Some(expr), None)?;
+        let _src0 = self.write_src(Some(expr), None)?;
         let tm = types::typecheck_file(&self.repl_path)?;
         let Some(it) = tm.inferred.get("it") else {
             return Err(crate::error::Error::msg("internal: missing it"));
@@ -311,29 +323,48 @@ impl ReplState {
             None => "main = stdoutWrite (toString it ++ \"\\n\")".to_string(),
         };
 
-        // Phase 3: add main binding and run (without re-typechecking).
-        // We've already typechecked the module in Phase 1, and Phase 1's type for `it`
-        // constraints Phase 2's decision about how to print. The combined module will typecheck
-        // successfully if `main` typechecks. Since we control the generation of `main_src`,
-        // we can skip the second typecheck.
-        self.write_src(Some(expr), Some(&main_src))?;
-        let src = std::fs::read_to_string(&self.repl_path)?;
-        let module = parser::parse_module(&src)?;
+        // Phase 3: run using the import-flattened module from Phase 1.
+        // This avoids a second `typecheck_file()` (which was the main REPL slowdown).
+        let mut module = tm.module.clone();
+        let main_mod = parser::parse_module(&format!("{main_src}\n"))?;
+        module.items.extend(main_mod.items);
+
         let irm = ir::lower_to_ir(&module)?;
         let _ = ir::run_main(&irm)?;
         Ok(())
     }
 
     fn maybe_add_def_line(&mut self, line: &str) -> bool {
+        fn def_name(line: &str) -> Option<String> {
+            let candidate = format!("{}\n", line);
+            let m = parser::parse_module(&candidate).ok()?;
+            let it = m.items.into_iter().next()?;
+            let ast::Item::Binding(b) = it else {
+                return None;
+            };
+            match b.pat.kind {
+                ast::PatternKind::Var(n) => Some(n),
+                _ => None,
+            }
+        }
+
         let candidate = format!("{}\n", line);
-        parser::parse_module(&candidate)
-            .ok()
-            .and_then(|m| m.items.into_iter().next())
-            .is_some_and(|it| matches!(it, ast::Item::Binding(_)))
-            .then(|| {
-                self.defs.push(line.to_string());
-            })
-            .is_some()
+        let Ok(m) = parser::parse_module(&candidate) else {
+            return false;
+        };
+        let Some(it) = m.items.into_iter().next() else {
+            return false;
+        };
+        let ast::Item::Binding(_) = it else {
+            return false;
+        };
+
+        if let Some(name) = def_name(line) {
+            self.defs
+                .retain(|d| def_name(d).as_deref() != Some(name.as_str()));
+        }
+        self.defs.push(line.to_string());
+        true
     }
 }
 
@@ -369,7 +400,9 @@ fn repl_impl(mut st: ReplState) -> Result<()> {
     }
 
     let _ = rl.save_history(&hist);
-    let _ = std::fs::remove_file(&st.repl_path);
+    if std::env::var("KSCR_KEEP_REPL_TMP").ok().as_deref() != Some("1") {
+        let _ = std::fs::remove_file(&st.repl_path);
+    }
     Ok(())
 }
 
@@ -397,12 +430,14 @@ fn repl_impl(mut st: ReplState) -> Result<()> {
         }
     }
 
-    let _ = std::fs::remove_file(&st.repl_path);
+    if std::env::var("KSCR_KEEP_REPL_TMP").ok().as_deref() != Some("1") {
+        let _ = std::fs::remove_file(&st.repl_path);
+    }
     Ok(())
 }
 
 fn try_resolve_repl_command(cmd: &str) -> Result<Option<&'static str>> {
-    const CMDS: [&str; 4] = ["quit", "type", "load", "modules"];
+    const CMDS: [&str; 5] = ["quit", "type", "info", "load", "modules"];
 
     if let Some(&found) = CMDS.iter().find(|&&c| c == cmd) {
         return Ok(Some(found));
@@ -466,7 +501,21 @@ fn handle_repl_line(st: &mut ReplState, line: &str) -> Result<bool> {
                     }
                     return Ok(false);
                 }
-                Ok(None) => {}
+                Ok(Some("info")) => {
+                    if rest.is_empty() {
+                        eprintln!("error: missing <name>");
+                        return Ok(false);
+                    }
+                    match st.info_of(rest) {
+                        Ok(s) => println!("{s}"),
+                        Err(e) => eprintln!("error: {e}"),
+                    }
+                    return Ok(false);
+                }
+                Ok(None) => {
+                    eprintln!("error: unknown command: :{cmd}");
+                    return Ok(false);
+                }
                 Err(e) => {
                     eprintln!("error: {e}");
                     return Ok(false);
@@ -499,6 +548,9 @@ fn build_repl_module_src(
     // Always bring Prelude in for a pleasant interactive experience.
     out.push_str("import Prelude\n");
     for m in loaded_modules {
+        if m == "Prelude" {
+            continue;
+        }
         out.push_str("import ");
         out.push_str(m);
         out.push('\n');
@@ -558,6 +610,29 @@ mod repl_tests {
         let defs = ["x = 41"];
         let ty = repl_eval_for_test(&defs, "x + 1").unwrap();
         assert!(ty.contains("Integer"));
+    }
+
+    #[test]
+    fn repl_allows_redefining_simple_name() {
+        let mut st = ReplState::new_default().unwrap();
+        assert!(st.maybe_add_def_line("x = 1"));
+        assert!(st.maybe_add_def_line("x = 2"));
+        assert_eq!(st.defs.len(), 1);
+        let ty = st.type_of("x").unwrap();
+        assert!(ty.contains("Integer"));
+    }
+
+    #[test]
+    fn repl_type_of_qualified_ctor() {
+        let ty = repl_type_of(&[], "Prelude.Just").unwrap();
+        assert!(ty.contains("Prelude.Maybe"));
+    }
+
+    #[test]
+    fn repl_eval_imported_ctor_binding() {
+        // Regression: evaluation must run against the import-flattened module so constructors exist.
+        let ty = repl_eval_for_test(&["a = Just 10"], "a").unwrap();
+        assert!(ty.contains("Prelude.Maybe"));
     }
 
     #[test]

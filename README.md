@@ -85,12 +85,14 @@ The REPL provides an interactive environment for experimenting with the language
 
 ```
 > :type <expr>        # Show the type of an expression
+> :info <name>        # Show the type of a name
 > :load <path>        # Load a module from file
-> :modules            # List loaded modules
+> :modules            # List loaded modules (always includes Prelude)
 > :quit               # Exit REPL
 
 # Command names accept unique prefixes:
 > :t 1 + 2            # Same as :type
+> :i Just             # Same as :info
 > :q                  # Same as :quit
 ```
 
