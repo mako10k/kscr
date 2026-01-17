@@ -24,11 +24,469 @@ pub(super) fn hash_module_ast(module: &ast::Module) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut hasher = DefaultHasher::new();
+    // Fast structural hash; avoids allocating a giant debug string every time.
+    fn hash_str(h: &mut DefaultHasher, s: &str) {
+        s.hash(h);
+    }
 
-    // Hash the complete module source representation
-    let module_str = format!("{:?}", module);
-    module_str.hash(&mut hasher);
+    fn hash_resolved_name(h: &mut DefaultHasher, n: &ast::ResolvedName) {
+        match n {
+            ast::ResolvedName::Unresolved(s) => {
+                0u8.hash(h);
+                hash_str(h, s);
+            }
+            ast::ResolvedName::Resolved {
+                module,
+                module_name,
+                name,
+            } => {
+                1u8.hash(h);
+                module.hash(h);
+                hash_str(h, module_name);
+                hash_str(h, name);
+            }
+        }
+    }
+
+    fn hash_type(h: &mut DefaultHasher, t: &ast::Type) {
+        use ast::Type;
+        match t {
+            Type::Unit => 0u8.hash(h),
+            Type::Integer => 1u8.hash(h),
+            Type::Bool => 2u8.hash(h),
+            Type::Float64 => 3u8.hash(h),
+            Type::Char => 4u8.hash(h),
+            Type::String => 5u8.hash(h),
+            Type::List(a) => {
+                6u8.hash(h);
+                hash_type(h, a);
+            }
+            Type::Tuple(ts) => {
+                7u8.hash(h);
+                ts.len().hash(h);
+                for x in ts {
+                    hash_type(h, x);
+                }
+            }
+            Type::Record(fs) => {
+                8u8.hash(h);
+                fs.len().hash(h);
+                for (l, x) in fs {
+                    hash_str(h, l);
+                    hash_type(h, x);
+                }
+            }
+            Type::RecordOpen(fs, rest) => {
+                9u8.hash(h);
+                fs.len().hash(h);
+                for (l, x) in fs {
+                    hash_str(h, l);
+                    hash_type(h, x);
+                }
+                hash_type(h, rest);
+            }
+            Type::Hole(n) => {
+                10u8.hash(h);
+                n.as_deref().hash(h);
+            }
+            Type::Var(s) => {
+                11u8.hash(h);
+                hash_str(h, s);
+            }
+            Type::App { head, args } => {
+                12u8.hash(h);
+                hash_type(h, head);
+                args.len().hash(h);
+                for a in args {
+                    hash_type(h, a);
+                }
+            }
+            Type::Func(a, b) => {
+                13u8.hash(h);
+                hash_type(h, a);
+                hash_type(h, b);
+            }
+        }
+    }
+
+    fn hash_pred(h: &mut DefaultHasher, p: &ast::Predicate) {
+        use ast::Predicate;
+        match p {
+            Predicate::Show(t) => {
+                0u8.hash(h);
+                hash_type(h, t);
+            }
+            Predicate::ShowRow(t) => {
+                1u8.hash(h);
+                hash_type(h, t);
+            }
+            Predicate::Eq(t) => {
+                2u8.hash(h);
+                hash_type(h, t);
+            }
+            Predicate::EqRow(t) => {
+                3u8.hash(h);
+                hash_type(h, t);
+            }
+            Predicate::Class { class, ty } => {
+                4u8.hash(h);
+                hash_str(h, class);
+                hash_type(h, ty);
+            }
+            Predicate::Lacks { label, row } => {
+                5u8.hash(h);
+                hash_str(h, label);
+                hash_type(h, row);
+            }
+        }
+    }
+
+    fn hash_qual_type(h: &mut DefaultHasher, qt: &ast::QualType) {
+        qt.preds.len().hash(h);
+        for p in &qt.preds {
+            hash_pred(h, p);
+        }
+        hash_type(h, &qt.ty);
+    }
+
+    fn hash_expr(h: &mut DefaultHasher, e: &ast::Expr) {
+        use ast::ExprKind;
+        match &e.kind {
+            ExprKind::Unit => 0u8.hash(h),
+            ExprKind::Integer(s) => {
+                1u8.hash(h);
+                hash_str(h, s);
+            }
+            ExprKind::Float64(s) => {
+                2u8.hash(h);
+                hash_str(h, s);
+            }
+            ExprKind::Bool(b) => {
+                3u8.hash(h);
+                b.hash(h);
+            }
+            ExprKind::String(s) => {
+                4u8.hash(h);
+                hash_str(h, s);
+            }
+            ExprKind::Char(c) => {
+                5u8.hash(h);
+                c.hash(h);
+            }
+            ExprKind::Var(s) => {
+                6u8.hash(h);
+                hash_str(h, s);
+            }
+            ExprKind::Ctor(n) => {
+                7u8.hash(h);
+                hash_resolved_name(h, n);
+            }
+            ExprKind::Lambda { params, body } => {
+                8u8.hash(h);
+                params.len().hash(h);
+                for p in params {
+                    hash_str(h, p);
+                }
+                hash_expr(h, body);
+            }
+            ExprKind::Apply { func, args } => {
+                9u8.hash(h);
+                hash_expr(h, func);
+                args.len().hash(h);
+                for a in args {
+                    hash_expr(h, a);
+                }
+            }
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                10u8.hash(h);
+                hash_expr(h, cond);
+                hash_expr(h, then_branch);
+                hash_expr(h, else_branch);
+            }
+            ExprKind::Let { bindings, body } => {
+                11u8.hash(h);
+                bindings.len().hash(h);
+                for b in bindings {
+                    hash_pat(h, &b.pat);
+                    hash_expr(h, &b.expr);
+                }
+                hash_expr(h, body);
+            }
+            ExprKind::Where { expr, bindings } => {
+                12u8.hash(h);
+                hash_expr(h, expr);
+                bindings.len().hash(h);
+                for b in bindings {
+                    hash_pat(h, &b.pat);
+                    hash_expr(h, &b.expr);
+                }
+            }
+            ExprKind::Annot { expr, ty } => {
+                13u8.hash(h);
+                hash_expr(h, expr);
+                hash_qual_type(h, ty);
+            }
+            ExprKind::Do(stmts) => {
+                14u8.hash(h);
+                stmts.len().hash(h);
+                for s in stmts {
+                    match s {
+                        ast::DoStmt::Bind { pat, expr } => {
+                            0u8.hash(h);
+                            hash_pat(h, pat);
+                            hash_expr(h, expr);
+                        }
+                        ast::DoStmt::Expr(e) => {
+                            1u8.hash(h);
+                            hash_expr(h, e);
+                        }
+                    }
+                }
+            }
+            ExprKind::Case { expr, arms } => {
+                15u8.hash(h);
+                hash_expr(h, expr);
+                arms.len().hash(h);
+                for a in arms {
+                    hash_pat(h, &a.pat);
+                    if let Some(g) = &a.guard {
+                        1u8.hash(h);
+                        hash_expr(h, g);
+                    } else {
+                        0u8.hash(h);
+                    }
+                    hash_expr(h, &a.body);
+                }
+            }
+            ExprKind::Cons { head, tail } => {
+                16u8.hash(h);
+                hash_expr(h, head);
+                hash_expr(h, tail);
+            }
+            ExprKind::List(es) => {
+                17u8.hash(h);
+                es.len().hash(h);
+                for x in es {
+                    hash_expr(h, x);
+                }
+            }
+            ExprKind::Tuple(es) => {
+                18u8.hash(h);
+                es.len().hash(h);
+                for x in es {
+                    hash_expr(h, x);
+                }
+            }
+            ExprKind::Record(fs) => {
+                19u8.hash(h);
+                fs.len().hash(h);
+                for (l, x) in fs {
+                    hash_str(h, l);
+                    hash_expr(h, x);
+                }
+            }
+        }
+    }
+
+    fn hash_pat(h: &mut DefaultHasher, p: &ast::Pattern) {
+        use ast::PatternKind;
+        match &p.kind {
+            PatternKind::Var(s) => {
+                0u8.hash(h);
+                hash_str(h, s);
+            }
+            PatternKind::Wildcard => 1u8.hash(h),
+            PatternKind::Hole(n) => {
+                2u8.hash(h);
+                n.as_deref().hash(h);
+            }
+            PatternKind::Literal(e) => {
+                3u8.hash(h);
+                hash_expr(h, e);
+            }
+            PatternKind::Tuple(ps) => {
+                4u8.hash(h);
+                ps.len().hash(h);
+                for x in ps {
+                    hash_pat(h, x);
+                }
+            }
+            PatternKind::List(ps) => {
+                5u8.hash(h);
+                ps.len().hash(h);
+                for x in ps {
+                    hash_pat(h, x);
+                }
+            }
+            PatternKind::Record(fs) => {
+                6u8.hash(h);
+                fs.len().hash(h);
+                for (l, x) in fs {
+                    hash_str(h, l);
+                    hash_pat(h, x);
+                }
+            }
+            PatternKind::RecordLoose(fs, rest) => {
+                7u8.hash(h);
+                fs.len().hash(h);
+                for (l, x) in fs {
+                    hash_str(h, l);
+                    hash_pat(h, x);
+                }
+                rest.as_deref().hash(h);
+            }
+            PatternKind::Cons(a, b) => {
+                8u8.hash(h);
+                hash_pat(h, a);
+                hash_pat(h, b);
+            }
+            PatternKind::Or(a, b) => {
+                9u8.hash(h);
+                hash_pat(h, a);
+                hash_pat(h, b);
+            }
+            PatternKind::As(s, p) => {
+                10u8.hash(h);
+                hash_str(h, s);
+                hash_pat(h, p);
+            }
+            PatternKind::View(p, e) => {
+                11u8.hash(h);
+                hash_pat(h, p);
+                hash_expr(h, e);
+            }
+            PatternKind::Constructor { name, args } => {
+                12u8.hash(h);
+                hash_resolved_name(h, name);
+                args.len().hash(h);
+                for a in args {
+                    hash_pat(h, a);
+                }
+            }
+        }
+    }
+
+    let mut hasher = DefaultHasher::new();
+    module.name.as_deref().hash(&mut hasher);
+    module.items.len().hash(&mut hasher);
+    for it in &module.items {
+        use ast::Item;
+        match it {
+            Item::Import(i) => {
+                0u8.hash(&mut hasher);
+                hash_str(&mut hasher, &i.module);
+                i.qualified.hash(&mut hasher);
+                i.as_name.as_deref().hash(&mut hasher);
+            }
+            Item::Export(e) => {
+                1u8.hash(&mut hasher);
+                e.specs.len().hash(&mut hasher);
+                for s in &e.specs {
+                    match s {
+                        ast::ExportSpec::Name(name) => {
+                            0u8.hash(&mut hasher);
+                            hash_str(&mut hasher, name);
+                        }
+                        ast::ExportSpec::Type { name, ctors } => {
+                            1u8.hash(&mut hasher);
+                            hash_str(&mut hasher, name);
+                            match ctors {
+                                ast::ExportCtors::All => 0u8.hash(&mut hasher),
+                                ast::ExportCtors::Some(cs) => {
+                                    1u8.hash(&mut hasher);
+                                    cs.len().hash(&mut hasher);
+                                    for c in cs {
+                                        hash_str(&mut hasher, c);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Item::Fixity(f) => {
+                2u8.hash(&mut hasher);
+                std::mem::discriminant(&f.assoc).hash(&mut hasher);
+                f.prec.hash(&mut hasher);
+                f.ops.len().hash(&mut hasher);
+                for op in &f.ops {
+                    hash_str(&mut hasher, op);
+                }
+            }
+            Item::Binding(b) => {
+                3u8.hash(&mut hasher);
+                hash_pat(&mut hasher, &b.pat);
+                hash_expr(&mut hasher, &b.expr);
+            }
+            Item::TypeAlias(ta) => {
+                4u8.hash(&mut hasher);
+                hash_str(&mut hasher, &ta.name);
+                ta.params.len().hash(&mut hasher);
+                for p in &ta.params {
+                    hash_str(&mut hasher, p);
+                }
+                hash_type(&mut hasher, &ta.ty);
+            }
+            Item::DataDecl(d) => {
+                5u8.hash(&mut hasher);
+                hash_str(&mut hasher, &d.name);
+                d.params.len().hash(&mut hasher);
+                for p in &d.params {
+                    hash_str(&mut hasher, p);
+                }
+                d.ctors.len().hash(&mut hasher);
+                for c in &d.ctors {
+                    hash_str(&mut hasher, &c.name);
+                    c.args.len().hash(&mut hasher);
+                    for a in &c.args {
+                        hash_type(&mut hasher, a);
+                    }
+                }
+                d.deriving.len().hash(&mut hasher);
+                for x in &d.deriving {
+                    hash_str(&mut hasher, x);
+                }
+            }
+            Item::ClassDecl(c) => {
+                6u8.hash(&mut hasher);
+                hash_str(&mut hasher, &c.name);
+                hash_str(&mut hasher, &c.param);
+                c.supers.len().hash(&mut hasher);
+                for p in &c.supers {
+                    hash_pred(&mut hasher, p);
+                }
+                c.methods.len().hash(&mut hasher);
+                for m in &c.methods {
+                    hash_str(&mut hasher, &m.name);
+                    hash_qual_type(&mut hasher, &m.ty);
+                }
+                c.default_methods.len().hash(&mut hasher);
+                for b in &c.default_methods {
+                    hash_pat(&mut hasher, &b.pat);
+                    hash_expr(&mut hasher, &b.expr);
+                }
+            }
+            Item::InstanceDecl(i) => {
+                7u8.hash(&mut hasher);
+                i.preds.len().hash(&mut hasher);
+                for p in &i.preds {
+                    hash_pred(&mut hasher, p);
+                }
+                hash_str(&mut hasher, &i.class);
+                hash_type(&mut hasher, &i.ty);
+                i.methods.len().hash(&mut hasher);
+                for b in &i.methods {
+                    hash_pat(&mut hasher, &b.pat);
+                    hash_expr(&mut hasher, &b.expr);
+                }
+            }
+        }
+    }
+
     hasher.finish()
 }
 
