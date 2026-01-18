@@ -77,11 +77,7 @@ where
                 .into();
             let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
-            let v = ir::run_main(&irm)?;
-            match v {
-                ir::Value::Unit => println!("()"),
-                other => println!("{other:#?}"),
-            }
+            let _ = ir::run_main(&irm)?;
             Ok(())
         }
         "repl" => repl(),
@@ -318,9 +314,9 @@ impl ReplState {
             Some(res) if is_unit_ty(res) => "main = it".to_string(),
             Some(_) => {
                 // Use braces to avoid indentation/layout sensitivity.
-                "main = do { x <- it; stdoutWrite (toString x ++ \"\\n\") }".to_string()
+                "main = do { x <- it; putStrLn (toString x) }".to_string()
             }
-            None => "main = stdoutWrite (toString it ++ \"\\n\")".to_string(),
+            None => "main = putStrLn (toString it)".to_string(),
         };
 
         // Phase 3: run using the import-flattened module from Phase 1.
