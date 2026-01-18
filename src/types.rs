@@ -585,6 +585,26 @@ pub fn generalize_qual(env: &TypeEnv, constraints: Vec<Constraint>, ty: Ty) -> S
     }
 }
 
+fn ftv_env_applied(subst: &Subst, env: &TypeEnv) -> HashSet<u32> {
+    env.values()
+        .flat_map(|sch| ftv_scheme(&apply_scheme(subst, sch)))
+        .collect()
+}
+
+fn generalize_qual_with_env_ftv(env_ftv: &HashSet<u32>, constraints: Vec<Constraint>, ty: Ty) -> Scheme {
+    let mut ftv = ftv_ty(&ty);
+    for c in &constraints {
+        ftv.extend(ftv_constraint(c));
+    }
+    let mut vars: Vec<u32> = ftv.difference(env_ftv).copied().collect();
+    vars.sort_unstable();
+    Scheme {
+        vars,
+        constraints,
+        ty,
+    }
+}
+
 pub fn instantiate(cx: &mut InferCtx, s: &Scheme) -> Ty {
     let (_, ty) = instantiate_qual(cx, s);
     ty
@@ -694,6 +714,7 @@ fn apply_scheme(subst: &Subst, s: &Scheme) -> Scheme {
     }
 }
 
+#[allow(dead_code)]
 fn apply_env(subst: &Subst, env: &TypeEnv) -> TypeEnv {
     env.iter()
         .map(|(k, v)| (k.clone(), apply_scheme(subst, v)))
@@ -988,8 +1009,7 @@ fn infer_pat_view(
     let t_scrut = cx.fresh();
     let t_view = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
 
-    let env_in = apply_env(subst, env);
-    let (s_e, _cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, e.clone())?;
+    let (s_e, _cs_e, t_e) = infer_expr_in(cx, data_env, subst, env, e.clone())?;
     *subst = compose(&s_e, subst);
 
     let su = unify(
@@ -1024,7 +1044,8 @@ fn infer_pat_constructor(
         };
         Error::msg(format!("unknown constructor: {name}{hint}"))
     })?;
-    let mut ctor_ty = instantiate(cx, scheme);
+    let scheme = apply_scheme(subst, scheme);
+    let mut ctor_ty = instantiate(cx, &scheme);
 
     for p in args {
         let arg_pat_ty = infer_pat_in(cx, data_env, subst, env, p, binds, seen, cs_out)?;
@@ -1097,7 +1118,7 @@ pub fn infer_expr(expr: ast::Expr) -> Result<Ty> {
     let data_env = DataEnv::new();
     let class_env = ClassEnv::default();
     let env = TypeEnv::new();
-    let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &env, expr)?;
+    let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &Subst::new(), &env, expr)?;
     let _ = simplify_constraints(&data_env, &class_env, apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
 }
@@ -1107,7 +1128,7 @@ pub fn infer_in_module(module: &ast::Module, expr: ast::Expr) -> Result<Ty> {
     let data_env = collect_data_env(module);
     let class_env = ClassEnv::default();
     let env = collect_ctor_env(&mut cx, module)?;
-    let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &env, expr)?;
+    let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &Subst::new(), &env, expr)?;
     let _ = simplify_constraints(&data_env, &class_env, apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
 }
@@ -3724,9 +3745,9 @@ fn infer_one_letrec_binding(
     )
     .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
 
-    let env_in = apply_env(cxi.subst, cxi.env_scc);
-    let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(cxi.cx, cxi.data_env, &env_in, b.expr)
-        .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
+    let (s_rhs, cs_rhs, t_rhs) =
+        infer_expr_in(cxi.cx, cxi.data_env, cxi.subst, cxi.env_scc, b.expr)
+            .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
     *cxi.subst = compose(&s_rhs, cxi.subst);
 
     let s_pat = unify(apply(cxi.subst, t_rhs), apply(cxi.subst, pat_ty))
@@ -3802,7 +3823,7 @@ fn infer_local_letrec_bindings(
             per_bind.push(infer_one_letrec_binding(&mut cxi, b)?);
         }
 
-        let env_gen_base = apply_env(&s, &env_global);
+        let env_gen_ftv = ftv_env_applied(&s, &env_global);
         let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
         for (binds, cs) in per_bind {
             for (name, t) in binds {
@@ -3811,7 +3832,7 @@ fn infer_local_letrec_bindings(
                     &ClassEnv::default(),
                     apply_constraints(&s, cs.clone()),
                 )?;
-                let scheme = generalize_qual(&env_gen_base, cs, apply(&s, t));
+                let scheme = generalize_qual_with_env_ftv(&env_gen_ftv, cs, apply(&s, t));
                 new_schemes.push((name, scheme));
             }
         }
@@ -3827,6 +3848,7 @@ fn infer_local_letrec_bindings(
 fn infer_expr_in(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     expr: ast::Expr,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
@@ -3854,8 +3876,12 @@ fn infer_expr_in(
             // We model methods as overloaded functions in the type environment
             // (`add_class_methods_into_env`). When import-forwarders don't expose a
             // method name as a value, allow falling back to the module-scope class env.
-            let from_env = env.get(&name).cloned();
-            let from_methods = cx.class_env.methods_by_name.get(&name).cloned();
+            let from_env = env.get(&name).map(|sch| apply_scheme(subst_env, sch));
+            let from_methods = cx
+                .class_env
+                .methods_by_name
+                .get(&name)
+                .map(|sch| apply_scheme(subst_env, sch));
 
             if std::env::var("KSCR_DEBUG_METHOD_VALUES").ok().as_deref() == Some("1")
                 && from_env.is_none()
@@ -3864,12 +3890,10 @@ fn infer_expr_in(
                 eprintln!("[KSCR_DEBUG_METHOD_VALUES] Var fallback hit: {name}");
             }
 
-            let s = from_env.or(from_methods);
-
-            let s = s
-                .as_ref()
-                .ok_or_else(|| Error::msg_with_span(format!("unbound variable: {name}"), span))?;
-            let (cs, ty) = instantiate_qual(cx, s);
+            let s = from_env.or(from_methods).ok_or_else(|| {
+                Error::msg_with_span(format!("unbound variable: {name}"), span)
+            })?;
+            let (cs, ty) = instantiate_qual(cx, &s);
             Ok((Subst::new(), cs, ty))
         }
 
@@ -3883,36 +3907,37 @@ fn infer_expr_in(
                 };
                 Error::msg_with_span(format!("unknown constructor: {key}{hint}"), span)
             })?;
-            let (cs, ty) = instantiate_qual(cx, s);
+            let s = apply_scheme(subst_env, s);
+            let (cs, ty) = instantiate_qual(cx, &s);
             Ok((Subst::new(), cs, ty))
         }
 
         ExprKind::Lambda { params, body } => {
-            infer_expr_lambda(cx, data_env, env, span, params, *body)
+            infer_expr_lambda(cx, data_env, subst_env, env, span, params, *body)
         }
 
-        ExprKind::Apply { func, args } => infer_expr_apply(cx, data_env, env, *func, args),
+        ExprKind::Apply { func, args } => infer_expr_apply(cx, data_env, subst_env, env, *func, args),
 
-        ExprKind::Annot { expr, ty } => infer_expr_annot(cx, data_env, env, *expr, ty),
+        ExprKind::Annot { expr, ty } => infer_expr_annot(cx, data_env, subst_env, env, *expr, ty),
 
         ExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => infer_expr_if(cx, data_env, env, *cond, *then_branch, *else_branch),
+        } => infer_expr_if(cx, data_env, subst_env, env, *cond, *then_branch, *else_branch),
 
-        ExprKind::Tuple(elems) => infer_expr_tuple(cx, data_env, env, elems),
+        ExprKind::Tuple(elems) => infer_expr_tuple(cx, data_env, subst_env, env, elems),
 
-        ExprKind::Cons { head, tail } => infer_expr_cons(cx, data_env, env, *head, *tail),
+        ExprKind::Cons { head, tail } => infer_expr_cons(cx, data_env, subst_env, env, *head, *tail),
 
-        ExprKind::List(elems) => infer_expr_list(cx, data_env, env, elems),
+        ExprKind::List(elems) => infer_expr_list(cx, data_env, subst_env, env, elems),
 
-        ExprKind::Record(fields) => infer_expr_record(cx, data_env, env, fields),
+        ExprKind::Record(fields) => infer_expr_record(cx, data_env, subst_env, env, fields),
 
         ExprKind::Let { bindings, body } => {
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "let")?;
-            let env_body = apply_env(&s_bind, &env2);
-            let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *body)
+            let subst_body = compose(&s_bind, subst_env);
+            let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &subst_body, &env2, *body)
                 .map_err(|e| e.with_context("in let body"))?;
             let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
@@ -3920,22 +3945,23 @@ fn infer_expr_in(
 
         ExprKind::Where { expr, bindings } => {
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "where")?;
-            let env_body = apply_env(&s_bind, &env2);
-            let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &env_body, *expr)
+            let subst_body = compose(&s_bind, subst_env);
+            let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &subst_body, &env2, *expr)
                 .map_err(|e| e.with_context("in where body"))?;
             let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
 
-        ExprKind::Case { expr, arms } => infer_expr_case(cx, data_env, env, span, *expr, arms),
+        ExprKind::Case { expr, arms } => infer_expr_case(cx, data_env, subst_env, env, span, *expr, arms),
 
-        ExprKind::Do(stmts) => infer_expr_do(cx, data_env, env, span, stmts),
+        ExprKind::Do(stmts) => infer_expr_do(cx, data_env, subst_env, env, span, stmts),
     }
 }
 
 fn infer_expr_lambda(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     span: ast::Span,
     params: Vec<String>,
@@ -3953,7 +3979,7 @@ fn infer_expr_lambda(
         param_tys.push(tv);
     }
 
-    let (s_body, cs_body, body_ty) = infer_expr_in(cx, data_env, &env2, body)?;
+    let (s_body, cs_body, body_ty) = infer_expr_in(cx, data_env, subst_env, &env2, body)?;
     let mut out = apply(&s_body, body_ty);
     for pty in param_tys.into_iter().rev() {
         out = Ty::Func(Box::new(apply(&s_body, pty)), Box::new(out));
@@ -3965,15 +3991,16 @@ fn infer_expr_lambda(
 fn infer_expr_apply(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     func: ast::Expr,
     args: Vec<ast::Expr>,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
-    let (mut s, mut cs, mut fun_ty) = infer_expr_in(cx, data_env, env, func)?;
+    let (mut s, mut cs, mut fun_ty) = infer_expr_in(cx, data_env, subst_env, env, func)?;
 
     for arg in args {
-        let env2 = apply_env(&s, env);
-        let (s_arg, cs_arg, arg_ty) = infer_expr_in(cx, data_env, &env2, arg)?;
+        let subst2 = compose(&s, subst_env);
+        let (s_arg, cs_arg, arg_ty) = infer_expr_in(cx, data_env, &subst2, env, arg)?;
         s = compose(&s_arg, &s);
 
         cs = apply_constraints(&s, cs);
@@ -3998,11 +4025,12 @@ fn infer_expr_apply(
 fn infer_expr_annot(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     expr: ast::Expr,
     ty: ast::QualType,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
-    let (s1, mut cs1, t1) = infer_expr_in(cx, data_env, env, expr)?;
+    let (s1, mut cs1, t1) = infer_expr_in(cx, data_env, subst_env, env, expr)?;
     let mut holes = HashMap::new();
 
     // Lower predicates + annotated type using a shared var map.
@@ -4054,13 +4082,14 @@ fn infer_expr_annot(
 fn infer_expr_if(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     cond: ast::Expr,
     then_branch: ast::Expr,
     else_branch: ast::Expr,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
     let (s_cond, cs_cond, t_cond) =
-        infer_expr_in(cx, data_env, env, cond).map_err(|e| e.with_context("in if cond"))?;
+        infer_expr_in(cx, data_env, subst_env, env, cond).map_err(|e| e.with_context("in if cond"))?;
     let s_bool = unify_dbg(
         apply(&s_cond, t_cond),
         Ty::Con("Bool".to_string()),
@@ -4070,15 +4099,15 @@ fn infer_expr_if(
     let mut s = compose(&s_bool, &s_cond);
     let mut cs = apply_constraints(&s, cs_cond);
 
-    let env2 = apply_env(&s, env);
-    let (s_then, cs_then, t_then) = infer_expr_in(cx, data_env, &env2, then_branch)
+    let subst2 = compose(&s, subst_env);
+    let (s_then, cs_then, t_then) = infer_expr_in(cx, data_env, &subst2, env, then_branch)
         .map_err(|e| e.with_context("in if then"))?;
     s = compose(&s_then, &s);
     cs = apply_constraints(&s, cs);
     cs.extend(apply_constraints(&s, cs_then));
 
-    let env3 = apply_env(&s, env);
-    let (s_else, cs_else, t_else) = infer_expr_in(cx, data_env, &env3, else_branch)
+    let subst3 = compose(&s, subst_env);
+    let (s_else, cs_else, t_else) = infer_expr_in(cx, data_env, &subst3, env, else_branch)
         .map_err(|e| e.with_context("in if else"))?;
     s = compose(&s_else, &s);
     cs = apply_constraints(&s, cs);
@@ -4098,6 +4127,7 @@ fn infer_expr_if(
 fn infer_expr_tuple(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     elems: Vec<ast::Expr>,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
@@ -4105,8 +4135,8 @@ fn infer_expr_tuple(
     let mut cs: Vec<Constraint> = vec![];
     let mut ts = Vec::new();
     for e in elems {
-        let env2 = apply_env(&s, env);
-        let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env2, e)?;
+        let subst2 = compose(&s, subst_env);
+        let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &subst2, env, e)?;
         s = compose(&s_e, &s);
         cs = apply_constraints(&s, cs);
         cs.extend(apply_constraints(&s, cs_e));
@@ -4118,13 +4148,14 @@ fn infer_expr_tuple(
 fn infer_expr_cons(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     head: ast::Expr,
     tail: ast::Expr,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
-    let (s_hd, cs_hd, t_hd) = infer_expr_in(cx, data_env, env, head)?;
-    let env2 = apply_env(&s_hd, env);
-    let (s_tl, cs_tl, t_tl) = infer_expr_in(cx, data_env, &env2, tail)?;
+    let (s_hd, cs_hd, t_hd) = infer_expr_in(cx, data_env, subst_env, env, head)?;
+    let subst2 = compose(&s_hd, subst_env);
+    let (s_tl, cs_tl, t_tl) = infer_expr_in(cx, data_env, &subst2, env, tail)?;
     let mut s = compose(&s_tl, &s_hd);
     let mut cs = apply_constraints(&s, cs_hd);
     cs.extend(apply_constraints(&s, cs_tl));
@@ -4152,6 +4183,7 @@ fn infer_expr_cons(
 fn infer_expr_list(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     elems: Vec<ast::Expr>,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
@@ -4159,12 +4191,12 @@ fn infer_expr_list(
         return Ok((Subst::new(), vec![], Ty::List(Box::new(cx.fresh()))));
     }
 
-    let (mut s, mut cs, first_ty) = infer_expr_in(cx, data_env, env, elems[0].clone())?;
+    let (mut s, mut cs, first_ty) = infer_expr_in(cx, data_env, subst_env, env, elems[0].clone())?;
     let mut elem_ty = apply(&s, first_ty);
 
     for e in elems.into_iter().skip(1) {
-        let env2 = apply_env(&s, env);
-        let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env2, e)?;
+        let subst2 = compose(&s, subst_env);
+        let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &subst2, env, e)?;
         s = compose(&s_e, &s);
         cs = apply_constraints(&s, cs);
         cs.extend(apply_constraints(&s, cs_e));
@@ -4185,6 +4217,7 @@ fn infer_expr_list(
 fn infer_expr_record(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     fields: Vec<(String, ast::Expr)>,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
@@ -4192,8 +4225,8 @@ fn infer_expr_record(
     let mut cs: Vec<Constraint> = vec![];
     let mut out = Vec::new();
     for (name, e) in fields {
-        let env2 = apply_env(&s, env);
-        let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env2, e)?;
+        let subst2 = compose(&s, subst_env);
+        let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &subst2, env, e)?;
         s = compose(&s_e, &s);
         cs = apply_constraints(&s, cs);
         cs.extend(apply_constraints(&s, cs_e));
@@ -4206,6 +4239,7 @@ fn infer_expr_record(
 fn infer_expr_case(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     span: ast::Span,
     expr: ast::Expr,
@@ -4215,7 +4249,7 @@ fn infer_expr_case(
         return Err(Error::msg_with_span("empty case", span));
     }
 
-    let (mut s, mut cs, scrut_ty) = infer_expr_in(cx, data_env, env, expr).map_err(|e| {
+    let (mut s, mut cs, scrut_ty) = infer_expr_in(cx, data_env, subst_env, env, expr).map_err(|e| {
         if std::env::var("KSCR_DEBUG_CASE_UNIFY").ok().as_deref() == Some("1") {
             eprintln!("[KSCR_DEBUG_CASE_UNIFY] scrutinee inference failed: {e}");
         }
@@ -4265,13 +4299,15 @@ fn infer_expr_case(
         cs = apply_constraints(&s, cs);
         cs.extend(apply_constraints(&s, cs_pat));
 
-        let mut env_arm = apply_env(&s, env);
+        let mut env_arm = env.clone();
         for (name, t) in binds {
             env_arm.insert(name, Scheme::mono(apply(&s, t)));
         }
 
+        let mut subst_arm = compose(&s, subst_env);
+
         if let Some(g) = guard {
-            let (s_g, cs_g, t_g) = infer_expr_in(cx, data_env, &env_arm, g)
+            let (s_g, cs_g, t_g) = infer_expr_in(cx, data_env, &subst_arm, &env_arm, g)
                 .map_err(|e| e.with_context(format!("in case arm {arm_no} guard")))?;
             s = compose(&s_g, &s);
             cs = apply_constraints(&s, cs);
@@ -4285,10 +4321,10 @@ fn infer_expr_case(
             .map_err(|e| e.with_context(format!("in case arm {arm_no} guard")))?;
             s = compose(&su_g, &s);
             cs = apply_constraints(&s, cs);
-            env_arm = apply_env(&s, &env_arm);
+            subst_arm = compose(&s, subst_env);
         }
 
-        let (s_arm, cs_arm, arm_ty) = infer_expr_in(cx, data_env, &env_arm, body)
+        let (s_arm, cs_arm, arm_ty) = infer_expr_in(cx, data_env, &subst_arm, &env_arm, body)
             .map_err(|e| e.with_context(format!("in case arm {arm_no}")))?;
         s = compose(&s_arm, &s);
         cs = apply_constraints(&s, cs);
@@ -4315,6 +4351,7 @@ fn infer_expr_case(
 fn infer_expr_do(
     cx: &mut InferCtx,
     data_env: &DataEnv,
+    subst_env: &Subst,
     env: &TypeEnv,
     span: ast::Span,
     stmts: Vec<ast::DoStmt>,
@@ -4351,8 +4388,8 @@ fn infer_expr_do(
                 )
                 .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
 
-                let env_in = apply_env(&s, &env2);
-                let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, expr)
+                let subst_in = compose(&s, subst_env);
+                let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &subst_in, &env2, expr)
                     .map_err(|e| e.with_context(format!("in do stmt {stmt_no} (<-)")))?;
                 s = compose(&s_e, &s);
                 cs = apply_constraints(&s, cs);
@@ -4381,7 +4418,6 @@ fn infer_expr_do(
                 cs = apply_constraints(&s, cs);
                 cs.extend(apply_constraints(&s, cs_pat));
 
-                env2 = apply_env(&s, &env2);
                 for (name, t) in binds {
                     env2.insert(name, Scheme::mono(apply(&s, t)));
                 }
@@ -4396,8 +4432,8 @@ fn infer_expr_do(
                 }
             }
             ast::DoStmt::Expr(e) => {
-                let env_in = apply_env(&s, &env2);
-                let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &env_in, e)
+                let subst_in = compose(&s, subst_env);
+                let (s_e, cs_e, t_e) = infer_expr_in(cx, data_env, &subst_in, &env2, e)
                     .map_err(|e| e.with_context(format!("in do stmt {stmt_no}")))?;
                 s = compose(&s_e, &s);
                 cs = apply_constraints(&s, cs);
@@ -7490,7 +7526,7 @@ fn infer_in_module_with_class_env(
             env.insert(name.clone(), scheme.clone());
         }
     }
-    let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &env, expr)?;
+    let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &Subst::new(), &env, expr)?;
     let _ = simplify_constraints(&data_env, class_env, apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
 }
@@ -8537,8 +8573,7 @@ fn infer_module_with_class_env(
             )
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
-            let env_in = apply_env(&subst, &env_scc);
-            let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &data_env, &env_in, b.expr.clone())
+            let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone())
                 .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
             subst = compose(&s_rhs, &subst);
 
@@ -8552,7 +8587,7 @@ fn infer_module_with_class_env(
         }
 
         // Generalize all names in the SCC against the environment *outside* the SCC.
-        let env_gen_base = apply_env(&subst, &env_global);
+        let env_gen_ftv = ftv_env_applied(&subst, &env_global);
         let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
         for (binds, cs) in per_bind {
             for (name, t) in binds {
@@ -8561,7 +8596,7 @@ fn infer_module_with_class_env(
                     class_env,
                     apply_constraints(&subst, cs.clone()),
                 )?;
-                let scheme = generalize_qual(&env_gen_base, cs, apply(&subst, t));
+                let scheme = generalize_qual_with_env_ftv(&env_gen_ftv, cs, apply(&subst, t));
                 new_schemes.push((name, scheme));
             }
         }
