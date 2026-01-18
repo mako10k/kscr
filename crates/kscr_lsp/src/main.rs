@@ -2,6 +2,7 @@ mod backend;
 mod backend_diagnostics_hover;
 mod backend_goto_completion;
 mod backend_helpers;
+mod backend_references_rename;
 mod backend_symbols;
 mod vfs;
 

@@ -12,28 +12,23 @@ pub(super) fn compute_diagnostics(doc: &Document) -> Vec<Diagnostic> {
             diagnostics.push(create_diagnostic(doc, &e, DiagnosticSeverity::ERROR));
             return diagnostics;
         }
-        Ok(_tokens) => {
-            match parser::parse_module(&doc.text) {
-                Err(e) => {
+        Ok(_tokens) => match parser::parse_module(&doc.text) {
+            Err(e) => {
+                diagnostics.push(create_diagnostic(doc, &e, DiagnosticSeverity::ERROR));
+                return diagnostics;
+            }
+            Ok(_module) => {
+                if let Err(e) = typecheck_document_text(&doc.uri, &doc.text) {
                     diagnostics.push(create_diagnostic(doc, &e, DiagnosticSeverity::ERROR));
-                    return diagnostics;
-                }
-                Ok(_module) => {
-                    if let Err(e) = typecheck_document_text(&doc.uri, &doc.text) {
-                        diagnostics.push(create_diagnostic(doc, &e, DiagnosticSeverity::ERROR));
-                    }
                 }
             }
-        }
+        },
     }
 
     diagnostics
 }
 
-pub(super) fn typecheck_document_text(
-    uri: &Url,
-    text: &str,
-) -> std::result::Result<(), KscrError> {
+pub(super) fn typecheck_document_text(uri: &Url, text: &str) -> std::result::Result<(), KscrError> {
     typecheck_document_typed(uri, text).map(|_| ())
 }
 

@@ -2,6 +2,7 @@
 
 use crate::backend_diagnostics_hover as diag_hover;
 use crate::backend_goto_completion;
+use crate::backend_references_rename;
 use crate::backend_symbols;
 use crate::vfs::{Document, Vfs};
 use kscr::parser;
@@ -43,7 +44,6 @@ impl Backend {
     async fn compute_diagnostics(&self, doc: &Document) -> Vec<Diagnostic> {
         diag_hover::compute_diagnostics(doc)
     }
-
 }
 
 #[cfg(test)]
@@ -215,6 +215,8 @@ impl LanguageServer for Backend {
                     trigger_characters: Some(vec![".".to_string()]),
                     ..Default::default()
                 }),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
         })
@@ -319,6 +321,38 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(items)))
     }
 
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let vfs = self.vfs.read().await;
+        let uri = params.text_document_position.text_document.uri;
+        let doc = match vfs.get(&uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let locs = backend_references_rename::references_in_vfs(
+            &vfs,
+            doc,
+            params.text_document_position.position,
+        );
+        Ok(Some(locs))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let vfs = self.vfs.read().await;
+        let uri = params.text_document_position.text_document.uri;
+        let doc = match vfs.get(&uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        Ok(backend_references_rename::rename_in_vfs(
+            &vfs,
+            doc,
+            params.text_document_position.position,
+            &params.new_name,
+        ))
+    }
+
     async fn document_symbol(
         &self,
         params: DocumentSymbolParams,
@@ -351,4 +385,3 @@ impl LanguageServer for Backend {
         }
     }
 }
-
