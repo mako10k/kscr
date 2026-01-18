@@ -189,13 +189,14 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable via clang\n                   Default: embeds packed IR and runs via Rust executor\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable via clang\n                   Default: embeds packed IR and runs via Rust executor\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
     );
 }
 
 struct ReplState {
     defs: Vec<String>,
     loaded_modules: Vec<String>,
+    loaded_file: Option<PathBuf>,
     base_dir: PathBuf,
     repl_path: PathBuf,
 }
@@ -213,6 +214,7 @@ impl ReplState {
         Ok(Self {
             defs: Vec::new(),
             loaded_modules: Vec::new(),
+            loaded_file: None,
             base_dir,
             repl_path,
         })
@@ -235,6 +237,9 @@ impl ReplState {
             ));
         };
 
+        // Validate eagerly: if typechecking fails, cancel the load and keep the current REPL state.
+        let _ = types::typecheck_file(path)?;
+
         let dir = path
             .parent()
             .ok_or_else(|| crate::error::Error::msg("invalid module path"))?;
@@ -244,6 +249,7 @@ impl ReplState {
             .base_dir
             .join(format!(".kscr_repl_{}.ks", std::process::id()));
         self.loaded_modules = vec![name];
+        self.loaded_file = Some(path.to_path_buf());
         self.defs.clear();
         Ok(())
     }
@@ -433,7 +439,7 @@ fn repl_impl(mut st: ReplState) -> Result<()> {
 }
 
 fn try_resolve_repl_command(cmd: &str) -> Result<Option<&'static str>> {
-    const CMDS: [&str; 5] = ["quit", "type", "info", "load", "modules"];
+    const CMDS: [&str; 6] = ["quit", "type", "info", "load", "modules", "edit"];
 
     if let Some(&found) = CMDS.iter().find(|&&c| c == cmd) {
         return Ok(Some(found));
@@ -461,6 +467,24 @@ fn handle_repl_line(st: &mut ReplState, line: &str) -> Result<bool> {
             Some(i) => (&rest0[..i], rest0[i..].trim_start()),
             None => (rest0, ""),
         };
+
+        if cmd == "!" {
+            if rest.is_empty() {
+                eprintln!("error: missing <cmd>");
+                return Ok(false);
+            }
+            let status = if cfg!(windows) {
+                std::process::Command::new("cmd").args(["/C", rest]).status()
+            } else {
+                std::process::Command::new("sh").args(["-c", rest]).status()
+            };
+            match status {
+                Ok(s) if s.success() => {}
+                Ok(s) => eprintln!("error: command failed: {s}"),
+                Err(e) => eprintln!("error: failed to run command: {e}"),
+            }
+            return Ok(false);
+        }
 
         if !cmd.is_empty() {
             match try_resolve_repl_command(cmd) {
@@ -505,6 +529,44 @@ fn handle_repl_line(st: &mut ReplState, line: &str) -> Result<bool> {
                     match st.info_of(rest) {
                         Ok(s) => println!("{s}"),
                         Err(e) => eprintln!("error: {e}"),
+                    }
+                    return Ok(false);
+                }
+                Ok(Some("edit")) => {
+                    let path = if rest.is_empty() {
+                        match &st.loaded_file {
+                            Some(p) => p.clone(),
+                            None => {
+                                eprintln!("error: missing <path>");
+                                return Ok(false);
+                            }
+                        }
+                    } else {
+                        PathBuf::from(rest)
+                    };
+
+                    let editor = std::env::var("EDITOR")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| {
+                            if cfg!(windows) {
+                                "notepad".to_string()
+                            } else {
+                                "vi".to_string()
+                            }
+                        });
+
+                    let mut it = editor.split_whitespace();
+                    let Some(bin) = it.next() else {
+                        eprintln!("error: invalid EDITOR");
+                        return Ok(false);
+                    };
+                    let mut cmd = std::process::Command::new(bin);
+                    cmd.args(it);
+                    cmd.arg(&path);
+                    match cmd.status() {
+                        Ok(_) => {}
+                        Err(e) => eprintln!("error: failed to run editor: {e}"),
                     }
                     return Ok(false);
                 }
@@ -641,6 +703,28 @@ mod repl_tests {
     fn repl_type_errors_are_reported() {
         let e = repl_type_of(&[], "1 True").unwrap_err();
         assert!(format!("{e}").contains("cannot unify"));
+    }
+
+    #[test]
+    fn repl_load_cancels_on_type_error() {
+        let mut st = ReplState::new_default().unwrap();
+
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("kscr_repl_load_cancel_{}_{uniq}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Bad.ks");
+        std::fs::write(&path, "module Bad where\n  x = doesNotExist\n").unwrap();
+
+        let e = st.load_module_file(&path).unwrap_err();
+        assert!(format!("{e}").contains("unbound variable"));
+        assert!(st.loaded_modules.is_empty());
+        assert!(st.loaded_file.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
