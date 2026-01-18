@@ -1,0 +1,8 @@
+# Memory-friendly defaults for this repository.
+#
+# Some low-memory environments can OOM when compiling the Rust LSP with default
+# parallelism. We cap build jobs to reduce peak memory.
+# Override per-invocation with `cargo -j N` if needed.
+
+[build]
+jobs = 1
