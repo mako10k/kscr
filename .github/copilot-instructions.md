@@ -59,6 +59,23 @@ JSONL
 # npx -y @mako10k/lsp-cli --root . --format pretty events --kind diagnostics --since 0 --limit 200
 ```
 
+## Version bump policy
+
+Keep versions aligned across Rust crates (and the npm package if used).
+
+Bump **PATCH** when:
+- Bugfixes that don’t change public surface behavior (incl. stdlib fixes).
+- Internal refactors, docs, CI/editor config.
+
+Bump **MINOR** when:
+- Additions that are backwards compatible: new stdlib modules/functions/types, new CLI flags, new language features that don’t break existing code.
+- New optional Cargo features / new builtins behind feature flags.
+
+Bump **MAJOR** when:
+- Breaking changes: syntax changes, type system changes affecting inference, stdlib API removals/renames, CLI breaking flags, changes to default semantics.
+
+If a change affects both the Rust engine and stdlib semantics, treat it as at least **MINOR**.
+
 ## Quality Gates (before commit)
 
 ```bash

@@ -1979,7 +1979,8 @@ fn add_ffi_primitives(env: &mut TypeEnv) {
     );
 
     // P9: real C ABI FFI (unsafe isolated; feature-gated).
-    // ffiPuts :: String -> IO i32
+    // ffiPuts :: [Char] -> IO i32
+    // Note: in stdlib, `type String = [Char]`, and string literals are `[Char]`.
     #[cfg(feature = "unsafe_ffi")]
     env.insert(
         "ffiPuts".to_string(),
@@ -1987,7 +1988,7 @@ fn add_ffi_primitives(env: &mut TypeEnv) {
             vars: vec![],
             constraints: vec![],
             ty: Ty::Func(
-                Box::new(Ty::Con("String".to_string())),
+                Box::new(Ty::List(Box::new(Ty::Con("Char".to_string())))),
                 Box::new(Ty::App {
                     head: Box::new(Ty::Con("IO".to_string())),
                     args: vec![Ty::Con("i32".to_string())],
