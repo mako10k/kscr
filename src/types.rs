@@ -7846,20 +7846,20 @@ fn monad_syntactic_head(e: &ast::Expr) -> Option<String> {
     }
 }
 
-fn resolve_method_dict_name(
+fn resolve_method_dict_expr(
     ctx: &ApplyRewriteCtx<'_>,
     class: &str,
     mname: &str,
     args: &[ast::Expr],
-) -> Result<(ast::Expr, Option<String>)> {
+) -> Result<Option<(ast::Expr, Option<String>)>> {
     use ast::{Expr, ExprKind};
 
     let dict_var = format!("__dict_{class}");
     if ctx.dicts_in_scope.contains(&dict_var) {
-        return Ok((
+        return Ok(Some((
             Expr::new(ctx.span, ExprKind::Var(dict_var.clone())),
             Some(dict_var),
-        ));
+        )));
     }
 
     let mut first_non_ground: Option<Ty> = None;
@@ -7916,17 +7916,17 @@ fn resolve_method_dict_name(
 
     if let Some(dict_name) = dict_name {
         let chosen_name_for_known = Some(dict_name.clone());
-        return Ok((
+        return Ok(Some((
             Expr::new(ctx.span, ExprKind::Var(dict_name)),
             chosen_name_for_known,
-        ));
+        )));
     }
     if let Some(d) = ctx.known_dicts_in_scope.get(class) {
         let chosen_name_for_known = Some(d.clone());
-        return Ok((
+        return Ok(Some((
             Expr::new(ctx.span, ExprKind::Var(d.clone())),
             chosen_name_for_known,
-        ));
+        )));
     }
     if let Some(d) = derive_dict_expr_from_candidates(
         ctx.span,
@@ -7935,7 +7935,7 @@ fn resolve_method_dict_name(
         ctx.dicts_in_scope,
         ctx.known_dicts_in_scope,
     ) {
-        return Ok((d, None));
+        return Ok(Some((d, None)));
     }
 
     if let Some(ty) = first_missing_instance {
@@ -7944,23 +7944,9 @@ fn resolve_method_dict_name(
         )));
     }
 
-    let ty_hint = first_non_ground
-        .or_else(|| {
-            args.first().and_then(|a0| {
-                infer_in_module_with_class_env(
-                    ctx.module_snapshot,
-                    ctx.class_env,
-                    ctx.inferred,
-                    a0.clone(),
-                )
-                .ok()
-            })
-        })
-        .unwrap_or(Ty::Con("<unknown>".to_string()));
-
-    Err(Error::msg(format!(
-        "cannot resolve method call `{mname}`: no ground argument type available (e.g. {ty_hint})"
-    )))
+    // No in-scope dictionary and no ground type to pick an instance: keep it polymorphic.
+    // The caller will wrap this in a dict-lambda.
+    Ok(None)
 }
 
 fn build_method_call(
@@ -8028,17 +8014,46 @@ fn rewrite_class_method_apply(
                 return Err(Error::msg("internal: empty method class list"));
             };
 
-            let (dict_expr, chosen_name_for_known) =
-                resolve_method_dict_name(ctx, class, mname, &args)?;
+            if let Some((dict_expr, chosen_name_for_known)) =
+                resolve_method_dict_expr(ctx, class, mname, &args)?
+            {
+                let mut known = ctx.known_dicts_in_scope.clone();
+                if let Some(chosen) = chosen_name_for_known.clone() {
+                    known.insert(class.clone(), chosen);
+                }
 
-            let mut known = ctx.known_dicts_in_scope.clone();
-            if let Some(chosen) = chosen_name_for_known.clone() {
-                known.insert(class.clone(), chosen);
+                let new_args = rewrite_args_with_known(ctx, &known, args)?;
+                return Ok(build_method_call(ctx, mname, dict_expr, new_args));
             }
 
-            let new_args = rewrite_args_with_known(ctx, &known, args)?;
+            // Polymorphic/ambiguous method application: keep it as a dictionary-taking function.
+            let dict_var = format!("__dict_{class}");
+            let mut scope = ctx.dicts_in_scope.clone();
+            scope.insert(dict_var.clone());
 
-            return Ok(build_method_call(ctx, mname, dict_expr, new_args));
+            let new_args: Vec<_> = args
+                .into_iter()
+                .map(|a| {
+                    rewrite_expr(
+                        ctx.module_snapshot,
+                        ctx.class_env,
+                        ctx.inferred,
+                        &scope,
+                        ctx.known_dicts_in_scope,
+                        a,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let dict_expr = Expr::new(ctx.span, ExprKind::Var(dict_var.clone()));
+            let body = build_method_call(ctx, mname, dict_expr, new_args);
+            return Ok(Expr::new(
+                ctx.span,
+                ExprKind::Lambda {
+                    params: vec![dict_var],
+                    body: Box::new(body),
+                },
+            ));
         }
     }
 
