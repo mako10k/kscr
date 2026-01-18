@@ -20,6 +20,7 @@ static STDLIB_AST_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedAst>>> = OnceLock
 static MODULE_TYPECHECK_CACHE: OnceLock<Mutex<HashMap<u64, CachedModuleTypecheck>>> =
     OnceLock::new();
 
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub(super) fn hash_module_ast(module: &ast::Module) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -149,6 +150,7 @@ pub(super) fn hash_module_ast(module: &ast::Module) -> u64 {
         hash_type(h, &qt.ty);
     }
 
+    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
     fn hash_expr(h: &mut DefaultHasher, e: &ast::Expr) {
         use ast::ExprKind;
         match &e.kind {

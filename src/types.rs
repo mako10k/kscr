@@ -597,7 +597,11 @@ fn ftv_env_applied_from_ftv(subst: &Subst, env_ftv: &HashSet<u32>) -> HashSet<u3
     out
 }
 
-fn generalize_qual_with_env_ftv(env_ftv: &HashSet<u32>, constraints: Vec<Constraint>, ty: Ty) -> Scheme {
+fn generalize_qual_with_env_ftv(
+    env_ftv: &HashSet<u32>,
+    constraints: Vec<Constraint>,
+    ty: Ty,
+) -> Scheme {
     let mut ftv = ftv_ty(&ty);
     for c in &constraints {
         ftv.extend(ftv_constraint(c));
@@ -3752,8 +3756,9 @@ fn infer_one_letrec_binding(
     .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
 
     let (s_rhs, cs_rhs, t_rhs) =
-        infer_expr_in(cxi.cx, cxi.data_env, cxi.subst, cxi.env_scc, b.expr)
-            .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
+        infer_expr_in(cxi.cx, cxi.data_env, cxi.subst, cxi.env_scc, b.expr).map_err(|e| {
+            e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name))
+        })?;
     *cxi.subst = compose(&s_rhs, cxi.subst);
 
     let s_pat = unify(apply(cxi.subst, t_rhs), apply(cxi.subst, pat_ty))
@@ -3898,9 +3903,9 @@ fn infer_expr_in(
                 eprintln!("[KSCR_DEBUG_METHOD_VALUES] Var fallback hit: {name}");
             }
 
-            let s = from_env.or(from_methods).ok_or_else(|| {
-                Error::msg_with_span(format!("unbound variable: {name}"), span)
-            })?;
+            let s = from_env
+                .or(from_methods)
+                .ok_or_else(|| Error::msg_with_span(format!("unbound variable: {name}"), span))?;
             let (cs, ty) = instantiate_qual(cx, &s);
             Ok((Subst::new(), cs, ty))
         }
@@ -3924,7 +3929,9 @@ fn infer_expr_in(
             infer_expr_lambda(cx, data_env, subst_env, env, span, params, *body)
         }
 
-        ExprKind::Apply { func, args } => infer_expr_apply(cx, data_env, subst_env, env, *func, args),
+        ExprKind::Apply { func, args } => {
+            infer_expr_apply(cx, data_env, subst_env, env, *func, args)
+        }
 
         ExprKind::Annot { expr, ty } => infer_expr_annot(cx, data_env, subst_env, env, *expr, ty),
 
@@ -3932,11 +3939,21 @@ fn infer_expr_in(
             cond,
             then_branch,
             else_branch,
-        } => infer_expr_if(cx, data_env, subst_env, env, *cond, *then_branch, *else_branch),
+        } => infer_expr_if(
+            cx,
+            data_env,
+            subst_env,
+            env,
+            *cond,
+            *then_branch,
+            *else_branch,
+        ),
 
         ExprKind::Tuple(elems) => infer_expr_tuple(cx, data_env, subst_env, env, elems),
 
-        ExprKind::Cons { head, tail } => infer_expr_cons(cx, data_env, subst_env, env, *head, *tail),
+        ExprKind::Cons { head, tail } => {
+            infer_expr_cons(cx, data_env, subst_env, env, *head, *tail)
+        }
 
         ExprKind::List(elems) => infer_expr_list(cx, data_env, subst_env, env, elems),
 
@@ -3960,7 +3977,9 @@ fn infer_expr_in(
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
         }
 
-        ExprKind::Case { expr, arms } => infer_expr_case(cx, data_env, subst_env, env, span, *expr, arms),
+        ExprKind::Case { expr, arms } => {
+            infer_expr_case(cx, data_env, subst_env, env, span, *expr, arms)
+        }
 
         ExprKind::Do(stmts) => infer_expr_do(cx, data_env, subst_env, env, span, stmts),
     }
@@ -4096,8 +4115,8 @@ fn infer_expr_if(
     then_branch: ast::Expr,
     else_branch: ast::Expr,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
-    let (s_cond, cs_cond, t_cond) =
-        infer_expr_in(cx, data_env, subst_env, env, cond).map_err(|e| e.with_context("in if cond"))?;
+    let (s_cond, cs_cond, t_cond) = infer_expr_in(cx, data_env, subst_env, env, cond)
+        .map_err(|e| e.with_context("in if cond"))?;
     let s_bool = unify_dbg(
         apply(&s_cond, t_cond),
         Ty::Con("Bool".to_string()),
@@ -4257,12 +4276,13 @@ fn infer_expr_case(
         return Err(Error::msg_with_span("empty case", span));
     }
 
-    let (mut s, mut cs, scrut_ty) = infer_expr_in(cx, data_env, subst_env, env, expr).map_err(|e| {
-        if std::env::var("KSCR_DEBUG_CASE_UNIFY").ok().as_deref() == Some("1") {
-            eprintln!("[KSCR_DEBUG_CASE_UNIFY] scrutinee inference failed: {e}");
-        }
-        e.with_context("in case scrutinee")
-    })?;
+    let (mut s, mut cs, scrut_ty) =
+        infer_expr_in(cx, data_env, subst_env, env, expr).map_err(|e| {
+            if std::env::var("KSCR_DEBUG_CASE_UNIFY").ok().as_deref() == Some("1") {
+                eprintln!("[KSCR_DEBUG_CASE_UNIFY] scrutinee inference failed: {e}");
+            }
+            e.with_context("in case scrutinee")
+        })?;
     let mut out_ty = cx.fresh();
 
     let mut pats_for_exhaustive_check: Vec<(ast::Pattern, bool)> = Vec::new();
@@ -8582,8 +8602,9 @@ fn infer_module_with_class_env(
             )
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
-            let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone())
-                .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
+            let (s_rhs, cs_rhs, t_rhs) =
+                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone())
+                    .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
             subst = compose(&s_rhs, &subst);
 
             let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))

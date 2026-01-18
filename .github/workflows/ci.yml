@@ -43,8 +43,12 @@ jobs:
       - name: Install cargo-geiger
         run: cargo install cargo-geiger --locked --version 0.13.0
 
+      - name: cargo fetch (for geiger)
+        run: cargo fetch --locked
+
       - name: cargo geiger
-        run: cargo geiger
+        run: |
+          cargo geiger || (echo "cargo geiger failed; retrying" && cargo geiger)
 
   nightly_udeps:
     name: nightly udeps (informational)
