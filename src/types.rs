@@ -585,10 +585,16 @@ pub fn generalize_qual(env: &TypeEnv, constraints: Vec<Constraint>, ty: Ty) -> S
     }
 }
 
-fn ftv_env_applied(subst: &Subst, env: &TypeEnv) -> HashSet<u32> {
-    env.values()
-        .flat_map(|sch| ftv_scheme(&apply_scheme(subst, sch)))
-        .collect()
+fn ftv_env_applied_from_ftv(subst: &Subst, env_ftv: &HashSet<u32>) -> HashSet<u32> {
+    let mut out: HashSet<u32> = HashSet::new();
+    for v in env_ftv {
+        if let Some(t) = subst.get(v) {
+            out.extend(ftv_ty(&apply(subst, t.clone())));
+        } else {
+            out.insert(*v);
+        }
+    }
+    out
 }
 
 fn generalize_qual_with_env_ftv(env_ftv: &HashSet<u32>, constraints: Vec<Constraint>, ty: Ty) -> Scheme {
@@ -3780,6 +3786,7 @@ fn infer_local_letrec_bindings(
     // generalized schemes. They should not leak to the surrounding expression.
     let mut s = Subst::new();
     let mut env_global = base_env.clone();
+    let mut env_global_ftv = ftv_env(&env_global);
 
     let n = bindings.len();
     if n == 0 {
@@ -3823,7 +3830,7 @@ fn infer_local_letrec_bindings(
             per_bind.push(infer_one_letrec_binding(&mut cxi, b)?);
         }
 
-        let env_gen_ftv = ftv_env_applied(&s, &env_global);
+        let env_gen_ftv = ftv_env_applied_from_ftv(&s, &env_global_ftv);
         let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
         for (binds, cs) in per_bind {
             for (name, t) in binds {
@@ -3838,6 +3845,7 @@ fn infer_local_letrec_bindings(
         }
 
         for (name, scheme) in new_schemes {
+            env_global_ftv.extend(ftv_scheme(&scheme));
             env_global.insert(name, scheme);
         }
     }
@@ -8514,6 +8522,7 @@ fn infer_module_with_class_env(
     };
     let data_env = collect_data_env(module);
     let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
+    let mut env_global_ftv = ftv_env(&env_global);
 
     let (bindings, ctx_names, defined_names, comps, comp_order) =
         infer_module_binding_scc_order(module)?;
@@ -8587,7 +8596,7 @@ fn infer_module_with_class_env(
         }
 
         // Generalize all names in the SCC against the environment *outside* the SCC.
-        let env_gen_ftv = ftv_env_applied(&subst, &env_global);
+        let env_gen_ftv = ftv_env_applied_from_ftv(&subst, &env_global_ftv);
         let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
         for (binds, cs) in per_bind {
             for (name, t) in binds {
@@ -8602,6 +8611,7 @@ fn infer_module_with_class_env(
         }
 
         for (name, scheme) in new_schemes {
+            env_global_ftv.extend(ftv_scheme(&scheme));
             env_global.insert(name.clone(), scheme.clone());
             out.insert(name, scheme);
         }
