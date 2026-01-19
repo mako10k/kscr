@@ -142,7 +142,7 @@ fn exported_name_set(module: &ast::Module) -> Option<HashSet<String>> {
     Some(out)
 }
 
-fn filter_inferred_by_exports(
+pub(crate) fn filter_inferred_by_exports(
     module: &ast::Module,
     inferred: std::collections::HashMap<String, types::Scheme>,
 ) -> Vec<(String, types::Scheme)> {

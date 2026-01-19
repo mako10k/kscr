@@ -38,6 +38,11 @@ where
     let output_path = output_path.unwrap_or_else(|| default_output_path(&input_path));
 
     let tm = crate::types::typecheck_file(&input_path)?;
+
+    // Stage 2 (MVP): emit an interface-only artifact (.ksif) that carries exported value schemes.
+    // This is not yet consumed by the compiler pipeline; it is produced for upcoming work.
+    emit_ksif(&input_path, &tm)?;
+
     let irm = crate::ir::lower_to_ir(&tm.module)?;
 
     if use_llvm {
@@ -58,6 +63,32 @@ where
     // that decodes the IR and feeds it to the existing executor.
     let kir1 = crate::kir1::encode_kir1_module(&irm);
     compile_rust_runner(&input_path, &output_path, &kir1, release)
+}
+
+fn emit_ksif(input_path: &Path, tm: &crate::types::TypedModule) -> Result<()> {
+    use std::io::Write;
+
+    let module_name = tm
+        .module
+        .name
+        .clone()
+        .unwrap_or_else(|| "Main".to_string());
+
+    // Reuse CLI export filtering logic (keeps export surface consistent).
+    let exported = crate::cli_impl::filter_inferred_by_exports(&tm.module, tm.inferred.clone());
+    let values: Vec<(String, crate::types::Scheme)> = exported;
+
+    let ksif = crate::kir1::KsifModule {
+        module_name,
+        values,
+    };
+    let bytes = crate::kir1::encode_ksif_module(&ksif);
+
+    let mut out_path = input_path.to_path_buf();
+    out_path.set_extension("ksif");
+    let mut f = std::fs::File::create(&out_path)?;
+    f.write_all(&bytes)?;
+    Ok(())
 }
 
 fn default_output_path(input_path: &Path) -> PathBuf {

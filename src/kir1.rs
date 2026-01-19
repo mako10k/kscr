@@ -10,13 +10,158 @@
 //! - Do not use for long-term stable artifacts yet.
 
 use crate::ir::{CastTarget, IrCaseArm, IrExpr, IrItem, IrLiteral, IrModule, IrPattern};
+use crate::types::{Constraint, Scheme, Ty};
 
 const MAGIC: [u8; 4] = *b"KIR1";
 const VERSION_MAJOR: u16 = 0;
 const VERSION_MINOR: u16 = 1;
 
 const SECTION_STRINGS: u32 = 1;
+const SECTION_INTERFACE: u32 = 4;
 const SECTION_IR: u32 = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KsifModule {
+    pub module_name: String,
+    /// Exported value schemes: name -> Scheme
+    pub values: Vec<(String, Scheme)>,
+}
+
+pub fn encode_ksif_module(module: &KsifModule) -> Vec<u8> {
+    let mut interner = StringInterner::default();
+    interner.intern(&module.module_name);
+    for (name, scheme) in &module.values {
+        interner.intern(name);
+        collect_strings_scheme(scheme, &mut interner);
+    }
+
+    let strings_payload = encode_strings_section(&interner);
+    let interface_payload = encode_interface_section(module, &interner);
+
+    let header_len = 4 + 2 + 2 + 4 + 8 + 8 + 4;
+    let crc_len = 4;
+    let file_header_len = header_len + crc_len;
+
+    let section_count: u32 = 2;
+    let section_entry_len = 4 + 8 + 8;
+    let section_table_len = (section_count as usize) * section_entry_len;
+
+    let strings_off = (file_header_len + section_table_len) as u64;
+    let interface_off = strings_off + strings_payload.len() as u64;
+
+    let sections = vec![
+        SectionEntry {
+            section_id: SECTION_STRINGS,
+            offset: strings_off,
+            length: strings_payload.len() as u64,
+        },
+        SectionEntry {
+            section_id: SECTION_INTERFACE,
+            offset: interface_off,
+            length: interface_payload.len() as u64,
+        },
+    ];
+
+    let file_len = (interface_off + interface_payload.len() as u64) as u64;
+    let mut out = Vec::with_capacity(file_len as usize);
+
+    out.extend_from_slice(&MAGIC);
+    write_u16(&mut out, VERSION_MAJOR);
+    write_u16(&mut out, VERSION_MINOR);
+    write_u32(&mut out, 0);
+    write_u64(&mut out, file_len);
+    write_u64(&mut out, file_header_len as u64);
+    write_u32(&mut out, section_count);
+    write_u32(&mut out, 0);
+
+    for s in &sections {
+        write_u32(&mut out, s.section_id);
+        write_u64(&mut out, s.offset);
+        write_u64(&mut out, s.length);
+    }
+
+    out.extend_from_slice(&strings_payload);
+    out.extend_from_slice(&interface_payload);
+
+    debug_assert_eq!(out.len() as u64, file_len);
+    out
+}
+
+pub fn decode_ksif_module(mut input: &[u8]) -> Kir1Result<KsifModule> {
+    let file = input;
+
+    if input.len() < 4 {
+        return Err(Kir1Error::Msg("unexpected EOF".to_string()));
+    }
+    if &input[..4] != &MAGIC {
+        return Err(Kir1Error::Msg("invalid magic".to_string()));
+    }
+    input = &input[4..];
+
+    let major = read_u16(&mut input)?;
+    let minor = read_u16(&mut input)?;
+    if major != VERSION_MAJOR {
+        return Err(Kir1Error::Msg(format!("unsupported KIR1 major: {major}")));
+    }
+    if minor != VERSION_MINOR {
+        return Err(Kir1Error::Msg(format!("unsupported KIR1 minor: {minor}")));
+    }
+    let _flags = read_u32(&mut input)?;
+    let file_len = read_u64(&mut input)?;
+    let section_table_off = read_u64(&mut input)?;
+    let section_count = read_u32(&mut input)?;
+    let _header_crc = read_u32(&mut input)?;
+
+    if file_len == 0 {
+        return Err(Kir1Error::Msg("invalid file_len".to_string()));
+    }
+    if file_len as usize != file.len() {
+        return Err(Kir1Error::Msg("file_len mismatch".to_string()));
+    }
+    if section_table_off as usize > file.len() {
+        return Err(Kir1Error::Msg("section_table_off out of range".to_string()));
+    }
+
+    let section_entry_len = 4 + 8 + 8;
+    let needed = (section_count as usize)
+        .checked_mul(section_entry_len)
+        .ok_or_else(|| Kir1Error::Msg("section table too large".to_string()))?;
+    let start = section_table_off as usize;
+    let end = start
+        .checked_add(needed)
+        .ok_or_else(|| Kir1Error::Msg("section table out of range".to_string()))?;
+    if end > file.len() {
+        return Err(Kir1Error::Msg("section table out of range".to_string()));
+    }
+
+    let mut sec_input = &file[start..end];
+    let mut sections = Vec::with_capacity(section_count as usize);
+    for _ in 0..section_count {
+        let section_id = read_u32(&mut sec_input)?;
+        let offset = read_u64(&mut sec_input)?;
+        let length = read_u64(&mut sec_input)?;
+        sections.push(SectionEntry {
+            section_id,
+            offset,
+            length,
+        });
+    }
+
+    let strings_entry = sections
+        .iter()
+        .find(|s| s.section_id == SECTION_STRINGS)
+        .ok_or_else(|| Kir1Error::Msg("missing STRINGS section".to_string()))?
+        .clone();
+    let interface_entry = sections
+        .iter()
+        .find(|s| s.section_id == SECTION_INTERFACE)
+        .ok_or_else(|| Kir1Error::Msg("missing INTERFACE section".to_string()))?
+        .clone();
+
+    let mut interner = decode_strings_section(slice_section(file, &strings_entry)?)?;
+    let ksif = decode_interface_section(slice_section(file, &interface_entry)?, &mut interner)?;
+    Ok(ksif)
+}
 
 #[derive(Debug)]
 pub enum Kir1Error {
@@ -210,6 +355,335 @@ fn collect_strings_module(module: &IrModule, interner: &mut StringInterner) {
                 collect_strings_expr(expr, interner);
             }
         }
+    }
+}
+
+fn collect_strings_scheme(scheme: &Scheme, interner: &mut StringInterner) {
+    collect_strings_ty(&scheme.ty, interner);
+    for c in &scheme.constraints {
+        collect_strings_constraint(c, interner);
+    }
+}
+
+fn collect_strings_ty(ty: &Ty, interner: &mut StringInterner) {
+    match ty {
+        Ty::Var(_) => {}
+        Ty::Con(name) => {
+            interner.intern(name);
+        }
+        Ty::List(t) => collect_strings_ty(t, interner),
+        Ty::Tuple(ts) => ts.iter().for_each(|t| collect_strings_ty(t, interner)),
+        Ty::Record(fields) => {
+            for (k, t) in fields {
+                interner.intern(k);
+                collect_strings_ty(t, interner);
+            }
+        }
+        Ty::RecordOpen(fields, rest) => {
+            for (k, t) in fields {
+                interner.intern(k);
+                collect_strings_ty(t, interner);
+            }
+            collect_strings_ty(rest, interner);
+        }
+        Ty::App { head, args } => {
+            collect_strings_ty(head, interner);
+            for a in args {
+                collect_strings_ty(a, interner);
+            }
+        }
+        Ty::Func(a, b) => {
+            collect_strings_ty(a, interner);
+            collect_strings_ty(b, interner);
+        }
+    }
+}
+
+fn collect_strings_constraint(c: &Constraint, interner: &mut StringInterner) {
+    match c {
+        Constraint::Show(t) | Constraint::ShowRow(t) | Constraint::Eq(t) | Constraint::EqRow(t) => {
+            collect_strings_ty(t, interner)
+        }
+        Constraint::Class { class, ty } => {
+            interner.intern(class);
+            collect_strings_ty(ty, interner);
+        }
+        Constraint::Lacks { label, row } => {
+            interner.intern(label);
+            collect_strings_ty(row, interner);
+        }
+    }
+}
+
+fn encode_interface_section(module: &KsifModule, interner: &StringInterner) -> Vec<u8> {
+    // INTERFACE payload format (v0.1):
+    // - module_name: StringId
+    // - value_count: varu32
+    // - repeated value entries:
+    //   - name: StringId
+    //   - scheme: Scheme
+    let mut out = Vec::new();
+    let module_name_id = interner
+        .index
+        .get(&module.module_name)
+        .copied()
+        .expect("module_name must be interned");
+    write_varu32(&mut out, module_name_id);
+    write_varu32(&mut out, module.values.len() as u32);
+    for (name, scheme) in &module.values {
+        let name_id = interner
+            .index
+            .get(name)
+            .copied()
+            .expect("export name must be interned");
+        write_varu32(&mut out, name_id);
+        encode_scheme(&mut out, scheme, interner);
+    }
+    out
+}
+
+fn decode_interface_section(
+    mut input: &[u8],
+    interner: &mut StringInterner,
+) -> Kir1Result<KsifModule> {
+    let module_name_id = read_varu32(&mut input)?;
+    let module_name = interner.get(module_name_id)?.to_string();
+    let value_count = read_varu32(&mut input)? as usize;
+    let mut values = Vec::with_capacity(value_count);
+    for _ in 0..value_count {
+        let name_id = read_varu32(&mut input)?;
+        let name = interner.get(name_id)?.to_string();
+        let scheme = decode_scheme(&mut input, interner)?;
+        values.push((name, scheme));
+    }
+    if !input.is_empty() {
+        return Err(Kir1Error::Msg("trailing bytes in INTERFACE".to_string()));
+    }
+    Ok(KsifModule { module_name, values })
+}
+
+fn encode_scheme(out: &mut Vec<u8>, scheme: &Scheme, interner: &StringInterner) {
+    write_varu32(out, scheme.vars.len() as u32);
+    for v in &scheme.vars {
+        write_varu32(out, *v);
+    }
+    write_varu32(out, scheme.constraints.len() as u32);
+    for c in &scheme.constraints {
+        encode_constraint(out, c, interner);
+    }
+    encode_ty(out, &scheme.ty, interner);
+}
+
+fn decode_scheme(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Result<Scheme> {
+    let vars_len = read_varu32(input)? as usize;
+    let mut vars = Vec::with_capacity(vars_len);
+    for _ in 0..vars_len {
+        vars.push(read_varu32(input)?);
+    }
+    let c_len = read_varu32(input)? as usize;
+    let mut constraints = Vec::with_capacity(c_len);
+    for _ in 0..c_len {
+        constraints.push(decode_constraint(input, interner)?);
+    }
+    let ty = decode_ty(input, interner)?;
+    Ok(Scheme {
+        vars,
+        constraints,
+        ty,
+    })
+}
+
+fn encode_constraint(out: &mut Vec<u8>, c: &Constraint, interner: &StringInterner) {
+    match c {
+        Constraint::Show(t) => {
+            write_u8(out, 1);
+            encode_ty(out, t, interner);
+        }
+        Constraint::ShowRow(t) => {
+            write_u8(out, 2);
+            encode_ty(out, t, interner);
+        }
+        Constraint::Eq(t) => {
+            write_u8(out, 3);
+            encode_ty(out, t, interner);
+        }
+        Constraint::EqRow(t) => {
+            write_u8(out, 4);
+            encode_ty(out, t, interner);
+        }
+        Constraint::Class { class, ty } => {
+            write_u8(out, 5);
+            let id = interner
+                .index
+                .get(class)
+                .copied()
+                .expect("constraint class name must be interned");
+            write_varu32(out, id);
+            encode_ty(out, ty, interner);
+        }
+        Constraint::Lacks { label, row } => {
+            write_u8(out, 6);
+            let id = interner
+                .index
+                .get(label)
+                .copied()
+                .expect("constraint label must be interned");
+            write_varu32(out, id);
+            encode_ty(out, row, interner);
+        }
+    }
+}
+
+fn decode_constraint(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Result<Constraint> {
+    let tag = read_u8(input)?;
+    match tag {
+        1 => Ok(Constraint::Show(decode_ty(input, interner)?)),
+        2 => Ok(Constraint::ShowRow(decode_ty(input, interner)?)),
+        3 => Ok(Constraint::Eq(decode_ty(input, interner)?)),
+        4 => Ok(Constraint::EqRow(decode_ty(input, interner)?)),
+        5 => {
+            let class_id = read_varu32(input)?;
+            let class = interner.get(class_id)?.to_string();
+            let ty = decode_ty(input, interner)?;
+            Ok(Constraint::Class { class, ty })
+        }
+        6 => {
+            let label_id = read_varu32(input)?;
+            let label = interner.get(label_id)?.to_string();
+            let row = decode_ty(input, interner)?;
+            Ok(Constraint::Lacks { label, row })
+        }
+        other => Err(Kir1Error::Msg(format!("unknown Constraint tag: {other}"))),
+    }
+}
+
+fn encode_ty(out: &mut Vec<u8>, ty: &Ty, interner: &StringInterner) {
+    match ty {
+        Ty::Var(v) => {
+            write_u8(out, 1);
+            write_varu32(out, *v);
+        }
+        Ty::Con(name) => {
+            write_u8(out, 2);
+            let id = interner
+                .index
+                .get(name)
+                .copied()
+                .expect("Ty::Con name must be interned");
+            write_varu32(out, id);
+        }
+        Ty::List(t) => {
+            write_u8(out, 3);
+            encode_ty(out, t, interner);
+        }
+        Ty::Tuple(ts) => {
+            write_u8(out, 4);
+            write_varu32(out, ts.len() as u32);
+            for t in ts {
+                encode_ty(out, t, interner);
+            }
+        }
+        Ty::Record(fields) => {
+            write_u8(out, 5);
+            write_varu32(out, fields.len() as u32);
+            for (k, t) in fields {
+                let kid = interner
+                    .index
+                    .get(k)
+                    .copied()
+                    .expect("record label must be interned");
+                write_varu32(out, kid);
+                encode_ty(out, t, interner);
+            }
+        }
+        Ty::RecordOpen(fields, rest) => {
+            write_u8(out, 6);
+            write_varu32(out, fields.len() as u32);
+            for (k, t) in fields {
+                let kid = interner
+                    .index
+                    .get(k)
+                    .copied()
+                    .expect("record label must be interned");
+                write_varu32(out, kid);
+                encode_ty(out, t, interner);
+            }
+            encode_ty(out, rest, interner);
+        }
+        Ty::App { head, args } => {
+            write_u8(out, 7);
+            encode_ty(out, head, interner);
+            write_varu32(out, args.len() as u32);
+            for a in args {
+                encode_ty(out, a, interner);
+            }
+        }
+        Ty::Func(a, b) => {
+            write_u8(out, 8);
+            encode_ty(out, a, interner);
+            encode_ty(out, b, interner);
+        }
+    }
+}
+
+fn decode_ty(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Result<Ty> {
+    let tag = read_u8(input)?;
+    match tag {
+        1 => Ok(Ty::Var(read_varu32(input)?)),
+        2 => {
+            let id = read_varu32(input)?;
+            Ok(Ty::Con(interner.get(id)?.to_string()))
+        }
+        3 => Ok(Ty::List(Box::new(decode_ty(input, interner)?))),
+        4 => {
+            let n = read_varu32(input)? as usize;
+            let mut ts = Vec::with_capacity(n);
+            for _ in 0..n {
+                ts.push(decode_ty(input, interner)?);
+            }
+            Ok(Ty::Tuple(ts))
+        }
+        5 => {
+            let n = read_varu32(input)? as usize;
+            let mut fields = Vec::with_capacity(n);
+            for _ in 0..n {
+                let kid = read_varu32(input)?;
+                let k = interner.get(kid)?.to_string();
+                let t = decode_ty(input, interner)?;
+                fields.push((k, t));
+            }
+            Ok(Ty::Record(fields))
+        }
+        6 => {
+            let n = read_varu32(input)? as usize;
+            let mut fields = Vec::with_capacity(n);
+            for _ in 0..n {
+                let kid = read_varu32(input)?;
+                let k = interner.get(kid)?.to_string();
+                let t = decode_ty(input, interner)?;
+                fields.push((k, t));
+            }
+            let rest = decode_ty(input, interner)?;
+            Ok(Ty::RecordOpen(fields, Box::new(rest)))
+        }
+        7 => {
+            let head = decode_ty(input, interner)?;
+            let n = read_varu32(input)? as usize;
+            let mut args = Vec::with_capacity(n);
+            for _ in 0..n {
+                args.push(decode_ty(input, interner)?);
+            }
+            Ok(Ty::App {
+                head: Box::new(head),
+                args,
+            })
+        }
+        8 => {
+            let a = decode_ty(input, interner)?;
+            let b = decode_ty(input, interner)?;
+            Ok(Ty::Func(Box::new(a), Box::new(b)))
+        }
+        other => Err(Kir1Error::Msg(format!("unknown Ty tag: {other}"))),
     }
 }
 
@@ -1067,5 +1541,23 @@ mod tests {
         let bytes = encode_kir1_module(&m);
         let m2 = decode_kir1_module(&bytes).expect("decode");
         assert_eq!(m, m2);
+    }
+
+    #[test]
+    fn roundtrip_ksif_minimal() {
+        let ksif = KsifModule {
+            module_name: "A".to_string(),
+            values: vec![(
+                "id".to_string(),
+                Scheme {
+                    vars: vec![0],
+                    constraints: vec![],
+                    ty: Ty::Func(Box::new(Ty::Var(0)), Box::new(Ty::Var(0))),
+                },
+            )],
+        };
+        let bytes = encode_ksif_module(&ksif);
+        let decoded = decode_ksif_module(&bytes).unwrap();
+        assert_eq!(decoded, ksif);
     }
 }
