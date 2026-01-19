@@ -11,25 +11,35 @@ where
 {
     // Capture args so we can provide best-effort file/position diagnostics on errors.
     let argv: Vec<String> = args.map(Into::into).collect();
+
     let mut it = argv.into_iter();
     let _exe = it.next();
     let cmd = it.next().unwrap_or_else(|| "help".to_string());
 
     // For most commands, the first argument is `<file>`.
-    let cmd_file_arg: Option<String> = match cmd.as_str() {
+    let cmd_file_arg: Option<String> = cmd_file_arg(&cmd, it.clone());
+
+    let res = dispatch_cmd(&cmd, it);
+    attach_best_effort_diagnostics(res, cmd_file_arg)
+}
+
+fn cmd_file_arg(cmd: &str, args: std::vec::IntoIter<String>) -> Option<String> {
+    match cmd {
         "parse" | "lex" | "typecheck" | "typecheck-file" | "ir" | "llvm-ir" | "compile" | "run" => {
-            it.clone().next()
+            args.into_iter().next()
         }
         _ => None,
-    };
+    }
+}
 
-    let res: Result<()> = match cmd.as_str() {
+fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
+    match cmd {
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
         }
         "parse" => {
-            let path = it
+            let path = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let src = std::fs::read_to_string(&path)?;
@@ -38,7 +48,7 @@ where
             Ok(())
         }
         "lex" => {
-            let path = it
+            let path = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let src = std::fs::read_to_string(&path)?;
@@ -48,20 +58,19 @@ where
         }
         "typecheck" => {
             let mut show_all = false;
-            let arg1: String = it
+            let arg1: String = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let path = match arg1.as_str() {
                 "--all" => {
                     show_all = true;
-                    it.next()
+                    args.next()
                         .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
                 }
                 other => other.to_string(),
             };
 
             let tm = types::typecheck_file(Path::new(&path))?;
-
             print!(
                 "{}",
                 render_typecheck_report(&tm.module, tm.inferred, show_all)
@@ -69,7 +78,7 @@ where
             Ok(())
         }
         "ir" => {
-            let path = it
+            let path = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let tm = types::typecheck_file(Path::new(&path))?;
@@ -78,7 +87,7 @@ where
             Ok(())
         }
         "run" => {
-            let path = it
+            let path = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let tm = types::typecheck_file(Path::new(&path))?;
@@ -87,38 +96,13 @@ where
             Ok(())
         }
         "repl" => repl(),
-        "llvm-ir" => crate::cli::cli_llvm_ir::cmd_llvm_ir(it),
-        "compile" => crate::cli::cli_compile::cmd_compile(it),
+        "llvm-ir" => crate::cli::cli_llvm_ir::cmd_llvm_ir(args),
+        "compile" => crate::cli::cli_compile::cmd_compile(args),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
-    };
-
-    fn span_to_loc(src: Option<&str>, span: crate::lexer::Span) -> (usize, usize, usize, usize) {
-        let len = src.map(|s| s.len()).unwrap_or(usize::MAX);
-        let start_off = span.start.min(len);
-        let mut end_off = span.end.min(len);
-        if end_off < start_off {
-            end_off = start_off;
-        }
-
-        if let Some(s) = src {
-            let mut line: usize = 1;
-            let mut last_nl: usize = 0;
-            for (i, ch) in s.char_indices() {
-                if i >= start_off {
-                    break;
-                }
-                if ch == '\n' {
-                    line += 1;
-                    last_nl = i + 1;
-                }
-            }
-            let col = s[last_nl..start_off].chars().count() + 1;
-            (line, col, start_off, end_off)
-        } else {
-            (1, 1, start_off, end_off)
-        }
     }
+}
 
+fn attach_best_effort_diagnostics(res: Result<()>, cmd_file_arg: Option<String>) -> Result<()> {
     // Attach a best-effort location prefix when we have spans and a file.
     if let Err(e) = res {
         if let Some(file) = cmd_file_arg {
@@ -164,6 +148,33 @@ where
     }
 
     Ok(())
+}
+
+fn span_to_loc(src: Option<&str>, span: crate::lexer::Span) -> (usize, usize, usize, usize) {
+    let len = src.map(|s| s.len()).unwrap_or(usize::MAX);
+    let start_off = span.start.min(len);
+    let mut end_off = span.end.min(len);
+    if end_off < start_off {
+        end_off = start_off;
+    }
+
+    if let Some(s) = src {
+        let mut line: usize = 1;
+        let mut last_nl: usize = 0;
+        for (i, ch) in s.char_indices() {
+            if i >= start_off {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                last_nl = i + 1;
+            }
+        }
+        let col = s[last_nl..start_off].chars().count() + 1;
+        (line, col, start_off, end_off)
+    } else {
+        (1, 1, start_off, end_off)
+    }
 }
 
 fn exported_specs(module: &ast::Module) -> Option<Vec<ast::ExportSpec>> {
