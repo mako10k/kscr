@@ -3940,7 +3940,9 @@ fn infer_expr_in(
             infer_expr_apply(cx, data_env, subst_env, env, *func, args)
         }
 
-        ExprKind::Annot { expr, ty } => infer_expr_annot(cx, data_env, subst_env, env, *expr, ty),
+        ExprKind::Annot { expr, ty } => {
+            infer_expr_annot(cx, data_env, subst_env, env, *expr, ty, None)
+        }
 
         ExprKind::If {
             cond,
@@ -4069,6 +4071,7 @@ fn infer_expr_annot(
     env: &TypeEnv,
     expr: ast::Expr,
     ty: ast::QualType,
+    outer_span: Option<crate::lexer::Span>,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
     let annot_span = expr.span;
     let (s1, mut cs1, t1) = infer_expr_in(cx, data_env, subst_env, env, expr)?;
@@ -4116,7 +4119,15 @@ fn infer_expr_annot(
         apply(&s1, t_ann.clone()),
         "infer_expr_annot",
     )
-    .map_err(|e| e.push_span(annot_span).with_context("infer_expr_annot"))?;
+    .map_err(|e| {
+        let e = e.push_span(annot_span);
+        let e = if let Some(s) = outer_span {
+            e.push_secondary_span(s)
+        } else {
+            e
+        };
+        e.with_context("infer_expr_annot")
+    })?;
     let s = compose(&s2, &s1);
     Ok((s.clone(), apply_constraints(&s, cs1), apply(&s, t_ann)))
 }
