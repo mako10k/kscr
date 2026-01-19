@@ -39,6 +39,7 @@ impl Error {
                 spans.insert(0, span);
                 Error::MsgWithSpans { msg, spans }
             }
+            Error::Msg(msg) => Error::MsgWithSpan { msg, span },
             other => other,
         }
     }

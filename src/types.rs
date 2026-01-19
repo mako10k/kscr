@@ -4024,6 +4024,11 @@ fn infer_expr_apply(
     func: ast::Expr,
     args: Vec<ast::Expr>,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
+    let apply_span = crate::lexer::Span {
+        start: func.span.start,
+        end: args.last().map(|a| a.span.end).unwrap_or(func.span.end),
+    };
+
     let (mut s, mut cs, mut fun_ty) = infer_expr_in(cx, data_env, subst_env, env, func)?;
 
     for arg in args {
@@ -4041,7 +4046,8 @@ fn infer_expr_apply(
             fun_ty,
             Ty::Func(Box::new(apply(&s, arg_ty)), Box::new(res.clone())),
             "infer_expr_apply",
-        )?;
+        )
+        .map_err(|e| e.push_span(apply_span).with_context("infer_expr_apply"))?;
         s = compose(&s_unify, &s);
         cs = apply_constraints(&s, cs);
         fun_ty = apply(&s, res);
