@@ -54,10 +54,10 @@ where
         }
     }
 
-    // Default (stage 1): typecheck -> lower to IR -> pack IR -> compile a tiny Rust runner
+    // Default (stage 1): typecheck -> lower to IR -> embed KIR1 -> compile a tiny Rust runner
     // that decodes the IR and feeds it to the existing executor.
-    let packed = crate::ir_pack::encode_ir_module(&irm);
-    compile_rust_runner(&input_path, &output_path, &packed, release)
+    let kir1 = crate::kir1::encode_kir1_module(&irm);
+    compile_rust_runner(&input_path, &output_path, &kir1, release)
 }
 
 fn default_output_path(input_path: &Path) -> PathBuf {
@@ -70,7 +70,7 @@ fn default_output_path(input_path: &Path) -> PathBuf {
 fn compile_rust_runner(
     input_path: &Path,
     output_path: &Path,
-    packed_ir: &[u8],
+    kir1_bytes: &[u8],
     release: bool,
 ) -> Result<()> {
     use std::io::Write;
@@ -106,10 +106,10 @@ fn compile_rust_runner(
         std::env::temp_dir().join(format!("kscr_compile_{}_{}", std::process::id(), nanos));
     std::fs::create_dir_all(&build_dir)?;
 
-    let packed_path = build_dir.join("packed_ir.bin");
+    let packed_path = build_dir.join("kir1.bin");
     {
         let mut f = std::fs::File::create(&packed_path)?;
-        f.write_all(packed_ir)?;
+        f.write_all(kir1_bytes)?;
     }
 
     let main_rs_path = build_dir.join("main.rs");
@@ -118,7 +118,7 @@ fn compile_rust_runner(
         // Note: keep this runner minimal; it just decodes packed IR and runs main.
         writeln!(
             f,
-            "use kscr::ir;\nuse kscr::ir_pack;\n\nfn main() {{\n    let bytes: &[u8] = include_bytes!(\"packed_ir.bin\");\n    let module = match ir_pack::decode_ir_module(bytes) {{\n        Ok(m) => m,\n        Err(e) => {{ eprintln!(\"kscr: failed to decode packed IR: {{}}\", e); std::process::exit(1); }}\n    }};\n\n    if let Err(e) = ir::run_main(&module) {{\n        eprintln!(\"kscr: runtime error: {{}}\", e);\n        std::process::exit(1);\n    }}\n}}\n"
+            "use kscr::ir;\nuse kscr::kir1;\n\nfn main() {{\n    let bytes: &[u8] = include_bytes!(\"kir1.bin\");\n    let module = match kir1::decode_kir1_module(bytes) {{\n        Ok(m) => m,\n        Err(e) => {{ eprintln!(\"kscr: failed to decode KIR1: {{:?}}\", e); std::process::exit(1); }}\n    }};\n\n    if let Err(e) = ir::run_main(&module) {{\n        eprintln!(\"kscr: runtime error: {{}}\", e);\n        std::process::exit(1);\n    }}\n}}\n"
         )?;
     }
 
@@ -149,7 +149,7 @@ fn compile_rust_runner(
 
     // Help users understand what's embedded.
     eprintln!(
-        "compiled {} -> {} (packed IR from {})",
+        "compiled {} -> {} (KIR1 embedded from {})",
         input_path.display(),
         output_path.display(),
         input_path.display()
