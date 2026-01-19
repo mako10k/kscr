@@ -4589,9 +4589,10 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     let mut module =
         load_module_with_imports_ast_with_loader(&mut loader, &entry, entry_dir, &entry_mod)?;
 
-    // Stage 2 (MVP): Optionally load interface-only artifacts (.ksif) for imports.
-    // Guarded to avoid changing semantics unintentionally until the pipeline is complete.
-    if std::env::var("KSCR_USE_KSIF").ok().as_deref() == Some("1") {
+    // Stage 2 (MVP): Default to loading interface-only artifacts (.ksif) for imports.
+    // Opt out via `KSCR_USE_KSIF=0`.
+    let use_ksif = std::env::var("KSCR_USE_KSIF").ok().as_deref() != Some("0");
+    if use_ksif {
         // Use the *entry* module's import decls (pre-flatten), because import-flattening removes
         // `Item::Import` from the final module.
         let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;

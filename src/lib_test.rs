@@ -54,8 +54,13 @@ fn ksif_default_output_and_import_search_path_smoke() {
     assert!(ksif_path.is_file(), "missing ksif: {}", ksif_path.display());
 
     // 2) Typecheck B with KSIF enabled (succeeds if search path works).
+    // Note: KSIF is default-on; keep this explicit to avoid regressions if defaults change.
     std::env::set_var("KSCR_USE_KSIF", "1");
     let _tm_b = crate::types::typecheck_file(&b).expect("typecheck B with ksif");
+
+    // 3) Opt-out should still work.
+    std::env::set_var("KSCR_USE_KSIF", "0");
+    let _tm_b_no = crate::types::typecheck_file(&b).expect("typecheck B without ksif");
 }
 
 #[test]
