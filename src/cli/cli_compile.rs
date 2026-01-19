@@ -1,6 +1,12 @@
 use crate::Result;
 use std::path::{Path, PathBuf};
 
+fn print_compile_help() {
+    eprintln!(
+        "USAGE:\n  kscr compile <file> [options]\n\nOPTIONS:\n  -o, --output <path>   Output executable path (default: <file> with extension stripped)\n      --release          Build optimized runner (-O)\n      --llvm             Compile via LLVM backend + clang (requires --features llvm)\n      --ksif-out <dir>   Emit `.ksif` into <dir> (default: ./target/ksif)\n  -h, --help             Show this help\n"
+    );
+}
+
 pub fn cmd_compile<I, S>(mut args: I) -> Result<()>
 where
     I: Iterator<Item = S>,
@@ -19,6 +25,10 @@ where
     while let Some(arg) = args.next() {
         let arg: String = arg.into();
         match arg.as_str() {
+            "-h" | "--help" => {
+                print_compile_help();
+                return Ok(());
+            }
             "-o" | "--output" => {
                 let out = args
                     .next()
