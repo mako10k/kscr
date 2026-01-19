@@ -3756,14 +3756,20 @@ fn infer_one_letrec_binding(
     )
     .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
 
+    let expr_span = b.expr.span;
+    let pat_span = b.pat.span;
+
     let (s_rhs, cs_rhs, t_rhs) =
         infer_expr_in(cxi.cx, cxi.data_env, cxi.subst, cxi.env_scc, b.expr).map_err(|e| {
             e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name))
         })?;
     *cxi.subst = compose(&s_rhs, cxi.subst);
 
-    let s_pat = unify(apply(cxi.subst, t_rhs), apply(cxi.subst, pat_ty))
-        .map_err(|e| e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name)))?;
+    let s_pat = unify(apply(cxi.subst, t_rhs), apply(cxi.subst, pat_ty)).map_err(|e| {
+        e.push_span(expr_span)
+            .push_secondary_span(pat_span)
+            .with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name))
+    })?;
     *cxi.subst = compose(&s_pat, cxi.subst);
 
     // Connect binder types to their placeholders so recursive references unify.
@@ -4064,6 +4070,7 @@ fn infer_expr_annot(
     expr: ast::Expr,
     ty: ast::QualType,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
+    let annot_span = expr.span;
     let (s1, mut cs1, t1) = infer_expr_in(cx, data_env, subst_env, env, expr)?;
     let mut holes = HashMap::new();
 
@@ -4108,7 +4115,8 @@ fn infer_expr_annot(
         apply(&s1, t1),
         apply(&s1, t_ann.clone()),
         "infer_expr_annot",
-    )?;
+    )
+    .map_err(|e| e.push_span(annot_span).with_context("infer_expr_annot"))?;
     let s = compose(&s2, &s1);
     Ok((s.clone(), apply_constraints(&s, cs1), apply(&s, t_ann)))
 }
@@ -8831,12 +8839,15 @@ fn infer_module_with_class_env(
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
             let (s_rhs, cs_rhs, t_rhs) =
-                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone())
-                    .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
+                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(|e| {
+                    e.push_secondary_span(b.pat.span)
+                        .with_context(format!("in binding {ctx_name}"))
+                })?;
             subst = compose(&s_rhs, &subst);
 
             let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty)).map_err(|e| {
-                e.push_span(b.pat.span)
+                e.push_span(b.expr.span)
+                    .push_secondary_span(b.pat.span)
                     .with_context(format!("in binding {ctx_name}"))
             })?;
             subst = compose(&s_pat, &subst);

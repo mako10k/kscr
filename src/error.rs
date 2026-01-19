@@ -44,6 +44,24 @@ impl Error {
         }
     }
 
+    pub fn push_secondary_span(self, span: Span) -> Self {
+        match self {
+            Error::MsgWithSpan { msg, span: primary } => Error::MsgWithSpans {
+                msg,
+                spans: vec![primary, span],
+            },
+            Error::MsgWithSpans { msg, mut spans } => {
+                spans.push(span);
+                Error::MsgWithSpans { msg, spans }
+            }
+            Error::Msg(msg) => Error::MsgWithSpans {
+                msg,
+                spans: vec![span],
+            },
+            other => other,
+        }
+    }
+
     pub fn span(&self) -> Option<Span> {
         match self {
             Error::MsgWithSpan { span, .. } => Some(*span),

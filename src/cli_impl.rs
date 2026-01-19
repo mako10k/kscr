@@ -17,7 +17,9 @@ where
 
     // For most commands, the first argument is `<file>`.
     let cmd_file_arg: Option<String> = match cmd.as_str() {
-        "parse" | "lex" | "typecheck" | "ir" | "llvm-ir" | "compile" | "run" => it.clone().next(),
+        "parse" | "lex" | "typecheck" | "typecheck-file" | "ir" | "llvm-ir" | "compile" | "run" => {
+            it.clone().next()
+        }
         _ => None,
     };
 
