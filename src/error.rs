@@ -54,7 +54,12 @@ impl Error {
                 spans.push(span);
                 Error::MsgWithSpans { msg, spans }
             }
-            Error::Msg(msg) => Error::MsgWithSpan { msg, span },
+            // If we don't have a primary span yet, treat this as a single secondary span.
+            // This avoids overriding future primary span decisions.
+            Error::Msg(msg) => Error::MsgWithSpans {
+                msg,
+                spans: vec![span],
+            },
             other => other,
         }
     }
