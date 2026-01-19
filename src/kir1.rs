@@ -93,7 +93,7 @@ pub fn decode_ksif_module(mut input: &[u8]) -> Kir1Result<KsifModule> {
     if input.len() < 4 {
         return Err(Kir1Error::Msg("unexpected EOF".to_string()));
     }
-    if &input[..4] != &MAGIC {
+    if input[..4] != MAGIC {
         return Err(Kir1Error::Msg("invalid magic".to_string()));
     }
     input = &input[4..];
@@ -459,7 +459,10 @@ fn decode_interface_section(
     if !input.is_empty() {
         return Err(Kir1Error::Msg("trailing bytes in INTERFACE".to_string()));
     }
-    Ok(KsifModule { module_name, values })
+    Ok(KsifModule {
+        module_name,
+        values,
+    })
 }
 
 fn encode_scheme(out: &mut Vec<u8>, scheme: &Scheme, interner: &StringInterner) {
@@ -728,7 +731,11 @@ fn collect_strings_expr(expr: &IrExpr, interner: &mut StringInterner) {
                 collect_strings_case_arm(a, interner);
             }
         }
-        IrExpr::IoBind { action, param, body } => {
+        IrExpr::IoBind {
+            action,
+            param,
+            body,
+        } => {
             collect_strings_expr(action, interner);
             interner.intern(param);
             collect_strings_expr(body, interner);
@@ -944,8 +951,8 @@ fn decode_literal(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Resul
         }
         5 => {
             let v = read_u32(input)?;
-            let c = std::char::from_u32(v)
-                .ok_or_else(|| Kir1Error::Msg("invalid char".to_string()))?;
+            let c =
+                std::char::from_u32(v).ok_or_else(|| Kir1Error::Msg("invalid char".to_string()))?;
             Ok(IrLiteral::Char(c))
         }
         other => Err(Kir1Error::Msg(format!("unknown IrLiteral tag: {other}"))),
@@ -1201,7 +1208,11 @@ fn encode_expr(out: &mut Vec<u8>, expr: &IrExpr, interner: &StringInterner) {
                 encode_case_arm(out, a, interner);
             }
         }
-        IrExpr::IoBind { action, param, body } => {
+        IrExpr::IoBind {
+            action,
+            param,
+            body,
+        } => {
             write_u8(out, 12);
             encode_expr(out, action, interner);
             write_varu32(out, interner.index[param]);
@@ -1281,8 +1292,8 @@ fn decode_expr(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Result<I
         }
         5 => {
             let v = read_u32(input)?;
-            let c = std::char::from_u32(v)
-                .ok_or_else(|| Kir1Error::Msg("invalid char".to_string()))?;
+            let c =
+                std::char::from_u32(v).ok_or_else(|| Kir1Error::Msg("invalid char".to_string()))?;
             IrExpr::Char(c)
         }
         6 => {
@@ -1431,7 +1442,10 @@ fn encode_opt_string_id(out: &mut Vec<u8>, s: Option<&str>, interner: &StringInt
     }
 }
 
-fn decode_opt_string_id(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Result<Option<String>> {
+fn decode_opt_string_id(
+    input: &mut &[u8],
+    interner: &mut StringInterner,
+) -> Kir1Result<Option<String>> {
     let tag = read_u8(input)?;
     match tag {
         0 => Ok(None),

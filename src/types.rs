@@ -4618,7 +4618,9 @@ fn inject_imported_ksif_forwarders(
 
     let mut injected: Vec<ast::Item> = Vec::new();
     for it in &entry_mod.items {
-        let ast::Item::Import(id) = it else { continue; };
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
         if id.qualified {
             continue;
         }
@@ -4697,8 +4699,12 @@ fn load_imported_ksif_schemes(
             continue;
         };
         let ksif_path = chosen.unwrap();
-        let ksif = crate::kir1::decode_ksif_module(&bytes)
-            .map_err(|e| Error::msg(format!("failed to decode ksif {}: {e:?}", ksif_path.display())))?;
+        let ksif = crate::kir1::decode_ksif_module(&bytes).map_err(|e| {
+            Error::msg(format!(
+                "failed to decode ksif {}: {e:?}",
+                ksif_path.display()
+            ))
+        })?;
         let mut m = HashMap::new();
         for (name, scheme) in ksif.values {
             m.insert(name, scheme);

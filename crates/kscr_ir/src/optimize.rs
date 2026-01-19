@@ -42,7 +42,7 @@ impl ConstantFolding {
             IrExpr::Apply { func, args } => {
                 let folded_func = self.fold_expr(func);
                 let folded_args: Vec<_> = args.iter().map(|a| self.fold_expr(a)).collect();
-                
+
                 // Beta reduction for simple cases
                 if let IrExpr::Lambda { params, body } = &folded_func {
                     if params.len() == folded_args.len() && folded_args.iter().all(Self::is_value) {
@@ -50,15 +50,19 @@ impl ConstantFolding {
                         return self.substitute_params(body, params, &folded_args);
                     }
                 }
-                
+
                 IrExpr::Apply {
                     func: Box::new(folded_func),
                     args: folded_args,
                 }
             }
-            IrExpr::If { cond, then_branch, else_branch } => {
+            IrExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 let folded_cond = self.fold_expr(cond);
-                
+
                 // Simplify if the condition is a constant
                 if let IrExpr::Bool(b) = folded_cond {
                     if b {
@@ -67,7 +71,7 @@ impl ConstantFolding {
                         return self.fold_expr(else_branch);
                     }
                 }
-                
+
                 IrExpr::If {
                     cond: Box::new(folded_cond),
                     then_branch: Box::new(self.fold_expr(then_branch)),
@@ -79,7 +83,7 @@ impl ConstantFolding {
                     .iter()
                     .map(|(name, expr)| (name.clone(), self.fold_expr(expr)))
                     .collect();
-                
+
                 IrExpr::Let {
                     bindings: folded_bindings,
                     body: Box::new(self.fold_expr(body)),
@@ -95,13 +99,17 @@ impl ConstantFolding {
                         body: self.fold_expr(&arm.body),
                     })
                     .collect();
-                
+
                 IrExpr::Case {
                     expr: Box::new(folded_expr),
                     arms: folded_arms,
                 }
             }
-            IrExpr::IoBind { action, param, body } => IrExpr::IoBind {
+            IrExpr::IoBind {
+                action,
+                param,
+                body,
+            } => IrExpr::IoBind {
                 action: Box::new(self.fold_expr(action)),
                 param: param.clone(),
                 body: Box::new(self.fold_expr(body)),
@@ -114,12 +122,8 @@ impl ConstantFolding {
                 head: Box::new(self.fold_expr(head)),
                 tail: Box::new(self.fold_expr(tail)),
             },
-            IrExpr::List(es) => {
-                IrExpr::List(es.iter().map(|e| self.fold_expr(e)).collect())
-            }
-            IrExpr::Tuple(es) => {
-                IrExpr::Tuple(es.iter().map(|e| self.fold_expr(e)).collect())
-            }
+            IrExpr::List(es) => IrExpr::List(es.iter().map(|e| self.fold_expr(e)).collect()),
+            IrExpr::Tuple(es) => IrExpr::Tuple(es.iter().map(|e| self.fold_expr(e)).collect()),
             IrExpr::Record(fields) => IrExpr::Record(
                 fields
                     .iter()
@@ -130,7 +134,7 @@ impl ConstantFolding {
                 expr: Box::new(self.fold_expr(expr)),
                 target: *target,
             },
-            
+
             // Literals and variables are already fully evaluated
             IrExpr::Unit
             | IrExpr::Integer(_)
@@ -190,7 +194,11 @@ impl ConstantFolding {
                 func: Box::new(self.substitute(func, subst)),
                 args: args.iter().map(|a| self.substitute(a, subst)).collect(),
             },
-            IrExpr::If { cond, then_branch, else_branch } => IrExpr::If {
+            IrExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => IrExpr::If {
                 cond: Box::new(self.substitute(cond, subst)),
                 then_branch: Box::new(self.substitute(then_branch, subst)),
                 else_branch: Box::new(self.substitute(else_branch, subst)),
@@ -209,7 +217,10 @@ impl ConstantFolding {
                     body: Box::new(self.substitute(body, &new_subst)),
                 }
             }
-            IrExpr::Case { expr: case_expr, arms } => IrExpr::Case {
+            IrExpr::Case {
+                expr: case_expr,
+                arms,
+            } => IrExpr::Case {
                 expr: Box::new(self.substitute(case_expr, subst)),
                 arms: arms
                     .iter()
@@ -225,7 +236,11 @@ impl ConstantFolding {
                     })
                     .collect(),
             },
-            IrExpr::IoBind { action, param, body } => {
+            IrExpr::IoBind {
+                action,
+                param,
+                body,
+            } => {
                 let mut new_subst = subst.clone();
                 new_subst.remove(param);
                 IrExpr::IoBind {
@@ -254,11 +269,14 @@ impl ConstantFolding {
                     .map(|(name, expr)| (name.clone(), self.substitute(expr, subst)))
                     .collect(),
             ),
-            IrExpr::CheckedCast { expr: cast_expr, target } => IrExpr::CheckedCast {
+            IrExpr::CheckedCast {
+                expr: cast_expr,
+                target,
+            } => IrExpr::CheckedCast {
                 expr: Box::new(self.substitute(cast_expr, subst)),
                 target: *target,
             },
-            
+
             // Literals are unchanged
             IrExpr::Unit
             | IrExpr::Integer(_)
@@ -365,29 +383,36 @@ impl DeadCodeElimination {
                     self.collect_free_vars(arg, vars);
                 }
             }
-            IrExpr::If { cond, then_branch, else_branch } => {
+            IrExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 self.collect_free_vars(cond, vars);
                 self.collect_free_vars(then_branch, vars);
                 self.collect_free_vars(else_branch, vars);
             }
             IrExpr::Let { bindings, body } => {
-                let bound: std::collections::HashSet<_> = 
+                let bound: std::collections::HashSet<_> =
                     bindings.iter().map(|(name, _)| name.clone()).collect();
-                
+
                 for (_, expr) in bindings {
                     self.collect_free_vars(expr, vars);
                 }
-                
+
                 let mut body_vars = std::collections::HashSet::new();
                 self.collect_free_vars(body, &mut body_vars);
-                
+
                 for var in body_vars {
                     if !bound.contains(&var) {
                         vars.insert(var);
                     }
                 }
             }
-            IrExpr::Case { expr: case_expr, arms } => {
+            IrExpr::Case {
+                expr: case_expr,
+                arms,
+            } => {
                 self.collect_free_vars(case_expr, vars);
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
@@ -396,7 +421,11 @@ impl DeadCodeElimination {
                     self.collect_free_vars(&arm.body, vars);
                 }
             }
-            IrExpr::IoBind { action, param, body } => {
+            IrExpr::IoBind {
+                action,
+                param,
+                body,
+            } => {
                 self.collect_free_vars(action, vars);
                 let mut body_vars = std::collections::HashSet::new();
                 self.collect_free_vars(body, &mut body_vars);
@@ -424,7 +453,9 @@ impl DeadCodeElimination {
                     self.collect_free_vars(expr, vars);
                 }
             }
-            IrExpr::CheckedCast { expr: cast_expr, .. } => {
+            IrExpr::CheckedCast {
+                expr: cast_expr, ..
+            } => {
                 self.collect_free_vars(cast_expr, vars);
             }
             IrExpr::Unit
@@ -442,7 +473,7 @@ impl OptimizationPass for DeadCodeElimination {
         // Always keep main
         let mut live = std::collections::HashSet::new();
         live.insert("main".to_string());
-        
+
         // Compute transitive closure of live bindings
         let mut changed = true;
         while changed {
@@ -461,7 +492,7 @@ impl OptimizationPass for DeadCodeElimination {
                 }
             }
         }
-        
+
         // Keep only live bindings
         IrModule {
             items: module
@@ -489,9 +520,12 @@ pub struct CaseSimplification;
 impl CaseSimplification {
     fn simplify_expr(&self, expr: &IrExpr) -> IrExpr {
         match expr {
-            IrExpr::Case { expr: case_expr, arms } if arms.len() == 1 => {
+            IrExpr::Case {
+                expr: case_expr,
+                arms,
+            } if arms.len() == 1 => {
                 let arm = &arms[0];
-                
+
                 // If the pattern is a wildcard or simple var without guard, simplify
                 if arm.guard.is_none() {
                     match &arm.pat {
@@ -508,7 +542,7 @@ impl CaseSimplification {
                         _ => {}
                     }
                 }
-                
+
                 // Otherwise, keep the case but simplify recursively
                 IrExpr::Case {
                     expr: Box::new(self.simplify_expr(case_expr)),
@@ -519,7 +553,10 @@ impl CaseSimplification {
                     }],
                 }
             }
-            IrExpr::Case { expr: case_expr, arms } => IrExpr::Case {
+            IrExpr::Case {
+                expr: case_expr,
+                arms,
+            } => IrExpr::Case {
                 expr: Box::new(self.simplify_expr(case_expr)),
                 arms: arms
                     .iter()
@@ -538,7 +575,11 @@ impl CaseSimplification {
                 func: Box::new(self.simplify_expr(func)),
                 args: args.iter().map(|a| self.simplify_expr(a)).collect(),
             },
-            IrExpr::If { cond, then_branch, else_branch } => IrExpr::If {
+            IrExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => IrExpr::If {
                 cond: Box::new(self.simplify_expr(cond)),
                 then_branch: Box::new(self.simplify_expr(then_branch)),
                 else_branch: Box::new(self.simplify_expr(else_branch)),
@@ -550,7 +591,11 @@ impl CaseSimplification {
                     .collect(),
                 body: Box::new(self.simplify_expr(body)),
             },
-            IrExpr::IoBind { action, param, body } => IrExpr::IoBind {
+            IrExpr::IoBind {
+                action,
+                param,
+                body,
+            } => IrExpr::IoBind {
                 action: Box::new(self.simplify_expr(action)),
                 param: param.clone(),
                 body: Box::new(self.simplify_expr(body)),
@@ -563,23 +608,22 @@ impl CaseSimplification {
                 head: Box::new(self.simplify_expr(head)),
                 tail: Box::new(self.simplify_expr(tail)),
             },
-            IrExpr::List(es) => {
-                IrExpr::List(es.iter().map(|e| self.simplify_expr(e)).collect())
-            }
-            IrExpr::Tuple(es) => {
-                IrExpr::Tuple(es.iter().map(|e| self.simplify_expr(e)).collect())
-            }
+            IrExpr::List(es) => IrExpr::List(es.iter().map(|e| self.simplify_expr(e)).collect()),
+            IrExpr::Tuple(es) => IrExpr::Tuple(es.iter().map(|e| self.simplify_expr(e)).collect()),
             IrExpr::Record(fields) => IrExpr::Record(
                 fields
                     .iter()
                     .map(|(name, expr)| (name.clone(), self.simplify_expr(expr)))
                     .collect(),
             ),
-            IrExpr::CheckedCast { expr: cast_expr, target } => IrExpr::CheckedCast {
+            IrExpr::CheckedCast {
+                expr: cast_expr,
+                target,
+            } => IrExpr::CheckedCast {
                 expr: Box::new(self.simplify_expr(cast_expr)),
                 target: *target,
             },
-            
+
             // Literals and variables are unchanged
             IrExpr::Unit
             | IrExpr::Integer(_)

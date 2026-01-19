@@ -90,11 +90,7 @@ fn emit_ksif(
 ) -> Result<()> {
     use std::io::Write;
 
-    let module_name = tm
-        .module
-        .name
-        .clone()
-        .unwrap_or_else(|| "Main".to_string());
+    let module_name = tm.module.name.clone().unwrap_or_else(|| "Main".to_string());
 
     // Reuse CLI export filtering logic (keeps export surface consistent).
     let exported = crate::cli_impl::filter_inferred_by_exports(&tm.module, tm.inferred.clone());
