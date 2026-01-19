@@ -4,50 +4,56 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub fn run<I, S>(mut args: I) -> Result<()>
+pub fn run<I, S>(args: I) -> Result<()>
 where
     I: Iterator<Item = S>,
     S: Into<String>,
 {
-    let _exe = args.next();
-    let cmd = args
-        .next()
-        .map(Into::into)
-        .unwrap_or_else(|| "help".to_string());
-    match cmd.as_str() {
+    // Capture args so we can provide best-effort file/position diagnostics on errors.
+    let argv: Vec<String> = args.map(Into::into).collect();
+    let mut it = argv.into_iter();
+    let _exe = it.next();
+    let cmd = it.next().unwrap_or_else(|| "help".to_string());
+
+    // For most commands, the first argument is `<file>`.
+    let cmd_file_arg: Option<String> = match cmd.as_str() {
+        "parse" | "lex" | "typecheck" | "ir" | "llvm-ir" | "compile" | "run" => it.clone().next(),
+        _ => None,
+    };
+
+    let res: Result<()> = match cmd.as_str() {
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
         }
         "parse" => {
-            let path = args
+            let path = it
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
-            let src = std::fs::read_to_string(path.into())?;
+            let src = std::fs::read_to_string(&path)?;
             let ast = parser::parse_module(&src)?;
             println!("{ast:#?}");
             Ok(())
         }
         "lex" => {
-            let path = args
+            let path = it
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
-            let src = std::fs::read_to_string(path.into())?;
+            let src = std::fs::read_to_string(&path)?;
             let toks = crate::lexer::lex(&src)?;
             println!("{toks:#?}");
             Ok(())
         }
         "typecheck" => {
             let mut show_all = false;
-            let arg1 = args
+            let arg1: String = it
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
-            let path = match arg1.into().as_str() {
+            let path = match arg1.as_str() {
                 "--all" => {
                     show_all = true;
-                    args.next()
+                    it.next()
                         .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
-                        .into()
                 }
                 other => other.to_string(),
             };
@@ -61,30 +67,72 @@ where
             Ok(())
         }
         "ir" => {
-            let path = args
+            let path = it
                 .next()
-                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
-                .into();
+                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
             println!("{irm:#?}");
             Ok(())
         }
         "run" => {
-            let path = args
+            let path = it
                 .next()
-                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
-                .into();
+                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
             let _ = ir::run_main(&irm)?;
             Ok(())
         }
         "repl" => repl(),
-        "llvm-ir" => crate::cli::cli_llvm_ir::cmd_llvm_ir(args),
-        "compile" => crate::cli::cli_compile::cmd_compile(args),
+        "llvm-ir" => crate::cli::cli_llvm_ir::cmd_llvm_ir(it),
+        "compile" => crate::cli::cli_compile::cmd_compile(it),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
+    };
+
+    // Attach a best-effort location prefix when we have a span and a file.
+    if let Err(e) = res {
+        if let Some(file) = cmd_file_arg {
+            let src = std::fs::read_to_string(&file).ok();
+            if let Some(span) = e.span() {
+                let src_s = src.as_deref();
+                let start_off = span.start.min(src_s.map(|s| s.len()).unwrap_or(span.start));
+                let mut end_off = span.end;
+                if let Some(s) = src_s {
+                    end_off = end_off.min(s.len());
+                    if end_off < start_off {
+                        end_off = start_off;
+                    }
+                }
+
+                if let Some(s) = src_s {
+                    let mut line: usize = 1;
+                    let mut last_nl: usize = 0;
+                    for (i, ch) in s.char_indices() {
+                        if i >= start_off {
+                            break;
+                        }
+                        if ch == '\n' {
+                            line += 1;
+                            last_nl = i + 1;
+                        }
+                    }
+                    let col = s[last_nl..start_off].chars().count() + 1;
+                    eprintln!(
+                        "error: {}:{}:{}: {} (span {}..{})",
+                        file, line, col, e, start_off, end_off
+                    );
+                } else {
+                    eprintln!("error: {}: {} (span {}..{})", file, e, start_off, end_off);
+                }
+                return Err(e);
+            }
+        }
+        eprintln!("error: {e}");
+        return Err(e);
     }
+
+    Ok(())
 }
 
 fn exported_specs(module: &ast::Module) -> Option<Vec<ast::ExportSpec>> {

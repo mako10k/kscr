@@ -7,6 +7,7 @@ pub enum Error {
     Io(std::io::Error),
     Msg(String),
     MsgWithSpan { msg: String, span: Span },
+    MsgWithSpans { msg: String, spans: Vec<Span> },
 }
 
 impl Error {
@@ -21,9 +22,39 @@ impl Error {
         }
     }
 
+    pub fn msg_with_spans(s: impl Into<String>, spans: Vec<Span>) -> Self {
+        Self::MsgWithSpans {
+            msg: s.into(),
+            spans,
+        }
+    }
+
+    pub fn push_span(self, span: Span) -> Self {
+        match self {
+            Error::MsgWithSpan { msg, span: s } => Error::MsgWithSpans {
+                msg,
+                spans: vec![span, s],
+            },
+            Error::MsgWithSpans { msg, mut spans } => {
+                spans.insert(0, span);
+                Error::MsgWithSpans { msg, spans }
+            }
+            other => other,
+        }
+    }
+
     pub fn span(&self) -> Option<Span> {
         match self {
             Error::MsgWithSpan { span, .. } => Some(*span),
+            Error::MsgWithSpans { spans, .. } => spans.first().copied(),
+            _ => None,
+        }
+    }
+
+    pub fn spans(&self) -> Option<&[Span]> {
+        match self {
+            Error::MsgWithSpan { span, .. } => Some(std::slice::from_ref(span)),
+            Error::MsgWithSpans { spans, .. } => Some(spans.as_slice()),
             _ => None,
         }
     }
@@ -33,6 +64,7 @@ impl Error {
         let msg = format!("{ctx}: {old}");
         match self {
             Error::MsgWithSpan { span, .. } => Error::msg_with_span(msg, span),
+            Error::MsgWithSpans { spans, .. } => Error::msg_with_spans(msg, spans),
             _ => Error::msg(msg),
         }
     }
@@ -44,6 +76,7 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "{e}"),
             Error::Msg(s) => write!(f, "{s}"),
             Error::MsgWithSpan { msg, .. } => write!(f, "{msg}"),
+            Error::MsgWithSpans { msg, .. } => write!(f, "{msg}"),
         }
     }
 }
