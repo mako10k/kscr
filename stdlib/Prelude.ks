@@ -45,7 +45,8 @@ module Prelude where
     ma >>= f = __ioBind ma f
     ma >> mb = __ioThen ma mb
 
-  print = stdoutWrite
+  -- Haskell-compatible: print via Show + newline.
+  print = \x -> putStrLn (toString x)
 
   readLine = stdinReadLine
 

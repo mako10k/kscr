@@ -46,19 +46,19 @@ impl Document {
         if line >= self.line_starts.len() {
             return None;
         }
-        
+
         let line_start = self.line_starts[line];
         let line_end = if line + 1 < self.line_starts.len() {
             self.line_starts[line + 1]
         } else {
             self.text.len()
         };
-        
+
         // Convert UTF-16 code units to UTF-8 byte offset
         let line_text = &self.text[line_start..line_end];
         let mut utf16_offset = 0u32;
         let mut byte_offset = 0usize;
-        
+
         for ch in line_text.chars() {
             if utf16_offset >= character {
                 break;
@@ -66,7 +66,7 @@ impl Document {
             utf16_offset += ch.len_utf16() as u32;
             byte_offset += ch.len_utf8();
         }
-        
+
         Some(line_start + byte_offset)
     }
 
@@ -76,23 +76,23 @@ impl Document {
         if offset > self.text.len() {
             return None;
         }
-        
+
         // Binary search for line
         let line = match self.line_starts.binary_search(&offset) {
             Ok(line) => line,
             Err(line) => line.saturating_sub(1),
         };
-        
+
         if line >= self.line_starts.len() {
             return None;
         }
-        
+
         let line_start = self.line_starts[line];
         let line_text = &self.text[line_start..offset];
-        
+
         // Count UTF-16 code units
         let character = line_text.chars().map(|c| c.len_utf16() as u32).sum();
-        
+
         Some((line as u32, character))
     }
 }
@@ -139,6 +139,10 @@ impl Vfs {
         self.documents.get(uri)
     }
 
+    pub fn iter_documents(&self) -> impl Iterator<Item = &Document> {
+        self.documents.values()
+    }
+
     /// Remove a document
     pub fn remove(&mut self, uri: &Url) {
         self.documents.remove(uri);
@@ -166,7 +170,7 @@ mod tests {
     fn test_position_to_offset() {
         let uri = Url::parse("file:///test.ks").unwrap();
         let doc = Document::new(uri, "hello\nworld\n".to_string(), 1);
-        
+
         assert_eq!(doc.position_to_offset(0, 0), Some(0));
         assert_eq!(doc.position_to_offset(0, 5), Some(5));
         assert_eq!(doc.position_to_offset(1, 0), Some(6));
@@ -177,7 +181,7 @@ mod tests {
     fn test_offset_to_position() {
         let uri = Url::parse("file:///test.ks").unwrap();
         let doc = Document::new(uri, "hello\nworld\n".to_string(), 1);
-        
+
         assert_eq!(doc.offset_to_position(0), Some((0, 0)));
         assert_eq!(doc.offset_to_position(5), Some((0, 5)));
         assert_eq!(doc.offset_to_position(6), Some((1, 0)));

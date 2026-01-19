@@ -34,16 +34,19 @@ pub(super) fn create_diagnostic(
     err: &KscrError,
     severity: DiagnosticSeverity,
 ) -> Diagnostic {
-    let range = err.span().and_then(|s| span_to_range(doc, s)).unwrap_or(Range {
-        start: Position {
-            line: 0,
-            character: 0,
-        },
-        end: Position {
-            line: 0,
-            character: 0,
-        },
-    });
+    let range = err
+        .span()
+        .and_then(|s| span_to_range(doc, s))
+        .unwrap_or(Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 0,
+            },
+        });
 
     Diagnostic {
         range,
@@ -84,22 +87,21 @@ pub(super) fn qualified_ident_at_offset(
 
     let mut start = i;
     while start >= 2 {
-        if toks[start - 1].kind == TokenKind::Dot {
-            if matches!(toks[start - 2].kind, TokenKind::Ident(_)) {
-                start -= 2;
-                continue;
-            }
+        if toks[start - 1].kind == TokenKind::Dot
+            && matches!(toks[start - 2].kind, TokenKind::Ident(_))
+        {
+            start -= 2;
+            continue;
         }
         break;
     }
 
     let mut end = i;
     while end + 2 < toks.len() {
-        if toks[end + 1].kind == TokenKind::Dot {
-            if matches!(toks[end + 2].kind, TokenKind::Ident(_)) {
-                end += 2;
-                continue;
-            }
+        if toks[end + 1].kind == TokenKind::Dot && matches!(toks[end + 2].kind, TokenKind::Ident(_))
+        {
+            end += 2;
+            continue;
         }
         break;
     }

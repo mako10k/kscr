@@ -63,7 +63,6 @@ pub(super) fn super_classify_toplevel_symbol(
     None
 }
 
-
 fn find_toplevel_span_in_doc(
     doc: &Document,
     module: &kscr::ast::Module,
@@ -270,15 +269,13 @@ pub(super) fn completion_items_in_doc(
             .into_iter()
             .map(|name| CompletionItem {
                 label: name.clone(),
-                kind: Some(if name
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_uppercase())
-                {
-                    CompletionItemKind::CLASS
-                } else {
-                    CompletionItemKind::VARIABLE
-                }),
+                kind: Some(
+                    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                        CompletionItemKind::CLASS
+                    } else {
+                        CompletionItemKind::VARIABLE
+                    },
+                ),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range,
                     new_text: name,

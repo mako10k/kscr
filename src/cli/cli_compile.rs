@@ -118,7 +118,7 @@ fn compile_rust_runner(
         // Note: keep this runner minimal; it just decodes packed IR and runs main.
         writeln!(
             f,
-            "use kscr::ir;\nuse kscr::ir_pack;\n\nfn main() {{\n    let bytes: &[u8] = include_bytes!(\"packed_ir.bin\");\n    let module = match ir_pack::decode_ir_module(bytes) {{\n        Ok(m) => m,\n        Err(e) => {{ eprintln!(\"kscr: failed to decode packed IR: {{}}\", e); std::process::exit(1); }}\n    }};\n\n    match ir::run_main(&module) {{\n        Ok(v) => match v {{\n            ir::Value::Unit => println!(\"()\"),\n            other => println!(\"{{:#?}}\", other),\n        }},\n        Err(e) => {{ eprintln!(\"kscr: runtime error: {{}}\", e); std::process::exit(1); }}\n    }}\n}}\n"
+            "use kscr::ir;\nuse kscr::ir_pack;\n\nfn main() {{\n    let bytes: &[u8] = include_bytes!(\"packed_ir.bin\");\n    let module = match ir_pack::decode_ir_module(bytes) {{\n        Ok(m) => m,\n        Err(e) => {{ eprintln!(\"kscr: failed to decode packed IR: {{}}\", e); std::process::exit(1); }}\n    }};\n\n    if let Err(e) = ir::run_main(&module) {{\n        eprintln!(\"kscr: runtime error: {{}}\", e);\n        std::process::exit(1);\n    }}\n}}\n"
         )?;
     }
 

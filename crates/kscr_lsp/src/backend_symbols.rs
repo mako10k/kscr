@@ -3,10 +3,7 @@ use crate::vfs::Document;
 use kscr::lexer;
 use tower_lsp::lsp_types::*;
 
-pub(super) fn item_to_symbol(
-    item: &kscr::ast::Item,
-    doc: &Document,
-) -> Option<DocumentSymbol> {
+pub(super) fn item_to_symbol(item: &kscr::ast::Item, doc: &Document) -> Option<DocumentSymbol> {
     use kscr::ast::Item;
 
     match item {

@@ -44,10 +44,7 @@ fn test_lsp_server_can_start() {
     // Check if the process is still running (LSP server should be waiting for input)
     match child.try_wait() {
         Ok(Some(status)) => {
-            panic!(
-                "LSP server exited unexpectedly with status: {:?}",
-                status
-            );
+            panic!("LSP server exited unexpectedly with status: {:?}", status);
         }
         Ok(None) => {
             // Process is still running, which is expected
@@ -59,7 +56,9 @@ fn test_lsp_server_can_start() {
 
     // Kill the process
     child.kill().expect("Failed to kill LSP server");
-    let output = child.wait_with_output().expect("Failed to wait for LSP server");
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for LSP server");
 
     // Check that stderr doesn't contain panic or error messages
     let stderr = String::from_utf8_lossy(&output.stderr);
