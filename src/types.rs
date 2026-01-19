@@ -4661,26 +4661,32 @@ fn load_imported_ksif_schemes(
 ) -> Result<HashMap<String, HashMap<String, Scheme>>> {
     use std::path::PathBuf;
 
-    // Heuristic search path (MVP): look for `<module>.ksif` next to the entry file.
+    // Heuristic search path (MVP):
+    // 1) Default artifact dir: `./target/ksif/<module>.ksif`
+    // 2) Next to the entry file (legacy): `<module>.ksif`
     // Dot-separated module names map to directories.
+    let default_artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("ksif");
     let mut imported: HashMap<String, HashMap<String, Scheme>> = HashMap::new();
     for it in &module.items {
         let ast::Item::Import(id) = it else {
             continue;
         };
         let candidates = [
+            // Default output location: `target/ksif/<Module>.ksif`
+            default_artifact_dir.join(format!("{}.ksif", id.module)),
             // Common convention in this repo's tests: `ksif_<Module>.ksif`
-            format!("ksif_{}.ksif", id.module),
+            entry_dir.join(format!("ksif_{}.ksif", id.module)),
             // Dot-separated module names map to directories.
-            format!("{}.ksif", id.module.replace('.', "/")),
+            entry_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
             // Plain `<Module>.ksif`
-            format!("{}.ksif", id.module),
+            entry_dir.join(format!("{}.ksif", id.module)),
         ];
 
         let mut bytes: Option<Vec<u8>> = None;
         let mut chosen: Option<PathBuf> = None;
-        for rel in candidates {
-            let p = entry_dir.join(&rel);
+        for p in candidates {
             if let Ok(b) = std::fs::read(&p) {
                 bytes = Some(b);
                 chosen = Some(p);
