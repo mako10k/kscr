@@ -474,7 +474,9 @@ fn handle_repl_line(st: &mut ReplState, line: &str) -> Result<bool> {
                 return Ok(false);
             }
             let status = if cfg!(windows) {
-                std::process::Command::new("cmd").args(["/C", rest]).status()
+                std::process::Command::new("cmd")
+                    .args(["/C", rest])
+                    .status()
             } else {
                 std::process::Command::new("sh").args(["-c", rest]).status()
             };
@@ -713,7 +715,10 @@ mod repl_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("kscr_repl_load_cancel_{}_{uniq}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_repl_load_cancel_{}_{uniq}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Bad.ks");
