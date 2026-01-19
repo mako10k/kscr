@@ -28,3 +28,6 @@ node_modules/
 
 # By convention, ignore generated binaries
 kscr
+
+# Generated interface artifacts (KSIF)
+*.ksif
