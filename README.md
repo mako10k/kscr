@@ -69,6 +69,11 @@ cargo run --features llvm -- llvm-ir path/to/file.ks
 # - The produced executable contains packed IR and runs it via kscr's runtime
 cargo run -- compile path/to/file.ks
 
+# Also emits an interface-only artifact (.ksif) for separate compilation experiments
+# - Default output: `./target/ksif/<file>.ksif`
+# - Override output directory:
+cargo run -- compile path/to/file.ks --ksif-out ./target/custom_ksif
+
 # Specify output path
 cargo run -- compile path/to/file.ks -o ./a.out
 
