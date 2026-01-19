@@ -90,42 +90,71 @@ where
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     };
 
-    // Attach a best-effort location prefix when we have a span and a file.
+    fn span_to_loc(src: Option<&str>, span: crate::lexer::Span) -> (usize, usize, usize, usize) {
+        let len = src.map(|s| s.len()).unwrap_or(usize::MAX);
+        let start_off = span.start.min(len);
+        let mut end_off = span.end.min(len);
+        if end_off < start_off {
+            end_off = start_off;
+        }
+
+        if let Some(s) = src {
+            let mut line: usize = 1;
+            let mut last_nl: usize = 0;
+            for (i, ch) in s.char_indices() {
+                if i >= start_off {
+                    break;
+                }
+                if ch == '\n' {
+                    line += 1;
+                    last_nl = i + 1;
+                }
+            }
+            let col = s[last_nl..start_off].chars().count() + 1;
+            (line, col, start_off, end_off)
+        } else {
+            (1, 1, start_off, end_off)
+        }
+    }
+
+    // Attach a best-effort location prefix when we have spans and a file.
     if let Err(e) = res {
         if let Some(file) = cmd_file_arg {
             let src = std::fs::read_to_string(&file).ok();
-            if let Some(span) = e.span() {
-                let src_s = src.as_deref();
-                let start_off = span.start.min(src_s.map(|s| s.len()).unwrap_or(span.start));
-                let mut end_off = span.end;
-                if let Some(s) = src_s {
-                    end_off = end_off.min(s.len());
-                    if end_off < start_off {
-                        end_off = start_off;
-                    }
-                }
+            let src_s = src.as_deref();
 
-                if let Some(s) = src_s {
-                    let mut line: usize = 1;
-                    let mut last_nl: usize = 0;
-                    for (i, ch) in s.char_indices() {
-                        if i >= start_off {
-                            break;
+            if let Some(spans) = e.spans() {
+                if let Some(primary) = spans.first().copied() {
+                    let (line, col, start_off, end_off) = span_to_loc(src_s, primary);
+                    if src_s.is_some() {
+                        eprintln!(
+                            "error: {}:{}:{}: {} (span {}..{})",
+                            file, line, col, e, start_off, end_off
+                        );
+                    } else {
+                        eprintln!("error: {}: {} (span {}..{})", file, e, start_off, end_off);
+                    }
+
+                    // Secondary spans as notes.
+                    let mut prev = primary;
+                    for s2 in spans.iter().skip(1).copied() {
+                        if s2 == prev {
+                            continue;
                         }
-                        if ch == '\n' {
-                            line += 1;
-                            last_nl = i + 1;
+                        prev = s2;
+                        let (l2, c2, so2, eo2) = span_to_loc(src_s, s2);
+                        if src_s.is_some() {
+                            eprintln!(
+                                "note: {}:{}:{}: related location (span {}..{})",
+                                file, l2, c2, so2, eo2
+                            );
+                        } else {
+                            eprintln!("note: {}: related location (span {}..{})", file, so2, eo2);
                         }
                     }
-                    let col = s[last_nl..start_off].chars().count() + 1;
-                    eprintln!(
-                        "error: {}:{}:{}: {} (span {}..{})",
-                        file, line, col, e, start_off, end_off
-                    );
-                } else {
-                    eprintln!("error: {}: {} (span {}..{})", file, e, start_off, end_off);
+
+                    return Err(e);
                 }
-                return Err(e);
             }
         }
         eprintln!("error: {e}");

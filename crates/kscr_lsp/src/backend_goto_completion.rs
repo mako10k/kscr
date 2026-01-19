@@ -205,6 +205,78 @@ fn goto_definition_unqualified_import(doc: &Document, name: &str) -> Option<Loca
 pub(super) fn goto_definition_in_doc(doc: &Document, pos: Position) -> Option<Location> {
     let off = doc.position_to_offset(pos.line, pos.character)?;
 
+    // First: if the cursor is on an `import <Module>` module name, jump to that module.
+    {
+        let toks = lexer::lex(&doc.text).ok()?;
+        let i = toks
+            .iter()
+            .position(|t| t.span.start <= off && off < t.span.end && t.span.end > t.span.start)
+            .or_else(|| {
+                toks.iter().position(|t| {
+                    t.span.start < off && off <= t.span.end && t.span.end > t.span.start
+                })
+            })?;
+
+        if toks[i].kind == lexer::TokenKind::KwImport {
+            // Allow clicking on the `import` keyword itself.
+            if let Some(p) = toks.get(i + 1) {
+                if let lexer::TokenKind::Ident(module) = &p.kind {
+                    let this_path = doc.uri.to_file_path().ok()?;
+                    let base_dir = this_path
+                        .parent()
+                        .filter(|p| p.exists())
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(std::env::temp_dir);
+                    let target_path = resolve_import_path(module, &base_dir)?;
+                    let uri = Url::from_file_path(&target_path).ok()?;
+                    return Some(Location {
+                        uri,
+                        range: Range {
+                            start: Position {
+                                line: 0,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: 0,
+                                character: 0,
+                            },
+                        },
+                    });
+                }
+            }
+        }
+
+        // Allow clicking on the module identifier.
+        if matches!(toks[i].kind, lexer::TokenKind::Ident(_))
+            && i >= 2
+            && toks[i - 1].kind == lexer::TokenKind::KwImport
+        {
+            if let lexer::TokenKind::Ident(module) = &toks[i].kind {
+                let this_path = doc.uri.to_file_path().ok()?;
+                let base_dir = this_path
+                    .parent()
+                    .filter(|p| p.exists())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(std::env::temp_dir);
+                let target_path = resolve_import_path(module, &base_dir)?;
+                let uri = Url::from_file_path(&target_path).ok()?;
+                return Some(Location {
+                    uri,
+                    range: Range {
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                    },
+                });
+            }
+        }
+    }
+
     let (name, _name_span) = qualified_ident_at_offset(&doc.text, off)?;
 
     if name.contains('.') {

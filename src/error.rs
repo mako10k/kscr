@@ -36,7 +36,7 @@ impl Error {
                 spans: vec![span, s],
             },
             Error::MsgWithSpans { msg, mut spans } => {
-                spans.insert(0, span);
+                spans.push(span);
                 Error::MsgWithSpans { msg, spans }
             }
             Error::Msg(msg) => Error::MsgWithSpan { msg, span },

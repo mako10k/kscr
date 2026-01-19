@@ -8835,8 +8835,10 @@ fn infer_module_with_class_env(
                     .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
             subst = compose(&s_rhs, &subst);
 
-            let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty))
-                .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
+            let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty)).map_err(|e| {
+                e.push_span(b.pat.span)
+                    .with_context(format!("in binding {ctx_name}"))
+            })?;
             subst = compose(&s_pat, &subst);
 
             let mut cs = cs_rhs;

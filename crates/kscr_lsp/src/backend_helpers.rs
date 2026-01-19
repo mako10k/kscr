@@ -48,6 +48,21 @@ pub(super) fn create_diagnostic(
             },
         });
 
+    let related_information = err.spans().and_then(|spans| {
+        let mut out: Vec<DiagnosticRelatedInformation> = Vec::new();
+        for s in spans.iter().skip(1).copied() {
+            let range = span_to_range(doc, s)?;
+            out.push(DiagnosticRelatedInformation {
+                location: Location {
+                    uri: doc.uri.clone(),
+                    range,
+                },
+                message: "related location".to_string(),
+            });
+        }
+        if out.is_empty() { None } else { Some(out) }
+    });
+
     Diagnostic {
         range,
         severity: Some(severity),
@@ -55,7 +70,7 @@ pub(super) fn create_diagnostic(
         code_description: None,
         source: Some("kscr".to_string()),
         message: err.to_string(),
-        related_information: None,
+        related_information,
         tags: None,
         data: None,
     }
