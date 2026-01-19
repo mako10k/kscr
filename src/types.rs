@@ -4950,6 +4950,7 @@ fn typecheck_internal(
     typecheck_internal_core(module, stdlib_class_env, None)
 }
 
+#[allow(clippy::too_many_lines)]
 fn typecheck_internal_core(
     mut module: ast::Module,
     stdlib_class_env: Option<&ClassEnv>,

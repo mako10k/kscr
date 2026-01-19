@@ -1139,6 +1139,7 @@ fn decode_case_arm(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Resu
 }
 
 fn encode_expr(out: &mut Vec<u8>, expr: &IrExpr, interner: &StringInterner) {
+    #![allow(clippy::too_many_lines)]
     match expr {
         IrExpr::Unit => write_u8(out, 0),
         IrExpr::Integer(s) => {
@@ -1267,6 +1268,7 @@ fn encode_expr(out: &mut Vec<u8>, expr: &IrExpr, interner: &StringInterner) {
 }
 
 fn decode_expr(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Result<IrExpr> {
+    #![allow(clippy::too_many_lines)]
     let tag = read_u8(input)?;
     Ok(match tag {
         0 => IrExpr::Unit,
