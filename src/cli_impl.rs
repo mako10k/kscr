@@ -457,131 +457,153 @@ fn try_resolve_repl_command(cmd: &str) -> Result<Option<&'static str>> {
     }
 }
 
+fn parse_repl_cmd(rest0: &str) -> (&str, &str) {
+    let split_at = rest0
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(i, _)| i);
+    match split_at {
+        Some(i) => (&rest0[..i], rest0[i..].trim_start()),
+        None => (rest0, ""),
+    }
+}
+
+fn repl_run_shell(rest: &str) {
+    if rest.is_empty() {
+        eprintln!("error: missing <cmd>");
+        return;
+    }
+    let status = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/C", rest])
+            .status()
+    } else {
+        std::process::Command::new("sh").args(["-c", rest]).status()
+    };
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!("error: command failed: {s}"),
+        Err(e) => eprintln!("error: failed to run command: {e}"),
+    }
+}
+
+fn repl_run_edit(st: &ReplState, rest: &str) {
+    let path = if rest.is_empty() {
+        match &st.loaded_file {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("error: missing <path>");
+                return;
+            }
+        }
+    } else {
+        PathBuf::from(rest)
+    };
+
+    let editor = std::env::var("EDITOR")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                "notepad".to_string()
+            } else {
+                "vi".to_string()
+            }
+        });
+
+    let mut it = editor.split_whitespace();
+    let Some(bin) = it.next() else {
+        eprintln!("error: invalid EDITOR");
+        return;
+    };
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(it);
+    cmd.arg(&path);
+    match cmd.status() {
+        Ok(_) => {}
+        Err(e) => eprintln!("error: failed to run editor: {e}"),
+    }
+}
+
+fn try_handle_repl_command(st: &mut ReplState, rest0: &str) -> Result<Option<bool>> {
+    let (cmd, rest) = parse_repl_cmd(rest0);
+
+    if cmd == "!" {
+        repl_run_shell(rest);
+        return Ok(Some(false));
+    }
+
+    if cmd.is_empty() {
+        return Ok(None);
+    }
+
+    match try_resolve_repl_command(cmd) {
+        Ok(Some("quit")) => {
+            if rest.is_empty() {
+                return Ok(Some(true));
+            }
+            Ok(None)
+        }
+        Ok(Some("modules")) => {
+            if rest.is_empty() {
+                println!("{}", st.modules_string());
+                return Ok(Some(false));
+            }
+            Ok(None)
+        }
+        Ok(Some("load")) => {
+            if rest.is_empty() {
+                eprintln!("error: missing <path>");
+                return Ok(Some(false));
+            }
+            match st.load_module_file(Path::new(rest)) {
+                Ok(()) => println!("loaded: {}", st.modules_string()),
+                Err(e) => eprintln!("error: {e}"),
+            }
+            Ok(Some(false))
+        }
+        Ok(Some("type")) => {
+            if rest.is_empty() {
+                eprintln!("error: missing <expr>");
+                return Ok(Some(false));
+            }
+            match st.type_of(rest) {
+                Ok(s) => println!("{s}"),
+                Err(e) => eprintln!("error: {e}"),
+            }
+            Ok(Some(false))
+        }
+        Ok(Some("info")) => {
+            if rest.is_empty() {
+                eprintln!("error: missing <name>");
+                return Ok(Some(false));
+            }
+            match st.info_of(rest) {
+                Ok(s) => println!("{s}"),
+                Err(e) => eprintln!("error: {e}"),
+            }
+            Ok(Some(false))
+        }
+        Ok(Some("edit")) => {
+            repl_run_edit(st, rest);
+            Ok(Some(false))
+        }
+        Ok(None) => {
+            eprintln!("error: unknown command: :{cmd}");
+            Ok(Some(false))
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            Ok(Some(false))
+        }
+        Ok(Some(_)) => Ok(None),
+    }
+}
+
 fn handle_repl_line(st: &mut ReplState, line: &str) -> Result<bool> {
     if let Some(rest0) = line.strip_prefix(':') {
-        let split_at = rest0
-            .char_indices()
-            .find(|(_, c)| c.is_whitespace())
-            .map(|(i, _)| i);
-        let (cmd, rest) = match split_at {
-            Some(i) => (&rest0[..i], rest0[i..].trim_start()),
-            None => (rest0, ""),
-        };
-
-        if cmd == "!" {
-            if rest.is_empty() {
-                eprintln!("error: missing <cmd>");
-                return Ok(false);
-            }
-            let status = if cfg!(windows) {
-                std::process::Command::new("cmd")
-                    .args(["/C", rest])
-                    .status()
-            } else {
-                std::process::Command::new("sh").args(["-c", rest]).status()
-            };
-            match status {
-                Ok(s) if s.success() => {}
-                Ok(s) => eprintln!("error: command failed: {s}"),
-                Err(e) => eprintln!("error: failed to run command: {e}"),
-            }
-            return Ok(false);
-        }
-
-        if !cmd.is_empty() {
-            match try_resolve_repl_command(cmd) {
-                Ok(Some("quit")) => {
-                    if rest.is_empty() {
-                        return Ok(true);
-                    }
-                }
-                Ok(Some("modules")) => {
-                    if rest.is_empty() {
-                        println!("{}", st.modules_string());
-                        return Ok(false);
-                    }
-                }
-                Ok(Some("load")) => {
-                    if rest.is_empty() {
-                        eprintln!("error: missing <path>");
-                        return Ok(false);
-                    }
-                    match st.load_module_file(Path::new(rest)) {
-                        Ok(()) => println!("loaded: {}", st.modules_string()),
-                        Err(e) => eprintln!("error: {e}"),
-                    }
-                    return Ok(false);
-                }
-                Ok(Some("type")) => {
-                    if rest.is_empty() {
-                        eprintln!("error: missing <expr>");
-                        return Ok(false);
-                    }
-                    match st.type_of(rest) {
-                        Ok(s) => println!("{s}"),
-                        Err(e) => eprintln!("error: {e}"),
-                    }
-                    return Ok(false);
-                }
-                Ok(Some("info")) => {
-                    if rest.is_empty() {
-                        eprintln!("error: missing <name>");
-                        return Ok(false);
-                    }
-                    match st.info_of(rest) {
-                        Ok(s) => println!("{s}"),
-                        Err(e) => eprintln!("error: {e}"),
-                    }
-                    return Ok(false);
-                }
-                Ok(Some("edit")) => {
-                    let path = if rest.is_empty() {
-                        match &st.loaded_file {
-                            Some(p) => p.clone(),
-                            None => {
-                                eprintln!("error: missing <path>");
-                                return Ok(false);
-                            }
-                        }
-                    } else {
-                        PathBuf::from(rest)
-                    };
-
-                    let editor = std::env::var("EDITOR")
-                        .ok()
-                        .filter(|s| !s.trim().is_empty())
-                        .unwrap_or_else(|| {
-                            if cfg!(windows) {
-                                "notepad".to_string()
-                            } else {
-                                "vi".to_string()
-                            }
-                        });
-
-                    let mut it = editor.split_whitespace();
-                    let Some(bin) = it.next() else {
-                        eprintln!("error: invalid EDITOR");
-                        return Ok(false);
-                    };
-                    let mut cmd = std::process::Command::new(bin);
-                    cmd.args(it);
-                    cmd.arg(&path);
-                    match cmd.status() {
-                        Ok(_) => {}
-                        Err(e) => eprintln!("error: failed to run editor: {e}"),
-                    }
-                    return Ok(false);
-                }
-                Ok(None) => {
-                    eprintln!("error: unknown command: :{cmd}");
-                    return Ok(false);
-                }
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return Ok(false);
-                }
-                Ok(Some(_)) => {}
-            }
+        if let Some(quit) = try_handle_repl_command(st, rest0)? {
+            return Ok(quit);
         }
     }
 
