@@ -4586,9 +4586,176 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
         entry_mod = ensure_implicit_prelude_import(entry_mod);
     }
 
-    let module =
+    let mut module =
         load_module_with_imports_ast_with_loader(&mut loader, &entry, entry_dir, &entry_mod)?;
+
+    // Stage 2 (MVP): Optionally load interface-only artifacts (.ksif) for imports.
+    // Guarded to avoid changing semantics unintentionally until the pipeline is complete.
+    if std::env::var("KSCR_USE_KSIF").ok().as_deref() == Some("1") {
+        // Use the *entry* module's import decls (pre-flatten), because import-flattening removes
+        // `Item::Import` from the final module.
+        let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
+        inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
+        return typecheck_with_stdlib_class_env_with_imported(module, imported);
+    }
+
     typecheck_with_stdlib_class_env(module)
+}
+
+fn inject_imported_ksif_forwarders(
+    module: &mut ast::Module,
+    entry_mod: &ast::Module,
+    imported: &HashMap<String, HashMap<String, Scheme>>,
+) -> Result<()> {
+    let mut defined: HashMap<String, String> = HashMap::new();
+    for it in &module.items {
+        let mut names = HashSet::new();
+        item_defined_names(it, &mut names);
+        for n in names {
+            defined.insert(n.clone(), name_origin_hint(it, &n));
+        }
+    }
+
+    let mut injected: Vec<ast::Item> = Vec::new();
+    for it in &entry_mod.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        if id.qualified {
+            continue;
+        }
+        let Some(schemes) = imported.get(&id.module) else {
+            continue;
+        };
+        let qual = id.as_name.as_deref().unwrap_or(&id.module);
+        for name in schemes.keys() {
+            if defined.contains_key(name) {
+                continue;
+            }
+            defined.insert(name.clone(), format!("import {qual} (.ksif)"));
+            injected.push(ast::Item::Binding(ast::Binding {
+                pat: ast::Pattern {
+                    kind: ast::PatternKind::Var(name.clone()),
+                    span: ast::dummy_span(),
+                },
+                expr: ast::Expr {
+                    kind: ast::ExprKind::Var(format!("{qual}.{name}")),
+                    span: ast::dummy_span(),
+                },
+            }));
+        }
+    }
+
+    if injected.is_empty() {
+        return Ok(());
+    }
+
+    let mut merged = Vec::new();
+    merged.append(&mut injected);
+    merged.append(&mut module.items);
+    module.items = merged;
+    Ok(())
+}
+
+fn load_imported_ksif_schemes(
+    module: &ast::Module,
+    entry_dir: &Path,
+) -> Result<HashMap<String, HashMap<String, Scheme>>> {
+    use std::path::PathBuf;
+
+    // Heuristic search path (MVP):
+    // 1) Default artifact dir: `./target/ksif/<module>.ksif`
+    // 2) Next to the entry file (legacy): `<module>.ksif`
+    // Dot-separated module names map to directories.
+    let default_artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("ksif");
+    let mut imported: HashMap<String, HashMap<String, Scheme>> = HashMap::new();
+    for it in &module.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        let candidates = [
+            // Default output location: `target/ksif/<Module>.ksif`
+            default_artifact_dir.join(format!("{}.ksif", id.module)),
+            // Common convention in this repo's tests: `ksif_<Module>.ksif`
+            entry_dir.join(format!("ksif_{}.ksif", id.module)),
+            // Dot-separated module names map to directories.
+            entry_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
+            // Plain `<Module>.ksif`
+            entry_dir.join(format!("{}.ksif", id.module)),
+        ];
+
+        let mut bytes: Option<Vec<u8>> = None;
+        let mut chosen: Option<PathBuf> = None;
+        for p in candidates {
+            if let Ok(b) = std::fs::read(&p) {
+                bytes = Some(b);
+                chosen = Some(p);
+                break;
+            }
+        }
+        let Some(bytes) = bytes else {
+            continue;
+        };
+        let ksif_path = chosen.unwrap();
+        let ksif = crate::kir1::decode_ksif_module(&bytes).map_err(|e| {
+            Error::msg(format!(
+                "failed to decode ksif {}: {e:?}",
+                ksif_path.display()
+            ))
+        })?;
+        let mut m = HashMap::new();
+        for (name, scheme) in ksif.values {
+            m.insert(name, scheme);
+        }
+        imported.insert(id.module.clone(), m);
+    }
+    Ok(imported)
+}
+
+fn typecheck_with_stdlib_class_env_with_imported(
+    mut module: ast::Module,
+    imported: HashMap<String, HashMap<String, Scheme>>,
+) -> Result<TypedModule> {
+    let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
+
+    let t0 = std::time::Instant::now();
+    let stdlib_class_env = load_stdlib_class_env()?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] load_stdlib_class_env: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    inject_stdlib_class_decls(&mut module)?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] inject_stdlib_class_decls: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    inject_stdlib_instance_dict_forwarders(&mut module)?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] inject_stdlib_instance_dict_forwarders: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    let out = typecheck_internal_with_imported(module, Some(&stdlib_class_env), imported);
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] typecheck_internal: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+    out
 }
 
 fn is_stdlib_path(path: &Path) -> bool {
@@ -4768,9 +4935,26 @@ pub fn typecheck(module: ast::Module) -> Result<TypedModule> {
     typecheck_internal(module, None)
 }
 
+fn typecheck_internal_with_imported(
+    module: ast::Module,
+    stdlib_class_env: Option<&ClassEnv>,
+    imported: HashMap<String, HashMap<String, Scheme>>,
+) -> Result<TypedModule> {
+    typecheck_internal_core(module, stdlib_class_env, Some(imported))
+}
+
 fn typecheck_internal(
+    module: ast::Module,
+    stdlib_class_env: Option<&ClassEnv>,
+) -> Result<TypedModule> {
+    typecheck_internal_core(module, stdlib_class_env, None)
+}
+
+#[allow(clippy::too_many_lines)]
+fn typecheck_internal_core(
     mut module: ast::Module,
     stdlib_class_env: Option<&ClassEnv>,
+    imported: Option<HashMap<String, HashMap<String, Scheme>>>,
 ) -> Result<TypedModule> {
     if module
         .items
@@ -4781,8 +4965,11 @@ fn typecheck_internal(
     }
 
     // Try to hit the module-level typecheck cache.
-    if let Some(inferred) = stdlib_cache::check_module_typecheck_cache(&module) {
-        return Ok(TypedModule { module, inferred });
+    // NOTE: cache is only used when imported schemes are not provided.
+    if imported.is_none() {
+        if let Some(inferred) = stdlib_cache::check_module_typecheck_cache(&module) {
+            return Ok(TypedModule { module, inferred });
+        }
     }
 
     let aliases = collect_type_aliases(&module);
@@ -4896,7 +5083,25 @@ fn typecheck_internal(
     rewrite_show_calls_in_module(&mut module);
 
     // Store in cache for future lookups.
-    stdlib_cache::store_module_typecheck_cache(&module, &inferred);
+    // NOTE: when imported schemes are provided, caching is not valid yet.
+    if imported.is_none() {
+        stdlib_cache::store_module_typecheck_cache(&module, &inferred);
+    }
+
+    // Stage 2 (MVP): If imported schemes were provided, merge them into the returned inferred map
+    // so downstream passes that consult `tm.inferred` can see them.
+    if let Some(by_mod) = imported {
+        let mut merged = inferred;
+        for (_m, schemes) in by_mod {
+            for (name, scheme) in schemes {
+                merged.entry(name).or_insert(scheme);
+            }
+        }
+        return Ok(TypedModule {
+            module,
+            inferred: merged,
+        });
+    }
 
     Ok(TypedModule { module, inferred })
 }

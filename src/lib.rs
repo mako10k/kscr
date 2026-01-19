@@ -8,6 +8,7 @@ pub mod debug;
 pub mod error;
 pub mod ir;
 pub mod ir_pack;
+pub mod kir1;
 pub mod lexer;
 pub mod parser;
 

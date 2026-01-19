@@ -24,6 +24,41 @@ fn typecheck_rejects_non_exhaustive_fun_clauses_for_adt() {
 }
 
 #[test]
+fn ksif_default_output_and_import_search_path_smoke() {
+    use std::path::PathBuf;
+
+    // Emit `target/ksif/ksif_A.ksif`, then typecheck B with KSIF enabled.
+    // Avoid spawning `cargo run` from tests (fragile in CI / sandbox).
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let a = repo.join("tests").join("ksif_A.ks");
+    let b = repo.join("tests").join("ksif_B.ks");
+
+    // 1) Typecheck A and write its exported schemes as KSIF under target/ksif.
+    let tm_a = crate::types::typecheck_file(&a).expect("typecheck A");
+    let module_name = tm_a
+        .module
+        .name
+        .clone()
+        .unwrap_or_else(|| "Main".to_string());
+    let exported = crate::cli_impl::filter_inferred_by_exports(&tm_a.module, tm_a.inferred.clone());
+    let ksif = crate::kir1::KsifModule {
+        module_name,
+        values: exported,
+    };
+    let bytes = crate::kir1::encode_ksif_module(&ksif);
+    let ksif_dir = repo.join("target").join("ksif");
+    std::fs::create_dir_all(&ksif_dir).expect("create target/ksif");
+    let ksif_path = ksif_dir.join("ksif_A.ksif");
+    std::fs::write(&ksif_path, bytes).expect("write ksif");
+
+    assert!(ksif_path.is_file(), "missing ksif: {}", ksif_path.display());
+
+    // 2) Typecheck B with KSIF enabled (succeeds if search path works).
+    std::env::set_var("KSCR_USE_KSIF", "1");
+    let _tm_b = crate::types::typecheck_file(&b).expect("typecheck B with ksif");
+}
+
+#[test]
 fn parser_module_basic() {
     let src = std::fs::read_to_string("tests/module_basic.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();

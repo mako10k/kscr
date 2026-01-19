@@ -142,7 +142,7 @@ fn exported_name_set(module: &ast::Module) -> Option<HashSet<String>> {
     Some(out)
 }
 
-fn filter_inferred_by_exports(
+pub(crate) fn filter_inferred_by_exports(
     module: &ast::Module,
     inferred: std::collections::HashMap<String, types::Scheme>,
 ) -> Vec<(String, types::Scheme)> {
@@ -189,7 +189,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable via clang\n                   Default: embeds packed IR and runs via Rust executor\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable\n                   Default: embeds packed IR and runs via Rust executor\n                   Emits `.ksif` by default to `./target/ksif/<file>.ksif`\n                   Options: -o/--output <path>, --release, --llvm, --ksif-out <dir>\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
     );
 }
 
