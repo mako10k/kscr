@@ -54,10 +54,7 @@ impl Error {
                 spans.push(span);
                 Error::MsgWithSpans { msg, spans }
             }
-            Error::Msg(msg) => Error::MsgWithSpans {
-                msg,
-                spans: vec![span],
-            },
+            Error::Msg(msg) => Error::MsgWithSpan { msg, span },
             other => other,
         }
     }
