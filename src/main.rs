@@ -49,9 +49,7 @@ fn main() {
                 if let Some(primary) = spans.first().copied() {
                     let (line, col, start_off, end_off) = span_to_loc(src_s, primary);
                     if src_s.is_some() {
-                        eprintln!(
-                            "error: {path}:{line}:{col}: {e} (span {start_off}..{end_off})"
-                        );
+                        eprintln!("error: {path}:{line}:{col}: {e} (span {start_off}..{end_off})");
                     } else {
                         eprintln!("error: {path}: {e} (span {start_off}..{end_off})");
                     }
@@ -68,9 +66,7 @@ fn main() {
                                 "note: {path}:{l2}:{c2}: related location (span {so2}..{eo2})"
                             );
                         } else {
-                            eprintln!(
-                                "note: {path}: related location (span {so2}..{eo2})"
-                            );
+                            eprintln!("note: {path}: related location (span {so2}..{eo2})");
                         }
                     }
 

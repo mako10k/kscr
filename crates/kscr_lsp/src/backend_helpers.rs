@@ -60,7 +60,11 @@ pub(super) fn create_diagnostic(
                 message: "related location".to_string(),
             });
         }
-        if out.is_empty() { None } else { Some(out) }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     });
 
     Diagnostic {

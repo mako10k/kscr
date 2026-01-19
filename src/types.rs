@@ -4112,14 +4112,17 @@ fn infer_expr_annot(
     }
 
     let t_ann = lower_surface_type(cx, &ty.ty, &mut holes);
-    let s2 = unify_dbg(apply(&s1, t1), apply(&s1, t_ann.clone()), "infer_expr_annot").map_err(
-        |e| {
-            // Primary: inner expression, Secondary: annotation site.
-            e.push_span(inner_expr_span)
-                .push_secondary_span(annot_span)
-                .with_context("infer_expr_annot")
-        },
-    )?;
+    let s2 = unify_dbg(
+        apply(&s1, t1),
+        apply(&s1, t_ann.clone()),
+        "infer_expr_annot",
+    )
+    .map_err(|e| {
+        // Primary: inner expression, Secondary: annotation site.
+        e.push_span(inner_expr_span)
+            .push_secondary_span(annot_span)
+            .with_context("infer_expr_annot")
+    })?;
     let s = compose(&s2, &s1);
     Ok((s.clone(), apply_constraints(&s, cs1), apply(&s, t_ann)))
 }
@@ -8842,10 +8845,12 @@ fn infer_module_with_class_env(
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
             let (s_rhs, cs_rhs, t_rhs) =
-                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(|e| {
-                    e.push_secondary_span(b.pat.span)
-                        .with_context(format!("in binding {ctx_name}"))
-                })?;
+                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(
+                    |e| {
+                        e.push_secondary_span(b.pat.span)
+                            .with_context(format!("in binding {ctx_name}"))
+                    },
+                )?;
             subst = compose(&s_rhs, &subst);
 
             let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty)).map_err(|e| {
