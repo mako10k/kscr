@@ -4,17 +4,36 @@ use rustyline::{error::ReadlineError, DefaultEditor};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub fn run<I, S>(mut args: I) -> Result<()>
+pub fn run<I, S>(args: I) -> Result<()>
 where
     I: Iterator<Item = S>,
     S: Into<String>,
 {
-    let _exe = args.next();
-    let cmd = args
-        .next()
-        .map(Into::into)
-        .unwrap_or_else(|| "help".to_string());
-    match cmd.as_str() {
+    // Capture args so we can provide best-effort file/position diagnostics on errors.
+    let argv: Vec<String> = args.map(Into::into).collect();
+
+    let mut it = argv.into_iter();
+    let _exe = it.next();
+    let cmd = it.next().unwrap_or_else(|| "help".to_string());
+
+    // For most commands, the first argument is `<file>`.
+    let cmd_file_arg: Option<String> = cmd_file_arg(&cmd, it.clone());
+
+    let res = dispatch_cmd(&cmd, it);
+    attach_best_effort_diagnostics(res, cmd_file_arg)
+}
+
+fn cmd_file_arg(cmd: &str, args: std::vec::IntoIter<String>) -> Option<String> {
+    match cmd {
+        "parse" | "lex" | "typecheck" | "typecheck-file" | "ir" | "llvm-ir" | "compile" | "run" => {
+            args.into_iter().next()
+        }
+        _ => None,
+    }
+}
+
+fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
+    match cmd {
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -23,7 +42,7 @@ where
             let path = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
-            let src = std::fs::read_to_string(path.into())?;
+            let src = std::fs::read_to_string(&path)?;
             let ast = parser::parse_module(&src)?;
             println!("{ast:#?}");
             Ok(())
@@ -32,28 +51,26 @@ where
             let path = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
-            let src = std::fs::read_to_string(path.into())?;
+            let src = std::fs::read_to_string(&path)?;
             let toks = crate::lexer::lex(&src)?;
             println!("{toks:#?}");
             Ok(())
         }
         "typecheck" => {
             let mut show_all = false;
-            let arg1 = args
+            let arg1: String = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
-            let path = match arg1.into().as_str() {
+            let path = match arg1.as_str() {
                 "--all" => {
                     show_all = true;
                     args.next()
                         .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
-                        .into()
                 }
                 other => other.to_string(),
             };
 
             let tm = types::typecheck_file(Path::new(&path))?;
-
             print!(
                 "{}",
                 render_typecheck_report(&tm.module, tm.inferred, show_all)
@@ -63,8 +80,7 @@ where
         "ir" => {
             let path = args
                 .next()
-                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
-                .into();
+                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
             println!("{irm:#?}");
@@ -73,8 +89,7 @@ where
         "run" => {
             let path = args
                 .next()
-                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
-                .into();
+                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
             let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
             let _ = ir::run_main(&irm)?;
@@ -84,6 +99,81 @@ where
         "llvm-ir" => crate::cli::cli_llvm_ir::cmd_llvm_ir(args),
         "compile" => crate::cli::cli_compile::cmd_compile(args),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
+    }
+}
+
+fn attach_best_effort_diagnostics(res: Result<()>, cmd_file_arg: Option<String>) -> Result<()> {
+    // Attach a best-effort location prefix when we have spans and a file.
+    if let Err(e) = res {
+        if let Some(file) = cmd_file_arg {
+            let src = std::fs::read_to_string(&file).ok();
+            let src_s = src.as_deref();
+
+            if let Some(spans) = e.spans() {
+                if let Some(primary) = spans.first().copied() {
+                    let (line, col, start_off, end_off) = span_to_loc(src_s, primary);
+                    if src_s.is_some() {
+                        eprintln!(
+                            "error: {}:{}:{}: {} (span {}..{})",
+                            file, line, col, e, start_off, end_off
+                        );
+                    } else {
+                        eprintln!("error: {}: {} (span {}..{})", file, e, start_off, end_off);
+                    }
+
+                    // Secondary spans as notes.
+                    let mut prev = primary;
+                    for s2 in spans.iter().skip(1).copied() {
+                        if s2 == prev {
+                            continue;
+                        }
+                        prev = s2;
+                        let (l2, c2, so2, eo2) = span_to_loc(src_s, s2);
+                        if src_s.is_some() {
+                            eprintln!(
+                                "note: {}:{}:{}: related location (span {}..{})",
+                                file, l2, c2, so2, eo2
+                            );
+                        } else {
+                            eprintln!("note: {}: related location (span {}..{})", file, so2, eo2);
+                        }
+                    }
+
+                    return Err(e);
+                }
+            }
+        }
+        eprintln!("error: {e}");
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+fn span_to_loc(src: Option<&str>, span: crate::lexer::Span) -> (usize, usize, usize, usize) {
+    let len = src.map(|s| s.len()).unwrap_or(usize::MAX);
+    let start_off = span.start.min(len);
+    let mut end_off = span.end.min(len);
+    if end_off < start_off {
+        end_off = start_off;
+    }
+
+    if let Some(s) = src {
+        let mut line: usize = 1;
+        let mut last_nl: usize = 0;
+        for (i, ch) in s.char_indices() {
+            if i >= start_off {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                last_nl = i + 1;
+            }
+        }
+        let col = s[last_nl..start_off].chars().count() + 1;
+        (line, col, start_off, end_off)
+    } else {
+        (1, 1, start_off, end_off)
     }
 }
 

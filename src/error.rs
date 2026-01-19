@@ -7,6 +7,7 @@ pub enum Error {
     Io(std::io::Error),
     Msg(String),
     MsgWithSpan { msg: String, span: Span },
+    MsgWithSpans { msg: String, spans: Vec<Span> },
 }
 
 impl Error {
@@ -21,19 +22,74 @@ impl Error {
         }
     }
 
+    pub fn msg_with_spans(s: impl Into<String>, spans: Vec<Span>) -> Self {
+        Self::MsgWithSpans {
+            msg: s.into(),
+            spans,
+        }
+    }
+
+    pub fn push_span(self, span: Span) -> Self {
+        match self {
+            Error::MsgWithSpan { msg, span: s } => Error::MsgWithSpans {
+                msg,
+                spans: vec![span, s],
+            },
+            Error::MsgWithSpans { msg, mut spans } => {
+                spans.push(span);
+                Error::MsgWithSpans { msg, spans }
+            }
+            Error::Msg(msg) => Error::MsgWithSpan { msg, span },
+            other => other,
+        }
+    }
+
+    pub fn push_secondary_span(self, span: Span) -> Self {
+        match self {
+            Error::MsgWithSpan { msg, span: primary } => Error::MsgWithSpans {
+                msg,
+                spans: vec![primary, span],
+            },
+            Error::MsgWithSpans { msg, mut spans } => {
+                spans.push(span);
+                Error::MsgWithSpans { msg, spans }
+            }
+            // If we don't have a primary span yet, treat this as a single secondary span.
+            // This avoids overriding future primary span decisions.
+            Error::Msg(msg) => Error::MsgWithSpans {
+                msg,
+                spans: vec![span],
+            },
+            other => other,
+        }
+    }
+
     pub fn span(&self) -> Option<Span> {
         match self {
             Error::MsgWithSpan { span, .. } => Some(*span),
+            Error::MsgWithSpans { spans, .. } => spans.first().copied(),
+            _ => None,
+        }
+    }
+
+    pub fn spans(&self) -> Option<&[Span]> {
+        match self {
+            Error::MsgWithSpan { span, .. } => Some(std::slice::from_ref(span)),
+            Error::MsgWithSpans { spans, .. } => Some(spans.as_slice()),
             _ => None,
         }
     }
 
     pub fn with_context(self, ctx: impl fmt::Display) -> Self {
-        let old = self.to_string();
-        let msg = format!("{ctx}: {old}");
         match self {
-            Error::MsgWithSpan { span, .. } => Error::msg_with_span(msg, span),
-            _ => Error::msg(msg),
+            Error::Msg(old) => Error::msg(format!("{ctx}: {old}")),
+            Error::MsgWithSpan { msg: old, span } => {
+                Error::msg_with_span(format!("{ctx}: {old}"), span)
+            }
+            Error::MsgWithSpans { msg: old, spans } => {
+                Error::msg_with_spans(format!("{ctx}: {old}"), spans)
+            }
+            other => Error::msg(format!("{ctx}: {other}")),
         }
     }
 }
@@ -44,6 +100,7 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "{e}"),
             Error::Msg(s) => write!(f, "{s}"),
             Error::MsgWithSpan { msg, .. } => write!(f, "{msg}"),
+            Error::MsgWithSpans { msg, .. } => write!(f, "{msg}"),
         }
     }
 }
