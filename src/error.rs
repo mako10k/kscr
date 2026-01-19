@@ -76,12 +76,15 @@ impl Error {
     }
 
     pub fn with_context(self, ctx: impl fmt::Display) -> Self {
-        let old = self.to_string();
-        let msg = format!("{ctx}: {old}");
         match self {
-            Error::MsgWithSpan { span, .. } => Error::msg_with_span(msg, span),
-            Error::MsgWithSpans { spans, .. } => Error::msg_with_spans(msg, spans),
-            _ => Error::msg(msg),
+            Error::Msg(old) => Error::msg(format!("{ctx}: {old}")),
+            Error::MsgWithSpan { msg: old, span } => {
+                Error::msg_with_span(format!("{ctx}: {old}"), span)
+            }
+            Error::MsgWithSpans { msg: old, spans } => {
+                Error::msg_with_spans(format!("{ctx}: {old}"), spans)
+            }
+            other => Error::msg(format!("{ctx}: {other}")),
         }
     }
 }
