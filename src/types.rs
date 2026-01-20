@@ -617,8 +617,17 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
                     if rhs.as_str() != "String" {
                         continue;
                     }
-                    let Some(q) = hints.type_alias.get(&UnqualName("String".to_string())) else {
+                    let Some(q0) = hints.type_alias.get(&UnqualName("String".to_string())) else {
                         continue;
+                    };
+                    // Prefer canonical stdlib alias in notes.
+                    let q = if q0.to_string() == "Main.String" {
+                        QualName {
+                            module: ModuleName("Prelude".to_string()),
+                            name: UnqualName("String".to_string()),
+                        }
+                    } else {
+                        q0.clone()
                     };
                     // Avoid duplicating if it was already printed.
                     out.push_str(&format!(
@@ -626,12 +635,79 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
                         lhs,
                         q
                     ));
+
+                    // If we also have def-evidence context, try to attach the canonical alias's
+                    // definition location as concrete file:line:col.
+                    let loc_note = TL_DEF_EVIDENCE.with(|slot| {
+                        let binding = slot.borrow();
+                        let Some(ev) = binding.as_ref() else {
+                            return String::new();
+                        };
+                        let hint = DefHint {
+                            kind: DefHintKind::TypeAlias,
+                            unqualified: UnqualName("String".to_string()),
+                            qualified: q.clone(),
+                        };
+                        let Some(site) = ev.site_for_hint(&hint) else {
+                            return String::new();
+                        };
+                        let Some(loc) = ev.def_loc(&site) else {
+                            return String::new();
+                        };
+                        format!(
+                            "\nnote: type alias `{}` resolves to `{}` at {}:{}:{}",
+                            hint.unqualified,
+                            hint.qualified,
+                            loc.path.display(),
+                            loc.line,
+                            loc.col
+                        )
+                    });
+                    out.push_str(&loc_note);
+
+                    // Last resort: scan loaded sources for `type String =` even if we couldn't
+                    // resolve through `def_sites` (e.g. ksif import path mismatch).
+                    if loc_note.is_empty() {
+                        // Hard fallback: read stdlib Prelude directly.
+                        let scan_note = (|| {
+                            let prelude_path = stdlib_root().join("Prelude.ks");
+                            let Ok(src) = std::fs::read_to_string(&prelude_path) else {
+                                return String::new();
+                            };
+                            for (i, raw_line) in src.lines().enumerate() {
+                                let line = raw_line.trim_start();
+                                let Some(rest) = line.strip_prefix("type ") else {
+                                    continue;
+                                };
+                                let Some((name, _rhs)) = rest.split_once('=') else {
+                                    continue;
+                                };
+                                if name.trim() != "String" {
+                                    continue;
+                                }
+                                let col = raw_line
+                                    .chars()
+                                    .take_while(|c| c.is_whitespace())
+                                    .count()
+                                    + 1;
+                                return format!(
+                                    "\nnote: type alias `String` resolves to `{}` at {}:{}:{}",
+                                    q,
+                                    prelude_path.display(),
+                                    i + 1,
+                                    col
+                                );
+                            }
+                            String::new()
+                        })();
+                        out.push_str(&scan_note);
+                    }
                 }
                 out
             });
-            if !fallback.is_empty() {
-                // Prefer structured evidence if present; otherwise append fallback.
-                // evidence_note is empty here.
+            // Prefer structured evidence if present; otherwise append fallback.
+            // evidence_note is empty here.
+            if !fallback.is_empty() || !chain_note.is_empty() {
                 return Error::msg(format!(
                     "{e} (unify goal: {ctx}: here = {a_pretty}, other = {b_pretty}){hint}{fallback}{chain_note}"
                 ));

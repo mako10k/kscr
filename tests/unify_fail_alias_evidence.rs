@@ -28,4 +28,19 @@ fn unify_fail_includes_type_alias_def_location_note() {
         s.contains("note: type alias `Text` expands to"),
         "expected alias expansion note in stderr, got: {s}"
     );
+    assert!(
+        s.contains("`Prelude.String`"),
+        "expected canonical expansion target in stderr, got: {s}"
+    );
+
+    // Stronger C (A + B): include the canonical alias's def-site location.
+    // Keep this robust: we only check for a stdlib path mention.
+    assert!(
+        s.contains("note: type alias `String` resolves to"),
+        "expected canonical alias def-site note in stderr, got: {s}"
+    );
+    assert!(
+        s.contains("stdlib/"),
+        "expected stdlib path in canonical alias def-site note, got: {s}"
+    );
 }
