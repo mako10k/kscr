@@ -10,6 +10,7 @@ use crate::{ast, error::Error, parser, Result};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::cell::RefCell;
 use std::sync::OnceLock;
 mod stdlib_cache;
 mod toposort;
@@ -140,6 +141,17 @@ pub struct InferCtx {
     class_env: ClassEnvIndex,
 }
 
+#[derive(Debug, Default, Clone)]
+struct NameHints {
+    /// Unqualified type constructor name -> resolved/qualified name.
+    /// Example: `Maybe` -> `Prelude.Maybe`.
+    type_ctor: HashMap<String, String>,
+}
+
+thread_local! {
+    static TL_NAME_HINTS: RefCell<NameHints> = RefCell::new(NameHints::default());
+}
+
 impl InferCtx {
     pub fn fresh(&mut self) -> Ty {
         let v = self.next_var;
@@ -164,13 +176,108 @@ pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
 
 fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
     unify(a.clone(), b.clone()).map_err(|e| {
+        let hint = TL_NAME_HINTS.with(|h| format_unify_name_hints(&a, &b, &h.borrow()));
         // Always attach the concrete unification goal. This dramatically improves debugging
         // for import/name-resolution issues where the root cause is not near the reported span.
         // Keep this compact; callers add spans/contexts.
         Error::msg(format!(
-            "{e} (unify goal: {ctx}: a = {a}, b = {b})"
+            "{e} (unify goal: {ctx}: a = {a}, b = {b}){hint}"
         ))
     })
+}
+
+fn collect_unqualified_type_ctor_hints_from_imported(module: &ast::Module) -> NameHints {
+    // After import-flattening, imported modules are qualified (e.g. `Prelude.Maybe`) and
+    // unqualified forwarders may be emitted as `type Maybe = Prelude.Maybe ...`.
+    // Collect both as lightweight “definition origin” hints.
+    let mut out = NameHints::default();
+    for it in &module.items {
+        match it {
+            ast::Item::TypeAlias(ta) => {
+                if !ta.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    continue;
+                }
+                // Only accept the simplest alias shape: `X = QUAL.X`.
+                if let ast::Type::Var(rhs) = &ta.ty {
+                    if rhs.ends_with(&format!(".{}", ta.name)) {
+                        out.type_ctor.insert(ta.name.clone(), rhs.clone());
+                    }
+                }
+            }
+            ast::Item::DataDecl(dd) => {
+                // Qualified data decls: `data Prelude.Maybe a = ...`
+                // Allow mapping `Maybe` -> `Prelude.Maybe`.
+                if let Some((qual, base)) = dd.name.rsplit_once('.') {
+                    let base = base.to_string();
+                    if base.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                        out.type_ctor
+                            .entry(base.clone())
+                            .or_insert_with(|| format!("{qual}.{base}"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn ty_has_unqualified_ctor(t: &Ty) -> Option<&str> {
+    match t {
+        Ty::Con(name) => {
+            if name.contains('.') {
+                None
+            } else if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                Some(name.as_str())
+            } else {
+                None
+            }
+        }
+        Ty::List(t) => ty_has_unqualified_ctor(t),
+        Ty::Tuple(ts) => ts.iter().find_map(ty_has_unqualified_ctor),
+        Ty::Record(fs) => fs.iter().find_map(|(_, t)| ty_has_unqualified_ctor(t)),
+        Ty::RecordOpen(fs, rest) => fs
+            .iter()
+            .find_map(|(_, t)| ty_has_unqualified_ctor(t))
+            .or_else(|| ty_has_unqualified_ctor(rest)),
+        Ty::App { head, args } => ty_has_unqualified_ctor(head)
+            .or_else(|| args.iter().find_map(ty_has_unqualified_ctor)),
+        Ty::Func(a, b) => ty_has_unqualified_ctor(a).or_else(|| ty_has_unqualified_ctor(b)),
+        Ty::Var(_) => None,
+    }
+}
+
+fn format_unify_name_hints(a: &Ty, b: &Ty, hints: &NameHints) -> String {
+    // Keep this short: show at most one ctor name hint.
+    for name in [ty_has_unqualified_ctor(a), ty_has_unqualified_ctor(b)]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(q) = hints.type_ctor.get(name) {
+            return format!(" (hint: type ctor `{name}` resolves to `{q}`)");
+        }
+    }
+    String::new()
+}
+
+fn format_unknown_ctor_name_hint(name: &str, hints: &NameHints) -> String {
+    // Known dotted names often fail due to missing qualified import/alias.
+    if name.contains('.') {
+        return " (hint: check qualified imports / aliasing)".to_string();
+    }
+
+    // For unqualified type ctor names, try to point to the resolved qualified name.
+    if name
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase())
+    {
+        if let Some(q) = hints.type_ctor.get(name) {
+            return format!(" (hint: `{name}` resolves to `{q}`)");
+        }
+    }
+
+    String::new()
 }
 
 fn last_ty_seg(name: &str) -> &str {
@@ -1048,11 +1155,7 @@ fn infer_pat_constructor(
     cs_out: &mut Vec<Constraint>,
 ) -> Result<Ty> {
     let scheme = env.get(name).ok_or_else(|| {
-        let hint = if name.contains('.') {
-            " (hint: check qualified imports / aliasing)"
-        } else {
-            ""
-        };
+        let hint = TL_NAME_HINTS.with(|h| format_unknown_ctor_name_hint(name, &h.borrow()));
         Error::msg(format!("unknown constructor: {name}{hint}"))
     })?;
     let scheme = apply_scheme(subst, scheme);
@@ -3927,11 +4030,7 @@ fn infer_expr_in(
         ExprKind::Ctor(name) => {
             let key = name.qualified_text();
             let s = env.get(&key).ok_or_else(|| {
-                let hint = if key.contains('.') {
-                    " (hint: check qualified imports / aliasing)"
-                } else {
-                    ""
-                };
+                let hint = TL_NAME_HINTS.with(|h| format_unknown_ctor_name_hint(&key, &h.borrow()));
                 Error::msg_with_span(format!("unknown constructor: {key}{hint}"), span)
             })?;
             let s = apply_scheme(subst_env, s);
@@ -5003,6 +5102,9 @@ fn typecheck_internal_core(
             return Ok(TypedModule { module, inferred });
         }
     }
+
+    let name_hints = collect_unqualified_type_ctor_hints_from_imported(&module);
+    TL_NAME_HINTS.with(|h| *h.borrow_mut() = name_hints);
 
     let aliases = collect_type_aliases(&module);
     module.items = module
@@ -10020,6 +10122,33 @@ mod inference_tests {
         .unwrap();
         let e = typecheck_file(&bad).unwrap_err();
         assert!(format!("{e}").contains("unknown constructor"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unknown_constructor_error_shows_type_ctor_resolution_hint() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_unknown_ctor_resolution_hint_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Provide a standard Prelude import so qualified names exist, but reference
+        // an unqualified type ctor that is not in scope. The error message should
+        // still hint the likely resolution.
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import Prelude.Read\n\n  bad : Maybe Integer = Nothing\n",
+        )
+        .unwrap();
+
+        let e = typecheck_file(&main).unwrap_err();
+        let msg = format!("{e}");
+        assert!(msg.contains("unknown constructor: Maybe"));
+        assert!(msg.contains("resolves to `Prelude.Maybe`"));
 
         let _ = std::fs::remove_dir_all(dir);
     }
