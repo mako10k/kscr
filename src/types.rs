@@ -7,7 +7,6 @@
 //! - Potentially lossy conversions happen only at boundaries as checked casts.
 
 use crate::{ast, error::Error, parser, Result};
-use crate::error::SourceSpan;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -41,6 +40,14 @@ struct DefSiteIndex {
     /// Qualified type constructor name -> definition site.
     /// Example: `Prelude.Maybe` -> (stdlib/Prelude.ks, span-of-data-decl)
     type_ctor: HashMap<String, DefSite>,
+
+    /// Qualified value constructor name -> definition site.
+    /// Example: `Prelude.Just` -> (stdlib/Prelude.ks, span-of-ctor)
+    value_ctor: HashMap<String, DefSite>,
+
+    /// Qualified type alias name -> definition site.
+    /// Example: `Prelude.String` -> (stdlib/Prelude.ks, span-of-type-alias)
+    type_alias: HashMap<String, DefSite>,
 }
 
 // (reserved) definition-location helpers will be added once def-site evidence is wired
@@ -170,10 +177,97 @@ struct NameHints {
     /// Unqualified type constructor name -> resolved/qualified name.
     /// Example: `Maybe` -> `Prelude.Maybe`.
     type_ctor: HashMap<String, String>,
+
+    /// Unqualified value constructor name -> resolved/qualified name.
+    /// Example: `Just` -> `Prelude.Just`.
+    value_ctor: HashMap<String, String>,
+
+    /// Unqualified type alias name -> resolved/qualified name.
+    /// Example: `String` -> `Prelude.String`.
+    type_alias: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum DefHintKind {
+    TypeCtor,
+    ValueCtor,
+    TypeAlias,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DefHint {
+    kind: DefHintKind,
+    /// Unqualified name that appeared in the type/error context.
+    unqualified: String,
+    /// Resolved qualified name (e.g. `Prelude.Maybe`).
+    qualified: String,
 }
 
 thread_local! {
     static TL_NAME_HINTS: RefCell<NameHints> = RefCell::new(NameHints::default());
+}
+
+thread_local! {
+    static TL_DEF_EVIDENCE: RefCell<Option<DefEvidenceCtx>> = RefCell::new(None);
+}
+
+#[derive(Clone)]
+struct DefEvidenceCtx {
+    def_sites: DefSiteIndex,
+    sources: HashMap<PathBuf, String>,
+}
+
+impl DefEvidenceCtx {
+    fn from_loader(loader: &ModuleLoader) -> Self {
+        Self {
+            def_sites: loader.def_sites.clone(),
+            sources: loader.sources.clone(),
+        }
+    }
+
+    fn def_loc(&self, site: &DefSite) -> Option<DefLoc> {
+        let src = self.sources.get(&site.path)?;
+        let start_off = site.span.start.min(src.len());
+
+        let mut line: usize = 1;
+        let mut last_nl: usize = 0;
+        for (i, ch) in src.char_indices() {
+            if i >= start_off {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                last_nl = i + 1;
+            }
+        }
+        let col = src[last_nl..start_off].chars().count() + 1;
+        Some(DefLoc {
+            path: site.path.clone(),
+            line,
+            col,
+        })
+    }
+
+    fn site_for_hint(&self, hint: &DefHint) -> Option<DefSite> {
+        match hint.kind {
+            DefHintKind::TypeCtor => self.def_sites.type_ctor.get(&hint.qualified).cloned(),
+            DefHintKind::ValueCtor => self.def_sites.value_ctor.get(&hint.qualified).cloned(),
+            DefHintKind::TypeAlias => self.def_sites.type_alias.get(&hint.qualified).cloned(),
+        }
+    }
+}
+
+struct WithDefEvidence;
+
+impl WithDefEvidence {
+    fn run<T>(ctx: DefEvidenceCtx, f: impl FnOnce() -> T) -> T {
+        TL_DEF_EVIDENCE.with(|slot| {
+            let prev = slot.replace(Some(ctx));
+            let out = f();
+            slot.replace(prev);
+            out
+        })
+    }
 }
 
 impl InferCtx {
@@ -201,59 +295,91 @@ pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
 fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
     unify(a.clone(), b.clone()).map_err(|e| {
         let hint = TL_NAME_HINTS.with(|h| format_unify_name_hints(&a, &b, &h.borrow()));
+        let evidence = TL_NAME_HINTS.with(|h| collect_unify_def_hints(&a, &b, &h.borrow()));
+        let evidence_note = TL_DEF_EVIDENCE.with(|slot| {
+            let binding = slot.borrow();
+            let Some(ev) = binding.as_ref() else {
+                return String::new();
+            };
+            let mut lines: Vec<String> = Vec::new();
+            for h in evidence {
+                let Some(site) = ev.site_for_hint(&h) else {
+                    continue;
+                };
+                let Some(loc) = ev.def_loc(&site) else {
+                    continue;
+                };
+                let kind = match h.kind {
+                    DefHintKind::TypeCtor => "type ctor",
+                    DefHintKind::ValueCtor => "value ctor",
+                    DefHintKind::TypeAlias => "type alias",
+                };
+                lines.push(format!(
+                    "note: {kind} `{}` resolves to `{}` at {}:{}:{}",
+                    h.unqualified,
+                    h.qualified,
+                    loc.path.display(),
+                    loc.line,
+                    loc.col
+                ));
+            }
+            if lines.is_empty() {
+                String::new()
+            } else {
+                format!("\n{}", lines.join("\n"))
+            }
+        });
         // Always attach the concrete unification goal. This dramatically improves debugging
         // for import/name-resolution issues where the root cause is not near the reported span.
         // Keep this compact; callers add spans/contexts.
         Error::msg(format!(
-            "{e} (unify goal: {ctx}: a = {a}, b = {b}){hint}"
+            "{e} (unify goal: {ctx}: a = {a}, b = {b}){hint}{evidence_note}"
         ))
     })
 }
 
-fn unify_dbg_with_evidence(
-    loader: &ModuleLoader,
-    a: Ty,
-    b: Ty,
-    ctx: &str,
-) -> Result<Subst> {
-    let ev = TL_NAME_HINTS.with(|h| collect_unify_evidence(loader, &a, &b, &h.borrow()));
-    unify_dbg(a, b, ctx).map_err(|e| attach_unify_evidence(e, ev))
-}
+fn collect_unify_def_hints(a: &Ty, b: &Ty, hints: &NameHints) -> Vec<DefHint> {
+    let mut out: Vec<DefHint> = Vec::new();
 
-fn attach_unify_evidence(mut e: Error, evidence: Vec<SourceSpan>) -> Error {
-    // Avoid duplicating the primary span: the caller usually pushes it after this.
-    for s in evidence {
-        e = e.push_secondary_source_span(s);
-    }
-    e
-}
-
-fn collect_unify_evidence(
-    loader: &ModuleLoader,
-    a: &Ty,
-    b: &Ty,
-    hints: &NameHints,
-) -> Vec<SourceSpan> {
-    let mut out = Vec::new();
     for t in [a, b] {
-        let Some(unqual) = ty_has_unqualified_ctor(t) else {
-            continue;
-        };
-        let Some(qual) = hints.type_ctor.get(unqual) else {
-            continue;
-        };
-        // Example: `Prelude.Maybe` -> definition site from ModuleLoader index.
-        if let Some(site) = loader.def_sites.type_ctor.get(qual) {
-            out.push(SourceSpan {
-                path: site.path.clone(),
-                span: site.span,
-            });
+        if let Some(unqual) = ty_has_unqualified_type_ctor(t) {
+            if let Some(qual) = hints.type_ctor.get(unqual) {
+                out.push(DefHint {
+                    kind: DefHintKind::TypeCtor,
+                    unqualified: unqual.to_string(),
+                    qualified: qual.clone(),
+                });
+            }
+        }
+
+        if let Some(unqual) = ty_has_unqualified_type_alias(t) {
+            if let Some(qual) = hints.type_alias.get(unqual) {
+                out.push(DefHint {
+                    kind: DefHintKind::TypeAlias,
+                    unqualified: unqual.to_string(),
+                    qualified: qual.clone(),
+                });
+            }
         }
     }
+
+    fn kind_rank(k: &DefHintKind) -> u8 {
+        match k {
+            DefHintKind::TypeCtor => 0,
+            DefHintKind::ValueCtor => 1,
+            DefHintKind::TypeAlias => 2,
+        }
+    }
+
+    out.sort_by(|a, b| {
+        (kind_rank(&a.kind), a.unqualified.as_str(), a.qualified.as_str())
+            .cmp(&(kind_rank(&b.kind), b.unqualified.as_str(), b.qualified.as_str()))
+    });
+    out.dedup();
     out
 }
 
-fn collect_unqualified_type_ctor_hints_from_imported(module: &ast::Module) -> NameHints {
+fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHints {
     // After import-flattening, imported modules are qualified (e.g. `Prelude.Maybe`) and
     // unqualified forwarders may be emitted as `type Maybe = Prelude.Maybe ...`.
     // Collect both as lightweight “definition origin” hints.
@@ -261,13 +387,15 @@ fn collect_unqualified_type_ctor_hints_from_imported(module: &ast::Module) -> Na
     for it in &module.items {
         match it {
             ast::Item::TypeAlias(ta) => {
-                if !ta.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    continue;
-                }
                 // Only accept the simplest alias shape: `X = QUAL.X`.
+                // (unqualified forwarders emitted for imported modules)
                 if let ast::Type::Var(rhs) = &ta.ty {
                     if rhs.ends_with(&format!(".{}", ta.name)) {
-                        out.type_ctor.insert(ta.name.clone(), rhs.clone());
+                        if ta.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                            out.type_ctor.insert(ta.name.clone(), rhs.clone());
+                        } else {
+                            out.type_alias.insert(ta.name.clone(), rhs.clone());
+                        }
                     }
                 }
             }
@@ -282,6 +410,17 @@ fn collect_unqualified_type_ctor_hints_from_imported(module: &ast::Module) -> Na
                             .or_insert_with(|| format!("{qual}.{base}"));
                     }
                 }
+
+                // Constructors (values): map `Just` -> `Prelude.Just`.
+                for ctor in &dd.ctors {
+                    if let Some((qual, base)) = ctor.name.rsplit_once('.') {
+                        if base.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                            out.value_ctor
+                                .entry(base.to_string())
+                                .or_insert_with(|| format!("{qual}.{base}"));
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -289,8 +428,7 @@ fn collect_unqualified_type_ctor_hints_from_imported(module: &ast::Module) -> Na
     out
 }
 
-
-fn ty_has_unqualified_ctor(t: &Ty) -> Option<&str> {
+fn ty_has_unqualified_type_ctor(t: &Ty) -> Option<&str> {
     match t {
         Ty::Con(name) => {
             if name.contains('.') {
@@ -301,23 +439,30 @@ fn ty_has_unqualified_ctor(t: &Ty) -> Option<&str> {
                 None
             }
         }
-        Ty::List(t) => ty_has_unqualified_ctor(t),
-        Ty::Tuple(ts) => ts.iter().find_map(ty_has_unqualified_ctor),
-        Ty::Record(fs) => fs.iter().find_map(|(_, t)| ty_has_unqualified_ctor(t)),
+        Ty::List(t) => ty_has_unqualified_type_ctor(t),
+        Ty::Tuple(ts) => ts.iter().find_map(ty_has_unqualified_type_ctor),
+        Ty::Record(fs) => fs.iter().find_map(|(_, t)| ty_has_unqualified_type_ctor(t)),
         Ty::RecordOpen(fs, rest) => fs
             .iter()
-            .find_map(|(_, t)| ty_has_unqualified_ctor(t))
-            .or_else(|| ty_has_unqualified_ctor(rest)),
-        Ty::App { head, args } => ty_has_unqualified_ctor(head)
-            .or_else(|| args.iter().find_map(ty_has_unqualified_ctor)),
-        Ty::Func(a, b) => ty_has_unqualified_ctor(a).or_else(|| ty_has_unqualified_ctor(b)),
+            .find_map(|(_, t)| ty_has_unqualified_type_ctor(t))
+            .or_else(|| ty_has_unqualified_type_ctor(rest)),
+        Ty::App { head, args } => ty_has_unqualified_type_ctor(head)
+            .or_else(|| args.iter().find_map(ty_has_unqualified_type_ctor)),
+        Ty::Func(a, b) => ty_has_unqualified_type_ctor(a).or_else(|| ty_has_unqualified_type_ctor(b)),
         Ty::Var(_) => None,
     }
 }
 
+fn ty_has_unqualified_type_alias(_t: &Ty) -> Option<&str> {
+    // NOTE: `Ty` currently does not represent aliases explicitly.
+    // We'll emit alias evidence from places that *do* know alias usage (e.g. type lowering).
+    None
+}
+
+
 fn format_unify_name_hints(a: &Ty, b: &Ty, hints: &NameHints) -> String {
     // Keep this short: show at most one ctor name hint.
-    for name in [ty_has_unqualified_ctor(a), ty_has_unqualified_ctor(b)]
+    for name in [ty_has_unqualified_type_ctor(a), ty_has_unqualified_type_ctor(b)]
         .into_iter()
         .flatten()
     {
@@ -1278,7 +1423,9 @@ fn infer_pat_in(
         PatternKind::Tuple(ps) => {
             infer_pat_tuple(cx, data_env, subst, env, ps, binds, seen, cs_out)
         }
-        PatternKind::List(ps) => infer_pat_list(cx, data_env, subst, env, ps, binds, seen, cs_out),
+        PatternKind::List(ps) => {
+            infer_pat_list(cx, data_env, subst, env, ps, binds, seen, cs_out)
+        }
         PatternKind::Record(fields) => {
             infer_pat_record(cx, data_env, subst, env, fields, binds, seen, cs_out)
         }
@@ -4040,7 +4187,7 @@ fn infer_one_letrec_binding(
     cxi: &mut LetrecInferCx<'_>,
     b: ast::Binding,
 ) -> Result<LetrecBindingInfer> {
-    let mut binds = Vec::new();
+    let mut binds: Vec<(String, Ty)> = Vec::new();
     let mut seen = HashSet::new();
     let mut cs_pat = Vec::new();
     let pat_ty = infer_pat_in(
@@ -4284,7 +4431,8 @@ fn infer_expr_in(
         ExprKind::Let { bindings, body } => {
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "let")?;
             let subst_body = compose(&s_bind, subst_env);
-            let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &subst_body, &env2, *body)
+            let (s_body, cs_body, t_body) =
+                infer_expr_in(cx, data_env, &subst_body, &env2, *body)
                 .map_err(|e| e.with_context("in let body"))?;
             let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
@@ -4293,7 +4441,8 @@ fn infer_expr_in(
         ExprKind::Where { expr, bindings } => {
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "where")?;
             let subst_body = compose(&s_bind, subst_env);
-            let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &subst_body, &env2, *expr)
+            let (s_body, cs_body, t_body) =
+                infer_expr_in(cx, data_env, &subst_body, &env2, *expr)
                 .map_err(|e| e.with_context("in where body"))?;
             let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
@@ -4473,14 +4622,16 @@ fn infer_expr_if(
     let mut cs = apply_constraints(&s, cs_cond);
 
     let subst2 = compose(&s, subst_env);
-    let (s_then, cs_then, t_then) = infer_expr_in(cx, data_env, &subst2, env, then_branch)
+    let (s_then, cs_then, t_then) =
+        infer_expr_in(cx, data_env, &subst2, env, then_branch)
         .map_err(|e| e.with_context("in if then"))?;
     s = compose(&s_then, &s);
     cs = apply_constraints(&s, cs);
     cs.extend(apply_constraints(&s, cs_then));
 
     let subst3 = compose(&s, subst_env);
-    let (s_else, cs_else, t_else) = infer_expr_in(cx, data_env, &subst3, env, else_branch)
+    let (s_else, cs_else, t_else) =
+        infer_expr_in(cx, data_env, &subst3, env, else_branch)
         .map_err(|e| e.with_context("in if else"))?;
     s = compose(&s_else, &s);
     cs = apply_constraints(&s, cs);
@@ -4622,8 +4773,7 @@ fn infer_expr_case(
         return Err(Error::msg_with_span("empty case", span));
     }
 
-    let (mut s, mut cs, scrut_ty) =
-        infer_expr_in(cx, data_env, subst_env, env, expr).map_err(|e| {
+    let (mut s, mut cs, scrut_ty) = infer_expr_in(cx, data_env, subst_env, env, expr).map_err(|e| {
             if std::env::var("KSCR_DEBUG_CASE_UNIFY").ok().as_deref() == Some("1") {
                 eprintln!("[KSCR_DEBUG_CASE_UNIFY] scrutinee inference failed: {e}");
             }
@@ -4639,7 +4789,7 @@ fn infer_expr_case(
 
         pats_for_exhaustive_check.push((pat.clone(), guard.is_some()));
 
-        let mut binds = Vec::new();
+        let mut binds: Vec<(String, Ty)> = Vec::new();
         let mut seen = HashSet::new();
         let mut cs_pat = Vec::new();
         let pat_ty = infer_pat_in(
@@ -4753,7 +4903,7 @@ fn infer_expr_do(
 
         match stmt {
             ast::DoStmt::Bind { pat, expr } => {
-                let mut binds = Vec::new();
+                let mut binds: Vec<(String, Ty)> = Vec::new();
                 let mut seen = HashSet::new();
                 let mut cs_pat = Vec::new();
                 let pat_ty = infer_pat_in(
@@ -4948,6 +5098,8 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     let mut module =
         load_module_with_imports_ast_with_loader(&mut loader, &entry, entry_dir, &entry_mod)?;
 
+    let def_ctx = DefEvidenceCtx::from_loader(&loader);
+
     // Stage 2 (MVP): Default to loading interface-only artifacts (.ksif) for imports.
     // Opt out via `KSCR_USE_KSIF=0`.
     let use_ksif = std::env::var("KSCR_USE_KSIF").ok().as_deref() != Some("0");
@@ -4956,14 +5108,14 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
         // `Item::Import` from the final module.
         let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
         inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
-        return typecheck_with_stdlib_class_env_with_imported_with_entry_path(
-            module,
-            imported,
-            Some(&entry),
-        );
+        return WithDefEvidence::run(def_ctx, || {
+            typecheck_with_stdlib_class_env_with_imported_with_entry_path(module, imported, Some(&entry))
+        });
     }
 
-    typecheck_with_stdlib_class_env_with_entry_path(module, Some(&entry))
+    WithDefEvidence::run(def_ctx, || {
+        typecheck_with_stdlib_class_env_with_entry_path(module, Some(&entry))
+    })
 }
 
 fn inject_imported_ksif_forwarders(
@@ -5426,7 +5578,7 @@ fn typecheck_internal_core_with_entry_path(
         }
     }
 
-    let name_hints = collect_unqualified_type_ctor_hints_from_imported(&module);
+    let name_hints = collect_unqualified_name_hints_from_imported(&module);
     TL_NAME_HINTS.with(|h| *h.borrow_mut() = name_hints);
 
     let aliases = collect_type_aliases(&module);
@@ -5454,12 +5606,14 @@ fn typecheck_internal_core_with_entry_path(
     let mut cx_for_index = InferCtx::default();
     let class_index = build_class_method_scheme_index(&mut cx_for_index, &class_env)?;
 
-    let inferred = infer_module_with_class_env_with_entry_path(
-        &module,
-        &class_env,
-        &class_index,
-        entry_path,
-    )?;
+    let inferred = if let Some(entry_path) = entry_path {
+        // Best-effort: when typechecking from a file, we have a ModuleLoader in the caller
+        // (typecheck_file) and can provide real file:line:col evidence.
+        // If there is no loader context, this falls back to no evidence.
+        infer_module_with_class_env_with_entry_path(&module, &class_env, &class_index, Some(entry_path))?
+    } else {
+        infer_module_with_class_env_with_entry_path(&module, &class_env, &class_index, None)?
+    };
 
     if let Some(main) = inferred.get("main") {
         let expected = Ty::App {
@@ -6172,6 +6326,17 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
 }
 
 impl ModuleLoader {
+    fn empty_for_tests() -> Self {
+        Self {
+            cache: HashMap::new(),
+            sources: HashMap::new(),
+            stack: Vec::new(),
+            emitted_qualified: HashSet::new(),
+            emitted_unqualified: HashSet::new(),
+            def_sites: DefSiteIndex::default(),
+        }
+    }
+
     fn debug_print_import(&self, enabled: bool, id: &ast::ImportDecl) {
         if !enabled {
             return;
@@ -6214,45 +6379,50 @@ impl ModuleLoader {
 
         // Record definition sites for later diagnostics.
         // These spans are file-local offsets; path is canonical.
-        // Only index qualified type constructor names (`Module.T`).
         for it in &m.items {
-            if let ast::Item::DataDecl(dd) = it {
-                if dd.name.contains('.') {
-                    self.def_sites.type_ctor.insert(
-                        dd.name.clone(),
-                        DefSite {
-                            path: path.to_path_buf(),
-                            span: dd.span,
-                        },
-                    );
+            match it {
+                ast::Item::DataDecl(dd) => {
+                    // Only index qualified type constructor names (`Module.T`).
+                    if dd.name.contains('.') {
+                        self.def_sites.type_ctor.insert(
+                            dd.name.clone(),
+                            DefSite {
+                                path: path.to_path_buf(),
+                                span: dd.span,
+                            },
+                        );
+                    }
+                    // Value constructors may also be qualified (`Module.C`).
+                    for ctor in &dd.ctors {
+                        if ctor.name.contains('.') {
+                            self.def_sites.value_ctor.insert(
+                                ctor.name.clone(),
+                                DefSite {
+                                    path: path.to_path_buf(),
+                                    span: ctor.span,
+                                },
+                            );
+                        }
+                    }
                 }
+                ast::Item::TypeAlias(ta) => {
+                    // Type aliases can act like “type-level forwarders” across modules.
+                    // Index only qualified names to avoid ambiguity.
+                    if ta.name.contains('.') {
+                        self.def_sites.type_alias.insert(
+                            ta.name.clone(),
+                            DefSite {
+                                path: path.to_path_buf(),
+                                span: ta.span,
+                            },
+                        );
+                    }
+                }
+                _ => {}
             }
         }
         self.cache.insert(path.to_path_buf(), m.clone());
         Ok(m)
-    }
-
-    fn def_loc(&self, site: &DefSite) -> Option<DefLoc> {
-        let src = self.sources.get(&site.path)?;
-        let start_off = site.span.start.min(src.len());
-
-        let mut line: usize = 1;
-        let mut last_nl: usize = 0;
-        for (i, ch) in src.char_indices() {
-            if i >= start_off {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                last_nl = i + 1;
-            }
-        }
-        let col = src[last_nl..start_off].chars().count() + 1;
-        Some(DefLoc {
-            path: site.path.clone(),
-            line,
-            col,
-        })
     }
 
     fn validate_import_cyclic(&self, p: &Path) -> Result<()> {
@@ -9307,7 +9477,7 @@ fn infer_module_with_class_env(
             let b = &bindings[bi];
             let ctx_name = &ctx_names[bi];
 
-            let mut binds = Vec::new();
+            let mut binds: Vec<(String, Ty)> = Vec::new();
             let mut seen = HashSet::new();
             let mut cs_pat = Vec::new();
             let pat_ty = infer_pat_in(
@@ -9322,8 +9492,14 @@ fn infer_module_with_class_env(
             )
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
-            let (s_rhs, cs_rhs, t_rhs) =
-                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(|e| {
+            let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(
+                &mut cx,
+                &data_env,
+                &subst,
+                &env_scc,
+                b.expr.clone(),
+            )
+            .map_err(|e| {
                     // If the inner error doesn't have a useful primary span,
                     // promote the binding RHS span as the primary location.
                     let mut e = e;
@@ -9447,7 +9623,7 @@ fn infer_module_with_class_env_with_entry_path(
             let b = &bindings[bi];
             let ctx_name = &ctx_names[bi];
 
-            let mut binds = Vec::new();
+            let mut binds: Vec<(String, Ty)> = Vec::new();
             let mut seen = HashSet::new();
             let mut cs_pat = Vec::new();
             let pat_ty = infer_pat_in(
@@ -9462,8 +9638,14 @@ fn infer_module_with_class_env_with_entry_path(
             )
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
-            let (s_rhs, cs_rhs, t_rhs) =
-                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(|e| {
+            let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(
+                &mut cx,
+                &data_env,
+                &subst,
+                &env_scc,
+                b.expr.clone(),
+            )
+            .map_err(|e| {
                     // If the inner error doesn't have a useful primary span,
                     // promote the binding RHS span as the primary location.
                     let mut e = e;
