@@ -163,12 +163,13 @@ pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
 }
 
 fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
-    unify(a.clone(), b.clone()).inspect_err(|_e| {
-        if std::env::var("KSCR_DEBUG_UNIFY").ok().as_deref() == Some("1") {
-            eprintln!("[KSCR_DEBUG_UNIFY] {ctx}");
-            eprintln!("  a: {a}");
-            eprintln!("  b: {b}");
-        }
+    unify(a.clone(), b.clone()).map_err(|e| {
+        // Always attach the concrete unification goal. This dramatically improves debugging
+        // for import/name-resolution issues where the root cause is not near the reported span.
+        // Keep this compact; callers add spans/contexts.
+        Error::msg(format!(
+            "{e} (unify goal: {ctx}: a = {a}, b = {b})"
+        ))
     })
 }
 
