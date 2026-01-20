@@ -6572,6 +6572,7 @@ fn import_unqualified_forwarders(
 
     let mut values = HashSet::new();
     let mut type_aliases = HashMap::new();
+    let mut data_decls: HashMap<String, ast::DataDecl> = HashMap::new();
     for it in import_items(module) {
         match it {
             ast::Item::Binding(b) => pat_defined_names(&b.pat, &mut values),
@@ -6580,6 +6581,7 @@ fn import_unqualified_forwarders(
             }
             ast::Item::DataDecl(d) => {
                 values.extend(d.ctors.iter().map(|c| c.name.clone()));
+                data_decls.insert(d.name.clone(), d);
             }
             ast::Item::Import(_)
             | ast::Item::Export(_)
@@ -6621,6 +6623,26 @@ fn import_unqualified_forwarders(
                 ty,
             }));
         }
+
+        // Data declarations also introduce a type constructor name that should be usable
+        // unqualified in annotations (e.g. `Maybe a`). Provide an alias to the qualified name.
+        if let Some(dd) = data_decls.get(n) {
+            let head = ast::Type::Var(format!("{qual}.{}", dd.name));
+            let ty = if dd.params.is_empty() {
+                head
+            } else {
+                ast::Type::App {
+                    head: Box::new(head),
+                    args: dd.params.iter().cloned().map(ast::Type::Var).collect(),
+                }
+            };
+            out.push(ast::Item::TypeAlias(ast::TypeAlias {
+                name: dd.name.clone(),
+                params: dd.params.clone(),
+                ty,
+            }));
+        }
+
     }
 
     Ok(out)
@@ -7208,7 +7230,16 @@ fn qualify_type(ty: ast::Type, type_map: &HashMap<String, String>) -> Result<ast
                 .collect::<Result<Vec<_>>>()?,
             Box::new(qualify_type(*r, type_map)?),
         ),
-        Type::Var(n) => Type::Var(type_map.get(&n).cloned().unwrap_or(n)),
+        Type::Var(n) => {
+            // `ast::Type::Var` represents both type variables (lowercase) and type constructors
+            // (uppercase). We only qualify constructors; qualifying type variables would break
+            // polymorphism in signatures.
+            if n.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                Type::Var(type_map.get(&n).cloned().unwrap_or(n))
+            } else {
+                Type::Var(n)
+            }
+        }
         Type::App { head, args } => Type::App {
             head: Box::new(qualify_type(*head, type_map)?),
             args: args
@@ -9879,6 +9910,36 @@ mod unification_tests {
         let a = cx.fresh();
         let t = Ty::List(Box::new(a.clone()));
         assert!(unify(a, t).is_err());
+    }
+}
+
+#[cfg(test)]
+mod import_type_forwarder_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn type_annotation_can_use_unqualified_data_type_from_import() {
+        // Regression test: importing Prelude should make `Maybe` usable in type annotations
+        // (resolved to `Prelude.Maybe`), so this should typecheck.
+        let tmp = std::env::temp_dir().join("kscr_import_type_forwarder_maybe.ks");
+        std::fs::write(
+            &tmp,
+            r#"module ImportTypeForwarderMaybe where
+  export Parser, pureP
+  import Prelude
+
+  type Parser a = String -> Maybe (a, String)
+
+  pureP :: a -> Parser a
+  pureP a = \s -> Just (a, s)
+"#,
+        )
+        .unwrap();
+
+        let typed = typecheck_file(Path::new(&tmp)).unwrap();
+        assert!(typed.inferred.contains_key("pureP"));
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
