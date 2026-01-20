@@ -409,6 +409,25 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
                 });
             }
         });
+        // Fallback: if either side is `[Char]`, emit evidence for the conventional `String`
+        // alias when it is in scope. Alias nodes are erased from `Ty`, so without this, we
+        // can miss the def-site note for common `String` mismatches.
+        if ty_has_list_char(&a) || ty_has_list_char(&b) {
+            TL_NAME_HINTS.with(|h| {
+                let hints = h.borrow();
+                // Prefer a resolved hint, but fall back to `Prelude.String`.
+                let qual = hints
+                    .type_alias
+                    .get("String")
+                    .cloned()
+                    .unwrap_or_else(|| "Prelude.String".to_string());
+                evidence.push(DefHint {
+                    kind: DefHintKind::TypeAlias,
+                    unqualified: "String".to_string(),
+                    qualified: qual,
+                });
+            });
+        }
         fn kind_rank(k: &DefHintKind) -> u8 {
             match k {
                 DefHintKind::TypeCtor => 0,
@@ -421,10 +440,10 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
                 .cmp(&(kind_rank(&b.kind), b.unqualified.as_str(), b.qualified.as_str()))
         });
         evidence.dedup();
-        let evidence_note = TL_DEF_EVIDENCE.with(|slot| {
+        let (evidence_note, evidence_missing) = TL_DEF_EVIDENCE.with(|slot| {
             let binding = slot.borrow();
             let Some(ev) = binding.as_ref() else {
-                return String::new();
+                return (String::new(), true);
             };
             let mut lines: Vec<String> = Vec::new();
             for h in evidence {
@@ -449,11 +468,84 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
                 ));
             }
             if lines.is_empty() {
-                String::new()
+                (String::new(), true)
             } else {
-                format!("\n{}", lines.join("\n"))
+                (format!("\n{}", lines.join("\n")), false)
             }
         });
+        if evidence_missing {
+            // Fallback: if we cannot resolve alias def-sites via loader index (e.g. KSIF path or
+            // qualified-name mismatch), still show *local* alias definitions in the current file.
+            // This satisfies the “prefer A, and C if possible” requirement.
+            let fallback = TL_DEF_EVIDENCE.with(|slot| {
+                let binding = slot.borrow();
+                let Some(ev) = binding.as_ref() else {
+                    return String::new();
+                };
+                // Collect unique paths (we only need the entry file in practice).
+                let mut paths: Vec<PathBuf> = ev.sources.keys().cloned().collect();
+                paths.sort();
+                paths.dedup();
+
+                let mut lines: Vec<String> = Vec::new();
+                for path in paths {
+                    let Some(src) = ev.sources.get(&path) else {
+                        continue;
+                    };
+                    for raw_line in src.lines() {
+                        // Very small heuristic: capture `type <Name> = ...` definitions.
+                        let line = raw_line.trim_start();
+                        let Some(rest) = line.strip_prefix("type ") else {
+                            continue;
+                        };
+                        let Some((name, _rhs)) = rest.split_once('=') else {
+                            continue;
+                        };
+                        let name = name.trim();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        // Only unqualified names.
+                        if name.contains('.') {
+                            continue;
+                        }
+                        // Column is best-effort (1-based) at the start of `type`.
+                        let line_no = src
+                            .lines()
+                            .position(|l| l == raw_line)
+                            .map(|i| i + 1)
+                            .unwrap_or(1);
+                        let col = raw_line.chars().take_while(|c| c.is_whitespace()).count() + 1;
+                        lines.push(format!(
+                            "note: type alias `{}` is defined locally at {}:{}:{}",
+                            name,
+                            path.display(),
+                            line_no,
+                            col
+                        ));
+                    }
+                }
+
+                if lines.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", lines.join("\n"))
+                }
+            });
+            if !fallback.is_empty() {
+                // Prefer structured evidence if present; otherwise append fallback.
+                // evidence_note is empty here.
+                return Error::msg(format!(
+                    "{e} (unify goal: {ctx}: here = {a_pretty}, other = {b_pretty}){hint}{fallback}"
+                ));
+            }
+        }
+        if std::env::var("KSCR_DEBUG_ALIAS_EVIDENCE").ok().as_deref() == Some("1") {
+            eprintln!(
+                "[KSCR_DEBUG_ALIAS_EVIDENCE] unify_dbg evidence_note: {}",
+                if evidence_note.is_empty() { "<empty>" } else { "<non-empty>" }
+            );
+        }
         // Always attach the concrete unification goal. This dramatically improves debugging
         // for import/name-resolution issues where the root cause is not near the reported span.
         // Keep this compact; callers add spans/contexts.
@@ -461,6 +553,10 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
             "{e} (unify goal: {ctx}: here = {a_pretty}, other = {b_pretty}){hint}{evidence_note}"
         ))
     })
+}
+
+fn ty_has_list_char(t: &Ty) -> bool {
+    matches!(t, Ty::List(inner) if matches!(inner.as_ref(), Ty::Con(c) if c == "Char"))
 }
 
 fn collect_unify_def_hints(a: &Ty, b: &Ty, hints: &NameHints) -> Vec<DefHint> {
@@ -522,6 +618,15 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                             out.type_alias.insert(ta.name.clone(), rhs.clone());
                         }
                     }
+                }
+
+                // Type aliases declared in the module itself can be referenced unqualified.
+                // Example: `type String = [Char]` in `Prelude` makes `String` resolve to
+                // `Prelude.String` (not `Main.Prelude.String`).
+                if ta.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    let mname = module.name.as_deref().unwrap_or("Main");
+                    out.type_alias
+                        .insert(ta.name.clone(), format!("{mname}.{}", ta.name));
                 }
             }
             ast::Item::DataDecl(dd) => {
@@ -4673,6 +4778,12 @@ fn infer_expr_annot(
     let (s1, mut cs1, t1) = infer_expr_in(cx, data_env, subst_env, env, expr)?;
     let mut holes = HashMap::new();
 
+    if std::env::var("KSCR_DEBUG_ALIAS_EVIDENCE").ok().as_deref() == Some("1") {
+        TL_NAME_HINTS.with(|h| {
+            eprintln!("[KSCR_DEBUG_ALIAS_EVIDENCE] type_alias hints: {:?}", h.borrow().type_alias);
+        });
+    }
+
     // Lower predicates + annotated type using a shared var map.
     for p in &ty.preds {
         match p {
@@ -5138,7 +5249,19 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
         Type::Bool => Ty::Con("Bool".to_string()),
         Type::Float64 => Ty::Con("Float64".to_string()),
         Type::Char => Ty::Con("Char".to_string()),
-        Type::String => Ty::Con("String".to_string()),
+        Type::String => {
+            // `String` is represented as a surface-type token but is a stdlib type alias.
+            // Record it as alias usage so unify failures can show def-site evidence.
+            TL_NAME_HINTS.with(|h| {
+                let hints = h.borrow();
+                if let Some(qual) = hints.type_alias.get("String").cloned() {
+                    TL_ALIAS_EVIDENCE.with(|slot| {
+                        slot.borrow_mut().push(("String".to_string(), qual));
+                    });
+                }
+            });
+            Ty::Con("String".to_string())
+        }
 
         Type::List(t) => Ty::List(Box::new(lower_surface_type(cx, t, holes))),
         Type::Tuple(ts) => Ty::Tuple(
@@ -5184,6 +5307,16 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
                     .or_insert_with(|| cx.fresh())
                     .clone()
             } else {
+                // Uppercase type names may be type aliases (e.g. `Text`, `String`).
+                // We can't keep alias nodes in `Ty`, so record evidence here.
+                TL_NAME_HINTS.with(|h| {
+                    let hints = h.borrow();
+                    if let Some(qual) = hints.type_alias.get(name).cloned() {
+                        TL_ALIAS_EVIDENCE.with(|slot| {
+                            slot.borrow_mut().push((name.clone(), qual));
+                        });
+                    }
+                });
                 Ty::Con(name.clone())
             }
         }
@@ -5239,6 +5372,22 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     }
 
     WithDefEvidence::run(def_ctx, || {
+        // Ensure the entry module's type alias def-sites are registered. When using the
+        // ModuleLoader path, we must explicitly merge these, otherwise unify evidence for
+        // file-local aliases won't resolve.
+        let alias_def_sites = collect_type_alias_def_sites(&module, Some(&entry));
+        TL_DEF_EVIDENCE.with(|slot| {
+            if let Some(ev) = &mut *slot.borrow_mut() {
+                for (name, site) in alias_def_sites {
+                    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                        ev.def_sites.type_ctor.insert(name, site);
+                    } else {
+                        ev.def_sites.type_alias.insert(name, site);
+                    }
+                }
+            }
+        });
+
         typecheck_with_stdlib_class_env_with_entry_path(module, Some(&entry))
     })
 }
@@ -5687,6 +5836,7 @@ fn typecheck_internal_core_with_entry_path(
     imported: Option<HashMap<String, HashMap<String, Scheme>>>,
     entry_path: Option<&Path>,
 ) -> Result<TypedModule> {
+    WithAliasEvidence::run(|| {
     if module
         .items
         .iter()
@@ -5707,14 +5857,25 @@ fn typecheck_internal_core_with_entry_path(
     TL_NAME_HINTS.with(|h| *h.borrow_mut() = name_hints);
 
     let aliases = collect_type_aliases(&module);
-    let _alias_def_sites = collect_type_alias_def_sites(&module, entry_path);
+    let alias_def_sites = collect_type_alias_def_sites(&module, entry_path);
+    // Make type alias def-sites available to unify evidence.
+    TL_DEF_EVIDENCE.with(|slot| {
+        if let Some(ev) = &mut *slot.borrow_mut() {
+            for (name, site) in alias_def_sites {
+                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                    // Type names that start uppercase are type constructors.
+                    ev.def_sites.type_ctor.insert(name, site);
+                } else {
+                    ev.def_sites.type_alias.insert(name, site);
+                }
+            }
+        }
+    });
     let items_in = std::mem::take(&mut module.items);
-    module.items = WithAliasEvidence::run(|| {
-        items_in
-            .into_iter()
-            .map(|it| expand_item(it, &aliases))
-            .collect::<Result<Vec<_>>>()
-    })?;
+    module.items = items_in
+        .into_iter()
+        .map(|it| expand_item(it, &aliases))
+        .collect::<Result<Vec<_>>>()?;
 
     let mut class_env = desugar_typeclasses(&mut module)?;
 
@@ -5777,6 +5938,7 @@ fn typecheck_internal_core_with_entry_path(
     });
 
     Ok(TypedModule { module, inferred })
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -10737,6 +10899,16 @@ fn expand_type(
         Type::Var(name) => {
             if let Some(alias) = aliases.get(&name) {
                 if alias.params.is_empty() {
+                    // Record alias usage (for stdlib aliases like `String`).
+                    // Resolve to qualified via import hints, so we can later show def-site evidence.
+                    TL_NAME_HINTS.with(|h| {
+                        let hints = h.borrow();
+                        if let Some(qual) = hints.type_alias.get(&alias.name) {
+                            TL_ALIAS_EVIDENCE.with(|slot| {
+                                slot.borrow_mut().push((alias.name.clone(), qual.clone()));
+                            });
+                        }
+                    });
                     expand_alias(alias, &[], aliases, stack)?
                 } else {
                     Type::Var(name)
