@@ -295,6 +295,12 @@ thread_local! {
     static TL_DEF_EVIDENCE: RefCell<Option<DefEvidenceCtx>> = RefCell::new(None);
 }
 
+thread_local! {
+    // Type alias usages encountered during AST lowering/expansion.
+    // Key: unqualified alias name (e.g. `String`). Value: resolved qualified name (e.g. `Prelude.String`).
+    static TL_ALIAS_EVIDENCE: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+}
+
 #[derive(Clone)]
 struct DefEvidenceCtx {
     def_sites: DefSiteIndex,
@@ -354,6 +360,19 @@ impl WithDefEvidence {
     }
 }
 
+struct WithAliasEvidence;
+
+impl WithAliasEvidence {
+    fn run<T>(f: impl FnOnce() -> T) -> T {
+        TL_ALIAS_EVIDENCE.with(|slot| {
+            let prev = std::mem::take(&mut *slot.borrow_mut());
+            let out = f();
+            *slot.borrow_mut() = prev;
+            out
+        })
+    }
+}
+
 impl InferCtx {
     pub fn fresh(&mut self) -> Ty {
         let v = self.next_var;
@@ -380,7 +399,28 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
     unify(a.clone(), b.clone()).map_err(|e| {
         let (a_pretty, b_pretty) = pretty_ty_pair(&a, &b);
         let hint = TL_NAME_HINTS.with(|h| format_unify_name_hints(&a, &b, &h.borrow()));
-        let evidence = TL_NAME_HINTS.with(|h| collect_unify_def_hints(&a, &b, &h.borrow()));
+        let mut evidence = TL_NAME_HINTS.with(|h| collect_unify_def_hints(&a, &b, &h.borrow()));
+        TL_ALIAS_EVIDENCE.with(|slot| {
+            for (unqual, qual) in slot.borrow().iter().cloned() {
+                evidence.push(DefHint {
+                    kind: DefHintKind::TypeAlias,
+                    unqualified: unqual,
+                    qualified: qual,
+                });
+            }
+        });
+        fn kind_rank(k: &DefHintKind) -> u8 {
+            match k {
+                DefHintKind::TypeCtor => 0,
+                DefHintKind::ValueCtor => 1,
+                DefHintKind::TypeAlias => 2,
+            }
+        }
+        evidence.sort_by(|a, b| {
+            (kind_rank(&a.kind), a.unqualified.as_str(), a.qualified.as_str())
+                .cmp(&(kind_rank(&b.kind), b.unqualified.as_str(), b.qualified.as_str()))
+        });
+        evidence.dedup();
         let evidence_note = TL_DEF_EVIDENCE.with(|slot| {
             let binding = slot.borrow();
             let Some(ev) = binding.as_ref() else {
@@ -5668,11 +5708,13 @@ fn typecheck_internal_core_with_entry_path(
 
     let aliases = collect_type_aliases(&module);
     let _alias_def_sites = collect_type_alias_def_sites(&module, entry_path);
-    module.items = module
-        .items
-        .into_iter()
-        .map(|it| expand_item(it, &aliases))
-        .collect::<Result<Vec<_>>>()?;
+    let items_in = std::mem::take(&mut module.items);
+    module.items = WithAliasEvidence::run(|| {
+        items_in
+            .into_iter()
+            .map(|it| expand_item(it, &aliases))
+            .collect::<Result<Vec<_>>>()
+    })?;
 
     let mut class_env = desugar_typeclasses(&mut module)?;
 
@@ -10716,6 +10758,19 @@ fn expand_alias(
     if stack.contains(&alias.name) {
         return Err(Error::msg("recursive type alias"));
     }
+
+    // Record alias usage for later unify diagnostics.
+    // We only know unqualified alias name here; resolve to qualified via current import hints.
+    TL_NAME_HINTS.with(|h| {
+        let hints = h.borrow();
+        if let Some(qual) = hints.type_alias.get(&alias.name) {
+            TL_ALIAS_EVIDENCE.with(|slot| {
+                slot.borrow_mut()
+                    .push((alias.name.clone(), qual.clone()));
+            });
+        }
+    });
+
     stack.push(alias.name.clone());
 
     let env: HashMap<String, ast::Type> = alias
