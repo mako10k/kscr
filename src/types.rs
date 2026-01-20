@@ -260,15 +260,71 @@ pub struct InferCtx {
 struct NameHints {
     /// Unqualified type constructor name -> resolved/qualified name.
     /// Example: `Maybe` -> `Prelude.Maybe`.
-    type_ctor: HashMap<String, String>,
+    type_ctor: HashMap<UnqualName, QualName>,
 
     /// Unqualified value constructor name -> resolved/qualified name.
     /// Example: `Just` -> `Prelude.Just`.
-    value_ctor: HashMap<String, String>,
+    value_ctor: HashMap<UnqualName, QualName>,
 
     /// Unqualified type alias name -> resolved/qualified name.
     /// Example: `String` -> `Prelude.String`.
-    type_alias: HashMap<String, String>,
+    type_alias: HashMap<UnqualName, QualName>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct ModuleName(String);
+
+impl ModuleName {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ModuleName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct UnqualName(String);
+
+impl UnqualName {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for UnqualName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct QualName {
+    module: ModuleName,
+    name: UnqualName,
+}
+
+impl QualName {
+    fn parse(s: &str) -> Option<Self> {
+        let (m, n) = s.rsplit_once('.')?;
+        Some(Self {
+            module: ModuleName(m.to_string()),
+            name: UnqualName(n.to_string()),
+        })
+    }
+
+    fn to_string(&self) -> String {
+        format!("{}.{}", self.module.0, self.name.0)
+    }
+}
+
+impl fmt::Display for QualName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_string())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -282,9 +338,9 @@ enum DefHintKind {
 struct DefHint {
     kind: DefHintKind,
     /// Unqualified name that appeared in the type/error context.
-    unqualified: String,
+    unqualified: UnqualName,
     /// Resolved qualified name (e.g. `Prelude.Maybe`).
-    qualified: String,
+    qualified: QualName,
 }
 
 thread_local! {
@@ -298,7 +354,7 @@ thread_local! {
 thread_local! {
     // Type alias usages encountered during AST lowering/expansion.
     // Key: unqualified alias name (e.g. `String`). Value: resolved qualified name (e.g. `Prelude.String`).
-    static TL_ALIAS_EVIDENCE: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+    static TL_ALIAS_EVIDENCE: RefCell<Vec<(UnqualName, QualName)>> = RefCell::new(Vec::new());
 }
 
 #[derive(Clone)]
@@ -339,10 +395,11 @@ impl DefEvidenceCtx {
     }
 
     fn site_for_hint(&self, hint: &DefHint) -> Option<DefSite> {
+        let key = hint.qualified.to_string();
         match hint.kind {
-            DefHintKind::TypeCtor => self.def_sites.type_ctor.get(&hint.qualified).cloned(),
-            DefHintKind::ValueCtor => self.def_sites.value_ctor.get(&hint.qualified).cloned(),
-            DefHintKind::TypeAlias => self.def_sites.type_alias.get(&hint.qualified).cloned(),
+            DefHintKind::TypeCtor => self.def_sites.type_ctor.get(&key).cloned(),
+            DefHintKind::ValueCtor => self.def_sites.value_ctor.get(&key).cloned(),
+            DefHintKind::TypeAlias => self.def_sites.type_alias.get(&key).cloned(),
         }
     }
 }
@@ -415,15 +472,17 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
         if ty_has_list_char(&a) || ty_has_list_char(&b) {
             TL_NAME_HINTS.with(|h| {
                 let hints = h.borrow();
-                // Prefer a resolved hint, but fall back to `Prelude.String`.
                 let qual = hints
                     .type_alias
-                    .get("String")
+                    .get(&UnqualName("String".to_string()))
                     .cloned()
-                    .unwrap_or_else(|| "Prelude.String".to_string());
+                    .unwrap_or_else(|| QualName {
+                        module: ModuleName("Prelude".to_string()),
+                        name: UnqualName("String".to_string()),
+                    });
                 evidence.push(DefHint {
                     kind: DefHintKind::TypeAlias,
-                    unqualified: "String".to_string(),
+                    unqualified: UnqualName("String".to_string()),
                     qualified: qual,
                 });
             });
@@ -436,8 +495,16 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
             }
         }
         evidence.sort_by(|a, b| {
-            (kind_rank(&a.kind), a.unqualified.as_str(), a.qualified.as_str())
-                .cmp(&(kind_rank(&b.kind), b.unqualified.as_str(), b.qualified.as_str()))
+            (
+                kind_rank(&a.kind),
+                a.unqualified.as_str(),
+                a.qualified.to_string(),
+            )
+            .cmp(&(
+                kind_rank(&b.kind),
+                b.unqualified.as_str(),
+                b.qualified.to_string(),
+            ))
         });
         evidence.dedup();
         let (evidence_note, evidence_missing) = TL_DEF_EVIDENCE.with(|slot| {
@@ -564,20 +631,22 @@ fn collect_unify_def_hints(a: &Ty, b: &Ty, hints: &NameHints) -> Vec<DefHint> {
 
     for t in [a, b] {
         if let Some(unqual) = ty_has_unqualified_type_ctor(t) {
-            if let Some(qual) = hints.type_ctor.get(unqual) {
+            let un = UnqualName(unqual.to_string());
+            if let Some(qual) = hints.type_ctor.get(&un) {
                 out.push(DefHint {
                     kind: DefHintKind::TypeCtor,
-                    unqualified: unqual.to_string(),
+                    unqualified: un,
                     qualified: qual.clone(),
                 });
             }
         }
 
         if let Some(unqual) = ty_has_unqualified_type_alias(t) {
-            if let Some(qual) = hints.type_alias.get(unqual) {
+            let un = UnqualName(unqual.to_string());
+            if let Some(qual) = hints.type_alias.get(&un) {
                 out.push(DefHint {
                     kind: DefHintKind::TypeAlias,
-                    unqualified: unqual.to_string(),
+                    unqualified: un,
                     qualified: qual.clone(),
                 });
             }
@@ -593,8 +662,16 @@ fn collect_unify_def_hints(a: &Ty, b: &Ty, hints: &NameHints) -> Vec<DefHint> {
     }
 
     out.sort_by(|a, b| {
-        (kind_rank(&a.kind), a.unqualified.as_str(), a.qualified.as_str())
-            .cmp(&(kind_rank(&b.kind), b.unqualified.as_str(), b.qualified.as_str()))
+        (
+            kind_rank(&a.kind),
+            a.unqualified.as_str(),
+            a.qualified.to_string(),
+        )
+        .cmp(&(
+            kind_rank(&b.kind),
+            b.unqualified.as_str(),
+            b.qualified.to_string(),
+        ))
     });
     out.dedup();
     out
@@ -613,9 +690,13 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                 if let ast::Type::Var(rhs) = &ta.ty {
                     if rhs.ends_with(&format!(".{}", ta.name)) {
                         if ta.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                            out.type_ctor.insert(ta.name.clone(), rhs.clone());
+                            if let Some(q) = QualName::parse(rhs) {
+                                out.type_ctor.insert(UnqualName(ta.name.clone()), q);
+                            }
                         } else {
-                            out.type_alias.insert(ta.name.clone(), rhs.clone());
+                            if let Some(q) = QualName::parse(rhs) {
+                                out.type_alias.insert(UnqualName(ta.name.clone()), q);
+                            }
                         }
                     }
                 }
@@ -625,8 +706,13 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                 // `Prelude.String` (not `Main.Prelude.String`).
                 if ta.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                     let mname = module.name.as_deref().unwrap_or("Main");
-                    out.type_alias
-                        .insert(ta.name.clone(), format!("{mname}.{}", ta.name));
+                    out.type_alias.insert(
+                        UnqualName(ta.name.clone()),
+                        QualName {
+                            module: ModuleName(mname.to_string()),
+                            name: UnqualName(ta.name.clone()),
+                        },
+                    );
                 }
             }
             ast::Item::DataDecl(dd) => {
@@ -635,9 +721,11 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                 if let Some((qual, base)) = dd.name.rsplit_once('.') {
                     let base = base.to_string();
                     if base.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                        out.type_ctor
-                            .entry(base.clone())
-                            .or_insert_with(|| format!("{qual}.{base}"));
+                        let k = UnqualName(base.clone());
+                        out.type_ctor.entry(k).or_insert_with(|| QualName {
+                            module: ModuleName(qual.to_string()),
+                            name: UnqualName(base.clone()),
+                        });
                     }
                 }
 
@@ -646,8 +734,11 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                     if let Some((qual, base)) = ctor.name.rsplit_once('.') {
                         if base.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                             out.value_ctor
-                                .entry(base.to_string())
-                                .or_insert_with(|| format!("{qual}.{base}"));
+                                .entry(UnqualName(base.to_string()))
+                                .or_insert_with(|| QualName {
+                                    module: ModuleName(qual.to_string()),
+                                    name: UnqualName(base.to_string()),
+                                });
                         }
                     }
                 }
@@ -696,8 +787,11 @@ fn format_unify_name_hints(a: &Ty, b: &Ty, hints: &NameHints) -> String {
         .into_iter()
         .flatten()
     {
-        if let Some(q) = hints.type_ctor.get(name) {
-            return format!(" (hint: type ctor `{name}` resolves to `{q}`)");
+        if let Some(q) = hints.type_ctor.get(&UnqualName(name.to_string())) {
+            return format!(
+                " (hint: type ctor `{name}` resolves to `{}`)",
+                q.to_string()
+            );
         }
     }
     String::new()
@@ -715,8 +809,8 @@ fn format_unknown_ctor_name_hint(name: &str, hints: &NameHints) -> String {
         .next()
         .is_some_and(|c| c.is_ascii_uppercase())
     {
-        if let Some(q) = hints.type_ctor.get(name) {
-            return format!(" (hint: `{name}` resolves to `{q}`)");
+        if let Some(q) = hints.type_ctor.get(&UnqualName(name.to_string())) {
+            return format!(" (hint: `{name}` resolves to `{}`)", q.to_string());
         }
     }
 
@@ -5254,9 +5348,13 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
             // Record it as alias usage so unify failures can show def-site evidence.
             TL_NAME_HINTS.with(|h| {
                 let hints = h.borrow();
-                if let Some(qual) = hints.type_alias.get("String").cloned() {
+                if let Some(qual) = hints
+                    .type_alias
+                    .get(&UnqualName("String".to_string()))
+                    .cloned()
+                {
                     TL_ALIAS_EVIDENCE.with(|slot| {
-                        slot.borrow_mut().push(("String".to_string(), qual));
+                        slot.borrow_mut().push((UnqualName("String".to_string()), qual));
                     });
                 }
             });
@@ -5311,9 +5409,9 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
                 // We can't keep alias nodes in `Ty`, so record evidence here.
                 TL_NAME_HINTS.with(|h| {
                     let hints = h.borrow();
-                    if let Some(qual) = hints.type_alias.get(name).cloned() {
+                    if let Some(qual) = hints.type_alias.get(&UnqualName(name.clone())).cloned() {
                         TL_ALIAS_EVIDENCE.with(|slot| {
-                            slot.borrow_mut().push((name.clone(), qual));
+                            slot.borrow_mut().push((UnqualName(name.clone()), qual));
                         });
                     }
                 });
@@ -10903,9 +11001,12 @@ fn expand_type(
                     // Resolve to qualified via import hints, so we can later show def-site evidence.
                     TL_NAME_HINTS.with(|h| {
                         let hints = h.borrow();
-                        if let Some(qual) = hints.type_alias.get(&alias.name) {
+                        if let Some(qual) = hints
+                            .type_alias
+                            .get(&UnqualName(alias.name.clone()))
+                        {
                             TL_ALIAS_EVIDENCE.with(|slot| {
-                                slot.borrow_mut().push((alias.name.clone(), qual.clone()));
+                                slot.borrow_mut().push((UnqualName(alias.name.clone()), qual.clone()));
                             });
                         }
                     });
@@ -10935,10 +11036,13 @@ fn expand_alias(
     // We only know unqualified alias name here; resolve to qualified via current import hints.
     TL_NAME_HINTS.with(|h| {
         let hints = h.borrow();
-        if let Some(qual) = hints.type_alias.get(&alias.name) {
+        if let Some(qual) = hints
+            .type_alias
+            .get(&UnqualName(alias.name.clone()))
+        {
             TL_ALIAS_EVIDENCE.with(|slot| {
                 slot.borrow_mut()
-                    .push((alias.name.clone(), qual.clone()));
+                    .push((UnqualName(alias.name.clone()), qual.clone()));
             });
         }
     });
