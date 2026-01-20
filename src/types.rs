@@ -269,6 +269,13 @@ struct NameHints {
     /// Unqualified type alias name -> resolved/qualified name.
     /// Example: `String` -> `Prelude.String`.
     type_alias: HashMap<UnqualName, QualName>,
+
+    /// Best-effort alias chain within the current module: `type Text = String` yields
+    /// `Text -> String`.
+    ///
+    /// This intentionally only tracks the simplest shape (RHS is a type var/name), because
+    /// it's just used to enrich unify diagnostics.
+    type_alias_rhs_unqual: HashMap<UnqualName, UnqualName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -599,11 +606,34 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
                     format!("\n{}", lines.join("\n"))
                 }
             });
+
+            // Additional (best-effort) C: if we saw `type Text = String`, also emit the def-site
+            // evidence for `String`'s canonical alias (usually `Prelude.String`) when available.
+            let chain_note = TL_NAME_HINTS.with(|h| {
+                let hints = h.borrow();
+                // Look for any local alias whose RHS is `String`.
+                let mut out = String::new();
+                for (lhs, rhs) in hints.type_alias_rhs_unqual.iter() {
+                    if rhs.as_str() != "String" {
+                        continue;
+                    }
+                    let Some(q) = hints.type_alias.get(&UnqualName("String".to_string())) else {
+                        continue;
+                    };
+                    // Avoid duplicating if it was already printed.
+                    out.push_str(&format!(
+                        "\nnote: type alias `{}` expands to `{}`",
+                        lhs,
+                        q
+                    ));
+                }
+                out
+            });
             if !fallback.is_empty() {
                 // Prefer structured evidence if present; otherwise append fallback.
                 // evidence_note is empty here.
                 return Error::msg(format!(
-                    "{e} (unify goal: {ctx}: here = {a_pretty}, other = {b_pretty}){hint}{fallback}"
+                    "{e} (unify goal: {ctx}: here = {a_pretty}, other = {b_pretty}){hint}{fallback}{chain_note}"
                 ));
             }
         }
@@ -698,6 +728,17 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                                 out.type_alias.insert(UnqualName(ta.name.clone()), q);
                             }
                         }
+                    }
+                }
+
+                // Track local alias chain: `type Text = String`.
+                if let ast::Type::Var(rhs) = &ta.ty {
+                    // Only keep unqualified RHS names.
+                    if !rhs.contains('.') {
+                        out.type_alias_rhs_unqual.insert(
+                            UnqualName(ta.name.clone()),
+                            UnqualName(rhs.clone()),
+                        );
                     }
                 }
 

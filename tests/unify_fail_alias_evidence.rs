@@ -22,4 +22,10 @@ fn unify_fail_includes_type_alias_def_location_note() {
         s.contains("tests/unify_fail_alias_evidence.ks:"),
         "expected location to reference test file, got: {s}"
     );
+
+    // C: also show where `Text` points to.
+    assert!(
+        s.contains("note: type alias `Text` expands to"),
+        "expected alias expansion note in stderr, got: {s}"
+    );
 }
