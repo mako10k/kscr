@@ -77,10 +77,9 @@ pub(super) fn create_diagnostic(
             let Some(range) = span_to_range(doc, s) else {
                 continue;
             };
-            if out
-                .iter()
-                .any(|ri| ri.location.range.start == range.start && ri.location.range.end == range.end)
-            {
+            if out.iter().any(|ri| {
+                ri.location.range.start == range.start && ri.location.range.end == range.end
+            }) {
                 continue;
             }
             out.push(DiagnosticRelatedInformation {
@@ -91,7 +90,11 @@ pub(super) fn create_diagnostic(
                 message: "related location".to_string(),
             });
         }
-        if out.is_empty() { None } else { Some(out) }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     } else if let Some(spans) = err.source_spans() {
         let mut out: Vec<DiagnosticRelatedInformation> = Vec::new();
         for ss in spans.iter().skip(1) {
@@ -101,11 +104,18 @@ pub(super) fn create_diagnostic(
             // Best-effort: without the other document in the VFS, we can't map offsets to line/col.
             // Still provide the URI; clients can open the file.
             out.push(DiagnosticRelatedInformation {
-                location: Location { uri, range: zero_range },
+                location: Location {
+                    uri,
+                    range: zero_range,
+                },
                 message: "related location".to_string(),
             });
         }
-        if out.is_empty() { None } else { Some(out) }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     } else {
         None
     };

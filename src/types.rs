@@ -7,10 +7,10 @@
 //! - Potentially lossy conversions happen only at boundaries as checked casts.
 
 use crate::{ast, error::Error, parser, Result};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::cell::RefCell;
 use std::sync::OnceLock;
 mod stdlib_cache;
 mod toposort;
@@ -166,24 +166,6 @@ impl fmt::Display for Ty {
     }
 }
 
-fn pretty_ty(ty: &Ty) -> String {
-    #[derive(Clone)]
-    struct PrettyTy<'a> {
-        ty: &'a Ty,
-        vars: HashMap<u32, String>,
-    }
-
-    impl fmt::Display for PrettyTy<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            fmt_ty_prec(f, self.ty, 0, &self.vars)
-        }
-    }
-
-    let mut vars: HashMap<u32, String> = HashMap::new();
-    assign_ty_var_names(ty, &mut vars);
-    format!("{}", PrettyTy { ty, vars })
-}
-
 fn pretty_ty_pair(a: &Ty, b: &Ty) -> (String, String) {
     #[derive(Clone)]
     struct PrettyTy<'a> {
@@ -281,11 +263,7 @@ struct NameHints {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct ModuleName(String);
 
-impl ModuleName {
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+impl ModuleName {}
 
 impl fmt::Display for ModuleName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -323,21 +301,20 @@ impl QualName {
         })
     }
 
-    fn to_string(&self) -> String {
+    fn as_key(&self) -> String {
         format!("{}.{}", self.module.0, self.name.0)
     }
 }
 
 impl fmt::Display for QualName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_string())
+        f.write_str(&self.as_key())
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum DefHintKind {
     TypeCtor,
-    ValueCtor,
     TypeAlias,
 }
 
@@ -351,17 +328,18 @@ struct DefHint {
 }
 
 thread_local! {
+    #[allow(clippy::missing_const_for_thread_local)]
     static TL_NAME_HINTS: RefCell<NameHints> = RefCell::new(NameHints::default());
 }
 
 thread_local! {
-    static TL_DEF_EVIDENCE: RefCell<Option<DefEvidenceCtx>> = RefCell::new(None);
+    static TL_DEF_EVIDENCE: RefCell<Option<DefEvidenceCtx>> = const { RefCell::new(None) };
 }
 
 thread_local! {
     // Type alias usages encountered during AST lowering/expansion.
     // Key: unqualified alias name (e.g. `String`). Value: resolved qualified name (e.g. `Prelude.String`).
-    static TL_ALIAS_EVIDENCE: RefCell<Vec<(UnqualName, QualName)>> = RefCell::new(Vec::new());
+    static TL_ALIAS_EVIDENCE: RefCell<Vec<(UnqualName, QualName)>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone)]
@@ -402,10 +380,9 @@ impl DefEvidenceCtx {
     }
 
     fn site_for_hint(&self, hint: &DefHint) -> Option<DefSite> {
-        let key = hint.qualified.to_string();
+        let key = hint.qualified.as_key();
         match hint.kind {
             DefHintKind::TypeCtor => self.def_sites.type_ctor.get(&key).cloned(),
-            DefHintKind::ValueCtor => self.def_sites.value_ctor.get(&key).cloned(),
             DefHintKind::TypeAlias => self.def_sites.type_alias.get(&key).cloned(),
         }
     }
@@ -497,7 +474,6 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
         fn kind_rank(k: &DefHintKind) -> u8 {
             match k {
                 DefHintKind::TypeCtor => 0,
-                DefHintKind::ValueCtor => 1,
                 DefHintKind::TypeAlias => 2,
             }
         }
@@ -505,12 +481,12 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
             (
                 kind_rank(&a.kind),
                 a.unqualified.as_str(),
-                a.qualified.to_string(),
+                a.qualified.as_key(),
             )
             .cmp(&(
                 kind_rank(&b.kind),
                 b.unqualified.as_str(),
-                b.qualified.to_string(),
+                b.qualified.as_key(),
             ))
         });
         evidence.dedup();
@@ -529,7 +505,6 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
                 };
                 let kind = match h.kind {
                     DefHintKind::TypeCtor => "type ctor",
-                    DefHintKind::ValueCtor => "value ctor",
                     DefHintKind::TypeAlias => "type alias",
                 };
                 lines.push(format!(
@@ -762,7 +737,6 @@ fn collect_unify_def_hints(a: &Ty, b: &Ty, hints: &NameHints) -> Vec<DefHint> {
     fn kind_rank(k: &DefHintKind) -> u8 {
         match k {
             DefHintKind::TypeCtor => 0,
-            DefHintKind::ValueCtor => 1,
             DefHintKind::TypeAlias => 2,
         }
     }
@@ -771,13 +745,13 @@ fn collect_unify_def_hints(a: &Ty, b: &Ty, hints: &NameHints) -> Vec<DefHint> {
         (
             kind_rank(&a.kind),
             a.unqualified.as_str(),
-            a.qualified.to_string(),
+            a.qualified.as_key(),
         )
-        .cmp(&(
-            kind_rank(&b.kind),
-            b.unqualified.as_str(),
-            b.qualified.to_string(),
-        ))
+            .cmp(&(
+                kind_rank(&b.kind),
+                b.unqualified.as_str(),
+                b.qualified.as_key(),
+            ))
     });
     out.dedup();
     out
@@ -795,14 +769,17 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                 // (unqualified forwarders emitted for imported modules)
                 if let ast::Type::Var(rhs) = &ta.ty {
                     if rhs.ends_with(&format!(".{}", ta.name)) {
-                        if ta.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                        if ta
+                            .name
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_uppercase())
+                        {
                             if let Some(q) = QualName::parse(rhs) {
                                 out.type_ctor.insert(UnqualName(ta.name.clone()), q);
                             }
-                        } else {
-                            if let Some(q) = QualName::parse(rhs) {
-                                out.type_alias.insert(UnqualName(ta.name.clone()), q);
-                            }
+                        } else if let Some(q) = QualName::parse(rhs) {
+                            out.type_alias.insert(UnqualName(ta.name.clone()), q);
                         }
                     }
                 }
@@ -811,17 +788,20 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                 if let ast::Type::Var(rhs) = &ta.ty {
                     // Only keep unqualified RHS names.
                     if !rhs.contains('.') {
-                        out.type_alias_rhs_unqual.insert(
-                            UnqualName(ta.name.clone()),
-                            UnqualName(rhs.clone()),
-                        );
+                        out.type_alias_rhs_unqual
+                            .insert(UnqualName(ta.name.clone()), UnqualName(rhs.clone()));
                     }
                 }
 
                 // Type aliases declared in the module itself can be referenced unqualified.
                 // Example: `type String = [Char]` in `Prelude` makes `String` resolve to
                 // `Prelude.String` (not `Main.Prelude.String`).
-                if ta.name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                if ta
+                    .name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+                {
                     let mname = module.name.as_deref().unwrap_or("Main");
                     out.type_alias.insert(
                         UnqualName(ta.name.clone()),
@@ -886,7 +866,9 @@ fn ty_has_unqualified_type_ctor(t: &Ty) -> Option<&str> {
             .or_else(|| ty_has_unqualified_type_ctor(rest)),
         Ty::App { head, args } => ty_has_unqualified_type_ctor(head)
             .or_else(|| args.iter().find_map(ty_has_unqualified_type_ctor)),
-        Ty::Func(a, b) => ty_has_unqualified_type_ctor(a).or_else(|| ty_has_unqualified_type_ctor(b)),
+        Ty::Func(a, b) => {
+            ty_has_unqualified_type_ctor(a).or_else(|| ty_has_unqualified_type_ctor(b))
+        }
         Ty::Var(_) => None,
     }
 }
@@ -897,18 +879,17 @@ fn ty_has_unqualified_type_alias(_t: &Ty) -> Option<&str> {
     None
 }
 
-
 fn format_unify_name_hints(a: &Ty, b: &Ty, hints: &NameHints) -> String {
     // Keep this short: show at most one ctor name hint.
-    for name in [ty_has_unqualified_type_ctor(a), ty_has_unqualified_type_ctor(b)]
-        .into_iter()
-        .flatten()
+    for name in [
+        ty_has_unqualified_type_ctor(a),
+        ty_has_unqualified_type_ctor(b),
+    ]
+    .into_iter()
+    .flatten()
     {
         if let Some(q) = hints.type_ctor.get(&UnqualName(name.to_string())) {
-            return format!(
-                " (hint: type ctor `{name}` resolves to `{}`)",
-                q.to_string()
-            );
+            return format!(" (hint: type ctor `{name}` resolves to `{}`)", q);
         }
     }
     String::new()
@@ -921,13 +902,9 @@ fn format_unknown_ctor_name_hint(name: &str, hints: &NameHints) -> String {
     }
 
     // For unqualified type ctor names, try to point to the resolved qualified name.
-    if name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase())
-    {
+    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
         if let Some(q) = hints.type_ctor.get(&UnqualName(name.to_string())) {
-            return format!(" (hint: `{name}` resolves to `{}`)", q.to_string());
+            return format!(" (hint: `{name}` resolves to `{}`)", q);
         }
     }
 
@@ -1332,25 +1309,6 @@ pub fn ftv_scheme(s: &Scheme) -> HashSet<u32> {
 
 fn ftv_env(env: &TypeEnv) -> HashSet<u32> {
     env.values().flat_map(|e| ftv_scheme(&e.scheme)).collect()
-}
-
-fn generalize(env: &TypeEnv, ty: Ty) -> Scheme {
-    generalize_qual(env, vec![], ty)
-}
-
-fn generalize_qual(env: &TypeEnv, constraints: Vec<Constraint>, ty: Ty) -> Scheme {
-    let env_ftv = ftv_env(env);
-    let mut ftv = ftv_ty(&ty);
-    for c in &constraints {
-        ftv.extend(ftv_constraint(c));
-    }
-    let mut vars: Vec<u32> = ftv.difference(&env_ftv).copied().collect();
-    vars.sort_unstable();
-    Scheme {
-        vars,
-        constraints,
-        ty,
-    }
 }
 
 fn ftv_env_applied_from_ftv(subst: &Subst, env_ftv: &HashSet<u32>) -> HashSet<u32> {
@@ -1864,9 +1822,7 @@ fn infer_pat_in(
         PatternKind::Tuple(ps) => {
             infer_pat_tuple(cx, data_env, subst, env, ps, binds, seen, cs_out)
         }
-        PatternKind::List(ps) => {
-            infer_pat_list(cx, data_env, subst, env, ps, binds, seen, cs_out)
-        }
+        PatternKind::List(ps) => infer_pat_list(cx, data_env, subst, env, ps, binds, seen, cs_out),
         PatternKind::Record(fields) => {
             infer_pat_record(cx, data_env, subst, env, fields, binds, seen, cs_out)
         }
@@ -2197,15 +2153,15 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
         "IO".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![a],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Var(a)),
-                Box::new(Ty::App {
-                    head: Box::new(Ty::Con("IO".to_string())),
-                    args: vec![Ty::Var(a)],
-                }),
-            ),
+                vars: vec![a],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::Var(a)),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![Ty::Var(a)],
+                    }),
+                ),
             },
             def_site: None,
         },
@@ -2230,15 +2186,15 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
         "__ioBind".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![a, b],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(io_a.clone()),
-                Box::new(Ty::Func(
-                    Box::new(Ty::Func(Box::new(Ty::Var(a)), Box::new(io_b.clone()))),
-                    Box::new(io_b),
-                )),
-            ),
+                vars: vec![a, b],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(io_a.clone()),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Func(Box::new(Ty::Var(a)), Box::new(io_b.clone()))),
+                        Box::new(io_b),
+                    )),
+                ),
             },
             def_site: None,
         },
@@ -2263,12 +2219,12 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
         "__ioThen".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![a, b],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(io_a),
-                Box::new(Ty::Func(Box::new(io_b.clone()), Box::new(io_b))),
-            ),
+                vars: vec![a, b],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(io_a),
+                    Box::new(Ty::Func(Box::new(io_b.clone()), Box::new(io_b))),
+                ),
             },
             def_site: None,
         },
@@ -2285,18 +2241,18 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
         "concatMap".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![a, b],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Func(
-                    Box::new(Ty::Var(a)),
-                    Box::new(Ty::List(Box::new(Ty::Var(b)))),
-                )),
-                Box::new(Ty::Func(
-                    Box::new(Ty::List(Box::new(Ty::Var(a)))),
-                    Box::new(Ty::List(Box::new(Ty::Var(b)))),
-                )),
-            ),
+                vars: vec![a, b],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Var(a)),
+                        Box::new(Ty::List(Box::new(Ty::Var(b)))),
+                    )),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::List(Box::new(Ty::Var(a)))),
+                        Box::new(Ty::List(Box::new(Ty::Var(b)))),
+                    )),
+                ),
             },
             def_site: None,
         },
@@ -2309,15 +2265,15 @@ fn add_integer_primitives(env: &mut TypeEnv) {
         "+".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Func(
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
                     Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Con("Integer".to_string())),
-                )),
-            ),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("Integer".to_string())),
+                        Box::new(Ty::Con("Integer".to_string())),
+                    )),
+                ),
             },
             def_site: None,
         },
@@ -2333,15 +2289,15 @@ fn add_integer_primitives(env: &mut TypeEnv) {
             name.to_string(),
             EnvEntry {
                 scheme: Scheme {
-                vars: vec![],
-                constraints: vec![],
-                ty: Ty::Func(
-                    Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Func(
+                    vars: vec![],
+                    constraints: vec![],
+                    ty: Ty::Func(
                         Box::new(Ty::Con("Integer".to_string())),
-                        Box::new(Ty::Con("Integer".to_string())),
-                    )),
-                ),
+                        Box::new(Ty::Func(
+                            Box::new(Ty::Con("Integer".to_string())),
+                            Box::new(Ty::Con("Integer".to_string())),
+                        )),
+                    ),
                 },
                 def_site: None,
             },
@@ -2353,15 +2309,15 @@ fn add_integer_primitives(env: &mut TypeEnv) {
         "-".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Func(
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
                     Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Con("Integer".to_string())),
-                )),
-            ),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("Integer".to_string())),
+                        Box::new(Ty::Con("Integer".to_string())),
+                    )),
+                ),
             },
             def_site: None,
         },
@@ -2372,15 +2328,15 @@ fn add_integer_primitives(env: &mut TypeEnv) {
         "*".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Func(
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
                     Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Con("Integer".to_string())),
-                )),
-            ),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("Integer".to_string())),
+                        Box::new(Ty::Con("Integer".to_string())),
+                    )),
+                ),
             },
             def_site: None,
         },
@@ -2391,15 +2347,15 @@ fn add_integer_primitives(env: &mut TypeEnv) {
         "/".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(Ty::Func(
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
                     Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Con("Integer".to_string())),
-                )),
-            ),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("Integer".to_string())),
+                        Box::new(Ty::Con("Integer".to_string())),
+                    )),
+                ),
             },
             def_site: None,
         },
@@ -2415,15 +2371,15 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
         "==".to_string(),
         EnvEntry {
             scheme: Scheme {
-            vars: vec![v],
-            constraints: vec![Constraint::Eq(Ty::Var(v))],
-            ty: Ty::Func(
-                Box::new(Ty::Var(v)),
-                Box::new(Ty::Func(
+                vars: vec![v],
+                constraints: vec![Constraint::Eq(Ty::Var(v))],
+                ty: Ty::Func(
                     Box::new(Ty::Var(v)),
-                    Box::new(Ty::Con("Bool".to_string())),
-                )),
-            ),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Var(v)),
+                        Box::new(Ty::Con("Bool".to_string())),
+                    )),
+                ),
             },
             def_site: None,
         },
@@ -2435,15 +2391,15 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
             name.to_string(),
             EnvEntry {
                 scheme: Scheme {
-                vars: vec![],
-                constraints: vec![],
-                ty: Ty::Func(
-                    Box::new(Ty::Con("Integer".to_string())),
-                    Box::new(Ty::Func(
+                    vars: vec![],
+                    constraints: vec![],
+                    ty: Ty::Func(
                         Box::new(Ty::Con("Integer".to_string())),
-                        Box::new(Ty::Con("Bool".to_string())),
-                    )),
-                ),
+                        Box::new(Ty::Func(
+                            Box::new(Ty::Con("Integer".to_string())),
+                            Box::new(Ty::Con("Bool".to_string())),
+                        )),
+                    ),
                 },
                 def_site: None,
             },
@@ -3601,7 +3557,6 @@ fn qualify_expr_ctors_for_instance_import(expr: ast::Expr, inst: &ast::InstanceD
 
     qualify_expr_ctors_recursive(expr, qual)
 }
-
 
 fn qualify_expr_ctors_recursive(mut e: ast::Expr, qual: &str) -> ast::Expr {
     match &mut e.kind {
@@ -4801,9 +4756,7 @@ fn infer_expr_in(
             // We model methods as overloaded functions in the type environment
             // (`add_class_methods_into_env`). When import-forwarders don't expose a
             // method name as a value, allow falling back to the module-scope class env.
-            let from_env = env
-                .get(&name)
-                .map(|e| apply_scheme(subst_env, &e.scheme));
+            let from_env = env.get(&name).map(|e| apply_scheme(subst_env, &e.scheme));
             let from_methods = cx
                 .class_env
                 .methods_by_name
@@ -4872,8 +4825,7 @@ fn infer_expr_in(
         ExprKind::Let { bindings, body } => {
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "let")?;
             let subst_body = compose(&s_bind, subst_env);
-            let (s_body, cs_body, t_body) =
-                infer_expr_in(cx, data_env, &subst_body, &env2, *body)
+            let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &subst_body, &env2, *body)
                 .map_err(|e| e.with_context("in let body"))?;
             let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
@@ -4882,8 +4834,7 @@ fn infer_expr_in(
         ExprKind::Where { expr, bindings } => {
             let (s_bind, env2) = infer_local_letrec_bindings(cx, data_env, env, bindings, "where")?;
             let subst_body = compose(&s_bind, subst_env);
-            let (s_body, cs_body, t_body) =
-                infer_expr_in(cx, data_env, &subst_body, &env2, *expr)
+            let (s_body, cs_body, t_body) = infer_expr_in(cx, data_env, &subst_body, &env2, *expr)
                 .map_err(|e| e.with_context("in where body"))?;
             let s = compose(&s_body, &s_bind);
             Ok((s.clone(), apply_constraints(&s, cs_body), apply(&s, t_body)))
@@ -4991,7 +4942,10 @@ fn infer_expr_annot(
 
     if std::env::var("KSCR_DEBUG_ALIAS_EVIDENCE").ok().as_deref() == Some("1") {
         TL_NAME_HINTS.with(|h| {
-            eprintln!("[KSCR_DEBUG_ALIAS_EVIDENCE] type_alias hints: {:?}", h.borrow().type_alias);
+            eprintln!(
+                "[KSCR_DEBUG_ALIAS_EVIDENCE] type_alias hints: {:?}",
+                h.borrow().type_alias
+            );
         });
     }
 
@@ -5069,16 +5023,14 @@ fn infer_expr_if(
     let mut cs = apply_constraints(&s, cs_cond);
 
     let subst2 = compose(&s, subst_env);
-    let (s_then, cs_then, t_then) =
-        infer_expr_in(cx, data_env, &subst2, env, then_branch)
+    let (s_then, cs_then, t_then) = infer_expr_in(cx, data_env, &subst2, env, then_branch)
         .map_err(|e| e.with_context("in if then"))?;
     s = compose(&s_then, &s);
     cs = apply_constraints(&s, cs);
     cs.extend(apply_constraints(&s, cs_then));
 
     let subst3 = compose(&s, subst_env);
-    let (s_else, cs_else, t_else) =
-        infer_expr_in(cx, data_env, &subst3, env, else_branch)
+    let (s_else, cs_else, t_else) = infer_expr_in(cx, data_env, &subst3, env, else_branch)
         .map_err(|e| e.with_context("in if else"))?;
     s = compose(&s_else, &s);
     cs = apply_constraints(&s, cs);
@@ -5220,7 +5172,8 @@ fn infer_expr_case(
         return Err(Error::msg_with_span("empty case", span));
     }
 
-    let (mut s, mut cs, scrut_ty) = infer_expr_in(cx, data_env, subst_env, env, expr).map_err(|e| {
+    let (mut s, mut cs, scrut_ty) =
+        infer_expr_in(cx, data_env, subst_env, env, expr).map_err(|e| {
             if std::env::var("KSCR_DEBUG_CASE_UNIFY").ok().as_deref() == Some("1") {
                 eprintln!("[KSCR_DEBUG_CASE_UNIFY] scrutinee inference failed: {e}");
             }
@@ -5471,7 +5424,8 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
                     .cloned()
                 {
                     TL_ALIAS_EVIDENCE.with(|slot| {
-                        slot.borrow_mut().push((UnqualName("String".to_string()), qual));
+                        slot.borrow_mut()
+                            .push((UnqualName("String".to_string()), qual));
                     });
                 }
             });
@@ -5582,7 +5536,11 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
         let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
         inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
         return WithDefEvidence::run(def_ctx, || {
-            typecheck_with_stdlib_class_env_with_imported_with_entry_path(module, imported, Some(&entry))
+            typecheck_with_stdlib_class_env_with_imported_with_entry_path(
+                module,
+                imported,
+                Some(&entry),
+            )
         });
     }
 
@@ -5720,50 +5678,6 @@ fn load_imported_ksif_schemes(
     Ok(imported)
 }
 
-fn typecheck_with_stdlib_class_env_with_imported(
-    mut module: ast::Module,
-    imported: HashMap<String, HashMap<String, Scheme>>,
-) -> Result<TypedModule> {
-    let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
-
-    let t0 = std::time::Instant::now();
-    let stdlib_class_env = load_stdlib_class_env()?;
-    if timing {
-        eprintln!(
-            "[KSCR_DEBUG_TIMING] load_stdlib_class_env: {:.3}s",
-            t0.elapsed().as_secs_f64()
-        );
-    }
-
-    let t0 = std::time::Instant::now();
-    inject_stdlib_class_decls(&mut module)?;
-    if timing {
-        eprintln!(
-            "[KSCR_DEBUG_TIMING] inject_stdlib_class_decls: {:.3}s",
-            t0.elapsed().as_secs_f64()
-        );
-    }
-
-    let t0 = std::time::Instant::now();
-    inject_stdlib_instance_dict_forwarders(&mut module)?;
-    if timing {
-        eprintln!(
-            "[KSCR_DEBUG_TIMING] inject_stdlib_instance_dict_forwarders: {:.3}s",
-            t0.elapsed().as_secs_f64()
-        );
-    }
-
-    let t0 = std::time::Instant::now();
-    let out = typecheck_internal_with_imported(module, Some(&stdlib_class_env), imported);
-    if timing {
-        eprintln!(
-            "[KSCR_DEBUG_TIMING] typecheck_internal: {:.3}s",
-            t0.elapsed().as_secs_f64()
-        );
-    }
-    out
-}
-
 fn is_stdlib_path(path: &Path) -> bool {
     let Ok(path) = std::fs::canonicalize(path) else {
         return false;
@@ -5823,53 +5737,6 @@ fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
     module
 }
 
-fn typecheck_with_stdlib_class_env(mut module: ast::Module) -> Result<TypedModule> {
-    // This path is for import-flattened modules produced by `load_module_with_imports`.
-    // We also need a stdlib-derived class environment so that methods can be treated as
-    // ordinary values (Haskell-like) even when import-forwarders don't expose them.
-    let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
-
-    let t0 = std::time::Instant::now();
-    let stdlib_class_env = load_stdlib_class_env()?;
-    if timing {
-        eprintln!(
-            "[KSCR_DEBUG_TIMING] load_stdlib_class_env: {:.3}s",
-            t0.elapsed().as_secs_f64()
-        );
-    }
-
-    let t0 = std::time::Instant::now();
-    inject_stdlib_class_decls(&mut module)?;
-    if timing {
-        eprintln!(
-            "[KSCR_DEBUG_TIMING] inject_stdlib_class_decls: {:.3}s",
-            t0.elapsed().as_secs_f64()
-        );
-    }
-
-    // Import-flattening qualifies stdlib instance dictionary bindings (e.g. `Prelude.__dict_Monad_IO`).
-    // Later rewrites may refer to unqualified ground dictionary names (e.g. `__dict_Monad_IO`),
-    // so we inject unqualified forwarders for those dictionaries here.
-    let t0 = std::time::Instant::now();
-    inject_stdlib_instance_dict_forwarders(&mut module)?;
-    if timing {
-        eprintln!(
-            "[KSCR_DEBUG_TIMING] inject_stdlib_instance_dict_forwarders: {:.3}s",
-            t0.elapsed().as_secs_f64()
-        );
-    }
-
-    let t0 = std::time::Instant::now();
-    let out = typecheck_internal(module, Some(&stdlib_class_env));
-    if timing {
-        eprintln!(
-            "[KSCR_DEBUG_TIMING] typecheck_internal: {:.3}s",
-            t0.elapsed().as_secs_f64()
-        );
-    }
-    out
-}
-
 fn typecheck_with_stdlib_class_env_with_entry_path(
     mut module: ast::Module,
     entry_path: Option<&Path>,
@@ -5904,7 +5771,8 @@ fn typecheck_with_stdlib_class_env_with_entry_path(
     }
 
     let t0 = std::time::Instant::now();
-    let out = typecheck_internal_core_with_entry_path(module, Some(&stdlib_class_env), None, entry_path);
+    let out =
+        typecheck_internal_core_with_entry_path(module, Some(&stdlib_class_env), None, entry_path);
     if timing {
         eprintln!(
             "[KSCR_DEBUG_TIMING] typecheck_internal: {:.3}s",
@@ -5949,7 +5817,12 @@ fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
     }
 
     let t0 = std::time::Instant::now();
-    let out = typecheck_internal_core_with_entry_path(module, Some(&stdlib_class_env), Some(imported), entry_path);
+    let out = typecheck_internal_core_with_entry_path(
+        module,
+        Some(&stdlib_class_env),
+        Some(imported),
+        entry_path,
+    );
     if timing {
         eprintln!(
             "[KSCR_DEBUG_TIMING] typecheck_internal: {:.3}s",
@@ -6030,14 +5903,6 @@ pub fn typecheck(module: ast::Module) -> Result<TypedModule> {
     typecheck_internal(module, None)
 }
 
-fn typecheck_internal_with_imported(
-    module: ast::Module,
-    stdlib_class_env: Option<&ClassEnv>,
-    imported: HashMap<String, HashMap<String, Scheme>>,
-) -> Result<TypedModule> {
-    typecheck_internal_core(module, stdlib_class_env, Some(imported))
-}
-
 fn typecheck_internal(
     module: ast::Module,
     stdlib_class_env: Option<&ClassEnv>,
@@ -6052,107 +5917,112 @@ fn typecheck_internal_core_with_entry_path(
     entry_path: Option<&Path>,
 ) -> Result<TypedModule> {
     WithAliasEvidence::run(|| {
-    if module
-        .items
-        .iter()
-        .any(|it| matches!(it, ast::Item::Import(_)))
-    {
-        return Err(Error::msg("imports are not supported yet"));
-    }
-
-    // Try to hit the module-level typecheck cache.
-    // NOTE: cache is only used when imported schemes are not provided.
-    if imported.is_none() {
-        if let Some(inferred) = stdlib_cache::check_module_typecheck_cache(&module) {
-            return Ok(TypedModule { module, inferred });
+        if module
+            .items
+            .iter()
+            .any(|it| matches!(it, ast::Item::Import(_)))
+        {
+            return Err(Error::msg("imports are not supported yet"));
         }
-    }
 
-    let name_hints = collect_unqualified_name_hints_from_imported(&module);
-    TL_NAME_HINTS.with(|h| *h.borrow_mut() = name_hints);
-
-    let aliases = collect_type_aliases(&module);
-    let alias_def_sites = collect_type_alias_def_sites(&module, entry_path);
-    // Make type alias def-sites available to unify evidence.
-    TL_DEF_EVIDENCE.with(|slot| {
-        if let Some(ev) = &mut *slot.borrow_mut() {
-            for (name, site) in alias_def_sites {
-                if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                    // Type names that start uppercase are type constructors.
-                    ev.def_sites.type_ctor.insert(name, site);
-                } else {
-                    ev.def_sites.type_alias.insert(name, site);
-                }
+        // Try to hit the module-level typecheck cache.
+        // NOTE: cache is only used when imported schemes are not provided.
+        if imported.is_none() {
+            if let Some(inferred) = stdlib_cache::check_module_typecheck_cache(&module) {
+                return Ok(TypedModule { module, inferred });
             }
         }
-    });
-    let items_in = std::mem::take(&mut module.items);
-    module.items = items_in
-        .into_iter()
-        .map(|it| expand_item(it, &aliases))
-        .collect::<Result<Vec<_>>>()?;
 
-    let mut class_env = desugar_typeclasses(&mut module)?;
+        let name_hints = collect_unqualified_name_hints_from_imported(&module);
+        TL_NAME_HINTS.with(|h| *h.borrow_mut() = name_hints);
 
-    if let Some(stdlib_env) = stdlib_class_env {
-        merge_class_env(&mut class_env, stdlib_env)?;
-    }
+        let aliases = collect_type_aliases(&module);
+        let alias_def_sites = collect_type_alias_def_sites(&module, entry_path);
+        // Make type alias def-sites available to unify evidence.
+        TL_DEF_EVIDENCE.with(|slot| {
+            if let Some(ev) = &mut *slot.borrow_mut() {
+                for (name, site) in alias_def_sites {
+                    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                        // Type names that start uppercase are type constructors.
+                        ev.def_sites.type_ctor.insert(name, site);
+                    } else {
+                        ev.def_sites.type_alias.insert(name, site);
+                    }
+                }
+            }
+        });
+        let items_in = std::mem::take(&mut module.items);
+        module.items = items_in
+            .into_iter()
+            .map(|it| expand_item(it, &aliases))
+            .collect::<Result<Vec<_>>>()?;
 
-    // If `Monad` is available, desugar `do`-notation into `(>>=)` / `(>>)`. This allows `do` to
-    // work for non-IO monads (via type classes).
-    if class_env.class_params.contains_key("Monad") {
-        desugar_do_to_monad_ops_in_module(&mut module)?;
-    }
+        let mut class_env = desugar_typeclasses(&mut module)?;
 
-    // Build method-name fallback index (Haskell-like: methods are values).
-    // Use the merged class env if stdlib is provided.
-    let mut cx_for_index = InferCtx::default();
-    let class_index = build_class_method_scheme_index(&mut cx_for_index, &class_env)?;
-
-    let inferred = if let Some(entry_path) = entry_path {
-        // Best-effort: when typechecking from a file, we have a ModuleLoader in the caller
-        // (typecheck_file) and can provide real file:line:col evidence.
-        // If there is no loader context, this falls back to no evidence.
-        infer_module_with_class_env_with_entry_path(&module, &class_env, &class_index, Some(entry_path))?
-    } else {
-        infer_module_with_class_env_with_entry_path(&module, &class_env, &class_index, None)?
-    };
-
-    if let Some(main) = inferred.get("main") {
-        let expected = Ty::App {
-            head: Box::new(Ty::Con("IO".to_string())),
-            args: vec![Ty::Con("Unit".to_string())],
-        };
-        if !main.vars.is_empty() || !main.constraints.is_empty() || main.ty != expected {
-            return Err(Error::msg("main must have type IO Unit"));
+        if let Some(stdlib_env) = stdlib_class_env {
+            merge_class_env(&mut class_env, stdlib_env)?;
         }
-    }
 
-    // Inject method value bindings early so dict-passing can thread dictionaries into them.
-    // (e.g. `enumFromTo` becomes a function expecting `__dict_Enum`.)
-    inject_class_method_value_bindings(&mut module, &class_env, &inferred);
+        // If `Monad` is available, desugar `do`-notation into `(>>=)` / `(>>)`. This allows `do` to
+        // work for non-IO monads (via type classes).
+        if class_env.class_params.contains_key("Monad") {
+            desugar_do_to_monad_ops_in_module(&mut module)?;
+        }
 
-    typeclass_dict_passing_common::rewrite_class_dict_passing_in_module(
-        &mut module,
-        &class_env,
-        &inferred,
-    )?;
+        // Build method-name fallback index (Haskell-like: methods are values).
+        // Use the merged class env if stdlib is provided.
+        let mut cx_for_index = InferCtx::default();
+        let class_index = build_class_method_scheme_index(&mut cx_for_index, &class_env)?;
 
-    // Rewrite method calls/vars while dictionary bindings still exist.
-    // This must happen before `rewrite_show_calls_in_module`, which replaces
-    // `show`/`==` etc. with builtins like `__show`/`__eq` and drops the need for
-    // class-method resolution at runtime.
-    rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred)?;
+        let inferred = if let Some(entry_path) = entry_path {
+            // Best-effort: when typechecking from a file, we have a ModuleLoader in the caller
+            // (typecheck_file) and can provide real file:line:col evidence.
+            // If there is no loader context, this falls back to no evidence.
+            infer_module_with_class_env_with_entry_path(
+                &module,
+                &class_env,
+                &class_index,
+                Some(entry_path),
+            )?
+        } else {
+            infer_module_with_class_env_with_entry_path(&module, &class_env, &class_index, None)?
+        };
 
-    // MVP: start routing `show`/`toString` calls through an explicit Show dictionary.
-    rewrite_show_calls_in_module(&mut module);
+        if let Some(main) = inferred.get("main") {
+            let expected = Ty::App {
+                head: Box::new(Ty::Con("IO".to_string())),
+                args: vec![Ty::Con("Unit".to_string())],
+            };
+            if !main.vars.is_empty() || !main.constraints.is_empty() || main.ty != expected {
+                return Err(Error::msg("main must have type IO Unit"));
+            }
+        }
 
-    // Drop class / instance decls after desugaring.
-    module.items.retain(|it| {
-        !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_))
-    });
+        // Inject method value bindings early so dict-passing can thread dictionaries into them.
+        // (e.g. `enumFromTo` becomes a function expecting `__dict_Enum`.)
+        inject_class_method_value_bindings(&mut module, &class_env, &inferred);
 
-    Ok(TypedModule { module, inferred })
+        typeclass_dict_passing_common::rewrite_class_dict_passing_in_module(
+            &mut module,
+            &class_env,
+            &inferred,
+        )?;
+
+        // Rewrite method calls/vars while dictionary bindings still exist.
+        // This must happen before `rewrite_show_calls_in_module`, which replaces
+        // `show`/`==` etc. with builtins like `__show`/`__eq` and drops the need for
+        // class-method resolution at runtime.
+        rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred)?;
+
+        // MVP: start routing `show`/`toString` calls through an explicit Show dictionary.
+        rewrite_show_calls_in_module(&mut module);
+
+        // Drop class / instance decls after desugaring.
+        module
+            .items
+            .retain(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)));
+
+        Ok(TypedModule { module, inferred })
     })
 }
 
@@ -6830,17 +6700,6 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
 }
 
 impl ModuleLoader {
-    fn empty_for_tests() -> Self {
-        Self {
-            cache: HashMap::new(),
-            sources: HashMap::new(),
-            stack: Vec::new(),
-            emitted_qualified: HashSet::new(),
-            emitted_unqualified: HashSet::new(),
-            def_sites: DefSiteIndex::default(),
-        }
-    }
-
     fn debug_print_import(&self, enabled: bool, id: &ast::ImportDecl) {
         if !enabled {
             return;
@@ -7738,7 +7597,6 @@ fn import_unqualified_forwarders(
                 span: ast::dummy_span(),
             }));
         }
-
     }
 
     Ok(out)
@@ -9996,26 +9854,20 @@ fn infer_module_with_class_env(
             )
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
-            let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(
-                &mut cx,
-                &data_env,
-                &subst,
-                &env_scc,
-                b.expr.clone(),
-            )
-            .map_err(|e| {
-                    // If the inner error doesn't have a useful primary span,
-                    // promote the binding RHS span as the primary location.
-                    let mut e = e;
-                    let needs_primary = e
-                        .span()
-                        .is_none_or(|s| s.start == s.end);
-                    if needs_primary {
-                        e = e.push_span(b.expr.span);
-                    }
-                    e.push_secondary_span(b.pat.span)
-                        .with_context(format!("in binding {ctx_name}"))
-                })?;
+            let (s_rhs, cs_rhs, t_rhs) =
+                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(
+                    |e| {
+                        // If the inner error doesn't have a useful primary span,
+                        // promote the binding RHS span as the primary location.
+                        let mut e = e;
+                        let needs_primary = e.span().is_none_or(|s| s.start == s.end);
+                        if needs_primary {
+                            e = e.push_span(b.expr.span);
+                        }
+                        e.push_secondary_span(b.pat.span)
+                            .with_context(format!("in binding {ctx_name}"))
+                    },
+                )?;
             subst = compose(&s_rhs, &subst);
 
             let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty)).map_err(|e| {
@@ -10074,8 +9926,7 @@ fn infer_module_with_class_env_with_entry_path(
         ..Default::default()
     };
     let data_env = collect_data_env(module);
-    let mut env_global =
-        collect_ctor_env_with_class_env(&mut cx, module, class_env, entry_path)?;
+    let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env, entry_path)?;
     let mut env_global_ftv = ftv_env(&env_global);
 
     let (bindings, ctx_names, defined_names, comps, comp_order) =
@@ -10142,24 +9993,20 @@ fn infer_module_with_class_env_with_entry_path(
             )
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
-            let (s_rhs, cs_rhs, t_rhs) = infer_expr_in(
-                &mut cx,
-                &data_env,
-                &subst,
-                &env_scc,
-                b.expr.clone(),
-            )
-            .map_err(|e| {
-                    // If the inner error doesn't have a useful primary span,
-                    // promote the binding RHS span as the primary location.
-                    let mut e = e;
-                    let needs_primary = e.span().is_none_or(|s| s.start == s.end);
-                    if needs_primary {
-                        e = e.push_span(b.expr.span);
-                    }
-                    e.push_secondary_span(b.pat.span)
-                        .with_context(format!("in binding {ctx_name}"))
-                })?;
+            let (s_rhs, cs_rhs, t_rhs) =
+                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(
+                    |e| {
+                        // If the inner error doesn't have a useful primary span,
+                        // promote the binding RHS span as the primary location.
+                        let mut e = e;
+                        let needs_primary = e.span().is_none_or(|s| s.start == s.end);
+                        if needs_primary {
+                            e = e.push_span(b.expr.span);
+                        }
+                        e.push_secondary_span(b.pat.span)
+                            .with_context(format!("in binding {ctx_name}"))
+                    },
+                )?;
             subst = compose(&s_rhs, &subst);
 
             let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty)).map_err(|e| {
@@ -11118,12 +10965,10 @@ fn expand_type(
                     // Resolve to qualified via import hints, so we can later show def-site evidence.
                     TL_NAME_HINTS.with(|h| {
                         let hints = h.borrow();
-                        if let Some(qual) = hints
-                            .type_alias
-                            .get(&UnqualName(alias.name.clone()))
-                        {
+                        if let Some(qual) = hints.type_alias.get(&UnqualName(alias.name.clone())) {
                             TL_ALIAS_EVIDENCE.with(|slot| {
-                                slot.borrow_mut().push((UnqualName(alias.name.clone()), qual.clone()));
+                                slot.borrow_mut()
+                                    .push((UnqualName(alias.name.clone()), qual.clone()));
                             });
                         }
                     });
@@ -11153,10 +10998,7 @@ fn expand_alias(
     // We only know unqualified alias name here; resolve to qualified via current import hints.
     TL_NAME_HINTS.with(|h| {
         let hints = h.borrow();
-        if let Some(qual) = hints
-            .type_alias
-            .get(&UnqualName(alias.name.clone()))
-        {
+        if let Some(qual) = hints.type_alias.get(&UnqualName(alias.name.clone())) {
             TL_ALIAS_EVIDENCE.with(|slot| {
                 slot.borrow_mut()
                     .push((UnqualName(alias.name.clone()), qual.clone()));

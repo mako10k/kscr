@@ -386,10 +386,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         // If that fails, accept infix ctor: `a :*: b`.
         let save = (ts.i, ts.last_span_end);
         let parsed = if let Ok(ctor_name) = parse_ctor_name(ts) {
-            let ctor_start = ts
-                .peek_span()
-                .map(|s| s.start)
-                .unwrap_or(ts.last_span_end);
+            let ctor_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
             let mut args = Vec::new();
             while matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s != "deriving")
                 || matches!(
@@ -418,10 +415,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
                 return Err(ts.err_here("expected ':'-prefixed constructor operator"));
             }
             let op = op.clone();
-            let ctor_start = ts
-                .peek_span()
-                .map(|s| s.start)
-                .unwrap_or(ts.last_span_end);
+            let ctor_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
             ts.bump();
             let rhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
             let ctor_end = ts.last_span_end;
@@ -1239,17 +1233,23 @@ fn desugar_fun(
         }
     }
 
-    let body = ast::Expr::new(synth_span, ast::ExprKind::Case {
-        expr: Box::new(scrut),
-        arms,
-    });
+    let body = ast::Expr::new(
+        synth_span,
+        ast::ExprKind::Case {
+            expr: Box::new(scrut),
+            arms,
+        },
+    );
 
     ast::Binding {
         pat: ast::Pattern::new(synth_span, ast::PatternKind::Var(name)),
-        expr: ast::Expr::new(synth_span, ast::ExprKind::Lambda {
-            params,
-            body: Box::new(body),
-        }),
+        expr: ast::Expr::new(
+            synth_span,
+            ast::ExprKind::Lambda {
+                params,
+                body: Box::new(body),
+            },
+        ),
         span: synth_span,
     }
 }

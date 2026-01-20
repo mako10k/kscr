@@ -504,6 +504,7 @@ pub(super) fn check_module_typecheck_cache(
     None
 }
 
+#[allow(dead_code)]
 pub(super) fn store_module_typecheck_cache(
     module: &ast::Module,
     schemes: &HashMap<String, super::Scheme>,

@@ -15,5 +15,8 @@ fn unify_fail_msg2_includes_def_location_note() {
 
     // New evidence: real file:line:col location note.
     assert!(s.contains("note:"), "stderr was: {s}");
-    assert!(s.contains(":") && s.split(':').count() >= 4, "stderr was: {s}");
+    assert!(
+        s.contains(":") && s.split(':').count() >= 4,
+        "stderr was: {s}"
+    );
 }
