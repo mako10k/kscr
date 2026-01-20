@@ -7,6 +7,7 @@
 //! - Potentially lossy conversions happen only at boundaries as checked casts.
 
 use crate::{ast, error::Error, parser, Result};
+use crate::error::SourceSpan;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -35,11 +36,8 @@ struct DefLoc {
     col: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NameDefInfo {
-    qualified: String,
-    site: Option<DefSite>,
-}
+// (reserved) definition-location helpers will be added once def-site evidence is wired
+// into unify/unknown-name diagnostics.
 
 // --- Milestone 2.2.1: Unification core (scaffolding) ---
 
@@ -203,6 +201,85 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
             "{e} (unify goal: {ctx}: a = {a}, b = {b}){hint}"
         ))
     })
+}
+
+fn unify_dbg_with_evidence(
+    loader: &ModuleLoader,
+    a: Ty,
+    b: Ty,
+    ctx: &str,
+) -> Result<Subst> {
+    let ev = TL_NAME_HINTS.with(|h| collect_unify_evidence(loader, &a, &b, &h.borrow()));
+    unify_dbg(a, b, ctx).map_err(|e| attach_unify_evidence(e, ev))
+}
+
+fn attach_unify_evidence(mut e: Error, evidence: Vec<SourceSpan>) -> Error {
+    // Avoid duplicating the primary span: the caller usually pushes it after this.
+    for s in evidence {
+        e = e.push_secondary_source_span(s);
+    }
+    e
+}
+
+fn collect_unify_evidence(
+    loader: &ModuleLoader,
+    a: &Ty,
+    b: &Ty,
+    hints: &NameHints,
+) -> Vec<SourceSpan> {
+    let mut out = Vec::new();
+    for t in [a, b] {
+        let Some(unqual) = ty_has_unqualified_ctor(t) else {
+            continue;
+        };
+        let Some(qual) = hints.type_ctor.get(unqual) else {
+            continue;
+        };
+        // Example: `Prelude.Maybe` -> module path `stdlib/Prelude.ks`, span from loaded AST.
+        // We currently only have file sources recorded for modules that were actually loaded.
+        // When not available, skip rather than emitting fake coords.
+        if let Some(ss) = find_type_ctor_defsite(loader, qual) {
+            out.push(ss);
+        }
+    }
+    out
+}
+
+fn find_type_ctor_defsite(loader: &ModuleLoader, qualified: &str) -> Option<SourceSpan> {
+    let (module, base) = qualified.rsplit_once('.')?;
+    // Try to resolve the module file via the same rules as imports.
+    // We use current-dir as an anchor; resolve_import_path canonicalizes anyway.
+    let cwd = std::env::current_dir().ok()?;
+    let path = loader.resolve_import_path(&cwd, module).ok()?;
+    let m = loader.cache.get(&path)?.clone();
+
+    // Find a matching `data` declaration.
+    for it in &m.items {
+        if let ast::Item::DataDecl(dd) = it {
+            let dd_name = dd
+                .name
+                .rsplit_once('.')
+                .map(|(_, b)| b)
+                .unwrap_or(dd.name.as_str());
+            if dd_name == base {
+                return Some(SourceSpan {
+                    path,
+                    span: dd.span,
+                });
+            }
+        }
+        if let ast::Item::TypeAlias(ta) = it {
+            // Unqualified forwarder `type Maybe = Prelude.Maybe ...` lives in the entry module;
+            // it still points to the qualified ctor in rhs, but for evidence we can point to the alias.
+            if ta.name == base {
+                return Some(SourceSpan {
+                    path,
+                    span: ta.span,
+                });
+            }
+        }
+    }
+    None
 }
 
 fn collect_unqualified_type_ctor_hints_from_imported(module: &ast::Module) -> NameHints {
@@ -696,15 +773,15 @@ pub fn ftv_scheme(s: &Scheme) -> HashSet<u32> {
     ftv
 }
 
-pub fn ftv_env(env: &TypeEnv) -> HashSet<u32> {
+fn ftv_env(env: &TypeEnv) -> HashSet<u32> {
     env.values().flat_map(|e| ftv_scheme(&e.scheme)).collect()
 }
 
-pub fn generalize(env: &TypeEnv, ty: Ty) -> Scheme {
+fn generalize(env: &TypeEnv, ty: Ty) -> Scheme {
     generalize_qual(env, vec![], ty)
 }
 
-pub fn generalize_qual(env: &TypeEnv, constraints: Vec<Constraint>, ty: Ty) -> Scheme {
+fn generalize_qual(env: &TypeEnv, constraints: Vec<Constraint>, ty: Ty) -> Scheme {
     let env_ftv = ftv_env(env);
     let mut ftv = ftv_ty(&ty);
     for c in &constraints {
@@ -4323,7 +4400,7 @@ fn infer_expr_apply(
 
         let s_unify = unify_dbg(
             fun_ty,
-            Ty::Func(Box::new(apply(&s, arg_ty)), Box::new(res.clone())),
+            Ty::Func(Box::new(apply(&s, arg_ty.clone())), Box::new(res.clone())),
             "infer_expr_apply",
         )
         .map_err(|e| e.push_span(apply_span).with_context("infer_expr_apply"))?;
@@ -5451,7 +5528,7 @@ fn typecheck_internal_core_with_entry_path(
 
 #[allow(clippy::too_many_lines)]
 fn typecheck_internal_core(
-    mut module: ast::Module,
+    module: ast::Module,
     stdlib_class_env: Option<&ClassEnv>,
     imported: Option<HashMap<String, HashMap<String, Scheme>>>,
 ) -> Result<TypedModule> {
