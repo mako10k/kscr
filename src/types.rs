@@ -3761,7 +3761,13 @@ fn infer_one_letrec_binding(
 
     let (s_rhs, cs_rhs, t_rhs) =
         infer_expr_in(cxi.cx, cxi.data_env, cxi.subst, cxi.env_scc, b.expr).map_err(|e| {
-            e.with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name))
+            let mut e = e;
+            let needs_primary = e.span().is_none_or(|s| s.start == s.end);
+            if needs_primary {
+                e = e.push_span(expr_span);
+            }
+            e.push_secondary_span(pat_span)
+                .with_context(format!("in {} binding {}", cxi.ctx_prefix, cxi.ctx_name))
         })?;
     *cxi.subst = compose(&s_rhs, cxi.subst);
 
@@ -4070,6 +4076,9 @@ fn infer_expr_annot(
     expr: ast::Expr,
     ty: ast::QualType,
 ) -> Result<(Subst, Vec<Constraint>, Ty)> {
+    // `ExprKind::Annot { expr, ty }` currently stores only a single `Expr.span`.
+    // Use that span both as primary and as the annotation-site secondary span.
+    // Better locations can be added by callers (e.g. binding RHS/pattern spans).
     let annot_span = expr.span;
     let inner_expr_span = expr.span;
     let (s1, mut cs1, t1) = infer_expr_in(cx, data_env, subst_env, env, expr)?;
@@ -4119,6 +4128,7 @@ fn infer_expr_annot(
     )
     .map_err(|e| {
         // Primary: inner expression, Secondary: annotation site.
+        // If spans are missing (0-length), other layers may attach better locations.
         e.push_span(inner_expr_span)
             .push_secondary_span(annot_span)
             .with_context("infer_expr_annot")
@@ -8845,12 +8855,19 @@ fn infer_module_with_class_env(
             .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
 
             let (s_rhs, cs_rhs, t_rhs) =
-                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(
-                    |e| {
-                        e.push_secondary_span(b.pat.span)
-                            .with_context(format!("in binding {ctx_name}"))
-                    },
-                )?;
+                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(|e| {
+                    // If the inner error doesn't have a useful primary span,
+                    // promote the binding RHS span as the primary location.
+                    let mut e = e;
+                    let needs_primary = e
+                        .span()
+                        .is_none_or(|s| s.start == s.end);
+                    if needs_primary {
+                        e = e.push_span(b.expr.span);
+                    }
+                    e.push_secondary_span(b.pat.span)
+                        .with_context(format!("in binding {ctx_name}"))
+                })?;
             subst = compose(&s_rhs, &subst);
 
             let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty)).map_err(|e| {

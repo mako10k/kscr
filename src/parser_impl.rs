@@ -1150,20 +1150,50 @@ fn desugar_fun(
     clauses: Vec<(Vec<ast::Pattern>, Option<ast::Expr>, ast::Expr)>,
 ) -> ast::Binding {
     let params: Vec<String> = (0..arity).map(|_| ts.fresh_name("_arg")).collect();
+
+    // Best-effort span for synthesized nodes.
+    // Prefer user-written spans (clause body/guard) over TokenStream cursor spans,
+    // to avoid pointing at layout/newline tokens.
+    let mut synth_span = crate::lexer::Span { start: 0, end: 0 };
+
     let scrut = if arity == 1 {
-        ast::Expr::dummy(ast::ExprKind::Var(params[0].clone()))
+        ast::Expr::new(synth_span, ast::ExprKind::Var(params[0].clone()))
     } else {
-        ast::Expr::dummy(ast::ExprKind::Tuple(
-            params
-                .iter()
-                .map(|p| ast::Expr::dummy(ast::ExprKind::Var(p.clone())))
-                .collect(),
-        ))
+        ast::Expr::new(
+            synth_span,
+            ast::ExprKind::Tuple(
+                params
+                    .iter()
+                    .map(|p| ast::Expr::new(synth_span, ast::ExprKind::Var(p.clone())))
+                    .collect(),
+            ),
+        )
     };
 
-    let arms = clauses
-        .into_iter()
-        .map(|(pats, guard, body)| ast::CaseArm {
+    let mut arms: Vec<ast::CaseArm> = Vec::new();
+    for (pats, guard, body) in clauses.into_iter() {
+        // Expand synth_span as we see real source spans.
+        let mut s = body.span;
+        if let Some(g) = &guard {
+            if g.span.start < s.start {
+                s.start = g.span.start;
+            }
+            if g.span.end > s.end {
+                s.end = g.span.end;
+            }
+        }
+        if synth_span.start == synth_span.end {
+            synth_span = s;
+        } else {
+            if s.start < synth_span.start {
+                synth_span.start = s.start;
+            }
+            if s.end > synth_span.end {
+                synth_span.end = s.end;
+            }
+        }
+
+        arms.push(ast::CaseArm {
             pat: if arity == 1 {
                 pats.into_iter().next().expect("arity=1 clause")
             } else {
@@ -1171,17 +1201,24 @@ fn desugar_fun(
             },
             guard,
             body,
-        })
-        .collect();
+        });
+    }
 
-    let body = ast::Expr::dummy(ast::ExprKind::Case {
+    // If all clause spans were dummy (shouldn't happen), fall back to current cursor span.
+    if synth_span.start == synth_span.end {
+        if let Some(anchor) = ts.peek_span() {
+            synth_span = anchor;
+        }
+    }
+
+    let body = ast::Expr::new(synth_span, ast::ExprKind::Case {
         expr: Box::new(scrut),
         arms,
     });
 
     ast::Binding {
-        pat: ast::Pattern::dummy(ast::PatternKind::Var(name)),
-        expr: ast::Expr::dummy(ast::ExprKind::Lambda {
+        pat: ast::Pattern::new(synth_span, ast::PatternKind::Var(name)),
+        expr: ast::Expr::new(synth_span, ast::ExprKind::Lambda {
             params,
             body: Box::new(body),
         }),

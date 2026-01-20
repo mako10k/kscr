@@ -34,8 +34,15 @@ pub(super) fn create_diagnostic(
     err: &KscrError,
     severity: DiagnosticSeverity,
 ) -> Diagnostic {
-    let range = err
-        .span()
+    let primary_span = err.spans().and_then(|spans| {
+        spans
+            .iter()
+            .copied()
+            .find(|s| s.start < s.end)
+            .or_else(|| spans.first().copied())
+    });
+
+    let range = primary_span
         .and_then(|s| span_to_range(doc, s))
         .unwrap_or(Range {
             start: Position {
@@ -51,7 +58,19 @@ pub(super) fn create_diagnostic(
     let related_information = err.spans().and_then(|spans| {
         let mut out: Vec<DiagnosticRelatedInformation> = Vec::new();
         for s in spans.iter().skip(1).copied() {
+            // Skip primary range duplicates and de-duplicate repeated related spans.
+            if let Some(p) = primary_span {
+                if s == p {
+                    continue;
+                }
+            }
             let range = span_to_range(doc, s)?;
+            if out
+                .iter()
+                .any(|ri| ri.location.range.start == range.start && ri.location.range.end == range.end)
+            {
+                continue;
+            }
             out.push(DiagnosticRelatedInformation {
                 location: Location {
                     uri: doc.uri.clone(),
@@ -60,11 +79,7 @@ pub(super) fn create_diagnostic(
                 message: "related location".to_string(),
             });
         }
-        if out.is_empty() {
-            None
-        } else {
-            Some(out)
-        }
+        if out.is_empty() { None } else { Some(out) }
     });
 
     Diagnostic {

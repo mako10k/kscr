@@ -46,7 +46,13 @@ fn main() {
             let src_s = src.as_deref();
 
             if let Some(spans) = e.spans() {
-                if let Some(primary) = spans.first().copied() {
+                let primary = spans
+                    .iter()
+                    .copied()
+                    .find(|s| s.start < s.end)
+                    .or_else(|| spans.first().copied());
+
+                if let Some(primary) = primary {
                     let (line, col, start_off, end_off) = span_to_loc(src_s, primary);
                     if src_s.is_some() {
                         eprintln!("error: {path}:{line}:{col}: {e} (span {start_off}..{end_off})");
