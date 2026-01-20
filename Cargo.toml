@@ -33,7 +33,7 @@ kscr_ir = { path = "crates/kscr_ir" }
 kscr_unsafe_ffi = { path = "crates/kscr_unsafe_ffi", optional = true }
 kscr_unsafe_bigint = { path = "crates/kscr_unsafe_bigint", optional = true }
 kscr_llvm = { path = "crates/kscr_llvm", optional = true }
-rustyline = { version = "14", optional = true }
+rustyline = { version = "17", optional = true }
 
 # Used by the top-level `kscr-lsp` binary target.
 tower-lsp = "0.20"
