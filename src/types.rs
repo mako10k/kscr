@@ -1547,7 +1547,7 @@ fn tarjan_scc(graph: &[Vec<usize>]) -> Vec<Vec<usize>> {
 }
 
 fn collect_ctor_env(cx: &mut InferCtx, module: &ast::Module) -> Result<TypeEnv> {
-    collect_ctor_env_with_class_env(cx, module, &ClassEnv::default())
+    collect_ctor_env_with_class_env(cx, module, &ClassEnv::default(), None)
 }
 
 fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
@@ -2230,6 +2230,7 @@ fn collect_ctor_env_with_class_env(
     cx: &mut InferCtx,
     module: &ast::Module,
     class_env: &ClassEnv,
+    module_path: Option<&Path>,
 ) -> Result<TypeEnv> {
     let mut env = TypeEnv::new();
 
@@ -2241,13 +2242,18 @@ fn collect_ctor_env_with_class_env(
     add_misc_builtins(cx, &mut env);
     add_ffi_primitives(&mut env);
 
-    add_data_ctors_into_env(cx, module, &mut env);
+    add_data_ctors_into_env(cx, module, module_path, &mut env);
     add_class_methods_into_env(cx, class_env, &mut env)?;
 
     Ok(env)
 }
 
-fn add_data_ctors_into_env(cx: &mut InferCtx, module: &ast::Module, env: &mut TypeEnv) {
+fn add_data_ctors_into_env(
+    cx: &mut InferCtx,
+    module: &ast::Module,
+    module_path: Option<&Path>,
+    env: &mut TypeEnv,
+) {
     for it in &module.items {
         let ast::Item::DataDecl(d) = it else {
             continue;
@@ -2297,7 +2303,10 @@ fn add_data_ctors_into_env(cx: &mut InferCtx, module: &ast::Module, env: &mut Ty
                         constraints: vec![],
                         ty,
                     },
-                    def_site: None,
+                    def_site: module_path.map(|p| DefSite {
+                        path: p.to_path_buf(),
+                        span: ctor.span,
+                    }),
                 },
             );
         }
@@ -4895,10 +4904,14 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
         // `Item::Import` from the final module.
         let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
         inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
-        return typecheck_with_stdlib_class_env_with_imported(module, imported);
+        return typecheck_with_stdlib_class_env_with_imported_with_entry_path(
+            module,
+            imported,
+            Some(&entry),
+        );
     }
 
-    typecheck_with_stdlib_class_env(module)
+    typecheck_with_stdlib_class_env_with_entry_path(module, Some(&entry))
 }
 
 fn inject_imported_ksif_forwarders(
@@ -5164,6 +5177,95 @@ fn typecheck_with_stdlib_class_env(mut module: ast::Module) -> Result<TypedModul
     out
 }
 
+fn typecheck_with_stdlib_class_env_with_entry_path(
+    mut module: ast::Module,
+    entry_path: Option<&Path>,
+) -> Result<TypedModule> {
+    let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
+
+    let t0 = std::time::Instant::now();
+    let stdlib_class_env = load_stdlib_class_env()?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] load_stdlib_class_env: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    inject_stdlib_class_decls(&mut module)?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] inject_stdlib_class_decls: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    inject_stdlib_instance_dict_forwarders(&mut module)?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] inject_stdlib_instance_dict_forwarders: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    let out = typecheck_internal_core_with_entry_path(module, Some(&stdlib_class_env), None, entry_path);
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] typecheck_internal: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+    out
+}
+
+fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
+    mut module: ast::Module,
+    imported: HashMap<String, HashMap<String, Scheme>>,
+    entry_path: Option<&Path>,
+) -> Result<TypedModule> {
+    let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
+
+    let t0 = std::time::Instant::now();
+    let stdlib_class_env = load_stdlib_class_env()?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] load_stdlib_class_env: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    inject_stdlib_class_decls(&mut module)?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] inject_stdlib_class_decls: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    inject_stdlib_instance_dict_forwarders(&mut module)?;
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] inject_stdlib_instance_dict_forwarders: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
+    let t0 = std::time::Instant::now();
+    let out = typecheck_internal_core_with_entry_path(module, Some(&stdlib_class_env), Some(imported), entry_path);
+    if timing {
+        eprintln!(
+            "[KSCR_DEBUG_TIMING] typecheck_internal: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+    out
+}
+
 fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()> {
     // Collect all qualified stdlib dict bindings present in the flattened module.
     let mut exports: HashSet<String> = HashSet::new();
@@ -5250,11 +5352,11 @@ fn typecheck_internal(
     typecheck_internal_core(module, stdlib_class_env, None)
 }
 
-#[allow(clippy::too_many_lines)]
-fn typecheck_internal_core(
+fn typecheck_internal_core_with_entry_path(
     mut module: ast::Module,
     stdlib_class_env: Option<&ClassEnv>,
     imported: Option<HashMap<String, HashMap<String, Scheme>>>,
+    entry_path: Option<&Path>,
 ) -> Result<TypedModule> {
     if module
         .items
@@ -5276,6 +5378,7 @@ fn typecheck_internal_core(
     TL_NAME_HINTS.with(|h| *h.borrow_mut() = name_hints);
 
     let aliases = collect_type_aliases(&module);
+    let _alias_def_sites = collect_type_alias_def_sites(&module, entry_path);
     module.items = module
         .items
         .into_iter()
@@ -5286,40 +5389,6 @@ fn typecheck_internal_core(
 
     if let Some(stdlib_env) = stdlib_class_env {
         merge_class_env(&mut class_env, stdlib_env)?;
-    }
-
-    if std::env::var("KSCR_DEBUG_CLASS_ENV").ok().as_deref() == Some("1") {
-        let monad_io = ("Monad".to_string(), "IO".to_string());
-        let ring_int = ("Ring".to_string(), "Integer".to_string());
-        eprintln!(
-            "[KSCR_DEBUG_CLASS_ENV] instances keys count = {}",
-            class_env.instances.len()
-        );
-        eprintln!(
-            "[KSCR_DEBUG_CLASS_ENV] has instances: Monad IO={} Ring Integer={}",
-            class_env.instances.contains_key(&monad_io),
-            class_env.instances.contains_key(&ring_int)
-        );
-        if !class_env.instances.contains_key(&monad_io) {
-            let hits: Vec<_> = class_env
-                .instances
-                .keys()
-                .filter(|(c, _)| c == "Monad")
-                .take(20)
-                .cloned()
-                .collect();
-            eprintln!("[KSCR_DEBUG_CLASS_ENV] sample Monad instance keys: {hits:?}");
-        }
-        if !class_env.instances.contains_key(&ring_int) {
-            let hits: Vec<_> = class_env
-                .instances
-                .keys()
-                .filter(|(c, _)| c == "Ring")
-                .take(20)
-                .cloned()
-                .collect();
-            eprintln!("[KSCR_DEBUG_CLASS_ENV] sample Ring instance keys: {hits:?}");
-        }
     }
 
     // If `Monad` is available, desugar `do`-notation into `(>>=)` / `(>>)`. This allows `do` to
@@ -5333,26 +5402,12 @@ fn typecheck_internal_core(
     let mut cx_for_index = InferCtx::default();
     let class_index = build_class_method_scheme_index(&mut cx_for_index, &class_env)?;
 
-    if std::env::var("KSCR_DEBUG_METHOD_VALUES").ok().as_deref() == Some("1") {
-        eprintln!(
-            "[KSCR_DEBUG_METHOD_VALUES] class_env.methods has enumFromTo={} enumFromThenTo={} (total={})",
-            class_env
-                .methods
-                .contains_key(&("Enum".to_string(), "enumFromTo".to_string())),
-            class_env
-                .methods
-                .contains_key(&("Enum".to_string(), "enumFromThenTo".to_string())),
-            class_env.methods.len()
-        );
-        eprintln!(
-            "[KSCR_DEBUG_METHOD_VALUES] class_index has enumFromTo={} enumFromThenTo={} (total={})",
-            class_index.methods_by_name.contains_key("enumFromTo"),
-            class_index.methods_by_name.contains_key("enumFromThenTo"),
-            class_index.methods_by_name.len()
-        );
-    }
-
-    let inferred = infer_module_with_class_env(&module, &class_env, &class_index)?;
+    let inferred = infer_module_with_class_env_with_entry_path(
+        &module,
+        &class_env,
+        &class_index,
+        entry_path,
+    )?;
 
     if let Some(main) = inferred.get("main") {
         let expected = Ty::App {
@@ -5380,33 +5435,24 @@ fn typecheck_internal_core(
     // class-method resolution at runtime.
     rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred)?;
 
-    // NOTE: method value bindings are injected before dict-passing.
-
     // MVP: start routing `show`/`toString` calls through an explicit Show dictionary.
     rewrite_show_calls_in_module(&mut module);
 
-    // Store in cache for future lookups.
-    // NOTE: when imported schemes are provided, caching is not valid yet.
-    if imported.is_none() {
-        stdlib_cache::store_module_typecheck_cache(&module, &inferred);
-    }
-
-    // Stage 2 (MVP): If imported schemes were provided, merge them into the returned inferred map
-    // so downstream passes that consult `tm.inferred` can see them.
-    if let Some(by_mod) = imported {
-        let mut merged = inferred;
-        for (_m, schemes) in by_mod {
-            for (name, scheme) in schemes {
-                merged.entry(name).or_insert(scheme);
-            }
-        }
-        return Ok(TypedModule {
-            module,
-            inferred: merged,
-        });
-    }
+    // Drop class / instance decls after desugaring.
+    module.items.retain(|it| {
+        !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_))
+    });
 
     Ok(TypedModule { module, inferred })
+}
+
+#[allow(clippy::too_many_lines)]
+fn typecheck_internal_core(
+    mut module: ast::Module,
+    stdlib_class_env: Option<&ClassEnv>,
+    imported: Option<HashMap<String, HashMap<String, Scheme>>>,
+) -> Result<TypedModule> {
+    typecheck_internal_core_with_entry_path(module, stdlib_class_env, imported, None)
 }
 
 fn load_stdlib_class_env() -> Result<ClassEnv> {
@@ -8121,7 +8167,7 @@ fn infer_in_module_with_class_env(
 ) -> Result<Ty> {
     let mut cx = InferCtx::default();
     let data_env = collect_data_env(module);
-    let mut env = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
+    let mut env = collect_ctor_env_with_class_env(&mut cx, module, class_env, None)?;
     // Add inferred binding types (module + imported forwarders). This is important for
     // inferring argument types during later desugaring passes.
     for (name, scheme) in inferred {
@@ -9140,7 +9186,7 @@ fn infer_module_with_class_env(
         ..Default::default()
     };
     let data_env = collect_data_env(module);
-    let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env)?;
+    let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env, None)?;
     let mut env_global_ftv = ftv_env(&env_global);
 
     let (bindings, ctx_names, defined_names, comps, comp_order) =
@@ -9212,6 +9258,144 @@ fn infer_module_with_class_env(
                     let needs_primary = e
                         .span()
                         .is_none_or(|s| s.start == s.end);
+                    if needs_primary {
+                        e = e.push_span(b.expr.span);
+                    }
+                    e.push_secondary_span(b.pat.span)
+                        .with_context(format!("in binding {ctx_name}"))
+                })?;
+            subst = compose(&s_rhs, &subst);
+
+            let s_pat = unify(apply(&subst, t_rhs), apply(&subst, pat_ty)).map_err(|e| {
+                e.push_span(b.expr.span)
+                    .push_secondary_span(b.pat.span)
+                    .with_context(format!("in binding {ctx_name}"))
+            })?;
+            subst = compose(&s_pat, &subst);
+
+            let mut cs = cs_rhs;
+            cs.extend(cs_pat);
+            per_bind.push((binds, cs));
+        }
+
+        // Generalize all names in the SCC against the environment *outside* the SCC.
+        let env_gen_ftv = ftv_env_applied_from_ftv(&subst, &env_global_ftv);
+        let mut new_schemes: Vec<(String, Scheme)> = Vec::new();
+        for (binds, cs) in per_bind {
+            for (name, t) in binds {
+                let cs = simplify_constraints(
+                    &data_env,
+                    class_env,
+                    apply_constraints(&subst, cs.clone()),
+                )?;
+                let scheme = generalize_qual_with_env_ftv(&env_gen_ftv, cs, apply(&subst, t));
+                new_schemes.push((name, scheme));
+            }
+        }
+
+        for (name, scheme) in new_schemes {
+            env_global_ftv.extend(ftv_scheme(&scheme));
+            env_global.insert(
+                name.clone(),
+                EnvEntry {
+                    scheme: scheme.clone(),
+                    def_site: None,
+                },
+            );
+            out.insert(name, scheme);
+        }
+    }
+
+    Ok(out)
+}
+
+fn infer_module_with_class_env_with_entry_path(
+    module: &ast::Module,
+    class_env: &ClassEnv,
+    class_index: &ClassEnvIndex,
+    entry_path: Option<&Path>,
+) -> Result<HashMap<String, Scheme>> {
+    // Order-independent top-level inference (Haskell-like): compute SCCs of top-level bindings,
+    // then typecheck SCCs in dependency order, generalizing non-recursive groups.
+    let mut cx = InferCtx {
+        class_env: class_index.clone(),
+        ..Default::default()
+    };
+    let data_env = collect_data_env(module);
+    let mut env_global =
+        collect_ctor_env_with_class_env(&mut cx, module, class_env, entry_path)?;
+    let mut env_global_ftv = ftv_env(&env_global);
+
+    let (bindings, ctx_names, defined_names, comps, comp_order) =
+        infer_module_binding_scc_order(module)?;
+
+    let mut subst = Subst::new();
+    let mut out = HashMap::new();
+
+    type BindingInfer = (Vec<(String, Ty)>, Vec<Constraint>);
+
+    for ci in comp_order {
+        let comp = &comps[ci];
+
+        // Pre-bind all names in this SCC as monomorphic placeholders.
+        let mut env_scc = env_global.clone();
+        let mut scc_names: HashSet<String> = HashSet::new();
+        for &bi in comp {
+            for n in &defined_names[bi] {
+                scc_names.insert(n.clone());
+            }
+        }
+
+        let mut scc_names: Vec<String> = scc_names.into_iter().collect();
+        scc_names.sort();
+
+        for name in scc_names.iter() {
+            let Ty::Var(v) = cx.fresh() else {
+                unreachable!()
+            };
+            env_scc.insert(
+                name.clone(),
+                EnvEntry {
+                    scheme: Scheme {
+                        vars: vec![],
+                        constraints: vec![],
+                        ty: Ty::Var(v),
+                    },
+                    def_site: entry_path.map(|p| DefSite {
+                        path: p.to_path_buf(),
+                        span: ast::dummy_span(),
+                    }),
+                },
+            );
+        }
+
+        // Infer each binding in the SCC under the placeholder environment.
+        let mut per_bind: Vec<BindingInfer> = Vec::new();
+        for &bi in comp {
+            let b = &bindings[bi];
+            let ctx_name = &ctx_names[bi];
+
+            let mut binds = Vec::new();
+            let mut seen = HashSet::new();
+            let mut cs_pat = Vec::new();
+            let pat_ty = infer_pat_in(
+                &mut cx,
+                &data_env,
+                &mut subst,
+                &env_scc,
+                &b.pat,
+                &mut binds,
+                &mut seen,
+                &mut cs_pat,
+            )
+            .map_err(|e| e.with_context(format!("in binding {ctx_name}")))?;
+
+            let (s_rhs, cs_rhs, t_rhs) =
+                infer_expr_in(&mut cx, &data_env, &subst, &env_scc, b.expr.clone()).map_err(|e| {
+                    // If the inner error doesn't have a useful primary span,
+                    // promote the binding RHS span as the primary location.
+                    let mut e = e;
+                    let needs_primary = e.span().is_none_or(|s| s.start == s.end);
                     if needs_primary {
                         e = e.push_span(b.expr.span);
                     }
@@ -9691,6 +9875,35 @@ fn collect_type_aliases(module: &ast::Module) -> HashMap<String, ast::TypeAlias>
         .iter()
         .filter_map(|it| match it {
             ast::Item::TypeAlias(ta) => Some((ta.name.clone(), ta.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn collect_type_alias_def_sites(
+    module: &ast::Module,
+    module_path: Option<&std::path::Path>,
+) -> HashMap<String, DefSite> {
+    let Some(path) = module_path else {
+        return HashMap::new();
+    };
+    module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            ast::Item::TypeAlias(ta) => {
+                if ta.span.start == ta.span.end {
+                    None
+                } else {
+                    Some((
+                        ta.name.clone(),
+                        DefSite {
+                            path: path.to_path_buf(),
+                            span: ta.span,
+                        },
+                    ))
+                }
+            }
             _ => None,
         })
         .collect()
