@@ -222,6 +222,7 @@ fn collect_unqualified_type_ctor_hints_from_imported(module: &ast::Module) -> Na
     out
 }
 
+
 fn ty_has_unqualified_ctor(t: &Ty) -> Option<&str> {
     match t {
         Ty::Con(name) => {
