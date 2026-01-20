@@ -166,6 +166,90 @@ impl fmt::Display for Ty {
     }
 }
 
+fn pretty_ty(ty: &Ty) -> String {
+    #[derive(Clone)]
+    struct PrettyTy<'a> {
+        ty: &'a Ty,
+        vars: HashMap<u32, String>,
+    }
+
+    impl fmt::Display for PrettyTy<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt_ty_prec(f, self.ty, 0, &self.vars)
+        }
+    }
+
+    let mut vars: HashMap<u32, String> = HashMap::new();
+    assign_ty_var_names(ty, &mut vars);
+    format!("{}", PrettyTy { ty, vars })
+}
+
+fn pretty_ty_pair(a: &Ty, b: &Ty) -> (String, String) {
+    #[derive(Clone)]
+    struct PrettyTy<'a> {
+        ty: &'a Ty,
+        vars: &'a HashMap<u32, String>,
+    }
+
+    impl fmt::Display for PrettyTy<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            fmt_ty_prec(f, self.ty, 0, self.vars)
+        }
+    }
+
+    let mut vars: HashMap<u32, String> = HashMap::new();
+    assign_ty_var_names(a, &mut vars);
+    assign_ty_var_names(b, &mut vars);
+    (
+        format!("{}", PrettyTy { ty: a, vars: &vars }),
+        format!("{}", PrettyTy { ty: b, vars: &vars }),
+    )
+}
+
+fn assign_ty_var_names(ty: &Ty, vars: &mut HashMap<u32, String>) {
+    fn next_name(i: usize) -> String {
+        // a..z, a1..z1, a2..z2, ...
+        let ch = (b'a' + (i % 26) as u8) as char;
+        let suffix = i / 26;
+        if suffix == 0 {
+            ch.to_string()
+        } else {
+            format!("{ch}{suffix}")
+        }
+    }
+
+    fn go(t: &Ty, vars: &mut HashMap<u32, String>, next: &mut usize) {
+        match t {
+            Ty::Var(v) => {
+                if !vars.contains_key(v) {
+                    let name = next_name(*next);
+                    *next += 1;
+                    vars.insert(*v, name);
+                }
+            }
+            Ty::Con(_) => {}
+            Ty::List(t) => go(t, vars, next),
+            Ty::Tuple(ts) => ts.iter().for_each(|t| go(t, vars, next)),
+            Ty::Record(fs) => fs.iter().for_each(|(_, t)| go(t, vars, next)),
+            Ty::RecordOpen(fs, rest) => {
+                fs.iter().for_each(|(_, t)| go(t, vars, next));
+                go(rest, vars, next);
+            }
+            Ty::App { head, args } => {
+                go(head, vars, next);
+                args.iter().for_each(|t| go(t, vars, next));
+            }
+            Ty::Func(a, b) => {
+                go(a, vars, next);
+                go(b, vars, next);
+            }
+        }
+    }
+
+    let mut next = vars.len();
+    go(ty, vars, &mut next);
+}
+
 #[derive(Debug, Default)]
 pub struct InferCtx {
     next_var: u32,
@@ -294,6 +378,7 @@ pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
 
 fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
     unify(a.clone(), b.clone()).map_err(|e| {
+        let (a_pretty, b_pretty) = pretty_ty_pair(&a, &b);
         let hint = TL_NAME_HINTS.with(|h| format_unify_name_hints(&a, &b, &h.borrow()));
         let evidence = TL_NAME_HINTS.with(|h| collect_unify_def_hints(&a, &b, &h.borrow()));
         let evidence_note = TL_DEF_EVIDENCE.with(|slot| {
@@ -333,7 +418,7 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
         // for import/name-resolution issues where the root cause is not near the reported span.
         // Keep this compact; callers add spans/contexts.
         Error::msg(format!(
-            "{e} (unify goal: {ctx}: a = {a}, b = {b}){hint}{evidence_note}"
+            "{e} (unify goal: {ctx}: here = {a_pretty}, other = {b_pretty}){hint}{evidence_note}"
         ))
     })
 }
