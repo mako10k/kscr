@@ -2944,6 +2944,8 @@ fn qualify_expr_ctors_for_instance_import(expr: ast::Expr, inst: &ast::InstanceD
         let ast::Type::Var(h) = instance_head(inst)? else {
             return None;
         };
+        // For an instance head like `P.Maybe` (alias-qualified import), constructors are
+        // accessible as `P.Nothing` / `P.Just`.
         h.split_once('.').map(|(q, _)| q)
     }
 
@@ -2963,6 +2965,7 @@ fn qualify_expr_ctors_for_instance_import(expr: ast::Expr, inst: &ast::InstanceD
 
     qualify_expr_ctors_recursive(expr, qual)
 }
+
 
 fn qualify_expr_ctors_recursive(mut e: ast::Expr, qual: &str) -> ast::Expr {
     match &mut e.kind {
@@ -9996,6 +9999,10 @@ fn expand_data_ctors(
     ctors
         .into_iter()
         .map(|c| {
+            let mut span = c.span;
+            if span.start > span.end {
+                std::mem::swap(&mut span.start, &mut span.end);
+            }
             Ok(ast::DataCtor {
                 name: c.name,
                 args: c
@@ -10003,7 +10010,7 @@ fn expand_data_ctors(
                     .into_iter()
                     .map(|t| expand_type(t, aliases, &mut Vec::new()))
                     .collect::<Result<Vec<_>>>()?,
-                span: c.span,
+                span,
             })
         })
         .collect()
