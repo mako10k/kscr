@@ -370,6 +370,7 @@ fn try_parse_toplevel_sig_line(ts: &mut TokenStream) -> Result<Option<(String, a
 }
 
 fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     ts.expect(TokenKind::KwData)?;
     let name = ts.expect_ident()?;
 
@@ -385,6 +386,10 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         // If that fails, accept infix ctor: `a :*: b`.
         let save = (ts.i, ts.last_span_end);
         let parsed = if let Ok(ctor_name) = parse_ctor_name(ts) {
+            let ctor_start = ts
+                .peek_span()
+                .map(|s| s.start)
+                .unwrap_or(ts.last_span_end);
             let mut args = Vec::new();
             while matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s != "deriving")
                 || matches!(
@@ -394,9 +399,14 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
             {
                 args.push(parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?);
             }
+            let ctor_end = ts.last_span_end;
             Some(ast::DataCtor {
                 name: ctor_name,
                 args,
+                span: crate::lexer::Span {
+                    start: ctor_start,
+                    end: ctor_end,
+                },
             })
         } else {
             (ts.i, ts.last_span_end) = save;
@@ -408,11 +418,20 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
                 return Err(ts.err_here("expected ':'-prefixed constructor operator"));
             }
             let op = op.clone();
+            let ctor_start = ts
+                .peek_span()
+                .map(|s| s.start)
+                .unwrap_or(ts.last_span_end);
             ts.bump();
             let rhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
+            let ctor_end = ts.last_span_end;
             Some(ast::DataCtor {
                 name: op,
                 args: vec![lhs, rhs],
+                span: crate::lexer::Span {
+                    start: ctor_start,
+                    end: ctor_end,
+                },
             })
         };
 
@@ -447,15 +466,18 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         }
     }
 
+    let end = ts.last_span_end;
     Ok(ast::Item::DataDecl(ast::DataDecl {
         name,
         params,
         ctors,
         deriving,
+        span: crate::lexer::Span { start, end },
     }))
 }
 
 fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     ts.expect(TokenKind::KwType)?;
     let name = ts.expect_ident()?;
 
@@ -466,7 +488,13 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
 
     ts.expect(TokenKind::Eq)?;
     let ty = parse_type_expr(ts, Stop::LineEnd, is_type_alias_end)?;
-    Ok(ast::Item::TypeAlias(ast::TypeAlias { name, params, ty }))
+    let end = ts.last_span_end;
+    Ok(ast::Item::TypeAlias(ast::TypeAlias {
+        name,
+        params,
+        ty,
+        span: crate::lexer::Span { start, end },
+    }))
 }
 
 fn parse_class_supers(ts: &mut TokenStream) -> Result<Vec<ast::Predicate>> {
@@ -1222,6 +1250,7 @@ fn desugar_fun(
             params,
             body: Box::new(body),
         }),
+        span: synth_span,
     }
 }
 
@@ -1266,11 +1295,17 @@ fn parse_eq_rhs(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
 }
 
 fn parse_binding_simple(ts: &mut TokenStream, stop: Stop) -> Result<ast::Binding> {
+    let start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     let pat = pattern::parse_pattern(ts)?;
 
     ts.expect(TokenKind::Eq)?;
     let expr = parse_eq_rhs(ts, stop)?;
-    Ok(ast::Binding { pat, expr })
+    let end = expr.span.end;
+    Ok(ast::Binding {
+        pat,
+        expr,
+        span: crate::lexer::Span { start, end },
+    })
 }
 
 fn is_sym_op_token(kind: Option<&TokenKind>) -> bool {

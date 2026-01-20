@@ -138,6 +138,7 @@ pub struct FixityDecl {
 pub struct Binding {
     pub pat: Pattern,
     pub expr: Expr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +146,7 @@ pub struct TypeAlias {
     pub name: String,
     pub params: Vec<String>,
     pub ty: Type,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,12 +155,14 @@ pub struct DataDecl {
     pub params: Vec<String>,
     pub ctors: Vec<DataCtor>,
     pub deriving: Vec<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataCtor {
     pub name: String,
     pub args: Vec<Type>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

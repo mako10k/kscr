@@ -57,6 +57,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
                             ast::Item::Binding(ast::Binding {
                                 pat: b.pat,
                                 expr: add_dict_params_to_expr(b.expr.span, b.expr, classes),
+                                span: b.span,
                             })
                         } else {
                             ast::Item::Binding(b)

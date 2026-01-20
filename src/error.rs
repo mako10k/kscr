@@ -1,6 +1,13 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::lexer::Span;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceSpan {
+    pub path: PathBuf,
+    pub span: Span,
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -8,6 +15,7 @@ pub enum Error {
     Msg(String),
     MsgWithSpan { msg: String, span: Span },
     MsgWithSpans { msg: String, spans: Vec<Span> },
+    MsgWithSourceSpans { msg: String, spans: Vec<SourceSpan> },
 }
 
 impl Error {
@@ -24,6 +32,13 @@ impl Error {
 
     pub fn msg_with_spans(s: impl Into<String>, spans: Vec<Span>) -> Self {
         Self::MsgWithSpans {
+            msg: s.into(),
+            spans,
+        }
+    }
+
+    pub fn msg_with_source_spans(s: impl Into<String>, spans: Vec<SourceSpan>) -> Self {
+        Self::MsgWithSourceSpans {
             msg: s.into(),
             spans,
         }
@@ -64,10 +79,46 @@ impl Error {
         }
     }
 
+    pub fn push_secondary_source_span(self, span: SourceSpan) -> Self {
+        match self {
+            Error::MsgWithSourceSpans { msg, mut spans } => {
+                spans.push(span);
+                Error::MsgWithSourceSpans { msg, spans }
+            }
+            Error::MsgWithSpan { msg, span: primary } => Error::MsgWithSourceSpans {
+                msg,
+                spans: vec![
+                    SourceSpan {
+                        path: PathBuf::new(),
+                        span: primary,
+                    },
+                    span,
+                ],
+            },
+            Error::MsgWithSpans { msg, spans } => Error::MsgWithSourceSpans {
+                msg,
+                spans: spans
+                    .into_iter()
+                    .map(|s| SourceSpan {
+                        path: PathBuf::new(),
+                        span: s,
+                    })
+                    .chain(std::iter::once(span))
+                    .collect(),
+            },
+            Error::Msg(msg) => Error::MsgWithSourceSpans {
+                msg,
+                spans: vec![span],
+            },
+            other => other,
+        }
+    }
+
     pub fn span(&self) -> Option<Span> {
         match self {
             Error::MsgWithSpan { span, .. } => Some(*span),
             Error::MsgWithSpans { spans, .. } => spans.first().copied(),
+            Error::MsgWithSourceSpans { spans, .. } => spans.first().map(|s| s.span),
             _ => None,
         }
     }
@@ -76,6 +127,15 @@ impl Error {
         match self {
             Error::MsgWithSpan { span, .. } => Some(std::slice::from_ref(span)),
             Error::MsgWithSpans { spans, .. } => Some(spans.as_slice()),
+            // Not representable as pure spans without discarding path information.
+            Error::MsgWithSourceSpans { .. } => None,
+            _ => None,
+        }
+    }
+
+    pub fn source_spans(&self) -> Option<&[SourceSpan]> {
+        match self {
+            Error::MsgWithSourceSpans { spans, .. } => Some(spans.as_slice()),
             _ => None,
         }
     }
@@ -89,6 +149,9 @@ impl Error {
             Error::MsgWithSpans { msg: old, spans } => {
                 Error::msg_with_spans(format!("{ctx}: {old}"), spans)
             }
+            Error::MsgWithSourceSpans { msg: old, spans } => {
+                Error::msg_with_source_spans(format!("{ctx}: {old}"), spans)
+            }
             other => Error::msg(format!("{ctx}: {other}")),
         }
     }
@@ -101,6 +164,7 @@ impl fmt::Display for Error {
             Error::Msg(s) => write!(f, "{s}"),
             Error::MsgWithSpan { msg, .. } => write!(f, "{msg}"),
             Error::MsgWithSpans { msg, .. } => write!(f, "{msg}"),
+            Error::MsgWithSourceSpans { msg, .. } => write!(f, "{msg}"),
         }
     }
 }

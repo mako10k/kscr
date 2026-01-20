@@ -22,6 +22,25 @@ pub struct TypedModule {
     pub inferred: HashMap<String, Scheme>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefSite {
+    path: PathBuf,
+    span: ast::Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DefLoc {
+    path: PathBuf,
+    line: usize,
+    col: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NameDefInfo {
+    qualified: String,
+    site: Option<DefSite>,
+}
+
 // --- Milestone 2.2.1: Unification core (scaffolding) ---
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -612,7 +631,13 @@ impl fmt::Display for Scheme {
     }
 }
 
-type TypeEnv = HashMap<String, Scheme>;
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnvEntry {
+    scheme: Scheme,
+    def_site: Option<DefSite>,
+}
+
+type TypeEnv = HashMap<String, EnvEntry>;
 
 pub fn compose(s1: &Subst, s2: &Subst) -> Subst {
     let mut out: Subst = s2.iter().map(|(v, t)| (*v, apply(s1, t.clone()))).collect();
@@ -672,7 +697,7 @@ pub fn ftv_scheme(s: &Scheme) -> HashSet<u32> {
 }
 
 pub fn ftv_env(env: &TypeEnv) -> HashSet<u32> {
-    env.values().flat_map(ftv_scheme).collect()
+    env.values().flat_map(|e| ftv_scheme(&e.scheme)).collect()
 }
 
 pub fn generalize(env: &TypeEnv, ty: Ty) -> Scheme {
@@ -836,7 +861,15 @@ fn apply_scheme(subst: &Subst, s: &Scheme) -> Scheme {
 #[allow(dead_code)]
 fn apply_env(subst: &Subst, env: &TypeEnv) -> TypeEnv {
     env.iter()
-        .map(|(k, v)| (k.clone(), apply_scheme(subst, v)))
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                EnvEntry {
+                    scheme: apply_scheme(subst, &v.scheme),
+                    def_site: v.def_site.clone(),
+                },
+            )
+        })
         .collect()
 }
 
@@ -1155,11 +1188,11 @@ fn infer_pat_constructor(
     seen: &mut HashSet<String>,
     cs_out: &mut Vec<Constraint>,
 ) -> Result<Ty> {
-    let scheme = env.get(name).ok_or_else(|| {
+    let entry = env.get(name).ok_or_else(|| {
         let hint = TL_NAME_HINTS.with(|h| format_unknown_ctor_name_hint(name, &h.borrow()));
         Error::msg(format!("unknown constructor: {name}{hint}"))
     })?;
-    let scheme = apply_scheme(subst, scheme);
+    let scheme = apply_scheme(subst, &entry.scheme);
     let mut ctor_ty = instantiate(cx, &scheme);
 
     for p in args {
@@ -1526,7 +1559,8 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "IO".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![a],
             constraints: vec![],
             ty: Ty::Func(
@@ -1536,6 +1570,8 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
                     args: vec![Ty::Var(a)],
                 }),
             ),
+            },
+            def_site: None,
         },
     );
 
@@ -1556,7 +1592,8 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "__ioBind".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![a, b],
             constraints: vec![],
             ty: Ty::Func(
@@ -1566,6 +1603,8 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
                     Box::new(io_b),
                 )),
             ),
+            },
+            def_site: None,
         },
     );
 
@@ -1586,13 +1625,16 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "__ioThen".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![a, b],
             constraints: vec![],
             ty: Ty::Func(
                 Box::new(io_a),
                 Box::new(Ty::Func(Box::new(io_b.clone()), Box::new(io_b))),
             ),
+            },
+            def_site: None,
         },
     );
 
@@ -1605,7 +1647,8 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "concatMap".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![a, b],
             constraints: vec![],
             ty: Ty::Func(
@@ -1618,6 +1661,8 @@ fn add_minimal_prelude_types(cx: &mut InferCtx, env: &mut TypeEnv) {
                     Box::new(Ty::List(Box::new(Ty::Var(b)))),
                 )),
             ),
+            },
+            def_site: None,
         },
     );
 }
@@ -1626,7 +1671,8 @@ fn add_integer_primitives(env: &mut TypeEnv) {
     // + :: Integer -> Integer -> Integer
     env.insert(
         "+".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![],
             constraints: vec![],
             ty: Ty::Func(
@@ -1636,6 +1682,8 @@ fn add_integer_primitives(env: &mut TypeEnv) {
                     Box::new(Ty::Con("Integer".to_string())),
                 )),
             ),
+            },
+            def_site: None,
         },
     );
 
@@ -1647,7 +1695,8 @@ fn add_integer_primitives(env: &mut TypeEnv) {
     for name in ["__quotInt", "__remInt", "__divInt", "__modInt"] {
         env.insert(
             name.to_string(),
-            Scheme {
+            EnvEntry {
+                scheme: Scheme {
                 vars: vec![],
                 constraints: vec![],
                 ty: Ty::Func(
@@ -1657,6 +1706,8 @@ fn add_integer_primitives(env: &mut TypeEnv) {
                         Box::new(Ty::Con("Integer".to_string())),
                     )),
                 ),
+                },
+                def_site: None,
             },
         );
     }
@@ -1664,7 +1715,8 @@ fn add_integer_primitives(env: &mut TypeEnv) {
     // - :: Integer -> Integer -> Integer
     env.insert(
         "-".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![],
             constraints: vec![],
             ty: Ty::Func(
@@ -1674,13 +1726,16 @@ fn add_integer_primitives(env: &mut TypeEnv) {
                     Box::new(Ty::Con("Integer".to_string())),
                 )),
             ),
+            },
+            def_site: None,
         },
     );
 
     // * :: Integer -> Integer -> Integer
     env.insert(
         "*".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![],
             constraints: vec![],
             ty: Ty::Func(
@@ -1690,13 +1745,16 @@ fn add_integer_primitives(env: &mut TypeEnv) {
                     Box::new(Ty::Con("Integer".to_string())),
                 )),
             ),
+            },
+            def_site: None,
         },
     );
 
     // / :: Integer -> Integer -> Integer
     env.insert(
         "/".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![],
             constraints: vec![],
             ty: Ty::Func(
@@ -1706,6 +1764,8 @@ fn add_integer_primitives(env: &mut TypeEnv) {
                     Box::new(Ty::Con("Integer".to_string())),
                 )),
             ),
+            },
+            def_site: None,
         },
     );
 }
@@ -1717,7 +1777,8 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "==".to_string(),
-        Scheme {
+        EnvEntry {
+            scheme: Scheme {
             vars: vec![v],
             constraints: vec![Constraint::Eq(Ty::Var(v))],
             ty: Ty::Func(
@@ -1727,6 +1788,8 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
                     Box::new(Ty::Con("Bool".to_string())),
                 )),
             ),
+            },
+            def_site: None,
         },
     );
 
@@ -1734,7 +1797,8 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     for name in ["<", "<=", ">", ">="] {
         env.insert(
             name.to_string(),
-            Scheme {
+            EnvEntry {
+                scheme: Scheme {
                 vars: vec![],
                 constraints: vec![],
                 ty: Ty::Func(
@@ -1744,6 +1808,8 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
                         Box::new(Ty::Con("Bool".to_string())),
                     )),
                 ),
+                },
+                def_site: None,
             },
         );
     }
@@ -1754,16 +1820,19 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "/=".to_string(),
-        Scheme {
-            vars: vec![v],
-            constraints: vec![Constraint::Eq(Ty::Var(v))],
-            ty: Ty::Func(
-                Box::new(Ty::Var(v)),
-                Box::new(Ty::Func(
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![v],
+                constraints: vec![Constraint::Eq(Ty::Var(v))],
+                ty: Ty::Func(
                     Box::new(Ty::Var(v)),
-                    Box::new(Ty::Con("Bool".to_string())),
-                )),
-            ),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Var(v)),
+                        Box::new(Ty::Con("Bool".to_string())),
+                    )),
+                ),
+            },
+            def_site: None,
         },
     );
 
@@ -1771,16 +1840,19 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     for name in ["&&", "||"] {
         env.insert(
             name.to_string(),
-            Scheme {
-                vars: vec![],
-                constraints: vec![],
-                ty: Ty::Func(
-                    Box::new(Ty::Con("Bool".to_string())),
-                    Box::new(Ty::Func(
+            EnvEntry {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: vec![],
+                    ty: Ty::Func(
                         Box::new(Ty::Con("Bool".to_string())),
-                        Box::new(Ty::Con("Bool".to_string())),
-                    )),
-                ),
+                        Box::new(Ty::Func(
+                            Box::new(Ty::Con("Bool".to_string())),
+                            Box::new(Ty::Con("Bool".to_string())),
+                        )),
+                    ),
+                },
+                def_site: None,
             },
         );
     }
@@ -1788,13 +1860,16 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     // not :: Bool -> Bool
     env.insert(
         "not".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Bool".to_string())),
-                Box::new(Ty::Con("Bool".to_string())),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::Con("Bool".to_string())),
+                    Box::new(Ty::Con("Bool".to_string())),
+                ),
+            },
+            def_site: None,
         },
     );
 }
@@ -1805,26 +1880,32 @@ fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     // intToString :: Integer -> [Char]
     env.insert(
         "intToString".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Integer".to_string())),
-                Box::new(char_list.clone()),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(char_list.clone()),
+                ),
+            },
+            def_site: None,
         },
     );
 
     // boolToString :: Bool -> [Char]
     env.insert(
         "boolToString".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("Bool".to_string())),
-                Box::new(char_list.clone()),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::Con("Bool".to_string())),
+                    Box::new(char_list.clone()),
+                ),
+            },
+            def_site: None,
         },
     );
 
@@ -1835,13 +1916,16 @@ fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     let list_a = Ty::List(Box::new(Ty::Var(v)));
     env.insert(
         "++".to_string(),
-        Scheme {
-            vars: vec![v],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(list_a.clone()),
-                Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_a))),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![v],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(list_a.clone()),
+                    Box::new(Ty::Func(Box::new(list_a.clone()), Box::new(list_a))),
+                ),
+            },
+            def_site: None,
         },
     );
 
@@ -1851,10 +1935,13 @@ fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "show".to_string(),
-        Scheme {
-            vars: vec![v],
-            constraints: vec![Constraint::Show(Ty::Var(v))],
-            ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![v],
+                constraints: vec![Constraint::Show(Ty::Var(v))],
+                ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
+            },
+            def_site: None,
         },
     );
 
@@ -1864,10 +1951,13 @@ fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "toString".to_string(),
-        Scheme {
-            vars: vec![v],
-            constraints: vec![Constraint::Show(Ty::Var(v))],
-            ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![v],
+                constraints: vec![Constraint::Show(Ty::Var(v))],
+                ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
+            },
+            def_site: None,
         },
     );
 }
@@ -1883,58 +1973,70 @@ fn add_io_basic_primitives(env: &mut TypeEnv) {
     // stdoutWrite :: [Char] -> IO Unit
     env.insert(
         "stdoutWrite".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(char_list.clone()),
-                Box::new(Ty::App {
-                    head: Box::new(Ty::Con("IO".to_string())),
-                    args: vec![Ty::Con("Unit".to_string())],
-                }),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(char_list.clone()),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![Ty::Con("Unit".to_string())],
+                    }),
+                ),
+            },
+            def_site: None,
         },
     );
 
     // stdinReadLine :: IO [Char]
     env.insert(
         "stdinReadLine".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::App {
-                head: Box::new(Ty::Con("IO".to_string())),
-                args: vec![char_list.clone()],
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![char_list.clone()],
+                },
             },
+            def_site: None,
         },
     );
 
     // readLine :: IO [Char]
     env.insert(
         "readLine".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::App {
-                head: Box::new(Ty::Con("IO".to_string())),
-                args: vec![char_list.clone()],
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![char_list.clone()],
+                },
             },
+            def_site: None,
         },
     );
 
     // print :: [Char] -> IO Unit
     env.insert(
         "print".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(char_list.clone()),
-                Box::new(Ty::App {
-                    head: Box::new(Ty::Con("IO".to_string())),
-                    args: vec![Ty::Con("Unit".to_string())],
-                }),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(char_list.clone()),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![Ty::Con("Unit".to_string())],
+                    }),
+                ),
+            },
+            def_site: None,
         },
     );
 }
@@ -1948,16 +2050,19 @@ fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "throw".to_string(),
-        Scheme {
-            vars: vec![a],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(char_list.clone()),
-                Box::new(Ty::App {
-                    head: Box::new(Ty::Con("IO".to_string())),
-                    args: vec![Ty::Var(a)],
-                }),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![a],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(char_list.clone()),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![Ty::Var(a)],
+                    }),
+                ),
+            },
+            def_site: None,
         },
     );
 
@@ -1972,13 +2077,16 @@ fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     let handler = Ty::Func(Box::new(char_list.clone()), Box::new(io_a.clone()));
     env.insert(
         "catch".to_string(),
-        Scheme {
-            vars: vec![a],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(io_a.clone()),
-                Box::new(Ty::Func(Box::new(handler), Box::new(io_a))),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![a],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(io_a.clone()),
+                    Box::new(Ty::Func(Box::new(handler), Box::new(io_a))),
+                ),
+            },
+            def_site: None,
         },
     );
 
@@ -1996,16 +2104,19 @@ fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "try".to_string(),
-        Scheme {
-            vars: vec![a],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(io_a),
-                Box::new(Ty::App {
-                    head: Box::new(Ty::Con("IO".to_string())),
-                    args: vec![either],
-                }),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![a],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(io_a),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![either],
+                    }),
+                ),
+            },
+            def_site: None,
         },
     );
 }
@@ -2019,10 +2130,13 @@ fn add_misc_builtins(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "error".to_string(),
-        Scheme {
-            vars: vec![a],
-            constraints: vec![],
-            ty: Ty::Func(Box::new(char_list.clone()), Box::new(Ty::Var(a))),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![a],
+                constraints: vec![],
+                ty: Ty::Func(Box::new(char_list.clone()), Box::new(Ty::Var(a))),
+            },
+            def_site: None,
         },
     );
 
@@ -2038,13 +2152,16 @@ fn add_misc_builtins(cx: &mut InferCtx, env: &mut TypeEnv) {
     };
     env.insert(
         "__recordGet".to_string(),
-        Scheme {
-            vars: vec![a, b],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Var(a)),
-                Box::new(Ty::Func(Box::new(char_list), Box::new(Ty::Var(b)))),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![a, b],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::Var(a)),
+                    Box::new(Ty::Func(Box::new(char_list), Box::new(Ty::Var(b)))),
+                ),
+            },
+            def_site: None,
         },
     );
 }
@@ -2054,32 +2171,38 @@ fn add_ffi_primitives(env: &mut TypeEnv) {
     // ffiAddI32 :: i32 -> i32 -> i32
     env.insert(
         "ffiAddI32".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("i32".to_string())),
-                Box::new(Ty::Func(
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
                     Box::new(Ty::Con("i32".to_string())),
-                    Box::new(Ty::Con("i32".to_string())),
-                )),
-            ),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("i32".to_string())),
+                        Box::new(Ty::Con("i32".to_string())),
+                    )),
+                ),
+            },
+            def_site: None,
         },
     );
 
     // ffiAddF32 :: f32 -> f32 -> f32
     env.insert(
         "ffiAddF32".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::Con("f32".to_string())),
-                Box::new(Ty::Func(
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
                     Box::new(Ty::Con("f32".to_string())),
-                    Box::new(Ty::Con("f32".to_string())),
-                )),
-            ),
+                    Box::new(Ty::Func(
+                        Box::new(Ty::Con("f32".to_string())),
+                        Box::new(Ty::Con("f32".to_string())),
+                    )),
+                ),
+            },
+            def_site: None,
         },
     );
 
@@ -2168,10 +2291,13 @@ fn add_data_ctors_into_env(cx: &mut InferCtx, module: &ast::Module, env: &mut Ty
             vars.sort_unstable();
             env.insert(
                 ctor.name.clone(),
-                Scheme {
-                    vars,
-                    constraints: vec![],
-                    ty,
+                EnvEntry {
+                    scheme: Scheme {
+                        vars,
+                        constraints: vec![],
+                        ty,
+                    },
+                    def_site: None,
                 },
             );
         }
@@ -2190,7 +2316,13 @@ fn add_class_methods_into_env(
             continue;
         }
         let scheme = lower_class_method_scheme(cx, class_env, class, qt)?;
-        env.insert(method.clone(), scheme);
+        env.insert(
+            method.clone(),
+            EnvEntry {
+                scheme,
+                def_site: None,
+            },
+        );
     }
 
     Ok(())
@@ -2767,6 +2899,7 @@ fn append_instance_items(
         extra_items.push(ast::Item::Binding(ast::Binding {
             pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
             expr,
+            span: ast::dummy_span(),
         }));
 
         dict_fields.push((
@@ -2788,6 +2921,7 @@ fn append_instance_items(
     extra_items.push(ast::Item::Binding(ast::Binding {
         pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(dict_name)),
         expr: dict_expr,
+        span: ast::dummy_span(),
     }));
 
     Ok(())
@@ -3932,7 +4066,13 @@ fn infer_local_letrec_bindings(
             for name in &defined_names[bi] {
                 let tv = cx.fresh();
                 placeholders.insert(name.clone(), tv.clone());
-                env_scc.insert(name.clone(), Scheme::mono(tv));
+                env_scc.insert(
+                    name.clone(),
+                    EnvEntry {
+                        scheme: Scheme::mono(tv),
+                        def_site: None,
+                    },
+                );
             }
         }
 
@@ -3969,7 +4109,13 @@ fn infer_local_letrec_bindings(
 
         for (name, scheme) in new_schemes {
             env_global_ftv.extend(ftv_scheme(&scheme));
-            env_global.insert(name, scheme);
+            env_global.insert(
+                name,
+                EnvEntry {
+                    scheme,
+                    def_site: None,
+                },
+            );
         }
     }
 
@@ -4007,7 +4153,9 @@ fn infer_expr_in(
             // We model methods as overloaded functions in the type environment
             // (`add_class_methods_into_env`). When import-forwarders don't expose a
             // method name as a value, allow falling back to the module-scope class env.
-            let from_env = env.get(&name).map(|sch| apply_scheme(subst_env, sch));
+            let from_env = env
+                .get(&name)
+                .map(|e| apply_scheme(subst_env, &e.scheme));
             let from_methods = cx
                 .class_env
                 .methods_by_name
@@ -4030,11 +4178,11 @@ fn infer_expr_in(
 
         ExprKind::Ctor(name) => {
             let key = name.qualified_text();
-            let s = env.get(&key).ok_or_else(|| {
+            let entry = env.get(&key).ok_or_else(|| {
                 let hint = TL_NAME_HINTS.with(|h| format_unknown_ctor_name_hint(&key, &h.borrow()));
                 Error::msg_with_span(format!("unknown constructor: {key}{hint}"), span)
             })?;
-            let s = apply_scheme(subst_env, s);
+            let s = apply_scheme(subst_env, &entry.scheme);
             let (cs, ty) = instantiate_qual(cx, &s);
             Ok((Subst::new(), cs, ty))
         }
@@ -4116,7 +4264,13 @@ fn infer_expr_lambda(
     let mut param_tys = Vec::new();
     for p in &params {
         let tv = cx.fresh();
-        env2.insert(p.clone(), Scheme::mono(tv.clone()));
+        env2.insert(
+            p.clone(),
+            EnvEntry {
+                scheme: Scheme::mono(tv.clone()),
+                def_site: None,
+            },
+        );
         param_tys.push(tv);
     }
 
@@ -4461,7 +4615,13 @@ fn infer_expr_case(
 
         let mut env_arm = env.clone();
         for (name, t) in binds {
-            env_arm.insert(name, Scheme::mono(apply(&s, t)));
+            env_arm.insert(
+                name,
+                EnvEntry {
+                    scheme: Scheme::mono(apply(&s, t)),
+                    def_site: None,
+                },
+            );
         }
 
         let mut subst_arm = compose(&s, subst_env);
@@ -4579,7 +4739,13 @@ fn infer_expr_do(
                 cs.extend(apply_constraints(&s, cs_pat));
 
                 for (name, t) in binds {
-                    env2.insert(name, Scheme::mono(apply(&s, t)));
+                    env2.insert(
+                        name,
+                        EnvEntry {
+                            scheme: Scheme::mono(apply(&s, t)),
+                            def_site: None,
+                        },
+                    );
                 }
 
                 if is_last {
@@ -4701,6 +4867,7 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
 
     let mut loader = ModuleLoader {
         cache: HashMap::new(),
+        sources: HashMap::new(),
         stack: vec![entry.clone()],
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
@@ -4774,6 +4941,7 @@ fn inject_imported_ksif_forwarders(
                     kind: ast::ExprKind::Var(format!("{qual}.{name}")),
                     span: ast::dummy_span(),
                 },
+                span: ast::dummy_span(),
             }));
         }
     }
@@ -5284,6 +5452,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
     // yield confusing failures. Use ModuleLoader to keep behavior consistent.
     let mut loader = ModuleLoader {
         cache: HashMap::new(),
+        sources: HashMap::new(),
         stack: Vec::new(),
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
@@ -5367,6 +5536,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
 
     let mut loader = ModuleLoader {
         cache: HashMap::new(),
+        sources: HashMap::new(),
         stack: Vec::new(),
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
@@ -5451,6 +5621,7 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
                 name: "String".to_string(),
                 params: Vec::new(),
                 ty: ast::Type::List(Box::new(ast::Type::Char)),
+                span: ast::dummy_span(),
             },
         );
 
@@ -5500,6 +5671,7 @@ struct ImportQualKey {
 
 struct ModuleLoader {
     cache: HashMap<PathBuf, ast::Module>,
+    sources: HashMap<PathBuf, String>,
     stack: Vec<PathBuf>,
     emitted_qualified: HashSet<ImportQualKey>,
     emitted_unqualified: HashSet<ImportQualKey>,
@@ -5703,6 +5875,7 @@ fn desugar_qualified_binding(b: ast::Binding, env: &QualEnv) -> Result<ast::Bind
     Ok(ast::Binding {
         pat: desugar_qualified_pattern(b.pat, env)?,
         expr: desugar_qualified_expr(b.expr, env)?,
+        span: b.span,
     })
 }
 
@@ -5934,10 +6107,34 @@ impl ModuleLoader {
             return Ok(m);
         }
         let src = std::fs::read_to_string(path)?;
+        self.sources.insert(path.to_path_buf(), src.clone());
         let mut m = parser::parse_module(&src)?;
         desugar_module_qualified_names(&mut m)?;
         self.cache.insert(path.to_path_buf(), m.clone());
         Ok(m)
+    }
+
+    fn def_loc(&self, site: &DefSite) -> Option<DefLoc> {
+        let src = self.sources.get(&site.path)?;
+        let start_off = site.span.start.min(src.len());
+
+        let mut line: usize = 1;
+        let mut last_nl: usize = 0;
+        for (i, ch) in src.char_indices() {
+            if i >= start_off {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                last_nl = i + 1;
+            }
+        }
+        let col = src[last_nl..start_off].chars().count() + 1;
+        Some(DefLoc {
+            path: site.path.clone(),
+            line,
+            col,
+        })
     }
 
     fn validate_import_cyclic(&self, p: &Path) -> Result<()> {
@@ -6708,6 +6905,7 @@ fn import_unqualified_forwarders(
             out.push(ast::Item::Binding(ast::Binding {
                 pat: ast::Pattern::dummy(ast::PatternKind::Var(n.clone())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var(format!("{qual}.{n}"))),
+                span: ast::dummy_span(),
             }));
         }
 
@@ -6725,6 +6923,7 @@ fn import_unqualified_forwarders(
                 name: ta.name.clone(),
                 params: ta.params.clone(),
                 ty,
+                span: ast::dummy_span(),
             }));
         }
 
@@ -6744,6 +6943,7 @@ fn import_unqualified_forwarders(
                 name: dd.name.clone(),
                 params: dd.params.clone(),
                 ty,
+                span: ast::dummy_span(),
             }));
         }
 
@@ -6909,6 +7109,7 @@ fn qualify_item(
         ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
             pat: qualify_pat_binders(b.pat, val_map)?,
             expr: qualify_expr(b.expr, val_map, type_map, ctor_map)?,
+            span: b.span,
         }),
         ast::Item::TypeAlias(mut ta) => {
             ta.name = type_map.get(&ta.name).cloned().unwrap_or(ta.name);
@@ -7146,6 +7347,7 @@ fn qualify_local_binding(
     Ok(ast::Binding {
         pat: qualify_pat_nonbinders(b.pat, ctor_map, val_map, type_map)?,
         expr: qualify_expr(b.expr, val_map, type_map, ctor_map)?,
+        span: b.span,
     })
 }
 
@@ -7527,6 +7729,7 @@ fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
     ast::Binding {
         pat: b.pat,
         expr: rewrite_show_calls_in_expr(b.expr),
+        span: b.span,
     }
 }
 
@@ -7923,7 +8126,13 @@ fn infer_in_module_with_class_env(
     // inferring argument types during later desugaring passes.
     for (name, scheme) in inferred {
         if !env.contains_key(name) {
-            env.insert(name.clone(), scheme.clone());
+            env.insert(
+                name.clone(),
+                EnvEntry {
+                    scheme: scheme.clone(),
+                    def_site: None,
+                },
+            );
         }
     }
     let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &Subst::new(), &env, expr)?;
@@ -8510,6 +8719,7 @@ impl<'a> RewriteExprCtx<'a> {
                 Ok(ast::Binding {
                     pat: b.pat,
                     expr: self.rewrite(b.expr)?,
+                    span: b.span,
                 })
             })
             .collect::<Result<Vec<_>>>()
@@ -8657,6 +8867,7 @@ fn rewrite_class_method_calls_in_module(
                 ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
                     pat: b.pat,
                     expr: ctx.rewrite_expr(&empty_scope, &empty_known, b.expr)?,
+                    span: b.span,
                 }),
                 other => other,
             })
@@ -8798,6 +9009,7 @@ fn create_method_bindings(
                 span: ast::dummy_span(),
             },
             expr,
+            span: ast::dummy_span(),
         }));
     }
 
@@ -8960,10 +9172,13 @@ fn infer_module_with_class_env(
             };
             env_scc.insert(
                 name.clone(),
-                Scheme {
-                    vars: vec![],
-                    constraints: vec![],
-                    ty: Ty::Var(v),
+                EnvEntry {
+                    scheme: Scheme {
+                        vars: vec![],
+                        constraints: vec![],
+                        ty: Ty::Var(v),
+                    },
+                    def_site: None,
                 },
             );
         }
@@ -9034,7 +9249,13 @@ fn infer_module_with_class_env(
 
         for (name, scheme) in new_schemes {
             env_global_ftv.extend(ftv_scheme(&scheme));
-            env_global.insert(name.clone(), scheme.clone());
+            env_global.insert(
+                name.clone(),
+                EnvEntry {
+                    scheme: scheme.clone(),
+                    def_site: None,
+                },
+            );
             out.insert(name, scheme);
         }
     }
@@ -9325,6 +9546,7 @@ fn desugar_monad_do_bindings(
             Ok(ast::Binding {
                 pat: b.pat,
                 expr: desugar_monad_do_expr(b.expr, fresh)?,
+                span: b.span,
             })
         })
         .collect::<Result<Vec<_>>>()
@@ -9508,6 +9730,7 @@ fn expand_bindings(
             Ok(ast::Binding {
                 pat: expand_pat(b.pat, aliases)?,
                 expr: expand_expr(b.expr, aliases)?,
+                span: b.span,
             })
         })
         .collect()
@@ -9567,6 +9790,7 @@ fn expand_data_ctors(
                     .into_iter()
                     .map(|t| expand_type(t, aliases, &mut Vec::new()))
                     .collect::<Result<Vec<_>>>()?,
+                span: c.span,
             })
         })
         .collect()
@@ -9577,17 +9801,20 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
         ast::Item::Binding(b) => Ok(ast::Item::Binding(ast::Binding {
             pat: expand_pat(b.pat, aliases)?,
             expr: expand_expr(b.expr, aliases)?,
+            span: b.span,
         })),
         ast::Item::TypeAlias(ta) => Ok(ast::Item::TypeAlias(ast::TypeAlias {
             name: ta.name,
             params: ta.params,
             ty: expand_type(ta.ty, aliases, &mut Vec::new())?,
+            span: ta.span,
         })),
         ast::Item::DataDecl(d) => Ok(ast::Item::DataDecl(ast::DataDecl {
             name: d.name,
             params: d.params,
             ctors: expand_data_ctors(d.ctors, aliases)?,
             deriving: d.deriving,
+            span: d.span,
         })),
         ast::Item::ClassDecl(c) => Ok(ast::Item::ClassDecl(ast::ClassDecl {
             name: c.name,
@@ -9622,6 +9849,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                     Ok(ast::Binding {
                         pat: expand_pat(b.pat, aliases)?,
                         expr: expand_expr(b.expr, aliases)?,
+                        span: b.span,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -9641,6 +9869,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                     Ok(ast::Binding {
                         pat: expand_pat(b.pat, aliases)?,
                         expr: expand_expr(b.expr, aliases)?,
+                        span: b.span,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
@@ -10709,6 +10938,7 @@ mod inference_tests {
             bindings: vec![ast::Binding {
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
+                span: ast::dummy_span(),
             }],
             body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
         }))
@@ -10718,6 +10948,7 @@ mod inference_tests {
             bindings: vec![ast::Binding {
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
+                span: ast::dummy_span(),
             }],
             body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
         }))
@@ -10732,6 +10963,7 @@ mod inference_tests {
             bindings: vec![ast::Binding {
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
+                span: ast::dummy_span(),
             }],
         }))
         .unwrap_err();
@@ -10834,6 +11066,7 @@ mod inference_tests {
                 params: vec!["x".to_string()],
                 body: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
             }),
+            span: ast::dummy_span(),
         };
 
         let body = ast::Expr::dummy(ast::ExprKind::Tuple(vec![
@@ -10873,6 +11106,7 @@ mod inference_tests {
                 ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
                 ast::Expr::dummy(ast::ExprKind::Bool(true)),
             ])),
+            span: ast::dummy_span(),
         };
 
         let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
@@ -10895,6 +11129,7 @@ mod inference_tests {
                 ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
                 ast::Expr::dummy(ast::ExprKind::Integer("2".to_string())),
             ])),
+            span: ast::dummy_span(),
         };
 
         let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
@@ -10915,6 +11150,7 @@ mod inference_tests {
                 ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
                 ast::Expr::dummy(ast::ExprKind::Integer("2".to_string())),
             ])),
+            span: ast::dummy_span(),
         };
 
         let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
@@ -10946,6 +11182,7 @@ mod inference_tests {
                 ),
                 ("b".to_string(), ast::Expr::dummy(ast::ExprKind::Bool(true))),
             ])),
+            span: ast::dummy_span(),
         };
 
         let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
@@ -10968,6 +11205,7 @@ mod inference_tests {
                 "b".to_string(),
                 ast::Expr::dummy(ast::ExprKind::Bool(true)),
             )])),
+            span: ast::dummy_span(),
         };
 
         let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
@@ -11207,6 +11445,7 @@ x = show (Bad (\y -> y))
         let x_bind = ast::Binding {
             pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
             expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
+            span: ast::dummy_span(),
         };
 
         let ty = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
@@ -11263,6 +11502,7 @@ x = case Just 1 of
         let x_bind = ast::Binding {
             pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
             expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
+            span: ast::dummy_span(),
         };
 
         let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {

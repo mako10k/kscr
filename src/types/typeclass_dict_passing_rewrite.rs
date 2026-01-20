@@ -510,6 +510,7 @@ fn rewrite_scoped_bindings(
         .into_iter()
         .map(|b| {
             let mut expr = b.expr;
+            let span = expr.span;
             if let PatternKind::Var(name) = &b.pat.kind {
                 if let Some(classes) = local_needs.get(name) {
                     expr = common::add_dict_params_to_expr(expr.span, expr, classes);
@@ -518,6 +519,7 @@ fn rewrite_scoped_bindings(
             Ok(ast::Binding {
                 pat: b.pat,
                 expr: rewrite_expr_cx(inner_cx, expr)?,
+                span,
             })
         })
         .collect()
