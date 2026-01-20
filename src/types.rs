@@ -36,6 +36,13 @@ struct DefLoc {
     col: usize,
 }
 
+#[derive(Debug, Default, Clone)]
+struct DefSiteIndex {
+    /// Qualified type constructor name -> definition site.
+    /// Example: `Prelude.Maybe` -> (stdlib/Prelude.ks, span-of-data-decl)
+    type_ctor: HashMap<String, DefSite>,
+}
+
 // (reserved) definition-location helpers will be added once def-site evidence is wired
 // into unify/unknown-name diagnostics.
 
@@ -235,51 +242,15 @@ fn collect_unify_evidence(
         let Some(qual) = hints.type_ctor.get(unqual) else {
             continue;
         };
-        // Example: `Prelude.Maybe` -> module path `stdlib/Prelude.ks`, span from loaded AST.
-        // We currently only have file sources recorded for modules that were actually loaded.
-        // When not available, skip rather than emitting fake coords.
-        if let Some(ss) = find_type_ctor_defsite(loader, qual) {
-            out.push(ss);
+        // Example: `Prelude.Maybe` -> definition site from ModuleLoader index.
+        if let Some(site) = loader.def_sites.type_ctor.get(qual) {
+            out.push(SourceSpan {
+                path: site.path.clone(),
+                span: site.span,
+            });
         }
     }
     out
-}
-
-fn find_type_ctor_defsite(loader: &ModuleLoader, qualified: &str) -> Option<SourceSpan> {
-    let (module, base) = qualified.rsplit_once('.')?;
-    // Try to resolve the module file via the same rules as imports.
-    // We use current-dir as an anchor; resolve_import_path canonicalizes anyway.
-    let cwd = std::env::current_dir().ok()?;
-    let path = loader.resolve_import_path(&cwd, module).ok()?;
-    let m = loader.cache.get(&path)?.clone();
-
-    // Find a matching `data` declaration.
-    for it in &m.items {
-        if let ast::Item::DataDecl(dd) = it {
-            let dd_name = dd
-                .name
-                .rsplit_once('.')
-                .map(|(_, b)| b)
-                .unwrap_or(dd.name.as_str());
-            if dd_name == base {
-                return Some(SourceSpan {
-                    path,
-                    span: dd.span,
-                });
-            }
-        }
-        if let ast::Item::TypeAlias(ta) = it {
-            // Unqualified forwarder `type Maybe = Prelude.Maybe ...` lives in the entry module;
-            // it still points to the qualified ctor in rhs, but for evidence we can point to the alias.
-            if ta.name == base {
-                return Some(SourceSpan {
-                    path,
-                    span: ta.span,
-                });
-            }
-        }
-    }
-    None
 }
 
 fn collect_unqualified_type_ctor_hints_from_imported(module: &ast::Module) -> NameHints {
@@ -4960,6 +4931,7 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
         stack: vec![entry.clone()],
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
+        def_sites: DefSiteIndex::default(),
     };
 
     // Load via ModuleLoader so stdlib cache + qualified-name desugaring stays consistent.
@@ -5582,6 +5554,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         stack: Vec::new(),
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
+        def_sites: DefSiteIndex::default(),
     };
 
     let t_scan = std::time::Instant::now();
@@ -5666,6 +5639,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
         stack: Vec::new(),
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
+        def_sites: DefSiteIndex::default(),
     };
 
     let mut injected: Vec<ast::Item> = Vec::new();
@@ -5801,6 +5775,7 @@ struct ModuleLoader {
     stack: Vec<PathBuf>,
     emitted_qualified: HashSet<ImportQualKey>,
     emitted_unqualified: HashSet<ImportQualKey>,
+    def_sites: DefSiteIndex,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -6236,6 +6211,23 @@ impl ModuleLoader {
         self.sources.insert(path.to_path_buf(), src.clone());
         let mut m = parser::parse_module(&src)?;
         desugar_module_qualified_names(&mut m)?;
+
+        // Record definition sites for later diagnostics.
+        // These spans are file-local offsets; path is canonical.
+        // Only index qualified type constructor names (`Module.T`).
+        for it in &m.items {
+            if let ast::Item::DataDecl(dd) = it {
+                if dd.name.contains('.') {
+                    self.def_sites.type_ctor.insert(
+                        dd.name.clone(),
+                        DefSite {
+                            path: path.to_path_buf(),
+                            span: dd.span,
+                        },
+                    );
+                }
+            }
+        }
         self.cache.insert(path.to_path_buf(), m.clone());
         Ok(m)
     }
