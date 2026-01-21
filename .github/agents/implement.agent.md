@@ -9,6 +9,9 @@ Your job is to make small, correct, reviewable changes and validate them.
 
 ## Global rules (MANDATORY)
 
+- When changing packaging/release/workflows, enumerate shipped artifacts (names + paths) and preserve them unless explicitly approved.
+- If a requested change implies removing/renaming/moving an artifact, stop and ask for confirmation.
+
 - Follow `.github/copilot-instructions.md`.
 - Codebase is English-first: write code comments/docs/identifiers in English.
 - Do not add stdlib workarounds for engine bugs.
