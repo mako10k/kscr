@@ -330,11 +330,39 @@ pub(super) fn completion_items_in_doc(
     let mut names: Vec<String> = tm
         .inferred
         .keys()
+        .cloned()
+        .chain(tm.docs.keys().cloned())
         .filter(|n| n.starts_with(prefix))
         .take(200)
-        .cloned()
         .collect();
     names.sort();
+    names.dedup();
+
+    // Best-effort: classify completion kind from the typechecked module.
+    // This keeps working even when the document text is incomplete.
+    let local_kind = {
+        let m = &tm.module;
+        Some(
+            names
+                .iter()
+                .filter_map(|n| {
+                    super_classify_toplevel_symbol(m, n).map(|k| {
+                        (
+                            n.clone(),
+                            match k {
+                                "binding" => CompletionItemKind::VARIABLE,
+                                "type" => CompletionItemKind::TYPE_PARAMETER,
+                                "data" => CompletionItemKind::STRUCT,
+                                "ctor" => CompletionItemKind::CONSTRUCTOR,
+                                "class" => CompletionItemKind::CLASS,
+                                _ => CompletionItemKind::TEXT,
+                            },
+                        )
+                    })
+                })
+                .collect::<HashMap<String, CompletionItemKind>>(),
+        )
+    };
 
     Some(
         names
@@ -342,11 +370,16 @@ pub(super) fn completion_items_in_doc(
             .map(|name| CompletionItem {
                 label: name.clone(),
                 kind: Some(
-                    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                        CompletionItemKind::CLASS
-                    } else {
-                        CompletionItemKind::VARIABLE
-                    },
+                    local_kind
+                        .as_ref()
+                        .and_then(|m| m.get(&name).copied())
+                        .unwrap_or_else(|| {
+                            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                                CompletionItemKind::CLASS
+                            } else {
+                                CompletionItemKind::VARIABLE
+                            }
+                        }),
                 ),
                 documentation: tm
                     .docs
