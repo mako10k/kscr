@@ -9,9 +9,22 @@ Goal: improve and expand `stdlib/` while keeping the Rust execution engine (lexe
 
 ## Git Safety (MANDATORY)
 
-- Do not run destructive or state-changing git commands without explicit user permission.
-  - Examples: `git checkout`/`switch`, `reset --hard`, `clean -fd`, `merge`, `rebase`, `cherry-pick`, `revert`
-- Prefer read-only commands for investigation: `git status`, `git diff`, `git log`, `git show`.
+- Do not run destructive git commands without explicit user permission.
+  - "Destructive" means hard to undo/recover locally (rewrites working tree/index/refs irreversibly).
+  - Examples (NOT allowed without permission):
+    - `git reset --hard ...`
+    - `git clean -fd ...`
+    - `git checkout -f ...`
+    - `git rebase ...`, `git rebase -i ...`
+    - `git commit --amend ...` (rewrites history)
+    - `git push --force ...`
+    - `git revert ...` (state-changing; keep requiring permission)
+    - `git merge ...`, `git cherry-pick ...` (state-changing; keep requiring permission)
+- "Recoverable" operations are allowed when needed (still prefer to keep changes minimal and visible).
+  - Examples (allowed):
+    - `git status`, `git diff`, `git log`, `git show`
+    - `git reset --soft ...`, `git reset --mixed ...`
+    - `git checkout -b ...`, `git switch -c ...` (new branch)
 
 ## Stdlib Policy (IMPORTANT)
 

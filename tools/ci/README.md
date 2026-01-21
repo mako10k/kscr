@@ -29,3 +29,17 @@ Status:
 
 - Deprecated: we now treat `clippy::too_many_lines` and `clippy::cognitive_complexity` as **hard gates** in CI (deny).
 - This ratchet mechanism is kept only for historical reference; it is no longer run in CI.
+
+## Geiger (unsafe usage report)
+
+Geiger can be noisy in this repo because some dependency crates embed data files that are not
+scanned (e.g. `*.rs.data`). Geiger may exit non-zero when it prints lots of warnings.
+
+- Script: `tools/ci/run_geiger.sh`
+- Output: `tools/ci/geiger.log`, `tools/ci/geiger_status.txt`
+
+Run:
+
+```bash
+bash tools/ci/run_geiger.sh
+```

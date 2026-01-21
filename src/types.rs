@@ -20,6 +20,47 @@ mod typeclass_dict_passing_rewrite;
 pub struct TypedModule {
     pub module: ast::Module,
     pub inferred: HashMap<String, Scheme>,
+    pub docs: HashMap<String, String>,
+}
+
+fn collect_toplevel_docs(module: &ast::Module) -> HashMap<String, String> {
+    use ast::{Item, PatternKind};
+
+    let mut out = HashMap::new();
+    for it in &module.items {
+        match it {
+            Item::Binding(b) => {
+                let Some(doc) = &b.doc else { continue };
+                let PatternKind::Var(name) = &b.pat.kind else {
+                    continue;
+                };
+                out.insert(name.clone(), doc.clone());
+            }
+            Item::TypeAlias(ta) => {
+                let Some(doc) = &ta.doc else { continue };
+                out.insert(ta.name.clone(), doc.clone());
+            }
+            Item::DataDecl(d) => {
+                if let Some(doc) = &d.doc {
+                    out.insert(d.name.clone(), doc.clone());
+                }
+
+                // Constructor docs: prefer ctor-level docs when present;
+                // otherwise fall back to the parent data decl docs (if any).
+                for ctor in &d.ctors {
+                    if let Some(ctor_doc) = ctor.doc.as_ref().or(d.doc.as_ref()) {
+                        out.insert(ctor.name.clone(), ctor_doc.clone());
+                    }
+                }
+            }
+            Item::ClassDecl(c) => {
+                let Some(doc) = &c.doc else { continue };
+                out.insert(c.name.clone(), doc.clone());
+            }
+            Item::Import(_) | Item::Export(_) | Item::Fixity(_) | Item::InstanceDecl(_) => {}
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2804,16 +2845,19 @@ fn add_ffi_primitives(env: &mut TypeEnv) {
     #[cfg(feature = "unsafe_ffi")]
     env.insert(
         "ffiPuts".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::List(Box::new(Ty::Con("Char".to_string())))),
-                Box::new(Ty::App {
-                    head: Box::new(Ty::Con("IO".to_string())),
-                    args: vec![Ty::Con("i32".to_string())],
-                }),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::List(Box::new(Ty::Con("Char".to_string())))),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![Ty::Con("i32".to_string())],
+                    }),
+                ),
+            },
+            def_site: None,
         },
     );
 }
@@ -3498,6 +3542,7 @@ fn append_instance_items(
         let expr = qualify_expr_ctors_for_instance_import(expr, inst);
         let expr = add_params_to_expr(ast::dummy_span(), expr, &extra_param_names);
         extra_items.push(ast::Item::Binding(ast::Binding {
+            doc: None,
             pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
             expr,
             span: ast::dummy_span(),
@@ -3520,6 +3565,7 @@ fn append_instance_items(
     let dict_expr = ast::Expr::new(ast::dummy_span(), ast::ExprKind::Record(dict_fields));
     let dict_expr = add_params_to_expr(ast::dummy_span(), dict_expr, &ctx_params);
     extra_items.push(ast::Item::Binding(ast::Binding {
+        doc: None,
         pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(dict_name)),
         expr: dict_expr,
         span: ast::dummy_span(),
@@ -5597,6 +5643,7 @@ fn inject_imported_ksif_forwarders(
             }
             defined.insert(name.clone(), format!("import {qual} (.ksif)"));
             injected.push(ast::Item::Binding(ast::Binding {
+                doc: None,
                 pat: ast::Pattern {
                     kind: ast::PatternKind::Var(name.clone()),
                     span: ast::dummy_span(),
@@ -5673,8 +5720,10 @@ fn load_imported_ksif_schemes(
         for (name, scheme) in ksif.values {
             m.insert(name, scheme);
         }
+
         imported.insert(id.module.clone(), m);
     }
+
     Ok(imported)
 }
 
@@ -5916,6 +5965,9 @@ fn typecheck_internal_core_with_entry_path(
     imported: Option<HashMap<String, HashMap<String, Scheme>>>,
     entry_path: Option<&Path>,
 ) -> Result<TypedModule> {
+    // Collect docs from the source AST once. Later desugaring/rewrites may drop or rewrite items.
+    let source_docs = collect_toplevel_docs(&module);
+
     WithAliasEvidence::run(|| {
         if module
             .items
@@ -5929,7 +5981,11 @@ fn typecheck_internal_core_with_entry_path(
         // NOTE: cache is only used when imported schemes are not provided.
         if imported.is_none() {
             if let Some(inferred) = stdlib_cache::check_module_typecheck_cache(&module) {
-                return Ok(TypedModule { module, inferred });
+                return Ok(TypedModule {
+                    module,
+                    inferred,
+                    docs: source_docs.clone(),
+                });
             }
         }
 
@@ -6022,7 +6078,11 @@ fn typecheck_internal_core_with_entry_path(
             .items
             .retain(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)));
 
-        Ok(TypedModule { module, inferred })
+        Ok(TypedModule {
+            module,
+            inferred,
+            docs: source_docs,
+        })
     })
 }
 
@@ -6246,6 +6306,7 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
         aliases.insert(
             "String".to_string(),
             ast::TypeAlias {
+                doc: None,
                 name: "String".to_string(),
                 params: Vec::new(),
                 ty: ast::Type::List(Box::new(ast::Type::Char)),
@@ -6502,6 +6563,7 @@ fn desugar_qualified_do_stmt(stmt: ast::DoStmt, env: &QualEnv) -> Result<ast::Do
 
 fn desugar_qualified_binding(b: ast::Binding, env: &QualEnv) -> Result<ast::Binding> {
     Ok(ast::Binding {
+        doc: b.doc,
         pat: desugar_qualified_pattern(b.pat, env)?,
         expr: desugar_qualified_expr(b.expr, env)?,
         span: b.span,
@@ -7554,6 +7616,7 @@ fn import_unqualified_forwarders(
     for n in exports.iter() {
         if values.contains(n) {
             out.push(ast::Item::Binding(ast::Binding {
+                doc: None,
                 pat: ast::Pattern::dummy(ast::PatternKind::Var(n.clone())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var(format!("{qual}.{n}"))),
                 span: ast::dummy_span(),
@@ -7571,6 +7634,7 @@ fn import_unqualified_forwarders(
                 }
             };
             out.push(ast::Item::TypeAlias(ast::TypeAlias {
+                doc: None,
                 name: ta.name.clone(),
                 params: ta.params.clone(),
                 ty,
@@ -7591,6 +7655,7 @@ fn import_unqualified_forwarders(
                 }
             };
             out.push(ast::Item::TypeAlias(ast::TypeAlias {
+                doc: None,
                 name: dd.name.clone(),
                 params: dd.params.clone(),
                 ty,
@@ -7757,6 +7822,7 @@ fn qualify_item(
 ) -> Result<ast::Item> {
     Ok(match it {
         ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
+            doc: b.doc,
             pat: qualify_pat_binders(b.pat, val_map)?,
             expr: qualify_expr(b.expr, val_map, type_map, ctor_map)?,
             span: b.span,
@@ -7995,6 +8061,7 @@ fn qualify_local_binding(
     ctor_map: &HashMap<String, String>,
 ) -> Result<ast::Binding> {
     Ok(ast::Binding {
+        doc: b.doc,
         pat: qualify_pat_nonbinders(b.pat, ctor_map, val_map, type_map)?,
         expr: qualify_expr(b.expr, val_map, type_map, ctor_map)?,
         span: b.span,
@@ -8377,6 +8444,7 @@ fn pat_defined_names(p: &ast::Pattern, out: &mut HashSet<String>) {
 
 fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
     ast::Binding {
+        doc: b.doc,
         pat: b.pat,
         expr: rewrite_show_calls_in_expr(b.expr),
         span: b.span,
@@ -9367,6 +9435,7 @@ impl<'a> RewriteExprCtx<'a> {
             .into_iter()
             .map(|b| {
                 Ok(ast::Binding {
+                    doc: b.doc,
                     pat: b.pat,
                     expr: self.rewrite(b.expr)?,
                     span: b.span,
@@ -9515,6 +9584,7 @@ fn rewrite_class_method_calls_in_module(
         .map(|it| {
             Ok(match it {
                 ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
+                    doc: b.doc,
                     pat: b.pat,
                     expr: ctx.rewrite_expr(&empty_scope, &empty_known, b.expr)?,
                     span: b.span,
@@ -9654,6 +9724,7 @@ fn create_method_bindings(
         );
 
         injected.push(ast::Item::Binding(Binding {
+            doc: None,
             pat: Pattern {
                 kind: PatternKind::Var(mname),
                 span: ast::dummy_span(),
@@ -10333,6 +10404,7 @@ fn desugar_monad_do_bindings(
         .into_iter()
         .map(|b| {
             Ok(ast::Binding {
+                doc: b.doc,
                 pat: b.pat,
                 expr: desugar_monad_do_expr(b.expr, fresh)?,
                 span: b.span,
@@ -10546,6 +10618,7 @@ fn expand_bindings(
         .into_iter()
         .map(|b| {
             Ok(ast::Binding {
+                doc: b.doc,
                 pat: expand_pat(b.pat, aliases)?,
                 expr: expand_expr(b.expr, aliases)?,
                 span: b.span,
@@ -10606,6 +10679,7 @@ fn expand_data_ctors(
                 std::mem::swap(&mut span.start, &mut span.end);
             }
             Ok(ast::DataCtor {
+                doc: c.doc,
                 name: c.name,
                 args: c
                     .args
@@ -10621,17 +10695,20 @@ fn expand_data_ctors(
 fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Result<ast::Item> {
     match item {
         ast::Item::Binding(b) => Ok(ast::Item::Binding(ast::Binding {
+            doc: b.doc,
             pat: expand_pat(b.pat, aliases)?,
             expr: expand_expr(b.expr, aliases)?,
             span: b.span,
         })),
         ast::Item::TypeAlias(ta) => Ok(ast::Item::TypeAlias(ast::TypeAlias {
+            doc: ta.doc,
             name: ta.name,
             params: ta.params,
             ty: expand_type(ta.ty, aliases, &mut Vec::new())?,
             span: ta.span,
         })),
         ast::Item::DataDecl(d) => Ok(ast::Item::DataDecl(ast::DataDecl {
+            doc: d.doc,
             name: d.name,
             params: d.params,
             ctors: expand_data_ctors(d.ctors, aliases)?,
@@ -10639,6 +10716,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
             span: d.span,
         })),
         ast::Item::ClassDecl(c) => Ok(ast::Item::ClassDecl(ast::ClassDecl {
+            doc: c.doc,
             name: c.name,
             param: c.param,
             supers: c
@@ -10669,6 +10747,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .into_iter()
                 .map(|b| {
                     Ok(ast::Binding {
+                        doc: b.doc,
                         pat: expand_pat(b.pat, aliases)?,
                         expr: expand_expr(b.expr, aliases)?,
                         span: b.span,
@@ -10689,6 +10768,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .into_iter()
                 .map(|b| {
                     Ok(ast::Binding {
+                        doc: b.doc,
                         pat: expand_pat(b.pat, aliases)?,
                         expr: expand_expr(b.expr, aliases)?,
                         span: b.span,
@@ -11782,6 +11862,7 @@ mod inference_tests {
     fn type_error_includes_let_binding_name() {
         let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![ast::Binding {
+                doc: None,
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
                 span: ast::dummy_span(),
@@ -11792,6 +11873,7 @@ mod inference_tests {
 
         let e = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![ast::Binding {
+                doc: None,
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
                 span: ast::dummy_span(),
@@ -11807,6 +11889,7 @@ mod inference_tests {
         let e = infer_expr(ast::Expr::dummy(ast::ExprKind::Where {
             expr: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
             bindings: vec![ast::Binding {
+                doc: None,
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
                 span: ast::dummy_span(),
@@ -11907,6 +11990,7 @@ mod inference_tests {
     #[test]
     fn infer_let_generalizes() {
         let id_binding = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Var("id".to_string())),
             expr: ast::Expr::dummy(ast::ExprKind::Lambda {
                 params: vec!["x".to_string()],
@@ -11944,6 +12028,7 @@ mod inference_tests {
     #[test]
     fn infer_let_tuple_pattern() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Tuple(vec![
                 ast::Pattern::dummy(ast::PatternKind::Var("a".to_string())),
                 ast::Pattern::dummy(ast::PatternKind::Var("b".to_string())),
@@ -11967,6 +12052,7 @@ mod inference_tests {
     #[test]
     fn infer_duplicate_pattern_vars_is_error() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Tuple(vec![
                 ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
@@ -11988,6 +12074,7 @@ mod inference_tests {
     #[test]
     fn infer_let_list_pattern() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::List(vec![
                 ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 ast::Pattern::dummy(ast::PatternKind::Var("y".to_string())),
@@ -12011,6 +12098,7 @@ mod inference_tests {
     #[test]
     fn infer_let_record_pattern() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Record(vec![
                 (
                     "b".to_string(),
@@ -12043,6 +12131,7 @@ mod inference_tests {
     #[test]
     fn infer_record_field_mismatch_is_error() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Record(vec![(
                 "a".to_string(),
                 ast::Pattern::dummy(ast::PatternKind::Wildcard),
@@ -12289,6 +12378,7 @@ x = show (Bad (\y -> y))
     #[test]
     fn infer_case_expr() {
         let x_bind = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
             expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
             span: ast::dummy_span(),
@@ -12346,6 +12436,7 @@ x = case Just 1 of
     #[test]
     fn infer_case_arm_mismatch_is_error() {
         let x_bind = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
             expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
             span: ast::dummy_span(),

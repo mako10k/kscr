@@ -78,15 +78,21 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
         .and_then(|m| crate::backend_goto_completion::super_classify_toplevel_symbol(m, &name))
         .unwrap_or("identifier");
 
-    let ty = typecheck_document_typed(&doc.uri, &doc.text)
-        .ok()
+    let typed = typecheck_document_typed(&doc.uri, &doc.text).ok();
+    let ty = typed
+        .as_ref()
         .and_then(|tm| tm.inferred.get(&name).map(|s| s.to_string()));
+    let doc_comment = typed.as_ref().and_then(|tm| tm.docs.get(&name).cloned());
 
     let range = span_to_range(doc, name_span);
-    let value = match ty {
+    let mut value = match ty {
         Some(ty) => format!("```kscr\n{name} :: {ty}\n```"),
         None => format!("```kscr\n{kind} {name}\n```"),
     };
+    if let Some(doc_comment) = doc_comment {
+        value.push_str("\n---\n");
+        value.push_str(&doc_comment);
+    }
 
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {

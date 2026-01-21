@@ -14,6 +14,7 @@ pub fn parse_module(src: &str) -> Result<ast::Module> {
     let fixities = node_collect_fixities(&tokens);
     let line_starts = compute_line_starts(src);
     let mut ts = TokenStream::new(tokens, fixities, line_starts);
+
     ts.skip_newlines();
 
     if matches!(ts.peek_kind(), Some(TokenKind::KwModule)) {
@@ -21,6 +22,63 @@ pub fn parse_module(src: &str) -> Result<ast::Module> {
     } else {
         let items = node_parse_items_until(&mut ts, StopAt::Eof)?;
         Ok(ast::Module { name: None, items })
+    }
+}
+
+fn consume_doc_block(ts: &mut TokenStream, doc_buf: &mut Option<String>) {
+    // Consumes a *single* doc token if present.
+    // Newlines are not consumed here.
+    match ts.peek_kind() {
+        Some(TokenKind::DocLine(s)) => {
+            let s = s.clone();
+            ts.bump();
+            append_doc(doc_buf, s);
+            // A doc comment consumes the rest of the line.
+            ts.consume_line_end();
+        }
+        Some(TokenKind::DocBlock(s)) => {
+            let s = s.clone();
+            ts.bump();
+            append_doc(doc_buf, s);
+        }
+        _ => {}
+    }
+}
+
+fn collect_toplevel_doc_comments(ts: &mut TokenStream, doc_buf: &mut Option<String>) {
+    // Collect consecutive doc comments.
+    while matches!(
+        ts.peek_kind(),
+        Some(TokenKind::DocLine(_) | TokenKind::DocBlock(_))
+    ) {
+        consume_doc_block(ts, doc_buf);
+    }
+}
+
+fn consume_blank_lines_breaking_doc(ts: &mut TokenStream, doc_buf: &mut Option<String>) {
+    // One or more blank lines break the doc chain.
+    if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        return;
+    }
+    let mut n = 0usize;
+    while matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        ts.bump();
+        n += 1;
+    }
+    if n >= 2 {
+        *doc_buf = None;
+    }
+}
+
+fn append_doc(doc_buf: &mut Option<String>, s: String) {
+    match doc_buf {
+        Some(buf) => {
+            buf.push('\n');
+            buf.push_str(&s);
+        }
+        None => {
+            *doc_buf = Some(s);
+        }
     }
 }
 
@@ -220,6 +278,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
     let mut items = Vec::new();
     let mut pending: Option<PendingFun> = None;
     let mut signature_buf: HashMap<String, ast::QualType> = HashMap::new();
+    let mut doc_buf: Option<String> = None;
 
     let flush_pending_fun = |ts: &mut TokenStream,
                              items: &mut Vec<ast::Item>,
@@ -228,6 +287,9 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
      -> Result<()> {
         if let Some(p) = pending.take() {
             let mut b = desugar_fun(ts, p.name, p.arity, p.clauses);
+            if b.doc.is_none() {
+                b.doc = p.doc;
+            }
             if let ast::PatternKind::Var(def_name) = &b.pat.kind {
                 if let Some(sig_ty) = signature_buf.remove(def_name) {
                     let span = b.expr.span;
@@ -249,6 +311,9 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
         if is_stop_at_bound(ts, stop_at) {
             break;
         }
+        // Doc comments must be seen *before* we skip newlines.
+        collect_toplevel_doc_comments(ts, &mut doc_buf);
+        consume_blank_lines_breaking_doc(ts, &mut doc_buf);
         if should_skip_newlines(ts, stop_at) {
             ts.skip_newlines();
         }
@@ -259,6 +324,10 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
 
         let tok = ts.peek_kind().cloned();
         match tok {
+            Some(TokenKind::DocLine(_)) | Some(TokenKind::DocBlock(_)) => {
+                // Handled by collect_toplevel_doc_comments above.
+                continue;
+            }
             Some(TokenKind::KwImport) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_import_decl(ts)?);
@@ -273,15 +342,15 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
             }
             Some(TokenKind::KwData) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
-                items.push(parse_data_decl(ts)?);
+                items.push(parse_data_decl(ts, doc_buf.take())?);
             }
             Some(TokenKind::KwType) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
-                items.push(parse_type_alias(ts)?);
+                items.push(parse_type_alias(ts, doc_buf.take())?);
             }
             Some(TokenKind::KwClass) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
-                items.push(parse_class_decl(ts)?);
+                items.push(parse_class_decl(ts, doc_buf.take())?);
             }
             Some(TokenKind::KwInstance) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
@@ -299,15 +368,24 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
                     ParsedBind::Binding(b) => {
                         flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
+                        let mut b = b;
+                        if b.doc.is_none() {
+                            b.doc = doc_buf.take();
+                        }
                         items.push(ast::Item::Binding(b));
                     }
                     ParsedBind::FunClause(c) => {
-                        push_fun_clause_item(ts, &mut items, &mut pending, c)?;
+                        // Attach to the *function group* (PendingFun).
+                        // Doc tokens appear before we know whether we're starting a new group.
+                        // Passing `doc_buf.take()` is safe: after the first use it becomes None,
+                        // and `push_fun_clause_item` appends only when relevant.
+                        push_fun_clause_item(ts, &mut items, &mut pending, doc_buf.take(), c)?;
                     }
                 }
             }
             Some(TokenKind::Newline) => {
                 ts.bump();
+                doc_buf = None;
                 continue;
             }
             Some(TokenKind::Dedent) if matches!(stop_at, StopAt::Dedent) => {
@@ -369,7 +447,7 @@ fn try_parse_toplevel_sig_line(ts: &mut TokenStream) -> Result<Option<(String, a
     Ok(Some((name, ty)))
 }
 
-fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
     let start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     ts.expect(TokenKind::KwData)?;
     let name = ts.expect_ident()?;
@@ -381,7 +459,20 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::Eq)?;
 
     let mut ctors = Vec::new();
+    let mut ctor_doc_buf: Option<String> = None;
     loop {
+        // Allow per-constructor doc comments inside `data` declarations.
+        // Example:
+        //   data T =
+        //     -- | ctor doc
+        //     A
+        //     | B
+        //
+        // We collect contiguous DocLine/DocBlock tokens and attach them to the next constructor.
+        while matches!(ts.peek_kind(), Some(TokenKind::DocLine(_) | TokenKind::DocBlock(_))) {
+            consume_doc_block(ts, &mut ctor_doc_buf);
+        }
+
         // Try prefix ctor first: `Ctor a b` / `(:*:) a b`.
         // If that fails, accept infix ctor: `a :*: b`.
         let save = (ts.i, ts.last_span_end);
@@ -398,6 +489,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
             }
             let ctor_end = ts.last_span_end;
             Some(ast::DataCtor {
+                doc: ctor_doc_buf.take(),
                 name: ctor_name,
                 args,
                 span: crate::lexer::Span {
@@ -420,6 +512,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
             let rhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
             let ctor_end = ts.last_span_end;
             Some(ast::DataCtor {
+                doc: ctor_doc_buf.take(),
                 name: op,
                 args: vec![lhs, rhs],
                 span: crate::lexer::Span {
@@ -462,6 +555,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 
     let end = ts.last_span_end;
     Ok(ast::Item::DataDecl(ast::DataDecl {
+        doc,
         name,
         params,
         ctors,
@@ -470,7 +564,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     }))
 }
 
-fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
+fn parse_type_alias(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
     let start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     ts.expect(TokenKind::KwType)?;
     let name = ts.expect_ident()?;
@@ -484,6 +578,7 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
     let ty = parse_type_expr(ts, Stop::LineEnd, is_type_alias_end)?;
     let end = ts.last_span_end;
     Ok(ast::Item::TypeAlias(ast::TypeAlias {
+        doc,
         name,
         params,
         ty,
@@ -586,8 +681,10 @@ fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, V
     let mut methods: Vec<ast::ClassMethodSig> = Vec::new();
     let mut default_items: Vec<ast::Item> = Vec::new();
     let mut pending: Option<PendingFun> = None;
+    let mut doc_buf: Option<String> = None;
 
     loop {
+        collect_toplevel_doc_comments(ts, &mut doc_buf);
         ts.skip_newlines();
         if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
             break;
@@ -605,10 +702,14 @@ fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, V
             match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
                 ParsedBind::Binding(b) => {
                     flush_pending_fun_item(ts, &mut default_items, pending.take())?;
+                    let mut b = b;
+                    if b.doc.is_none() {
+                        b.doc = doc_buf.take();
+                    }
                     default_items.push(ast::Item::Binding(b));
                 }
                 ParsedBind::FunClause(c) => {
-                    push_fun_clause_item(ts, &mut default_items, &mut pending, c)?;
+                    push_fun_clause_item(ts, &mut default_items, &mut pending, doc_buf.take(), c)?;
                 }
             }
             ts.consume_line_end();
@@ -637,7 +738,7 @@ fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, V
     Ok((methods, default_methods))
 }
 
-fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+fn parse_class_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
     ts.expect(TokenKind::KwClass)?;
 
     let supers = parse_class_supers(ts)?;
@@ -650,6 +751,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     if !matches!(ts.peek_kind(), Some(TokenKind::Indent)) {
         // Allow empty class bodies.
         return Ok(ast::Item::ClassDecl(ast::ClassDecl {
+            doc,
             name,
             param,
             supers,
@@ -661,6 +763,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     let (methods, default_methods) = parse_class_body(ts)?;
 
     Ok(ast::Item::ClassDecl(ast::ClassDecl {
+        doc,
         name,
         param,
         supers,
@@ -745,7 +848,7 @@ fn parse_instance_decl(ts: &mut TokenStream) -> Result<ast::Item> {
                     method_items.push(ast::Item::Binding(b));
                 }
                 ParsedBind::FunClause(c) => {
-                    push_fun_clause_item(ts, &mut method_items, &mut pending, c)?;
+                    push_fun_clause_item(ts, &mut method_items, &mut pending, None, c)?;
                 }
             },
             Some(_) => return Err(ts.err_here("unexpected token in instance")),
@@ -1063,6 +1166,7 @@ struct FunClause {
     args: Vec<ast::Pattern>,
     guard: Option<ast::Expr>,
     body: ast::Expr,
+    doc: Option<String>,
 }
 
 enum ParsedBind {
@@ -1074,6 +1178,7 @@ struct PendingFun {
     name: String,
     arity: usize,
     clauses: Vec<(Vec<ast::Pattern>, Option<ast::Expr>, ast::Expr)>,
+    doc: Option<String>,
 }
 
 fn flush_pending_fun_item(
@@ -1084,9 +1189,11 @@ fn flush_pending_fun_item(
     let Some(p) = pending else {
         return Ok(());
     };
-    out.push(ast::Item::Binding(desugar_fun(
-        ts, p.name, p.arity, p.clauses,
-    )));
+    let mut b = desugar_fun(ts, p.name, p.arity, p.clauses);
+    if b.doc.is_none() {
+        b.doc = p.doc;
+    }
+    out.push(ast::Item::Binding(b));
     Ok(())
 }
 
@@ -1098,21 +1205,33 @@ fn flush_pending_fun_binding(
     let Some(p) = pending else {
         return;
     };
-    out.push(desugar_fun(ts, p.name, p.arity, p.clauses));
+    let mut b = desugar_fun(ts, p.name, p.arity, p.clauses);
+    if b.doc.is_none() {
+        b.doc = p.doc;
+    }
+    out.push(b);
 }
 
 fn push_fun_clause_binding(
     ts: &mut TokenStream,
     out: &mut Vec<ast::Binding>,
     pending: &mut Option<PendingFun>,
+    doc: Option<String>,
     c: FunClause,
 ) {
     let arity = c.args.len();
     let clause = (c.args, c.guard, c.body);
+    let clause_doc = c.doc;
 
     match pending {
         Some(p) if p.name == c.name && p.arity == arity => {
             p.clauses.push(clause);
+            if let Some(d) = doc {
+                append_doc(&mut p.doc, d);
+            }
+            if let Some(d) = clause_doc {
+                append_doc(&mut p.doc, d);
+            }
         }
         Some(_) => {
             flush_pending_fun_binding(ts, out, pending.take());
@@ -1120,6 +1239,7 @@ fn push_fun_clause_binding(
                 name: c.name,
                 arity,
                 clauses: vec![clause],
+                doc: doc.or(clause_doc),
             });
         }
         None => {
@@ -1127,6 +1247,7 @@ fn push_fun_clause_binding(
                 name: c.name,
                 arity,
                 clauses: vec![clause],
+                doc: doc.or(clause_doc),
             });
         }
     }
@@ -1136,14 +1257,22 @@ fn push_fun_clause_item(
     ts: &mut TokenStream,
     out: &mut Vec<ast::Item>,
     pending: &mut Option<PendingFun>,
+    doc: Option<String>,
     c: FunClause,
 ) -> Result<()> {
     let arity = c.args.len();
     let clause = (c.args, c.guard, c.body);
+    let clause_doc = c.doc;
 
     match pending {
         Some(p) if p.name == c.name && p.arity == arity => {
             p.clauses.push(clause);
+            if let Some(d) = doc {
+                append_doc(&mut p.doc, d);
+            }
+            if let Some(d) = clause_doc {
+                append_doc(&mut p.doc, d);
+            }
         }
         Some(_) => {
             flush_pending_fun_item(ts, out, pending.take())?;
@@ -1151,6 +1280,7 @@ fn push_fun_clause_item(
                 name: c.name,
                 arity,
                 clauses: vec![clause],
+                doc: doc.or(clause_doc),
             });
         }
         None => {
@@ -1158,6 +1288,7 @@ fn push_fun_clause_item(
                 name: c.name,
                 arity,
                 clauses: vec![clause],
+                doc: doc.or(clause_doc),
             });
         }
     }
@@ -1242,6 +1373,7 @@ fn desugar_fun(
     );
 
     ast::Binding {
+        doc: None,
         pat: ast::Pattern::new(synth_span, ast::PatternKind::Var(name)),
         expr: ast::Expr::new(
             synth_span,
@@ -1302,6 +1434,7 @@ fn parse_binding_simple(ts: &mut TokenStream, stop: Stop) -> Result<ast::Binding
     let expr = parse_eq_rhs(ts, stop)?;
     let end = expr.span.end;
     Ok(ast::Binding {
+        doc: None,
         pat,
         expr,
         span: crate::lexer::Span { start, end },
@@ -1415,6 +1548,7 @@ fn try_parse_funclause_paren_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
         args,
         guard,
         body,
+        doc: None,
     })))
 }
 
@@ -1450,6 +1584,7 @@ fn try_parse_funclause_infix_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
         args: vec![lhs_pat, rhs_pat],
         guard,
         body,
+        doc: None,
     })))
 }
 
@@ -1490,6 +1625,7 @@ fn try_parse_funclause_prefix_ident(
         args,
         guard,
         body,
+        doc: None,
     })))
 }
 
@@ -1633,7 +1769,7 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                     flush_pending_fun_binding(ts, &mut bs, pending.take());
                     bs.push(b);
                 }
-                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, c),
+                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, None, c),
             }
             ts.consume_line_end();
         }
@@ -1648,7 +1784,7 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
 
         match parse_binding_or_fun_clause(ts, Stop::LetBind)? {
             ParsedBind::Binding(b) => bs.push(b),
-            ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, c),
+            ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, None, c),
         }
         while matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
             ts.bump();
@@ -1657,7 +1793,7 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                     flush_pending_fun_binding(ts, &mut bs, pending.take());
                     bs.push(b);
                 }
-                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, c),
+                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, None, c),
             }
         }
         flush_pending_fun_binding(ts, &mut bs, pending.take());
@@ -1928,7 +2064,7 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
                     bindings.push(b);
                 }
                 ParsedBind::FunClause(c) => {
-                    push_fun_clause_binding(ts, &mut bindings, &mut pending, c)
+                    push_fun_clause_binding(ts, &mut bindings, &mut pending, None, c)
                 }
             }
 
@@ -1981,7 +2117,7 @@ fn parse_where(ts: &mut TokenStream, expr: ast::Expr) -> Result<ast::Expr> {
                     bindings.push(b);
                 }
                 ParsedBind::FunClause(c) => {
-                    push_fun_clause_binding(ts, &mut bindings, &mut pending, c)
+                    push_fun_clause_binding(ts, &mut bindings, &mut pending, None, c)
                 }
             }
 
