@@ -59,6 +59,16 @@ jobs:
         # as warnings and exit non-zero. We only gate on our own usage of `unsafe`.
         run: bash tools/ci/run_geiger.sh
 
+      - name: Upload geiger logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geiger-logs-${{ github.run_id }}-${{ github.sha }}
+          path: |
+            tools/ci/geiger.log
+            tools/ci/geiger_status.txt
+          if-no-files-found: error
+
   nightly_udeps:
     name: nightly udeps (informational)
     runs-on: ubuntu-latest

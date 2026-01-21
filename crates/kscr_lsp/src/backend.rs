@@ -161,12 +161,12 @@ mod tests {
 
     #[test]
     fn hover_shows_ctor_doc_comment() {
-                let src_typed = r#"module Main where
+        let src_typed = r#"module Main where
     data Opt a = {-| some ctor doc -} Some a | None
 
     x = Some 1
 "#
-            .to_string();
+        .to_string();
 
         let tmp_dir = std::env::temp_dir().join("kscr_tests");
         std::fs::create_dir_all(&tmp_dir).unwrap();
