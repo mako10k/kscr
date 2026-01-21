@@ -187,41 +187,114 @@ fn lsp_toplevel_doc_after_where_is_visible_in_hover_and_completion() {
     let tm = kscr::types::typecheck_file(&path).unwrap();
     assert!(
         tm.docs
-            .get("v")
+            .get("identDoc")
             .is_some_and(|d| d.contains("Identity function.")),
-        "TypedModule.docs missing for `v`: {:?}",
+        "TypedModule.docs missing for `identDoc`: {:?}",
         tm.docs
     );
 
-    // Hover on the binding name "v".
-    let h = backend_diagnostics_hover::hover_in_doc(&doc, Position::new(4, 2)).unwrap();
+    // Hover on the binding name "identDoc".
+    let h = backend_diagnostics_hover::hover_in_doc(&doc, Position::new(2, 2)).unwrap();
     let s = match h.contents {
         tower_lsp::lsp_types::HoverContents::Markup(m) => m.value,
         other => panic!("unexpected hover contents: {other:?}"),
     };
-    assert!(s.contains("v"));
+    assert!(s.contains("identDoc"));
     assert!(s.contains("Identity function."));
 
-    // Completion with prefix "v" should include `v` with docs.
-    let src_doc2 = format!("{src_typed}\nv");
+    // Completion with prefix "id" should include `identDoc` with docs.
+    let src_doc2 = format!("{src_typed}\nid");
     let doc2 = vfs::Document::new(doc.uri.clone(), src_doc2, 1);
     let items = backend_goto_completion::completion_items_in_doc(&doc2, Position::new(5, 2), &tm)
         .unwrap();
 
     let id_item = items
         .iter()
-        .find(|i| i.label == "v")
+        .find(|i| i.label == "identDoc")
         .unwrap_or_else(|| {
             panic!(
-                "missing `v` in completion: {:?}",
+                "missing `identDoc` in completion: {:?}",
                 items.iter().map(|i| &i.label).collect::<Vec<_>>()
             )
         });
     let id_doc = id_item
         .documentation
         .as_ref()
-        .expect("missing documentation for `v`");
+        .expect("missing documentation for `identDoc`");
     match id_doc {
+        tower_lsp::lsp_types::Documentation::MarkupContent(mc) => {
+            assert_eq!(mc.kind, MarkupKind::Markdown);
+            assert!(mc.value.contains("Identity function."));
+        }
+        other => panic!("unexpected documentation: {other:?}"),
+    }
+}
+
+#[test]
+fn lsp_toplevel_doc_after_where_attaches_to_next_decl() {
+    let src_typed = r#"module Main where
+    -- | Identity function.
+    identDoc x = x
+
+    v = identDoc 1
+"#
+    .to_string();
+
+    let tmp_dir = std::env::temp_dir().join("kscr_tests");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let path = tmp_dir.join("toplevel_doc_after_where_attaches_to_next_decl.ks");
+    std::fs::write(&path, &src_typed).unwrap();
+
+    let uri = tower_lsp::lsp_types::Url::from_file_path(&path).unwrap();
+    // Add trailing newline for stable cursoring.
+    let doc = vfs::Document::new(uri, format!("{src_typed}\n"), 1);
+
+    let tm = kscr::types::typecheck_file(&path).unwrap();
+    assert!(
+        tm.docs
+            .get("identDoc")
+            .is_some_and(|d| d.contains("Identity function.")),
+        "TypedModule.docs missing for `identDoc`: {:?}",
+        tm.docs
+    );
+    assert!(
+        tm.docs
+            .get("v")
+            .is_none_or(|d| !d.contains("Identity function.")),
+        "Doc unexpectedly attached to `v`: {:?}",
+        tm.docs
+    );
+
+    // Hover on the binding name "identDoc".
+    // line 2: "  identDoc x = x"
+    let h = backend_diagnostics_hover::hover_in_doc(&doc, Position::new(2, 4)).unwrap();
+    let s = match h.contents {
+        tower_lsp::lsp_types::HoverContents::Markup(m) => m.value,
+        other => panic!("unexpected hover contents: {other:?}"),
+    };
+    assert!(s.contains("identDoc"));
+    assert!(s.contains("Identity function."));
+
+    // Completion with prefix "id" should include `identDoc` with docs.
+    let src_doc2 = format!("{src_typed}\nid");
+    let doc2 = vfs::Document::new(doc.uri.clone(), src_doc2, 1);
+    let items = backend_goto_completion::completion_items_in_doc(&doc2, Position::new(5, 2), &tm)
+        .unwrap();
+
+    let item = items
+        .iter()
+        .find(|i| i.label == "identDoc")
+        .unwrap_or_else(|| {
+            panic!(
+                "missing `identDoc` in completion: {:?}",
+                items.iter().map(|i| &i.label).collect::<Vec<_>>()
+            )
+        });
+    let docv = item
+        .documentation
+        .as_ref()
+        .expect("missing documentation for `identDoc`");
+    match docv {
         tower_lsp::lsp_types::Documentation::MarkupContent(mc) => {
             assert_eq!(mc.kind, MarkupKind::Markdown);
             assert!(mc.value.contains("Identity function."));
