@@ -2836,16 +2836,19 @@ fn add_ffi_primitives(env: &mut TypeEnv) {
     #[cfg(feature = "unsafe_ffi")]
     env.insert(
         "ffiPuts".to_string(),
-        Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Func(
-                Box::new(Ty::List(Box::new(Ty::Con("Char".to_string())))),
-                Box::new(Ty::App {
-                    head: Box::new(Ty::Con("IO".to_string())),
-                    args: vec![Ty::Con("i32".to_string())],
-                }),
-            ),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::List(Box::new(Ty::Con("Char".to_string())))),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![Ty::Con("i32".to_string())],
+                    }),
+                ),
+            },
+            def_site: None,
         },
     );
 }
