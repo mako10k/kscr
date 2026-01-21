@@ -20,6 +20,38 @@ mod typeclass_dict_passing_rewrite;
 pub struct TypedModule {
     pub module: ast::Module,
     pub inferred: HashMap<String, Scheme>,
+    pub docs: HashMap<String, String>,
+}
+
+fn collect_toplevel_docs(module: &ast::Module) -> HashMap<String, String> {
+    use ast::{Item, PatternKind};
+
+    let mut out = HashMap::new();
+    for it in &module.items {
+        match it {
+            Item::Binding(b) => {
+                let Some(doc) = &b.doc else { continue };
+                let PatternKind::Var(name) = &b.pat.kind else {
+                    continue;
+                };
+                out.insert(name.clone(), doc.clone());
+            }
+            Item::TypeAlias(ta) => {
+                let Some(doc) = &ta.doc else { continue };
+                out.insert(ta.name.clone(), doc.clone());
+            }
+            Item::DataDecl(d) => {
+                let Some(doc) = &d.doc else { continue };
+                out.insert(d.name.clone(), doc.clone());
+            }
+            Item::ClassDecl(c) => {
+                let Some(doc) = &c.doc else { continue };
+                out.insert(c.name.clone(), doc.clone());
+            }
+            Item::Import(_) | Item::Export(_) | Item::Fixity(_) | Item::InstanceDecl(_) => {}
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5676,8 +5708,10 @@ fn load_imported_ksif_schemes(
         for (name, scheme) in ksif.values {
             m.insert(name, scheme);
         }
+
         imported.insert(id.module.clone(), m);
     }
+
     Ok(imported)
 }
 
@@ -5919,6 +5953,9 @@ fn typecheck_internal_core_with_entry_path(
     imported: Option<HashMap<String, HashMap<String, Scheme>>>,
     entry_path: Option<&Path>,
 ) -> Result<TypedModule> {
+    // Collect docs from the source AST once. Later desugaring/rewrites may drop or rewrite items.
+    let source_docs = collect_toplevel_docs(&module);
+
     WithAliasEvidence::run(|| {
         if module
             .items
@@ -5932,7 +5969,11 @@ fn typecheck_internal_core_with_entry_path(
         // NOTE: cache is only used when imported schemes are not provided.
         if imported.is_none() {
             if let Some(inferred) = stdlib_cache::check_module_typecheck_cache(&module) {
-                return Ok(TypedModule { module, inferred });
+                return Ok(TypedModule {
+                    module,
+                    inferred,
+                    docs: source_docs.clone(),
+                });
             }
         }
 
@@ -6025,7 +6066,11 @@ fn typecheck_internal_core_with_entry_path(
             .items
             .retain(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)));
 
-        Ok(TypedModule { module, inferred })
+        Ok(TypedModule {
+            module,
+            inferred,
+            docs: source_docs,
+        })
     })
 }
 
@@ -11804,6 +11849,7 @@ mod inference_tests {
     fn type_error_includes_let_binding_name() {
         let _ = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![ast::Binding {
+                doc: None,
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
                 span: ast::dummy_span(),
@@ -11814,6 +11860,7 @@ mod inference_tests {
 
         let e = infer_expr(ast::Expr::dummy(ast::ExprKind::Let {
             bindings: vec![ast::Binding {
+                doc: None,
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
                 span: ast::dummy_span(),
@@ -11829,6 +11876,7 @@ mod inference_tests {
         let e = infer_expr(ast::Expr::dummy(ast::ExprKind::Where {
             expr: Box::new(ast::Expr::dummy(ast::ExprKind::Var("x".to_string()))),
             bindings: vec![ast::Binding {
+                doc: None,
                 pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var("y".to_string())),
                 span: ast::dummy_span(),
@@ -11929,6 +11977,7 @@ mod inference_tests {
     #[test]
     fn infer_let_generalizes() {
         let id_binding = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Var("id".to_string())),
             expr: ast::Expr::dummy(ast::ExprKind::Lambda {
                 params: vec!["x".to_string()],
@@ -11966,6 +12015,7 @@ mod inference_tests {
     #[test]
     fn infer_let_tuple_pattern() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Tuple(vec![
                 ast::Pattern::dummy(ast::PatternKind::Var("a".to_string())),
                 ast::Pattern::dummy(ast::PatternKind::Var("b".to_string())),
@@ -11989,6 +12039,7 @@ mod inference_tests {
     #[test]
     fn infer_duplicate_pattern_vars_is_error() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Tuple(vec![
                 ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
@@ -12010,6 +12061,7 @@ mod inference_tests {
     #[test]
     fn infer_let_list_pattern() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::List(vec![
                 ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
                 ast::Pattern::dummy(ast::PatternKind::Var("y".to_string())),
@@ -12033,6 +12085,7 @@ mod inference_tests {
     #[test]
     fn infer_let_record_pattern() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Record(vec![
                 (
                     "b".to_string(),
@@ -12065,6 +12118,7 @@ mod inference_tests {
     #[test]
     fn infer_record_field_mismatch_is_error() {
         let b = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Record(vec![(
                 "a".to_string(),
                 ast::Pattern::dummy(ast::PatternKind::Wildcard),
@@ -12311,6 +12365,7 @@ x = show (Bad (\y -> y))
     #[test]
     fn infer_case_expr() {
         let x_bind = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
             expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
             span: ast::dummy_span(),
@@ -12368,6 +12423,7 @@ x = case Just 1 of
     #[test]
     fn infer_case_arm_mismatch_is_error() {
         let x_bind = ast::Binding {
+            doc: None,
             pat: ast::Pattern::dummy(ast::PatternKind::Var("x".to_string())),
             expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
             span: ast::dummy_span(),

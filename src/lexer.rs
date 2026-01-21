@@ -197,7 +197,9 @@ fn skip_line_comment(bytes: &[u8], i: &mut usize) {
 }
 
 fn is_doc_line_comment(bytes: &[u8], i: usize) -> bool {
-    bytes.get(i..).is_some_and(|rest| rest.starts_with(b"--") && rest.get(2..).is_some_and(|r| r.starts_with(b" |")))
+    bytes.get(i..).is_some_and(|rest| {
+        rest.starts_with(b"--") && rest.get(2..).is_some_and(|r| r.starts_with(b" |"))
+    })
 }
 
 fn lex_doc_line_comment(bytes: &[u8], i: &mut usize, tokens: &mut Vec<Token>) {
@@ -208,7 +210,9 @@ fn lex_doc_line_comment(bytes: &[u8], i: &mut usize, tokens: &mut Vec<Token>) {
     while *i < bytes.len() && bytes[*i] != b'\n' {
         *i += 1;
     }
-    let content = String::from_utf8_lossy(&bytes[content_start..*i]).trim_end().to_string();
+    let content = String::from_utf8_lossy(&bytes[content_start..*i])
+        .trim()
+        .to_string();
     push_token(tokens, TokenKind::DocLine(content), start, *i);
 }
 
@@ -229,7 +233,7 @@ fn skip_block_comment(bytes: &[u8], i: &mut usize) {
 }
 
 fn is_doc_block_comment(bytes: &[u8], i: usize) -> bool {
-    bytes.get(i..).is_some_and(|rest| rest.starts_with(b"{-|") )
+    bytes.get(i..).is_some_and(|rest| rest.starts_with(b"{-|"))
 }
 
 fn lex_doc_block_comment(bytes: &[u8], i: &mut usize, tokens: &mut Vec<Token>) {

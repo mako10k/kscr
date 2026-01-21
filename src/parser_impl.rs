@@ -14,6 +14,7 @@ pub fn parse_module(src: &str) -> Result<ast::Module> {
     let fixities = node_collect_fixities(&tokens);
     let line_starts = compute_line_starts(src);
     let mut ts = TokenStream::new(tokens, fixities, line_starts);
+
     ts.skip_newlines();
 
     if matches!(ts.peek_kind(), Some(TokenKind::KwModule)) {
@@ -21,6 +22,63 @@ pub fn parse_module(src: &str) -> Result<ast::Module> {
     } else {
         let items = node_parse_items_until(&mut ts, StopAt::Eof)?;
         Ok(ast::Module { name: None, items })
+    }
+}
+
+fn consume_doc_block(ts: &mut TokenStream, doc_buf: &mut Option<String>) {
+    // Consumes a *single* doc token if present.
+    // Newlines are not consumed here.
+    match ts.peek_kind() {
+        Some(TokenKind::DocLine(s)) => {
+            let s = s.clone();
+            ts.bump();
+            append_doc(doc_buf, s);
+            // A doc comment consumes the rest of the line.
+            ts.consume_line_end();
+        }
+        Some(TokenKind::DocBlock(s)) => {
+            let s = s.clone();
+            ts.bump();
+            append_doc(doc_buf, s);
+        }
+        _ => {}
+    }
+}
+
+fn collect_toplevel_doc_comments(ts: &mut TokenStream, doc_buf: &mut Option<String>) {
+    // Collect consecutive doc comments.
+    while matches!(
+        ts.peek_kind(),
+        Some(TokenKind::DocLine(_) | TokenKind::DocBlock(_))
+    ) {
+        consume_doc_block(ts, doc_buf);
+    }
+}
+
+fn consume_blank_lines_breaking_doc(ts: &mut TokenStream, doc_buf: &mut Option<String>) {
+    // One or more blank lines break the doc chain.
+    if !matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        return;
+    }
+    let mut n = 0usize;
+    while matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        ts.bump();
+        n += 1;
+    }
+    if n >= 2 {
+        *doc_buf = None;
+    }
+}
+
+fn append_doc(doc_buf: &mut Option<String>, s: String) {
+    match doc_buf {
+        Some(buf) => {
+            buf.push('\n');
+            buf.push_str(&s);
+        }
+        None => {
+            *doc_buf = Some(s);
+        }
     }
 }
 
@@ -220,6 +278,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
     let mut items = Vec::new();
     let mut pending: Option<PendingFun> = None;
     let mut signature_buf: HashMap<String, ast::QualType> = HashMap::new();
+    let mut doc_buf: Option<String> = None;
 
     let flush_pending_fun = |ts: &mut TokenStream,
                              items: &mut Vec<ast::Item>,
@@ -249,6 +308,9 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
         if is_stop_at_bound(ts, stop_at) {
             break;
         }
+        // Doc comments must be seen *before* we skip newlines.
+        collect_toplevel_doc_comments(ts, &mut doc_buf);
+        consume_blank_lines_breaking_doc(ts, &mut doc_buf);
         if should_skip_newlines(ts, stop_at) {
             ts.skip_newlines();
         }
@@ -259,6 +321,10 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
 
         let tok = ts.peek_kind().cloned();
         match tok {
+            Some(TokenKind::DocLine(_)) | Some(TokenKind::DocBlock(_)) => {
+                // Handled by collect_toplevel_doc_comments above.
+                continue;
+            }
             Some(TokenKind::KwImport) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_import_decl(ts)?);
@@ -273,15 +339,15 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
             }
             Some(TokenKind::KwData) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
-                items.push(parse_data_decl(ts)?);
+                items.push(parse_data_decl(ts, doc_buf.take())?);
             }
             Some(TokenKind::KwType) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
-                items.push(parse_type_alias(ts)?);
+                items.push(parse_type_alias(ts, doc_buf.take())?);
             }
             Some(TokenKind::KwClass) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
-                items.push(parse_class_decl(ts)?);
+                items.push(parse_class_decl(ts, doc_buf.take())?);
             }
             Some(TokenKind::KwInstance) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
@@ -299,6 +365,10 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
                     ParsedBind::Binding(b) => {
                         flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
+                        let mut b = b;
+                        if b.doc.is_none() {
+                            b.doc = doc_buf.take();
+                        }
                         items.push(ast::Item::Binding(b));
                     }
                     ParsedBind::FunClause(c) => {
@@ -308,6 +378,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
             }
             Some(TokenKind::Newline) => {
                 ts.bump();
+                doc_buf = None;
                 continue;
             }
             Some(TokenKind::Dedent) if matches!(stop_at, StopAt::Dedent) => {
@@ -369,7 +440,7 @@ fn try_parse_toplevel_sig_line(ts: &mut TokenStream) -> Result<Option<(String, a
     Ok(Some((name, ty)))
 }
 
-fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
     let start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     ts.expect(TokenKind::KwData)?;
     let name = ts.expect_ident()?;
@@ -462,7 +533,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 
     let end = ts.last_span_end;
     Ok(ast::Item::DataDecl(ast::DataDecl {
-        doc: None,
+        doc,
         name,
         params,
         ctors,
@@ -471,7 +542,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     }))
 }
 
-fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
+fn parse_type_alias(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
     let start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     ts.expect(TokenKind::KwType)?;
     let name = ts.expect_ident()?;
@@ -485,7 +556,7 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
     let ty = parse_type_expr(ts, Stop::LineEnd, is_type_alias_end)?;
     let end = ts.last_span_end;
     Ok(ast::Item::TypeAlias(ast::TypeAlias {
-        doc: None,
+        doc,
         name,
         params,
         ty,
@@ -588,8 +659,10 @@ fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, V
     let mut methods: Vec<ast::ClassMethodSig> = Vec::new();
     let mut default_items: Vec<ast::Item> = Vec::new();
     let mut pending: Option<PendingFun> = None;
+    let mut doc_buf: Option<String> = None;
 
     loop {
+        collect_toplevel_doc_comments(ts, &mut doc_buf);
         ts.skip_newlines();
         if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
             break;
@@ -607,6 +680,10 @@ fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, V
             match parse_binding_or_fun_clause(ts, Stop::LineEnd)? {
                 ParsedBind::Binding(b) => {
                     flush_pending_fun_item(ts, &mut default_items, pending.take())?;
+                    let mut b = b;
+                    if b.doc.is_none() {
+                        b.doc = doc_buf.take();
+                    }
                     default_items.push(ast::Item::Binding(b));
                 }
                 ParsedBind::FunClause(c) => {
@@ -639,7 +716,7 @@ fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, V
     Ok((methods, default_methods))
 }
 
-fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
+fn parse_class_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
     ts.expect(TokenKind::KwClass)?;
 
     let supers = parse_class_supers(ts)?;
@@ -652,7 +729,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     if !matches!(ts.peek_kind(), Some(TokenKind::Indent)) {
         // Allow empty class bodies.
         return Ok(ast::Item::ClassDecl(ast::ClassDecl {
-            doc: None,
+            doc,
             name,
             param,
             supers,
@@ -664,7 +741,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     let (methods, default_methods) = parse_class_body(ts)?;
 
     Ok(ast::Item::ClassDecl(ast::ClassDecl {
-        doc: None,
+        doc,
         name,
         param,
         supers,
