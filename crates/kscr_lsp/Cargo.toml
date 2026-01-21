@@ -3,6 +3,9 @@ name = "kscr_lsp"
 version = "0.2.0"
 edition = "2021"
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "kscr-lsp"
 path = "src/main.rs"

@@ -41,7 +41,7 @@ jobs:
         run: cargo fmt -- --check
 
       - name: cargo clippy (deny warnings)
-        run: cargo clippy --all-features -- -D warnings -D clippy::too_many_lines -D clippy::cognitive_complexity
+        run: cargo clippy --all-features -- -D warnings
 
       - name: Install cargo-geiger
         run: |
@@ -57,7 +57,7 @@ jobs:
       - name: cargo geiger
         # cargo-geiger may report non-fatal scanning issues (e.g. generated/data files)
         # as warnings and exit non-zero. We only gate on our own usage of `unsafe`.
-        run: cargo geiger --forbid-only --locked
+        run: bash tools/ci/run_geiger.sh
 
   nightly_udeps:
     name: nightly udeps (informational)

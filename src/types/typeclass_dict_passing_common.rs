@@ -55,6 +55,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
                     if let PatternKind::Var(name) = &b.pat.kind {
                         if let Some(classes) = needs_dicts.get(name) {
                             ast::Item::Binding(ast::Binding {
+                                doc: None,
                                 pat: b.pat,
                                 expr: add_dict_params_to_expr(b.expr.span, b.expr, classes),
                                 span: b.span,

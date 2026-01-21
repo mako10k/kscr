@@ -517,6 +517,7 @@ fn rewrite_scoped_bindings(
                 }
             }
             Ok(ast::Binding {
+                doc: None,
                 pat: b.pat,
                 expr: rewrite_expr_cx(inner_cx, expr)?,
                 span,
