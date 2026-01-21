@@ -43,6 +43,12 @@ fn collect_toplevel_docs(module: &ast::Module) -> HashMap<String, String> {
             Item::DataDecl(d) => {
                 let Some(doc) = &d.doc else { continue };
                 out.insert(d.name.clone(), doc.clone());
+
+                // Best-effort: also attach the same doc to constructors.
+                // Constructor-level doc comments are not modeled yet.
+                for ctor in &d.ctors {
+                    out.insert(ctor.name.clone(), doc.clone());
+                }
             }
             Item::ClassDecl(c) => {
                 let Some(doc) = &c.doc else { continue };

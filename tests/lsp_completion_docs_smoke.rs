@@ -16,6 +16,9 @@ fn lsp_completion_includes_doc_comments() {
 -- | A simple data type.
 type Box = Integer
 
+-- | A small sum type.
+data Opt a = Some a | None
+
 -- | Another binding.
 adjust = 0
 "#;
@@ -46,6 +49,14 @@ adjust = 0
             .get("Box")
             .is_some_and(|d| d.contains("A simple data type.")),
         "TypedModule.docs missing for `Box`: {:?}",
+        tm.docs
+    );
+
+    assert!(
+        tm.docs
+            .get("Some")
+            .is_some_and(|d| d.contains("A small sum type.")),
+        "TypedModule.docs missing for `Some`: {:?}",
         tm.docs
     );
 
@@ -106,6 +117,40 @@ adjust = 0
         tower_lsp::lsp_types::Documentation::MarkupContent(mc) => {
             assert_eq!(mc.kind, MarkupKind::Markdown);
             assert!(mc.value.contains("A simple data type."));
+        }
+        other => panic!("unexpected documentation: {other:?}"),
+    }
+
+    // Completion with prefix "So" should include the constructor `Some` with docs.
+    let (doc3_uri, doc3_text) = {
+        let src_doc3 = format!("{src_typed}\nSo");
+        (doc.uri.clone(), src_doc3)
+    };
+    let doc3 = vfs::Document::new(doc3_uri, doc3_text, 0);
+    let items3 = backend_goto_completion::completion_items_in_doc(&doc3, Position::new(8, 2), &tm)
+        .unwrap();
+
+    let some = items3
+        .iter()
+        .find(|i| i.label == "Some")
+        .unwrap_or_else(|| {
+            panic!(
+                "missing `Some` in completion: {:?}",
+                items3.iter().map(|i| &i.label).collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(
+        some.kind,
+        Some(tower_lsp::lsp_types::CompletionItemKind::CONSTRUCTOR)
+    );
+    let some_doc = some
+        .documentation
+        .as_ref()
+        .expect("missing documentation for `Some`");
+    match some_doc {
+        tower_lsp::lsp_types::Documentation::MarkupContent(mc) => {
+            assert_eq!(mc.kind, MarkupKind::Markdown);
+            assert!(mc.value.contains("A small sum type."));
         }
         other => panic!("unexpected documentation: {other:?}"),
     }
