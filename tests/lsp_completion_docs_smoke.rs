@@ -9,6 +9,9 @@ mod backend_helpers;
 #[path = "../crates/kscr_lsp/src/backend_goto_completion.rs"]
 mod backend_goto_completion;
 
+#[path = "../crates/kscr_lsp/src/backend_diagnostics_hover.rs"]
+mod backend_diagnostics_hover;
+
 #[test]
 fn lsp_completion_includes_doc_comments() {
     let src_typed = r#"add x y = x + y
@@ -154,6 +157,74 @@ adjust = 0
         tower_lsp::lsp_types::Documentation::MarkupContent(mc) => {
             assert_eq!(mc.kind, MarkupKind::Markdown);
             assert!(mc.value.contains("some ctor doc"));
+        }
+        other => panic!("unexpected documentation: {other:?}"),
+    }
+}
+
+#[test]
+fn lsp_toplevel_doc_after_where_is_visible_in_hover_and_completion() {
+    let src_typed = r#"module Main where
+  -- | Identity function.
+  identDoc x = x
+
+  v = identDoc 1
+"#
+    .to_string();
+
+    // For hover, add a harmless trailing newline so cursoring around is stable.
+    // Keep typechecking based on the on-disk `src_typed`.
+    let src_doc = format!("{src_typed}\n");
+
+    let tmp_dir = std::env::temp_dir().join("kscr_tests");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let path = tmp_dir.join("toplevel_doc_after_where.ks");
+    std::fs::write(&path, &src_typed).unwrap();
+
+    let uri = tower_lsp::lsp_types::Url::from_file_path(&path).unwrap();
+    let doc = vfs::Document::new(uri, src_doc, 1);
+
+    let tm = kscr::types::typecheck_file(&path).unwrap();
+    assert!(
+        tm.docs
+            .get("v")
+            .is_some_and(|d| d.contains("Identity function.")),
+        "TypedModule.docs missing for `v`: {:?}",
+        tm.docs
+    );
+
+    // Hover on the binding name "v".
+    let h = backend_diagnostics_hover::hover_in_doc(&doc, Position::new(4, 2)).unwrap();
+    let s = match h.contents {
+        tower_lsp::lsp_types::HoverContents::Markup(m) => m.value,
+        other => panic!("unexpected hover contents: {other:?}"),
+    };
+    assert!(s.contains("v"));
+    assert!(s.contains("Identity function."));
+
+    // Completion with prefix "v" should include `v` with docs.
+    let src_doc2 = format!("{src_typed}\nv");
+    let doc2 = vfs::Document::new(doc.uri.clone(), src_doc2, 1);
+    let items = backend_goto_completion::completion_items_in_doc(&doc2, Position::new(5, 2), &tm)
+        .unwrap();
+
+    let id_item = items
+        .iter()
+        .find(|i| i.label == "v")
+        .unwrap_or_else(|| {
+            panic!(
+                "missing `v` in completion: {:?}",
+                items.iter().map(|i| &i.label).collect::<Vec<_>>()
+            )
+        });
+    let id_doc = id_item
+        .documentation
+        .as_ref()
+        .expect("missing documentation for `v`");
+    match id_doc {
+        tower_lsp::lsp_types::Documentation::MarkupContent(mc) => {
+            assert_eq!(mc.kind, MarkupKind::Markdown);
+            assert!(mc.value.contains("Identity function."));
         }
         other => panic!("unexpected documentation: {other:?}"),
     }
