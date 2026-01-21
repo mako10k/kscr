@@ -528,12 +528,84 @@ fn module_typecheck_cache() -> &'static Mutex<HashMap<u64, CachedModuleTypecheck
     MODULE_TYPECHECK_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(super) fn stdlib_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib")
+pub(super) fn stdlib_root() -> Result<PathBuf> {
+    resolve_stdlib_root()
+}
+
+pub(super) fn set_stdlib_root_override(path: PathBuf) {
+    let slot = STDLIB_ROOT_OVERRIDE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut g) = slot.lock() {
+        *g = Some(path);
+    }
+}
+
+fn stdlib_root_override() -> Option<PathBuf> {
+    let slot = STDLIB_ROOT_OVERRIDE.get_or_init(|| Mutex::new(None));
+    slot.lock().ok().and_then(|g| g.clone())
+}
+
+static STDLIB_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn resolve_stdlib_root() -> Result<PathBuf> {
+    let mut tried: Vec<PathBuf> = Vec::new();
+
+    // 1) CLI override: --stdlib-dir <path>
+    if let Some(p) = stdlib_root_override() {
+        tried.push(p.clone());
+        if is_valid_stdlib_root(&p) {
+            return Ok(p);
+        }
+    }
+
+    // 2) Env: KSCR_STDLIB_DIR
+    if let Ok(s) = std::env::var("KSCR_STDLIB_DIR") {
+        if !s.trim().is_empty() {
+            let p = PathBuf::from(s);
+            tried.push(p.clone());
+            if is_valid_stdlib_root(&p) {
+                return Ok(p);
+            }
+        }
+    }
+
+    // 3) $EXE_DIR/stdlib
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("stdlib");
+            tried.push(p.clone());
+            if is_valid_stdlib_root(&p) {
+                return Ok(p);
+            }
+        }
+    }
+
+    // 4) (dev/test only) CARGO_MANIFEST_DIR/stdlib
+    if cfg!(any(test, debug_assertions)) {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+        tried.push(p.clone());
+        if is_valid_stdlib_root(&p) {
+            return Ok(p);
+        }
+    }
+
+    Err(crate::error::Error::msg(format!(
+        "cannot find stdlib root (tried: {}). Hint: pass --stdlib-dir <path>, set KSCR_STDLIB_DIR, or place stdlib next to the kscr executable ($EXE_DIR/stdlib).",
+        tried
+            .into_iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
+}
+
+fn is_valid_stdlib_root(dir: &Path) -> bool {
+    dir.join("Prelude.ks").is_file()
 }
 
 pub(super) fn is_stdlib_path(path: &Path) -> bool {
-    path.starts_with(stdlib_root())
+    stdlib_root()
+        .ok()
+        .is_some_and(|root| path.starts_with(root))
 }
 
 pub(super) fn load_ast_stdlib_cached(path: &Path) -> Result<Option<ast::Module>> {
