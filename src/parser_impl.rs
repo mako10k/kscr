@@ -469,7 +469,10 @@ fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Ite
         //     | B
         //
         // We collect contiguous DocLine/DocBlock tokens and attach them to the next constructor.
-        while matches!(ts.peek_kind(), Some(TokenKind::DocLine(_) | TokenKind::DocBlock(_))) {
+        while matches!(
+            ts.peek_kind(),
+            Some(TokenKind::DocLine(_) | TokenKind::DocBlock(_))
+        ) {
             consume_doc_block(ts, &mut ctor_doc_buf);
         }
 
@@ -1769,7 +1772,9 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                     flush_pending_fun_binding(ts, &mut bs, pending.take());
                     bs.push(b);
                 }
-                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, None, c),
+                ParsedBind::FunClause(c) => {
+                    push_fun_clause_binding(ts, &mut bs, &mut pending, None, c)
+                }
             }
             ts.consume_line_end();
         }
@@ -1793,7 +1798,9 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
                     flush_pending_fun_binding(ts, &mut bs, pending.take());
                     bs.push(b);
                 }
-                ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, None, c),
+                ParsedBind::FunClause(c) => {
+                    push_fun_clause_binding(ts, &mut bs, &mut pending, None, c)
+                }
             }
         }
         flush_pending_fun_binding(ts, &mut bs, pending.take());

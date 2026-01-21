@@ -381,13 +381,12 @@ pub(super) fn completion_items_in_doc(
                             }
                         }),
                 ),
-                documentation: tm
-                    .docs
-                    .get(&name)
-                    .map(|doc| Documentation::MarkupContent(MarkupContent {
+                documentation: tm.docs.get(&name).map(|doc| {
+                    Documentation::MarkupContent(MarkupContent {
                         kind: MarkupKind::Markdown,
                         value: doc.clone(),
-                    })),
+                    })
+                }),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range,
                     new_text: name,

@@ -63,12 +63,11 @@ adjust = 0
         tm.docs
     );
 
-
     // Completion on a fresh line with prefix "ad" should include `adjust`.
     // Lines are 0-based.
     // `ad` is on the last line.
-    let items = backend_goto_completion::completion_items_in_doc(&doc, Position::new(11, 2), &tm)
-        .unwrap();
+    let items =
+        backend_goto_completion::completion_items_in_doc(&doc, Position::new(11, 2), &tm).unwrap();
 
     let adjust = items
         .iter()
@@ -98,18 +97,15 @@ adjust = 0
     };
     let doc2 = vfs::Document::new(doc2_uri, doc2_text, 0);
     // `B` is appended after the typed source.
-    let items2 = backend_goto_completion::completion_items_in_doc(&doc2, Position::new(11, 1), &tm)
-        .unwrap();
+    let items2 =
+        backend_goto_completion::completion_items_in_doc(&doc2, Position::new(11, 1), &tm).unwrap();
 
-    let b = items2
-        .iter()
-        .find(|i| i.label == "Box")
-        .unwrap_or_else(|| {
-            panic!(
-                "missing `Box` in completion: {:?}",
-                items2.iter().map(|i| &i.label).collect::<Vec<_>>()
-            )
-        });
+    let b = items2.iter().find(|i| i.label == "Box").unwrap_or_else(|| {
+        panic!(
+            "missing `Box` in completion: {:?}",
+            items2.iter().map(|i| &i.label).collect::<Vec<_>>()
+        )
+    });
     assert_eq!(
         b.kind,
         Some(tower_lsp::lsp_types::CompletionItemKind::TYPE_PARAMETER)
@@ -133,8 +129,8 @@ adjust = 0
     };
     let doc3 = vfs::Document::new(doc3_uri, doc3_text, 0);
     // `So` is appended after the typed source.
-    let items3 = backend_goto_completion::completion_items_in_doc(&doc3, Position::new(11, 2), &tm)
-        .unwrap();
+    let items3 =
+        backend_goto_completion::completion_items_in_doc(&doc3, Position::new(11, 2), &tm).unwrap();
 
     let some = items3
         .iter()
@@ -205,8 +201,8 @@ fn lsp_toplevel_doc_after_where_is_visible_in_hover_and_completion() {
     // Completion with prefix "id" should include `identDoc` with docs.
     let src_doc2 = format!("{src_typed}\nid");
     let doc2 = vfs::Document::new(doc.uri.clone(), src_doc2, 1);
-    let items = backend_goto_completion::completion_items_in_doc(&doc2, Position::new(5, 2), &tm)
-        .unwrap();
+    let items =
+        backend_goto_completion::completion_items_in_doc(&doc2, Position::new(5, 2), &tm).unwrap();
 
     let id_item = items
         .iter()
@@ -278,8 +274,8 @@ fn lsp_toplevel_doc_after_where_attaches_to_next_decl() {
     // Completion with prefix "id" should include `identDoc` with docs.
     let src_doc2 = format!("{src_typed}\nid");
     let doc2 = vfs::Document::new(doc.uri.clone(), src_doc2, 1);
-    let items = backend_goto_completion::completion_items_in_doc(&doc2, Position::new(5, 2), &tm)
-        .unwrap();
+    let items =
+        backend_goto_completion::completion_items_in_doc(&doc2, Position::new(5, 2), &tm).unwrap();
 
     let item = items
         .iter()
