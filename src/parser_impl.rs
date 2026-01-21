@@ -462,6 +462,7 @@ fn parse_data_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 
     let end = ts.last_span_end;
     Ok(ast::Item::DataDecl(ast::DataDecl {
+        doc: None,
         name,
         params,
         ctors,
@@ -484,6 +485,7 @@ fn parse_type_alias(ts: &mut TokenStream) -> Result<ast::Item> {
     let ty = parse_type_expr(ts, Stop::LineEnd, is_type_alias_end)?;
     let end = ts.last_span_end;
     Ok(ast::Item::TypeAlias(ast::TypeAlias {
+        doc: None,
         name,
         params,
         ty,
@@ -650,6 +652,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     if !matches!(ts.peek_kind(), Some(TokenKind::Indent)) {
         // Allow empty class bodies.
         return Ok(ast::Item::ClassDecl(ast::ClassDecl {
+            doc: None,
             name,
             param,
             supers,
@@ -661,6 +664,7 @@ fn parse_class_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     let (methods, default_methods) = parse_class_body(ts)?;
 
     Ok(ast::Item::ClassDecl(ast::ClassDecl {
+        doc: None,
         name,
         param,
         supers,
@@ -1242,6 +1246,7 @@ fn desugar_fun(
     );
 
     ast::Binding {
+        doc: None,
         pat: ast::Pattern::new(synth_span, ast::PatternKind::Var(name)),
         expr: ast::Expr::new(
             synth_span,
@@ -1302,6 +1307,7 @@ fn parse_binding_simple(ts: &mut TokenStream, stop: Stop) -> Result<ast::Binding
     let expr = parse_eq_rhs(ts, stop)?;
     let end = expr.span.end;
     Ok(ast::Binding {
+        doc: None,
         pat,
         expr,
         span: crate::lexer::Span { start, end },

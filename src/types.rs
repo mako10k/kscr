@@ -3498,6 +3498,7 @@ fn append_instance_items(
         let expr = qualify_expr_ctors_for_instance_import(expr, inst);
         let expr = add_params_to_expr(ast::dummy_span(), expr, &extra_param_names);
         extra_items.push(ast::Item::Binding(ast::Binding {
+            doc: None,
             pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(impl_name.clone())),
             expr,
             span: ast::dummy_span(),
@@ -3520,6 +3521,7 @@ fn append_instance_items(
     let dict_expr = ast::Expr::new(ast::dummy_span(), ast::ExprKind::Record(dict_fields));
     let dict_expr = add_params_to_expr(ast::dummy_span(), dict_expr, &ctx_params);
     extra_items.push(ast::Item::Binding(ast::Binding {
+        doc: None,
         pat: ast::Pattern::new(ast::dummy_span(), ast::PatternKind::Var(dict_name)),
         expr: dict_expr,
         span: ast::dummy_span(),
@@ -5597,6 +5599,7 @@ fn inject_imported_ksif_forwarders(
             }
             defined.insert(name.clone(), format!("import {qual} (.ksif)"));
             injected.push(ast::Item::Binding(ast::Binding {
+                doc: None,
                 pat: ast::Pattern {
                     kind: ast::PatternKind::Var(name.clone()),
                     span: ast::dummy_span(),
@@ -6246,6 +6249,7 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
         aliases.insert(
             "String".to_string(),
             ast::TypeAlias {
+                doc: None,
                 name: "String".to_string(),
                 params: Vec::new(),
                 ty: ast::Type::List(Box::new(ast::Type::Char)),
@@ -6502,6 +6506,7 @@ fn desugar_qualified_do_stmt(stmt: ast::DoStmt, env: &QualEnv) -> Result<ast::Do
 
 fn desugar_qualified_binding(b: ast::Binding, env: &QualEnv) -> Result<ast::Binding> {
     Ok(ast::Binding {
+        doc: b.doc,
         pat: desugar_qualified_pattern(b.pat, env)?,
         expr: desugar_qualified_expr(b.expr, env)?,
         span: b.span,
@@ -7554,6 +7559,7 @@ fn import_unqualified_forwarders(
     for n in exports.iter() {
         if values.contains(n) {
             out.push(ast::Item::Binding(ast::Binding {
+                doc: None,
                 pat: ast::Pattern::dummy(ast::PatternKind::Var(n.clone())),
                 expr: ast::Expr::dummy(ast::ExprKind::Var(format!("{qual}.{n}"))),
                 span: ast::dummy_span(),
@@ -7571,6 +7577,7 @@ fn import_unqualified_forwarders(
                 }
             };
             out.push(ast::Item::TypeAlias(ast::TypeAlias {
+                doc: None,
                 name: ta.name.clone(),
                 params: ta.params.clone(),
                 ty,
@@ -7591,6 +7598,7 @@ fn import_unqualified_forwarders(
                 }
             };
             out.push(ast::Item::TypeAlias(ast::TypeAlias {
+                doc: None,
                 name: dd.name.clone(),
                 params: dd.params.clone(),
                 ty,
@@ -7757,6 +7765,7 @@ fn qualify_item(
 ) -> Result<ast::Item> {
     Ok(match it {
         ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
+            doc: b.doc,
             pat: qualify_pat_binders(b.pat, val_map)?,
             expr: qualify_expr(b.expr, val_map, type_map, ctor_map)?,
             span: b.span,
@@ -7995,6 +8004,7 @@ fn qualify_local_binding(
     ctor_map: &HashMap<String, String>,
 ) -> Result<ast::Binding> {
     Ok(ast::Binding {
+        doc: b.doc,
         pat: qualify_pat_nonbinders(b.pat, ctor_map, val_map, type_map)?,
         expr: qualify_expr(b.expr, val_map, type_map, ctor_map)?,
         span: b.span,
@@ -8377,6 +8387,7 @@ fn pat_defined_names(p: &ast::Pattern, out: &mut HashSet<String>) {
 
 fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
     ast::Binding {
+        doc: b.doc,
         pat: b.pat,
         expr: rewrite_show_calls_in_expr(b.expr),
         span: b.span,
@@ -9367,6 +9378,7 @@ impl<'a> RewriteExprCtx<'a> {
             .into_iter()
             .map(|b| {
                 Ok(ast::Binding {
+                    doc: b.doc,
                     pat: b.pat,
                     expr: self.rewrite(b.expr)?,
                     span: b.span,
@@ -9515,6 +9527,7 @@ fn rewrite_class_method_calls_in_module(
         .map(|it| {
             Ok(match it {
                 ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
+                    doc: b.doc,
                     pat: b.pat,
                     expr: ctx.rewrite_expr(&empty_scope, &empty_known, b.expr)?,
                     span: b.span,
@@ -9654,6 +9667,7 @@ fn create_method_bindings(
         );
 
         injected.push(ast::Item::Binding(Binding {
+            doc: None,
             pat: Pattern {
                 kind: PatternKind::Var(mname),
                 span: ast::dummy_span(),
@@ -10333,6 +10347,7 @@ fn desugar_monad_do_bindings(
         .into_iter()
         .map(|b| {
             Ok(ast::Binding {
+                doc: b.doc,
                 pat: b.pat,
                 expr: desugar_monad_do_expr(b.expr, fresh)?,
                 span: b.span,
@@ -10546,6 +10561,7 @@ fn expand_bindings(
         .into_iter()
         .map(|b| {
             Ok(ast::Binding {
+                doc: b.doc,
                 pat: expand_pat(b.pat, aliases)?,
                 expr: expand_expr(b.expr, aliases)?,
                 span: b.span,
@@ -10621,17 +10637,20 @@ fn expand_data_ctors(
 fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Result<ast::Item> {
     match item {
         ast::Item::Binding(b) => Ok(ast::Item::Binding(ast::Binding {
+            doc: b.doc,
             pat: expand_pat(b.pat, aliases)?,
             expr: expand_expr(b.expr, aliases)?,
             span: b.span,
         })),
         ast::Item::TypeAlias(ta) => Ok(ast::Item::TypeAlias(ast::TypeAlias {
+            doc: ta.doc,
             name: ta.name,
             params: ta.params,
             ty: expand_type(ta.ty, aliases, &mut Vec::new())?,
             span: ta.span,
         })),
         ast::Item::DataDecl(d) => Ok(ast::Item::DataDecl(ast::DataDecl {
+            doc: d.doc,
             name: d.name,
             params: d.params,
             ctors: expand_data_ctors(d.ctors, aliases)?,
@@ -10639,6 +10658,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
             span: d.span,
         })),
         ast::Item::ClassDecl(c) => Ok(ast::Item::ClassDecl(ast::ClassDecl {
+            doc: c.doc,
             name: c.name,
             param: c.param,
             supers: c
@@ -10669,6 +10689,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .into_iter()
                 .map(|b| {
                     Ok(ast::Binding {
+                        doc: b.doc,
                         pat: expand_pat(b.pat, aliases)?,
                         expr: expand_expr(b.expr, aliases)?,
                         span: b.span,
@@ -10689,6 +10710,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                 .into_iter()
                 .map(|b| {
                     Ok(ast::Binding {
+                        doc: b.doc,
                         pat: expand_pat(b.pat, aliases)?,
                         expr: expand_expr(b.expr, aliases)?,
                         span: b.span,

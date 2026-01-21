@@ -516,7 +516,8 @@ fn rewrite_scoped_bindings(
                     expr = common::add_dict_params_to_expr(expr.span, expr, classes);
                 }
             }
-            Ok(ast::Binding {
+                Ok(ast::Binding {
+                    doc: None,
                 pat: b.pat,
                 expr: rewrite_expr_cx(inner_cx, expr)?,
                 span,

@@ -69,6 +69,7 @@ pub enum Item {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassDecl {
+    pub doc: Option<String>,
     pub name: String,
     pub param: String,
     /// Superclass constraints (Haskell-style): `class (C a, D a) => E a where ...`.
@@ -136,6 +137,7 @@ pub struct FixityDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Binding {
+    pub doc: Option<String>,
     pub pat: Pattern,
     pub expr: Expr,
     pub span: Span,
@@ -143,6 +145,7 @@ pub struct Binding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeAlias {
+    pub doc: Option<String>,
     pub name: String,
     pub params: Vec<String>,
     pub ty: Type,
@@ -151,6 +154,7 @@ pub struct TypeAlias {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataDecl {
+    pub doc: Option<String>,
     pub name: String,
     pub params: Vec<String>,
     pub ctors: Vec<DataCtor>,

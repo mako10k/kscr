@@ -68,6 +68,12 @@ pub enum TokenKind {
     Question,
     LeftArrow,
     Semicolon,
+
+    // Haskell-style doc comments.
+    // - Line:  "-- | ..."
+    // - Block: "{-| ... -}"
+    DocLine(String),
+    DocBlock(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,6 +196,22 @@ fn skip_line_comment(bytes: &[u8], i: &mut usize) {
     }
 }
 
+fn is_doc_line_comment(bytes: &[u8], i: usize) -> bool {
+    bytes.get(i..).is_some_and(|rest| rest.starts_with(b"--") && rest.get(2..).is_some_and(|r| r.starts_with(b" |")))
+}
+
+fn lex_doc_line_comment(bytes: &[u8], i: &mut usize, tokens: &mut Vec<Token>) {
+    let start = *i;
+    // Consume "-- |".
+    *i += 4;
+    let content_start = *i;
+    while *i < bytes.len() && bytes[*i] != b'\n' {
+        *i += 1;
+    }
+    let content = String::from_utf8_lossy(&bytes[content_start..*i]).trim_end().to_string();
+    push_token(tokens, TokenKind::DocLine(content), start, *i);
+}
+
 fn skip_block_comment(bytes: &[u8], i: &mut usize) {
     *i += 2;
     let mut depth = 1usize;
@@ -204,6 +226,42 @@ fn skip_block_comment(bytes: &[u8], i: &mut usize) {
             *i += 1;
         }
     }
+}
+
+fn is_doc_block_comment(bytes: &[u8], i: usize) -> bool {
+    bytes.get(i..).is_some_and(|rest| rest.starts_with(b"{-|") )
+}
+
+fn lex_doc_block_comment(bytes: &[u8], i: &mut usize, tokens: &mut Vec<Token>) {
+    let start = *i;
+    *i += 3; // consume "{-|"
+
+    let content_start = *i;
+    let mut depth = 1usize;
+
+    while *i < bytes.len() && depth > 0 {
+        if bytes[*i..].starts_with(b"{-") {
+            depth += 1;
+            *i += 2;
+        } else if bytes[*i..].starts_with(b"-}") {
+            depth -= 1;
+            if depth == 0 {
+                let content_end = *i;
+                let content = String::from_utf8_lossy(&bytes[content_start..content_end])
+                    .trim()
+                    .to_string();
+                *i += 2; // consume "-}"
+                push_token(tokens, TokenKind::DocBlock(content), start, *i);
+                return;
+            }
+            *i += 2;
+        } else {
+            *i += 1;
+        }
+    }
+
+    // Unclosed doc block comment: treat it as a normal (skipped) block comment.
+    // Lexer error handling for this currently lives elsewhere; keep behavior non-fatal here.
 }
 
 fn dot_is_qualification(bytes: &[u8], i: usize) -> bool {
@@ -579,8 +637,18 @@ pub fn lex(src: &str) -> crate::Result<Vec<Token>> {
             continue;
         }
 
+        if is_doc_line_comment(bytes, i) {
+            lex_doc_line_comment(bytes, &mut i, &mut tokens);
+            continue;
+        }
+
         if bytes[i..].starts_with(b"--") {
             skip_line_comment(bytes, &mut i);
+            continue;
+        }
+
+        if is_doc_block_comment(bytes, i) {
+            lex_doc_block_comment(bytes, &mut i, &mut tokens);
             continue;
         }
 
