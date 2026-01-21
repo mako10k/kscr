@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux_release:
+    name: linux release (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Package artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME}"
+          target="x86_64-unknown-linux-gnu"
+          dist_dir="dist"
+
+          mkdir -p "$dist_dir"
+
+          archive_base="kscr-${version}-${target}"
+          archive_path="${dist_dir}/${archive_base}.tar.gz"
+
+          tar -C target/release -czf "$archive_path" kscr kscr-lsp
+
+          (cd "$dist_dir" && sha256sum "${archive_base}.tar.gz" > "${archive_base}.tar.gz.sha256")
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          fail_on_unmatched_files: true
+          generate_release_notes: true
