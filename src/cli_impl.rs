@@ -58,17 +58,48 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
         }
         "typecheck" => {
             let mut show_all = false;
+            let mut stdlib_dir: Option<PathBuf> = None;
             let arg1: String = args
                 .next()
                 .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
-            let path = match arg1.as_str() {
+            let mut pending: Vec<String> = Vec::new();
+            match arg1.as_str() {
                 "--all" => {
                     show_all = true;
-                    args.next()
-                        .ok_or_else(|| crate::error::Error::msg("missing <file>"))?
                 }
-                other => other.to_string(),
-            };
+                "--stdlib-dir" => {
+                    let dir = args.next().ok_or_else(|| {
+                        crate::error::Error::msg("missing <path> for --stdlib-dir")
+                    })?;
+                    stdlib_dir = Some(PathBuf::from(dir));
+                }
+                other => {
+                    pending.push(other.to_string());
+                }
+            }
+
+            // Parse remaining args (allow options in any order; first non-option is <file>).
+            while let Some(a) = args.next() {
+                match a.as_str() {
+                    "--all" => show_all = true,
+                    "--stdlib-dir" => {
+                        let dir = args.next().ok_or_else(|| {
+                            crate::error::Error::msg("missing <path> for --stdlib-dir")
+                        })?;
+                        stdlib_dir = Some(PathBuf::from(dir));
+                    }
+                    other => pending.push(other.to_string()),
+                }
+            }
+
+            let path = pending
+                .into_iter()
+                .next()
+                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
+
+            if let Some(dir) = stdlib_dir {
+                types::set_stdlib_dir_override(dir);
+            }
 
             let tm = types::typecheck_file(Path::new(&path))?;
             print!(
@@ -78,18 +109,20 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
             Ok(())
         }
         "ir" => {
-            let path = args
-                .next()
-                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
+            let (stdlib_dir, path) = parse_stdlib_dir_and_file(args)?;
+            if let Some(dir) = stdlib_dir {
+                types::set_stdlib_dir_override(dir);
+            }
             let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
             println!("{irm:#?}");
             Ok(())
         }
         "run" => {
-            let path = args
-                .next()
-                .ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
+            let (stdlib_dir, path) = parse_stdlib_dir_and_file(args)?;
+            if let Some(dir) = stdlib_dir {
+                types::set_stdlib_dir_override(dir);
+            }
             let tm = types::typecheck_file(Path::new(&path))?;
             let irm = ir::lower_to_ir(&tm.module)?;
             let _ = ir::run_main(&irm)?;
@@ -100,6 +133,29 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
         "compile" => crate::cli::cli_compile::cmd_compile(args),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
+}
+
+fn parse_stdlib_dir_and_file(
+    mut args: std::vec::IntoIter<String>,
+) -> Result<(Option<PathBuf>, String)> {
+    let mut stdlib_dir: Option<PathBuf> = None;
+    let mut file: Option<String> = None;
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--stdlib-dir" => {
+                let dir = args
+                    .next()
+                    .ok_or_else(|| crate::error::Error::msg("missing <path> for --stdlib-dir"))?;
+                stdlib_dir = Some(PathBuf::from(dir));
+            }
+            other => {
+                file = Some(other.to_string());
+                break;
+            }
+        }
+    }
+    let file = file.ok_or_else(|| crate::error::Error::msg("missing <file>"))?;
+    Ok((stdlib_dir, file))
 }
 
 fn attach_best_effort_diagnostics(res: Result<()>, cmd_file_arg: Option<String>) -> Result<()> {
@@ -279,7 +335,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n  ir <file>         Typecheck then lower to IR (debug)\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable\n                   Default: embeds packed IR and runs via Rust executor\n                   Emits `.ksif` by default to `./target/ksif/<file>.ksif`\n                   Options: -o/--output <path>, --release, --llvm, --ksif-out <dir>\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n                   Default: uses `.ksif` for imports when available\n                   Opt out: set `KSCR_USE_KSIF=0`\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   Options: --all, --stdlib-dir <path>\n  ir <file>         Typecheck then lower to IR (debug)\n                   Options: --stdlib-dir <path>\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable\n                   Default: embeds packed IR and runs via Rust executor\n                   Emits `.ksif` by default to `./target/ksif/<file>.ksif`\n                   Options: -o/--output <path>, --release, --llvm, --ksif-out <dir>\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n                   Default: uses `.ksif` for imports when available\n                   Opt out: set `KSCR_USE_KSIF=0`\n                   Options: --stdlib-dir <path>\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n\nENV:\n  KSCR_STDLIB_DIR   Stdlib root directory (fallback)\n"
     );
 }
 

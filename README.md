@@ -187,6 +187,15 @@ The `stdlib/Prelude.ks` provides common functions and types:
 - **Data types**: `Maybe`, `Either` (with deriving Show)
 - **Maybe utilities**: `maybe`, `fromMaybe`, `isJust`, `isNothing`, `listToMaybe`, `maybeToList`, `mapMaybe`, `catMaybes`
 
+### Stdlib discovery
+
+`kscr` resolves the stdlib root directory in this order:
+
+1. CLI: `--stdlib-dir <path>`
+2. Env: `KSCR_STDLIB_DIR`
+3. `$EXE_DIR/stdlib` (next to the `kscr` executable)
+4. (dev/test only) `CARGO_MANIFEST_DIR/stdlib`
+
 ## Documentation
 
 Detailed documentation is available in the `docs/` directory:
