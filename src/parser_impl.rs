@@ -452,7 +452,20 @@ fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Ite
     ts.expect(TokenKind::Eq)?;
 
     let mut ctors = Vec::new();
+    let mut ctor_doc_buf: Option<String> = None;
     loop {
+        // Allow per-constructor doc comments inside `data` declarations.
+        // Example:
+        //   data T =
+        //     -- | ctor doc
+        //     A
+        //     | B
+        //
+        // We collect contiguous DocLine/DocBlock tokens and attach them to the next constructor.
+        while matches!(ts.peek_kind(), Some(TokenKind::DocLine(_) | TokenKind::DocBlock(_))) {
+            consume_doc_block(ts, &mut ctor_doc_buf);
+        }
+
         // Try prefix ctor first: `Ctor a b` / `(:*:) a b`.
         // If that fails, accept infix ctor: `a :*: b`.
         let save = (ts.i, ts.last_span_end);
@@ -469,6 +482,7 @@ fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Ite
             }
             let ctor_end = ts.last_span_end;
             Some(ast::DataCtor {
+                doc: ctor_doc_buf.take(),
                 name: ctor_name,
                 args,
                 span: crate::lexer::Span {
@@ -491,6 +505,7 @@ fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Ite
             let rhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
             let ctor_end = ts.last_span_end;
             Some(ast::DataCtor {
+                doc: ctor_doc_buf.take(),
                 name: op,
                 args: vec![lhs, rhs],
                 span: crate::lexer::Span {

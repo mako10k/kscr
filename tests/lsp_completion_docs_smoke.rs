@@ -17,7 +17,7 @@ fn lsp_completion_includes_doc_comments() {
 type Box = Integer
 
 -- | A small sum type.
-data Opt a = Some a | None
+data Opt a = {-| some ctor doc -} Some a | None
 
 -- | Another binding.
 adjust = 0
@@ -55,7 +55,7 @@ adjust = 0
     assert!(
         tm.docs
             .get("Some")
-            .is_some_and(|d| d.contains("A small sum type.")),
+            .is_some_and(|d| d.contains("some ctor doc")),
         "TypedModule.docs missing for `Some`: {:?}",
         tm.docs
     );
@@ -63,7 +63,8 @@ adjust = 0
 
     // Completion on a fresh line with prefix "ad" should include `adjust`.
     // Lines are 0-based.
-    let items = backend_goto_completion::completion_items_in_doc(&doc, Position::new(4, 2), &tm)
+    // `ad` is on the last line.
+    let items = backend_goto_completion::completion_items_in_doc(&doc, Position::new(11, 2), &tm)
         .unwrap();
 
     let adjust = items
@@ -93,7 +94,8 @@ adjust = 0
         (doc.uri.clone(), src_doc2)
     };
     let doc2 = vfs::Document::new(doc2_uri, doc2_text, 0);
-    let items2 = backend_goto_completion::completion_items_in_doc(&doc2, Position::new(5, 1), &tm)
+    // `B` is appended after the typed source.
+    let items2 = backend_goto_completion::completion_items_in_doc(&doc2, Position::new(11, 1), &tm)
         .unwrap();
 
     let b = items2
@@ -127,7 +129,8 @@ adjust = 0
         (doc.uri.clone(), src_doc3)
     };
     let doc3 = vfs::Document::new(doc3_uri, doc3_text, 0);
-    let items3 = backend_goto_completion::completion_items_in_doc(&doc3, Position::new(8, 2), &tm)
+    // `So` is appended after the typed source.
+    let items3 = backend_goto_completion::completion_items_in_doc(&doc3, Position::new(11, 2), &tm)
         .unwrap();
 
     let some = items3
@@ -150,7 +153,7 @@ adjust = 0
     match some_doc {
         tower_lsp::lsp_types::Documentation::MarkupContent(mc) => {
             assert_eq!(mc.kind, MarkupKind::Markdown);
-            assert!(mc.value.contains("A small sum type."));
+            assert!(mc.value.contains("some ctor doc"));
         }
         other => panic!("unexpected documentation: {other:?}"),
     }

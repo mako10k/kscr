@@ -164,6 +164,7 @@ pub struct DataDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataCtor {
+    pub doc: Option<String>,
     pub name: String,
     pub args: Vec<Type>,
     pub span: Span,

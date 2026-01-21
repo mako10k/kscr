@@ -44,10 +44,11 @@ fn collect_toplevel_docs(module: &ast::Module) -> HashMap<String, String> {
                 let Some(doc) = &d.doc else { continue };
                 out.insert(d.name.clone(), doc.clone());
 
-                // Best-effort: also attach the same doc to constructors.
-                // Constructor-level doc comments are not modeled yet.
+                // Constructor docs: prefer ctor-level docs when present;
+                // otherwise fall back to the parent data decl docs.
                 for ctor in &d.ctors {
-                    out.insert(ctor.name.clone(), doc.clone());
+                    let ctor_doc = ctor.doc.as_ref().unwrap_or(doc);
+                    out.insert(ctor.name.clone(), ctor_doc.clone());
                 }
             }
             Item::ClassDecl(c) => {
@@ -10676,6 +10677,7 @@ fn expand_data_ctors(
                 std::mem::swap(&mut span.start, &mut span.end);
             }
             Ok(ast::DataCtor {
+                doc: c.doc,
                 name: c.name,
                 args: c
                     .args
