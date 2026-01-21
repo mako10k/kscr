@@ -157,12 +157,20 @@ fn handle_bol_indentation(
         }
     }
 
-    // Do not change indentation on blank/comment-only lines.
-    if *i >= bytes.len()
-        || bytes[*i] == b'\n'
-        || bytes[*i..].starts_with(b"--")
-        || bytes[*i..].starts_with(b"{-")
-    {
+    // Blank lines do not affect indentation.
+    if *i >= bytes.len() || bytes[*i] == b'\n' {
+        return Ok(false);
+    }
+
+    // Comment-only lines do not affect indentation.
+    // NOTE: Doc comments are lexed as tokens, but they should still count
+    // as comment-only lines for layout/indentation.
+    if bytes[*i..].starts_with(b"--") {
+        // Includes both normal line comments and doc line comments (`-- |`).
+        return Ok(false);
+    }
+    if bytes[*i..].starts_with(b"{-") {
+        // Includes both normal block comments and doc block comments (`{-|`).
         return Ok(false);
     }
 
