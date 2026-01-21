@@ -162,17 +162,10 @@ fn handle_bol_indentation(
         return Ok(false);
     }
 
-    // Comment-only lines do not affect indentation.
-    // NOTE: Doc comments are lexed as tokens, but they should still count
-    // as comment-only lines for layout/indentation.
-    if bytes[*i..].starts_with(b"--") {
-        // Includes both normal line comments and doc line comments (`-- |`).
-        return Ok(false);
-    }
-    if bytes[*i..].starts_with(b"{-") {
-        // Includes both normal block comments and doc block comments (`{-|`).
-        return Ok(false);
-    }
+    // Comment-only lines should not force Dedent, but they also should not
+    // prevent an Indent from being established (e.g. `module ... where` followed
+    // by an indented doc comment).
+    let is_comment_only_line = bytes[*i..].starts_with(b"--") || bytes[*i..].starts_with(b"{-");
 
     let current = *indent_stack.last().unwrap_or(&0);
     match col.cmp(&current) {
@@ -181,6 +174,9 @@ fn handle_bol_indentation(
             push_token(tokens, TokenKind::Indent, *i, *i);
         }
         std::cmp::Ordering::Less => {
+            if is_comment_only_line {
+                return Ok(false);
+            }
             while indent_stack.len() > 1 && col < *indent_stack.last().unwrap() {
                 indent_stack.pop();
                 push_token(tokens, TokenKind::Dedent, *i, *i);
