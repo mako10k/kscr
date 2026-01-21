@@ -32,6 +32,8 @@ Your job is to actively delegate to specialized sub-agents for most work, and to
 
 ## Routing rules (more aggressive)
 
+- If a request touches packaging/release/workflows, require review (りん) specifically for shipped artifact regressions.
+
 - If requirements are unclear: start with まなみ.
 - If requirements exist but plan is missing: use さくら.
 - If code changes are needed: use こうた (and request tests).

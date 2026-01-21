@@ -49,7 +49,19 @@ jobs:
           archive_base="kscr-${version}-${target}"
           archive_path="${dist_dir}/${archive_base}.tar.gz"
 
-          tar -C target/release -czf "$archive_path" kscr kscr-lsp
+          # Release layout:
+          #   bin/kscr
+          #   bin/kscr-lsp
+          #   bin/stdlib/...
+          stage_dir="${dist_dir}/${archive_base}"
+          rm -rf "$stage_dir"
+          mkdir -p "$stage_dir/bin"
+
+          cp "target/release/kscr" "$stage_dir/bin/kscr"
+          cp "target/release/kscr-lsp" "$stage_dir/bin/kscr-lsp"
+          cp -r "stdlib" "$stage_dir/bin/stdlib"
+
+          tar -C "$dist_dir" -czf "$archive_path" "$archive_base"
 
           (cd "$dist_dir" && sha256sum "${archive_base}.tar.gz" > "${archive_base}.tar.gz.sha256")
 

@@ -8,11 +8,12 @@ use tower_lsp::lsp_types::*;
 fn resolve_import_path(module: &str, base_dir: &Path) -> Option<PathBuf> {
     let rel = module.replace('.', "/");
     let local = base_dir.join(format!("{rel}.ks"));
-    let stdlib = types::stdlib_root().join(format!("{rel}.ks"));
-
-    std::fs::canonicalize(&local)
-        .or_else(|_| std::fs::canonicalize(&stdlib))
-        .ok()
+    if let Ok(p) = std::fs::canonicalize(&local) {
+        return Some(p);
+    }
+    let stdlib_root = types::try_stdlib_root().ok()?;
+    let stdlib = stdlib_root.join(format!("{rel}.ks"));
+    std::fs::canonicalize(&stdlib).ok()
 }
 
 fn toplevel_binding_spans(module: &kscr::ast::Module) -> HashMap<String, kscr::lexer::Span> {

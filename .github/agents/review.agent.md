@@ -17,6 +17,8 @@ Your job is to review proposed or existing changes and provide actionable feedba
 
 ## Review checklist
 
+- Packaging/Release: verify shipped artifact set (no silent removals/renames) and confirm release layout matches workflow/docs.
+
 - Correctness: semantics match docs/tests; edge cases handled.
 - Safety: no panics/unwraps added without justification.
 - Maintainability: minimal diff, clear naming, consistent style.

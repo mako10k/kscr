@@ -26,6 +26,22 @@ Goal: improve and expand `stdlib/` while keeping the Rust execution engine (lexe
     - `git reset --soft ...`, `git reset --mixed ...`
     - `git checkout -b ...`, `git switch -c ...` (new branch)
 
+## Packaging / Release Guardrails (MANDATORY)
+
+### Shell-safe gh usage (MANDATORY)
+
+- When running `gh issue create|edit`, never use backticks in `--body` (they execute in the shell).
+- Always use `--body-file` or a single-quoted heredoc (e.g. `cat > /tmp/body.md <<'MD' ... MD`).
+
+- Packaging/release changes MUST NOT remove, rename, or stop shipping existing artifacts without explicit user approval.
+- If a task touches `.github/workflows/**`, release scripts, or archive layouts, you MUST enumerate the expected shipped artifacts (names + paths) before editing.
+- If the shipped artifact set changes (add/remove/rename/move), you MUST ask for confirmation before implementing it.
+- Prefer additive changes and keep filenames/layout stable when possible.
+
+Confirmation questions (copy/paste):
+- "This change would remove/rename/move shipped artifact(s): <artifact> (<old path> -> <new path or removed>). Is this intended?"
+- "Release payload currently includes: <list>. Do you want to keep all of these shipped?"
+
 ## Stdlib Policy (IMPORTANT)
 
 - Do not “fix” engine bugs via ad-hoc stdlib workarounds.

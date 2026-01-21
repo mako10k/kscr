@@ -5539,7 +5539,15 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
 }
 
 pub fn stdlib_root() -> PathBuf {
+    stdlib_cache::stdlib_root().unwrap_or_else(|_| PathBuf::from("stdlib"))
+}
+
+pub fn try_stdlib_root() -> Result<PathBuf> {
     stdlib_cache::stdlib_root()
+}
+
+pub fn set_stdlib_dir_override(path: PathBuf) {
+    stdlib_cache::set_stdlib_root_override(path);
 }
 
 pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
@@ -6775,7 +6783,8 @@ impl ModuleLoader {
     fn resolve_import_path(&self, dir: &Path, module: &str) -> Result<std::path::PathBuf> {
         let rel = module.replace('.', "/");
         let local = dir.join(format!("{}.ks", rel));
-        let stdlib = stdlib_cache::stdlib_root().join(format!("{}.ks", rel));
+        let stdlib_root = stdlib_cache::stdlib_root()?;
+        let stdlib = stdlib_root.join(format!("{}.ks", rel));
 
         std::fs::canonicalize(&local)
             .or_else(|_| std::fs::canonicalize(&stdlib))
