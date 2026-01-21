@@ -160,6 +160,37 @@ mod tests {
     }
 
     #[test]
+    fn hover_shows_ctor_doc_comment() {
+                let src_typed = r#"module Main where
+    data Opt a = {-| some ctor doc -} Some a | None
+
+    x = Some 1
+"#
+            .to_string();
+
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_ctor_doc.smoke.ks");
+        std::fs::write(&path, &src_typed).unwrap();
+
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src_typed, 1);
+
+        // Position on "Some" in "x = Some 1".
+        let pos = Position {
+            line: 3,
+            character: 8,
+        };
+        let h = hover_in_doc(&doc, pos).unwrap();
+        let s = match h.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(s.contains("Some"));
+        assert!(s.contains("some ctor doc"));
+    }
+
+    #[test]
     fn document_symbols_have_reasonable_ranges() {
         let uri = Url::parse("file:///test.ks").unwrap();
         let src = "module M where\n  x = 1\n  data Foo = Bar\n".to_string();

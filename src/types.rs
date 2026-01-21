@@ -41,14 +41,16 @@ fn collect_toplevel_docs(module: &ast::Module) -> HashMap<String, String> {
                 out.insert(ta.name.clone(), doc.clone());
             }
             Item::DataDecl(d) => {
-                let Some(doc) = &d.doc else { continue };
-                out.insert(d.name.clone(), doc.clone());
+                if let Some(doc) = &d.doc {
+                    out.insert(d.name.clone(), doc.clone());
+                }
 
                 // Constructor docs: prefer ctor-level docs when present;
-                // otherwise fall back to the parent data decl docs.
+                // otherwise fall back to the parent data decl docs (if any).
                 for ctor in &d.ctors {
-                    let ctor_doc = ctor.doc.as_ref().unwrap_or(doc);
-                    out.insert(ctor.name.clone(), ctor_doc.clone());
+                    if let Some(ctor_doc) = ctor.doc.as_ref().or(d.doc.as_ref()) {
+                        out.insert(ctor.name.clone(), ctor_doc.clone());
+                    }
                 }
             }
             Item::ClassDecl(c) => {
