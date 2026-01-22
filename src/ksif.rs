@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::ast::ModuleId;
 
@@ -262,6 +263,21 @@ impl ModuleShape {
         }
         Ok(())
     }
+
+    /// Save ModuleShape to a file as JSON.
+    pub fn save_to_file(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let json = self.to_json()?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load ModuleShape from a file.
+    pub fn load_from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let json = std::fs::read_to_string(path)?;
+        let shape = Self::from_json(&json)?;
+        shape.validate_header()?;
+        Ok(shape)
+    }
 }
 
 impl ModuleContent {
@@ -283,6 +299,90 @@ impl ModuleContent {
     /// Deserialize from JSON
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
+    }
+
+    /// Save ModuleContent to a file as JSON.
+    pub fn save_to_file(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let json = self.to_json()?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Load ModuleContent from a file.
+    pub fn load_from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let json = std::fs::read_to_string(path)?;
+        let content = Self::from_json(&json)?;
+        Ok(content)
+    }
+}
+
+/// Module collision information for error reporting.
+#[derive(Debug, Clone)]
+pub struct ModuleCollision {
+    pub canonical_path: String,
+    pub candidates: Vec<ModuleCandidate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleCandidate {
+    pub file_path: std::path::PathBuf,
+    pub header_salt: String,
+}
+
+impl ModuleCollision {
+    /// Format a helpful error message for module collision.
+    pub fn error_message(&self, import_site: &str) -> String {
+        let mut msg = format!(
+            "Module collision detected for '{}' at import site: {}\n",
+            self.canonical_path, import_site
+        );
+        msg.push_str("Multiple candidates found:\n");
+        for (idx, candidate) in self.candidates.iter().enumerate() {
+            msg.push_str(&format!(
+                "  [{}] {}\n      (salt: {})\n",
+                idx + 1,
+                candidate.file_path.display(),
+                candidate.header_salt
+            ));
+        }
+        msg.push_str("\nSuggested fix:\n");
+        msg.push_str("  - Tighten version constraints in package metadata\n");
+        msg.push_str("  - Remove conflicting dependencies from search path\n");
+        msg.push_str("  - Ensure all candidates have matching version/salt\n");
+        msg
+    }
+}
+
+/// Detect if multiple module candidates have conflicting salts.
+///
+/// Returns None if no collision, or Some(ModuleCollision) if candidates conflict.
+pub fn detect_collision(
+    canonical_path: &str,
+    candidates: &[(std::path::PathBuf, ModuleShape)],
+) -> Option<ModuleCollision> {
+    if candidates.len() <= 1 {
+        return None;
+    }
+
+    // Check if all candidates have the same salt
+    let first_salt = &candidates[0].1.header.salt;
+    let all_match = candidates.iter().all(|(_, shape)| &shape.header.salt == first_salt);
+
+    if all_match {
+        // All candidates have identical salt - this is acceptable duplication
+        None
+    } else {
+        // Conflicting salts - report collision
+        Some(ModuleCollision {
+            canonical_path: canonical_path.to_string(),
+            candidates: candidates
+                .iter()
+                .map(|(path, shape)| ModuleCandidate {
+                    file_path: path.clone(),
+                    header_salt: shape.header.salt.clone(),
+                })
+                .collect(),
+        })
     }
 }
 
@@ -328,5 +428,45 @@ mod tests {
         let deserialized = ModuleContent::from_json(&json).expect("deserialization failed");
 
         assert_eq!(content.canonical_path, deserialized.canonical_path);
+    }
+
+    #[test]
+    fn test_collision_detection_no_collision() {
+        let shape1 = ModuleShape::new("Data.List".to_string());
+        let candidates = vec![(std::path::PathBuf::from("/a/Data.List.ks"), shape1)];
+        assert!(detect_collision("Data.List", &candidates).is_none());
+    }
+
+    #[test]
+    fn test_collision_detection_same_salt_ok() {
+        let shape1 = ModuleShape::new("Data.List".to_string());
+        let shape2 = ModuleShape::new("Data.List".to_string());
+        let candidates = vec![
+            (std::path::PathBuf::from("/a/Data.List.ks"), shape1),
+            (std::path::PathBuf::from("/b/Data.List.ks"), shape2),
+        ];
+        // Same salt - no collision
+        assert!(detect_collision("Data.List", &candidates).is_none());
+    }
+
+    #[test]
+    fn test_collision_detection_different_salt_error() {
+        let mut shape1 = ModuleShape::new("Data.List".to_string());
+        shape1.header.salt = "v0.1.0".to_string();
+
+        let mut shape2 = ModuleShape::new("Data.List".to_string());
+        shape2.header.salt = "v0.2.0".to_string();
+
+        let candidates = vec![
+            (std::path::PathBuf::from("/a/Data.List.ks"), shape1),
+            (std::path::PathBuf::from("/b/Data.List.ks"), shape2),
+        ];
+
+        let collision = detect_collision("Data.List", &candidates);
+        assert!(collision.is_some());
+
+        let collision = collision.unwrap();
+        assert_eq!(collision.canonical_path, "Data.List");
+        assert_eq!(collision.candidates.len(), 2);
     }
 }
