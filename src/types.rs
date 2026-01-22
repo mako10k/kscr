@@ -94,6 +94,55 @@ struct DefSiteIndex {
 // (reserved) definition-location helpers will be added once def-site evidence is wired
 // into unify/unknown-name diagnostics.
 
+/// Symbol kind for module exports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SymbolKind {
+    /// Value-level binding (function, constant, pattern-bound name).
+    Value,
+    /// Type constructor (from data declaration).
+    Type,
+    /// Type alias.
+    TypeAlias,
+    /// Data constructor.
+    Ctor,
+    /// Type class.
+    Class,
+    /// Instance declaration (not typically exported by name, but tracked for completeness).
+    Instance,
+}
+
+/// Per-module export table mapping exported names to their symbol kinds.
+///
+/// This structure is keyed by symbol name and tracks what kind of symbol each export represents.
+/// In Stage 1, we use this internally but continue to provide the old HashSet<String> interface
+/// to existing callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportTable {
+    /// Map from exported symbol name to its kind.
+    entries: HashMap<String, SymbolKind>,
+}
+
+impl ExportTable {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, name: String, kind: SymbolKind) {
+        self.entries.insert(name, kind);
+    }
+
+    fn extend(&mut self, names: impl IntoIterator<Item = (String, SymbolKind)>) {
+        self.entries.extend(names);
+    }
+
+    /// Derive the old HashSet<String> view for backward compatibility.
+    pub fn as_name_set(&self) -> HashSet<String> {
+        self.entries.keys().cloned().collect()
+    }
+}
+
 // --- Milestone 2.2.1: Unification core (scaffolding) ---
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7259,13 +7308,14 @@ impl ModuleLoader {
             self.stack.pop();
 
             let exports = module_exported_names(&imported)?;
-            self.debug_print_exports(debug_imports, id, &exports);
+            let export_names = exports.as_name_set();
+            self.debug_print_exports(debug_imports, id, &export_names);
 
             self.emit_qualified_imports(
                 &p,
                 id,
                 &imported,
-                &exports,
+                &export_names,
                 &mut local_emitted_qualified,
                 out,
             )?;
@@ -7278,7 +7328,8 @@ impl ModuleLoader {
                     qual: primary_qual.to_string(),
                 };
                 if self.emitted_unqualified.insert(key) {
-                    let fwd = import_unqualified_forwarders(&imported, primary_qual, &exports)?;
+                    let fwd =
+                        import_unqualified_forwarders(&imported, primary_qual, &export_names)?;
                     if debug_imports && id.module == "Prelude" {
                         let mut defined_names = HashSet::new();
                         for it in &fwd {
@@ -7317,8 +7368,8 @@ fn import_items(module: &ast::Module) -> Vec<ast::Item> {
         .collect()
 }
 
-fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
-    let mut exports = HashSet::new();
+fn module_exported_names(module: &ast::Module) -> Result<ExportTable> {
+    let mut exports = ExportTable::new();
     let mut has_export_decl = false;
 
     for it in &module.items {
@@ -7329,10 +7380,15 @@ fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
         for spec in &ed.specs {
             match spec {
                 ast::ExportSpec::Name(n) => {
-                    exports.insert(n.clone());
+                    // For now, classify unqualified names as values.
+                    // Later stages can refine this by looking up the actual item.
+                    let kind = classify_exported_name(module, n);
+                    exports.insert(n.clone(), kind);
                 }
                 ast::ExportSpec::Type { name, ctors } => {
-                    exports.insert(name.clone());
+                    // Classify the type name (could be Type or Class)
+                    let kind = classify_type_export(module, name);
+                    exports.insert(name.clone(), kind);
 
                     let dd = module.items.iter().find_map(|it| match it {
                         ast::Item::DataDecl(d) if d.name == *name => Some(d),
@@ -7341,13 +7397,14 @@ fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
                     let Some(dd) = dd else {
                         // Type exports can refer to classes too (e.g. `Monad(..)`), which are not
                         // `DataDecl`s. For MVP export checking, allow these through.
-                        exports.insert(name.clone());
                         continue;
                     };
 
                     match ctors {
                         ast::ExportCtors::All => {
-                            exports.extend(dd.ctors.iter().map(|c| c.name.clone()));
+                            exports.extend(
+                                dd.ctors.iter().map(|c| (c.name.clone(), SymbolKind::Ctor)),
+                            );
                         }
                         ast::ExportCtors::Some(cs) => {
                             let known: HashSet<&str> =
@@ -7358,7 +7415,7 @@ fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
                                         "export list references unknown constructor: {name}({c})"
                                     )));
                                 }
-                                exports.insert(c.clone());
+                                exports.insert(c.clone(), SymbolKind::Ctor);
                             }
                         }
                     }
@@ -7368,16 +7425,20 @@ fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
     }
 
     if !has_export_decl {
-        let mut all = HashSet::new();
+        // No explicit export list: export everything
         for it in &module.items {
             match it {
-                ast::Item::Binding(b) => pat_defined_names(&b.pat, &mut all),
+                ast::Item::Binding(b) => {
+                    let mut names = HashSet::new();
+                    pat_defined_names(&b.pat, &mut names);
+                    exports.extend(names.into_iter().map(|n| (n, SymbolKind::Value)));
+                }
                 ast::Item::TypeAlias(ta) => {
-                    all.insert(ta.name.clone());
+                    exports.insert(ta.name.clone(), SymbolKind::TypeAlias);
                 }
                 ast::Item::DataDecl(d) => {
-                    all.insert(d.name.clone());
-                    all.extend(d.ctors.iter().map(|c| c.name.clone()));
+                    exports.insert(d.name.clone(), SymbolKind::Type);
+                    exports.extend(d.ctors.iter().map(|c| (c.name.clone(), SymbolKind::Ctor)));
                 }
                 ast::Item::Import(_)
                 | ast::Item::Export(_)
@@ -7386,10 +7447,85 @@ fn module_exported_names(module: &ast::Module) -> Result<HashSet<String>> {
                 | ast::Item::InstanceDecl(_) => {}
             }
         }
-        return Ok(all);
+        return Ok(exports);
     }
 
     Ok(exports)
+}
+
+/// Classify an exported name by looking it up in the module items.
+fn classify_exported_name(module: &ast::Module, name: &str) -> SymbolKind {
+    for it in &module.items {
+        match it {
+            ast::Item::Binding(b) => {
+                if pattern_defines_name(&b.pat, name) {
+                    return SymbolKind::Value;
+                }
+            }
+            ast::Item::TypeAlias(ta) if ta.name == name => {
+                return SymbolKind::TypeAlias;
+            }
+            ast::Item::DataDecl(d) => {
+                if d.name == name {
+                    return SymbolKind::Type;
+                }
+                if d.ctors.iter().any(|c| c.name == name) {
+                    return SymbolKind::Ctor;
+                }
+            }
+            ast::Item::ClassDecl(c) if c.name == name => {
+                return SymbolKind::Class;
+            }
+            _ => {}
+        }
+    }
+    // Default to Value if we can't find it (shouldn't happen in well-formed modules)
+    SymbolKind::Value
+}
+
+/// Classify a type export (Type vs Class).
+fn classify_type_export(module: &ast::Module, name: &str) -> SymbolKind {
+    for it in &module.items {
+        match it {
+            ast::Item::DataDecl(d) if d.name == name => return SymbolKind::Type,
+            ast::Item::ClassDecl(c) if c.name == name => return SymbolKind::Class,
+            _ => {}
+        }
+    }
+    // Default to Type if we can't find it
+    SymbolKind::Type
+}
+
+/// Check if a pattern defines the given name.
+fn pattern_defines_name(pat: &ast::Pattern, name: &str) -> bool {
+    match &pat.kind {
+        ast::PatternKind::Var(n) => n == name,
+        ast::PatternKind::Wildcard | ast::PatternKind::Literal(_) | ast::PatternKind::Hole(_) => {
+            false
+        }
+        ast::PatternKind::Constructor { args, .. } => {
+            args.iter().any(|p| pattern_defines_name(p, name))
+        }
+        ast::PatternKind::Tuple(pats) => pats.iter().any(|p| pattern_defines_name(p, name)),
+        ast::PatternKind::List(pats) => pats.iter().any(|p| pattern_defines_name(p, name)),
+        ast::PatternKind::Record(fields) => {
+            fields.iter().any(|(_, p)| pattern_defines_name(p, name))
+        }
+        ast::PatternKind::RecordLoose(fields, rest) => {
+            fields.iter().any(|(_, p)| pattern_defines_name(p, name))
+                || rest.as_ref().is_some_and(|r| r == name)
+        }
+        ast::PatternKind::Cons(p1, p2) => {
+            pattern_defines_name(p1, name) || pattern_defines_name(p2, name)
+        }
+        ast::PatternKind::Or(p1, p2) => {
+            pattern_defines_name(p1, name) || pattern_defines_name(p2, name)
+        }
+        ast::PatternKind::As(as_name, inner) => {
+            as_name == name || pattern_defines_name(inner, name)
+        }
+        ast::PatternKind::View(inner, _) => pattern_defines_name(inner, name),
+    }
 }
 
 fn import_qualified_items_for_decl(
@@ -12727,5 +12863,118 @@ x = case Just 1 of
             })),
         }))
         .unwrap_err();
+    }
+}
+
+#[cfg(test)]
+mod export_table_tests {
+    use super::*;
+
+    #[test]
+    fn export_table_as_name_set_works() {
+        let mut table = ExportTable::new();
+        table.insert("foo".to_string(), SymbolKind::Value);
+        table.insert("Bar".to_string(), SymbolKind::Type);
+        table.insert("Baz".to_string(), SymbolKind::Ctor);
+
+        let names = table.as_name_set();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains("foo"));
+        assert!(names.contains("Bar"));
+        assert!(names.contains("Baz"));
+    }
+
+    #[test]
+    fn module_exported_names_no_export_decl() {
+        let module = ast::Module {
+            name: Some("Test".to_string()),
+            items: vec![
+                ast::Item::Binding(ast::Binding {
+                    doc: None,
+                    pat: ast::Pattern::dummy(ast::PatternKind::Var("foo".to_string())),
+                    expr: ast::Expr::dummy(ast::ExprKind::Integer("42".to_string())),
+                    span: ast::dummy_span(),
+                }),
+                ast::Item::TypeAlias(ast::TypeAlias {
+                    doc: None,
+                    name: "MyInt".to_string(),
+                    params: vec![],
+                    ty: ast::Type::Var("Integer".to_string()),
+                    span: ast::dummy_span(),
+                }),
+            ],
+        };
+
+        let table = module_exported_names(&module).unwrap();
+        let names = table.as_name_set();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains("foo"));
+        assert!(names.contains("MyInt"));
+    }
+
+    #[test]
+    fn module_exported_names_with_data_decl() {
+        let module = ast::Module {
+            name: Some("Test".to_string()),
+            items: vec![ast::Item::DataDecl(ast::DataDecl {
+                doc: None,
+                name: "Maybe".to_string(),
+                params: vec!["a".to_string()],
+                ctors: vec![
+                    ast::DataCtor {
+                        doc: None,
+                        name: "Just".to_string(),
+                        args: vec![ast::Type::Var("a".to_string())],
+                        span: ast::dummy_span(),
+                    },
+                    ast::DataCtor {
+                        doc: None,
+                        name: "Nothing".to_string(),
+                        args: vec![],
+                        span: ast::dummy_span(),
+                    },
+                ],
+                deriving: vec![],
+                span: ast::dummy_span(),
+            })],
+        };
+
+        let table = module_exported_names(&module).unwrap();
+        let names = table.as_name_set();
+        assert_eq!(names.len(), 3);
+        assert!(names.contains("Maybe"));
+        assert!(names.contains("Just"));
+        assert!(names.contains("Nothing"));
+    }
+
+    #[test]
+    fn module_exported_names_with_explicit_exports() {
+        let module = ast::Module {
+            name: Some("Test".to_string()),
+            items: vec![
+                ast::Item::Binding(ast::Binding {
+                    doc: None,
+                    pat: ast::Pattern::dummy(ast::PatternKind::Var("foo".to_string())),
+                    expr: ast::Expr::dummy(ast::ExprKind::Integer("42".to_string())),
+                    span: ast::dummy_span(),
+                }),
+                ast::Item::Binding(ast::Binding {
+                    doc: None,
+                    pat: ast::Pattern::dummy(ast::PatternKind::Var("bar".to_string())),
+                    expr: ast::Expr::dummy(ast::ExprKind::Integer("43".to_string())),
+                    span: ast::dummy_span(),
+                }),
+                ast::Item::Export(ast::ExportDecl {
+                    specs: vec![ast::ExportSpec::Name("foo".to_string())],
+                }),
+            ],
+        };
+
+        let table = module_exported_names(&module).unwrap();
+        let names = table.as_name_set();
+        // Only 'foo' should be exported, not 'bar'
+        assert_eq!(names.len(), 1);
+        assert!(names.contains("foo"));
+        assert!(!names.contains("bar"));
     }
 }
