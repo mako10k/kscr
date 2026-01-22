@@ -1,7 +1,81 @@
 //! KSIF vNext: KScript Intermediate Format
 //!
-//! Stage 3: Separate module shape (interface) from content (payload).
-//! This enables efficient cross-module references and dependency resolution.
+//! ## Overview
+//!
+//! Stage 3 of the module system design introduces KSIF (KScript Intermediate Format),
+//! a serialized representation that separates module **shape** (interface) from
+//! **content** (implementation payload).
+//!
+//! ## Key Concepts
+//!
+//! ### 1. ModuleShape (Interface)
+//!
+//! Contains everything needed for type checking and name resolution of dependent modules:
+//! - Exported types, classes, values, instances
+//! - Type signatures and class method signatures
+//! - Dependency specifications
+//! - **No implementation details**
+//!
+//! Benefits:
+//! - Fast dependency scanning without parsing full modules
+//! - Enables incremental compilation
+//! - Clear separation of interface from implementation
+//!
+//! ### 2. ModuleContent (Payload)
+//!
+//! Contains the actual implementation:
+//! - Value definitions (IR or AST)
+//! - Instance method implementations
+//! - Only needed for execution, not for type checking dependents
+//!
+//! ### 3. KSIF Header and Salt
+//!
+//! Every KSIF file includes a header with:
+//! - **Version**: KSIF schema version (currently "1.0")
+//! - **Salt**: Includes kscr interpreter version for cache safety
+//!
+//! The salt prevents accidental usage of incompatible cached modules across
+//! different interpreter versions.
+//!
+//! ### 4. Module Collision Detection
+//!
+//! When multiple candidates provide the same canonical module path:
+//! - If all have matching salt → acceptable duplication (pick any)
+//! - If salts differ → error with detailed diagnostics
+//!
+//! Error messages include:
+//! - Import site
+//! - All conflicting candidates with file paths
+//! - Salt/version for each candidate
+//! - Suggested fixes
+//!
+//! ## Usage Example
+//!
+//! ```rust,ignore
+//! use kscr::ksif::ModuleShape;
+//!
+//! // Extract shape from AST
+//! let shape = ModuleShape::from_ast_module(&module, "Data.List".to_string());
+//!
+//! // Save to file
+//! shape.save_to_file(Path::new("Data.List.ksif"))?;
+//!
+//! // Load later for dependency resolution
+//! let loaded = ModuleShape::load_from_file(Path::new("Data.List.ksif"))?;
+//! ```
+//!
+//! ## Design Goals
+//!
+//! - **Local-first**: Start with local package resolution
+//! - **Registry-ready**: Metadata compatible with future central registry
+//! - **Incremental**: Support incremental compilation
+//! - **Safe**: Version-aware caching with automatic invalidation
+//!
+//! ## Non-goals (for now)
+//!
+//! - Central registry integration
+//! - Signature verification
+//! - Lockfiles (future: Stage 2 of package resolution)
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
