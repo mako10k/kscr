@@ -3460,7 +3460,8 @@ fn preregister_instance_dicts(
             }
             Err(_) => {
                 // Polymorphic (non-ground) instance: pre-register a stable dictionary name.
-                let dict_name = format!("__dict_{}_poly{}", inst.class.name, poly_to_register.len());
+                let dict_name =
+                    format!("__dict_{}_poly{}", inst.class.name, poly_to_register.len());
 
                 // Lower the instance head type into an internal type pattern.
                 let mut cx = InferCtx::default();
@@ -4167,7 +4168,11 @@ fn simplify_process_constraint(
     Ok(())
 }
 
-fn is_superclass_of_class_env(class_env: &ClassEnv, sub: &ast::ClassId, sup: &ast::ClassId) -> bool {
+fn is_superclass_of_class_env(
+    class_env: &ClassEnv,
+    sub: &ast::ClassId,
+    sup: &ast::ClassId,
+) -> bool {
     use std::collections::{HashSet, VecDeque};
 
     if sub == sup {
