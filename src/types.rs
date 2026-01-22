@@ -7164,7 +7164,12 @@ impl ModuleLoader {
         if let Some(m) = self.cache.get(path) {
             return Ok(m.clone());
         }
-        if let Some(m) = stdlib_cache::load_ast_stdlib_cached(path)? {
+        if let Some(mut m) = stdlib_cache::load_ast_stdlib_cached(path)? {
+            // stdlib_cache does not have access to ModuleIdInterner; resolve module IDs here.
+            let env = module_qual_env(&m);
+            resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
+            resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
+
             self.cache.insert(path.to_path_buf(), m.clone());
             return Ok(m);
         }
