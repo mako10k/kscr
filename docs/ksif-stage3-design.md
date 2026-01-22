@@ -76,6 +76,27 @@ This document summarizes the Stage 3 implementation of KSIF (KScript Intermediat
 
 **Purpose**: Enable persistent caching of module shapes for dependency resolution.
 
+### 5. Serialization Format
+
+#### Current Implementation: JSON via serde
+
+**Choice rationale**:
+- JSON is human-readable for debugging during development
+- Easy to inspect and validate manually
+- Widely supported tooling
+
+**Important note**: This is **not a permanent format choice**. The serialization format may migrate to more efficient alternatives in the future, such as:
+- **Protocol Buffers (protobuf)**: Better performance, smaller size, backwards compatibility
+- **Cap'n Proto**: Zero-copy deserialization, efficient
+- **MessagePack**: Binary JSON alternative
+- **Custom binary format**: Optimized for kscr-specific needs
+
+**Migration strategy**:
+- The `ksif_version` field in `KsifHeader` tracks the format version
+- When changing formats, increment the version and provide migration tools
+- Keep serialization logic isolated to enable easy format changes
+- Core types (`ModuleShape`, `ModuleContent`) remain format-agnostic
+
 ## Testing
 
 All existing tests pass (339 tests total):

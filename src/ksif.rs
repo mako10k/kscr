@@ -71,12 +71,34 @@
 //! - **Incremental**: Support incremental compilation
 //! - **Safe**: Version-aware caching with automatic invalidation
 //!
+//! ## Serialization Format
+//!
+//! **Current implementation**: JSON via serde
+//!
+//! The current serialization uses JSON for simplicity and debuggability during development.
+//! However, this is **not a permanent choice**. Future versions may migrate to more efficient
+//! formats such as:
+//! - Protocol Buffers (protobuf)
+//! - Cap'n Proto
+//! - MessagePack
+//! - Custom binary format
+//!
+//! The serialization format is versioned via `KsifHeader.ksif_version` to support migration.
+//! When changing formats, update the version and provide migration tools.
+//!
+//! **Design principle**: Keep serialization logic isolated to enable easy format changes.
+//! The core types (`ModuleShape`, `ModuleContent`) should remain format-agnostic.
+//!
 //! ## Non-goals (for now)
 //!
 //! - Central registry integration
 //! - Signature verification
 //! - Lockfiles (future: Stage 2 of package resolution)
 
+// Current serialization: serde + JSON
+// Note: This is not permanent. Future versions may use Protocol Buffers,
+// Cap'n Proto, MessagePack, or other formats for better performance.
+// The ksif_version tracks format changes to support migration.
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -316,12 +338,19 @@ impl ModuleShape {
         shape
     }
 
-    /// Serialize to JSON
+    /// Serialize to JSON.
+    ///
+    /// **Note**: JSON is the current serialization format for development convenience,
+    /// but this may change in future versions (e.g., to Protocol Buffers, Cap'n Proto,
+    /// or other formats). The `ksif_version` field in the header tracks format changes.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
-    /// Deserialize from JSON
+    /// Deserialize from JSON.
+    ///
+    /// **Note**: This expects JSON format matching the current `ksif_version`.
+    /// Future versions may support multiple formats or provide migration tools.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
     }
@@ -365,12 +394,19 @@ impl ModuleContent {
         }
     }
 
-    /// Serialize to JSON
+    /// Serialize to JSON.
+    ///
+    /// **Note**: JSON is the current serialization format for development convenience,
+    /// but this may change in future versions (e.g., to Protocol Buffers, Cap'n Proto,
+    /// or other formats). The `ksif_version` field in the header tracks format changes.
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
-    /// Deserialize from JSON
+    /// Deserialize from JSON.
+    ///
+    /// **Note**: This expects JSON format matching the current `ksif_version`.
+    /// Future versions may support multiple formats or provide migration tools.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
     }
