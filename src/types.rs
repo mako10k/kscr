@@ -6455,6 +6455,24 @@ impl ModuleIdInterner {
             .insert(canonical_module.to_string(), id);
         id
     }
+
+    /// Get the canonical module name for a given ModuleId.
+    fn get_canonical_name(&self, id: ast::ModuleId) -> Option<&str> {
+        self.by_canonical_name
+            .iter()
+            .find(|(_, &mid)| mid == id)
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Get or intern a module ID for a canonical path.
+    fn get_or_intern(&mut self, canonical_module: &str) -> ast::ModuleId {
+        self.intern(canonical_module)
+    }
+
+    /// Check if a canonical module name has been interned.
+    fn contains(&self, canonical_module: &str) -> bool {
+        self.by_canonical_name.contains_key(canonical_module)
+    }
 }
 
 struct ModuleLoader {

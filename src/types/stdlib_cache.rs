@@ -701,7 +701,7 @@ pub(super) fn load_ast_stdlib_cached(path: &Path) -> Result<Option<ast::Module>>
     let src = std::fs::read_to_string(path)?;
     let mut m = parser::parse_module(&src)?;
     super::desugar_module_qualified_names(&mut m)?;
-    // Stdlib cache does not have a ModuleLoader/ModuleIdInterner; keep ClassId.module as dummy.
+    // Note: ClassId.module remains as dummy ModuleId(0) until resolved in ModuleLoader.load_ast().
 
     if let Ok(mut cache) = stdlib_ast_cache().lock() {
         cache.insert(

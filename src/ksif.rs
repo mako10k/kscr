@@ -163,6 +163,84 @@ impl ModuleShape {
         }
     }
 
+    /// Build a ModuleShape from an AST Module.
+    ///
+    /// This extracts the interface information (types, classes, instances)
+    /// without the implementation details.
+    pub fn from_ast_module(module: &crate::ast::Module, canonical_path: String) -> Self {
+        let mut shape = Self::new(canonical_path);
+
+        for item in &module.items {
+            match item {
+                crate::ast::Item::Binding(b) => {
+                    // For now, we don't track value exports in the shape
+                    // (would need type inference results)
+                    let _ = b;
+                }
+                crate::ast::Item::DataDecl(dd) => {
+                    shape.types.insert(
+                        dd.name.clone(),
+                        TypeExport {
+                            name: dd.name.clone(),
+                            kind: "*".to_string(), // Simplified: would need kind inference
+                            arity: dd.params.len(),
+                            constructors: dd.ctors.iter().map(|c| c.name.clone()).collect(),
+                        },
+                    );
+                }
+                crate::ast::Item::ClassDecl(cd) => {
+                    shape.classes.insert(
+                        cd.name.clone(),
+                        ClassExport {
+                            name: cd.name.clone(),
+                            param: cd.param.clone(),
+                            methods: cd
+                                .methods
+                                .iter()
+                                .map(|m| ClassMethodSig {
+                                    name: m.name.clone(),
+                                    scheme: format!("{:?}", m.ty), // Simplified: would serialize properly
+                                })
+                                .collect(),
+                            supers: cd
+                                .supers
+                                .iter()
+                                .map(|p| format!("{:?}", p)) // Simplified
+                                .collect(),
+                        },
+                    );
+                }
+                crate::ast::Item::InstanceDecl(inst) => {
+                    shape.instances.push(InstanceExport {
+                        class_name: inst.class.name.clone(),
+                        instance_type: format!("{:?}", inst.ty), // Simplified
+                        context: inst
+                            .preds
+                            .iter()
+                            .map(|p| format!("{:?}", p)) // Simplified
+                            .collect(),
+                    });
+                }
+                crate::ast::Item::Import(imp) => {
+                    // Track dependencies from imports
+                    if !shape
+                        .dependencies
+                        .iter()
+                        .any(|d| d.name == imp.module)
+                    {
+                        shape.dependencies.push(DependencySpec {
+                            name: imp.module.clone(),
+                            version_req: "*".to_string(), // Default: any version
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        shape
+    }
+
     /// Serialize to JSON
     pub fn to_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
