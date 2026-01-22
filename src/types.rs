@@ -5550,6 +5550,11 @@ pub fn set_stdlib_dir_override(path: PathBuf) {
     stdlib_cache::set_stdlib_root_override(path);
 }
 
+/// Install the embedded stdlib into a user-writable location and return its path.
+pub fn install_embedded_stdlib() -> Result<PathBuf> {
+    stdlib_cache::install_embedded_stdlib()
+}
+
 pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // Prelude is auto-imported unless the module has explicit imports.
     // Implement this before import-flattening.

@@ -196,6 +196,19 @@ The `stdlib/Prelude.ks` provides common functions and types:
 3. `$EXE_DIR/stdlib` (next to the `kscr` executable)
 4. (dev/test only) `CARGO_MANIFEST_DIR/stdlib`
 
+5. Embedded stdlib (when bundled in the binary): `kscr` contains an embedded copy of `stdlib/` when distributed via `cargo install` or other packaging. At runtime, if no other stdlib location is found, `kscr` will extract the embedded stdlib into your user data directory (typically `$XDG_DATA_HOME/kscr/stdlib` or `$HOME/.local/share/kscr/stdlib`) and use that location.
+
+You can explicitly extract the embedded stdlib with the CLI command:
+
+```bash
+# Extract embedded stdlib to the user data directory
+kscr --install-stdlib
+# or equivalently
+kscr install-stdlib
+```
+
+If extraction succeeds the tool prints the extracted path. If you prefer a custom location, continue to use `--stdlib-dir <path>` or set `KSCR_STDLIB_DIR`.
+
 ## Documentation
 
 Detailed documentation is available in the `docs/` directory:

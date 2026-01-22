@@ -586,7 +586,7 @@ fn extract_embedded_to(dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn install_embedded_stdlib() -> Result<PathBuf> {
+pub(super) fn install_embedded_stdlib() -> Result<PathBuf> {
     let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
     let dest = base.join("kscr").join("stdlib");
 
