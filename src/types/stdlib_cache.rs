@@ -1,11 +1,11 @@
 use crate::{ast, parser, Result};
+use dirs;
+use include_dir::{include_dir, Dir, DirEntry};
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
-use std::fs;
-use include_dir::{include_dir, Dir, DirEntry};
-use dirs;
 
 #[derive(Clone)]
 struct CachedAst {
