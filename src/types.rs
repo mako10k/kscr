@@ -6772,7 +6772,7 @@ fn desugar_qualified_predicate(p: ast::Predicate, env: &QualEnv) -> Result<ast::
         ast::Predicate::Eq(t) => ast::Predicate::Eq(desugar_qualified_type(t, env)?),
         ast::Predicate::EqRow(t) => ast::Predicate::EqRow(desugar_qualified_type(t, env)?),
         ast::Predicate::Class { class, ty } => ast::Predicate::Class {
-            class,
+            class: desugar_qualified_ref(&class, env)?,
             ty: desugar_qualified_type(ty, env)?,
         },
         ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {

@@ -10,6 +10,16 @@ pub struct Module {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModuleId(pub u32);
 
+/// Internal typeclass identity.
+///
+/// Stage 2 prep: keep this unused for now; later we will replace `class: String` references
+/// in predicates/instances with `ClassId`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClassId {
+    pub module: ModuleId,
+    pub name: String,
+}
+
 /// A name that can be either syntactic (unresolved) or resolved to a module.
 ///
 /// The `module_name` is kept for diagnostics and pretty-printing.
