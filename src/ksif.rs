@@ -386,6 +386,15 @@ impl ModuleContent {
     pub fn load_from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let json = std::fs::read_to_string(path)?;
         let content = Self::from_json(&json)?;
+        // Validate header compatibility
+        if !content.header.is_compatible() {
+            return Err(format!(
+                "Incompatible KSIF content version or salt: expected {}, got {}",
+                KsifHeader::current().salt,
+                content.header.salt
+            )
+            .into());
+        }
         Ok(content)
     }
 }
@@ -502,6 +511,27 @@ mod tests {
         let deserialized = ModuleContent::from_json(&json).expect("deserialization failed");
 
         assert_eq!(content.canonical_path, deserialized.canonical_path);
+    }
+
+    #[test]
+    fn test_module_content_header_validation() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a content with incompatible header
+        let mut content = ModuleContent::new("Test.Module".to_string());
+        content.header.salt = "incompatible-version".to_string();
+
+        let json = content.to_json().expect("serialization failed");
+
+        // Write to temp file
+        let mut file = NamedTempFile::new().expect("failed to create temp file");
+        file.write_all(json.as_bytes())
+            .expect("failed to write temp file");
+
+        // Loading should fail due to incompatible header
+        let result = ModuleContent::load_from_file(file.path());
+        assert!(result.is_err());
     }
 
     #[test]
