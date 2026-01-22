@@ -20,7 +20,7 @@ pub(crate) fn parse_predicate_in_root(ts: &mut TokenStream, stop: Stop) -> Resul
 }
 
 fn parse_predicate(ts: &mut TokenStream, stop: Stop) -> Result<ast::Predicate> {
-    let name = ts.expect_ident()?;
+    let name = parse_maybe_qualified_ident(ts)?;
     match name.as_str() {
         "Show" => Ok(ast::Predicate::Show(parse_type_expr(
             ts,
