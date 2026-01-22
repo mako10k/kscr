@@ -1215,7 +1215,7 @@ pub enum Constraint {
     EqRow(Ty),
     /// User-defined typeclass constraint: `C t`.
     Class {
-        class: String,
+        class: ast::ClassId,
         ty: Ty,
     },
     /// Field absence constraint for row types (records/open records/row variables).
@@ -1265,7 +1265,7 @@ fn fmt_constraint(
             fmt_ty_prec(f, t, 0, vars)
         }
         Constraint::Class { class, ty } => {
-            write!(f, "{class} ")?;
+            write!(f, "{} ", class.name)?;
             fmt_ty_prec(f, ty, 0, vars)
         }
         Constraint::Lacks { label, row } => {
@@ -3041,7 +3041,7 @@ fn build_class_method_scheme_index(
 fn lower_class_method_scheme(
     cx: &mut InferCtx,
     class_env: &ClassEnv,
-    class: &str,
+    class: &ast::ClassId,
     qt: &ast::QualType,
 ) -> Result<Scheme> {
     let param = class_env
@@ -3055,7 +3055,7 @@ fn lower_class_method_scheme(
 
     let mut cs: Vec<Constraint> = Vec::new();
     cs.push(Constraint::Class {
-        class: class.to_string(),
+        class: class.clone(),
         ty: class_param_ty,
     });
 
@@ -3136,16 +3136,16 @@ type DataEnv = HashMap<String, ast::DataDecl>;
 
 #[derive(Debug, Default, Clone)]
 struct ClassEnv {
-    /// class name -> parameter name (e.g. `class C a where` => (C, a))
-    class_params: HashMap<String, String>,
-    /// class name -> superclass predicates (Haskell-style)
-    class_supers: HashMap<String, Vec<ast::Predicate>>,
+    /// class id -> parameter name (e.g. `class C a where` => (C, a))
+    class_params: HashMap<ast::ClassId, String>,
+    /// class id -> superclass predicates (Haskell-style)
+    class_supers: HashMap<ast::ClassId, Vec<ast::Predicate>>,
     /// method name -> list of classes that define it
-    method_classes: HashMap<String, Vec<String>>,
+    method_classes: HashMap<String, Vec<ast::ClassId>>,
     /// (class, method) -> declared method type
-    methods: HashMap<(String, String), ast::QualType>,
+    methods: HashMap<(ast::ClassId, String), ast::QualType>,
     /// (class, instance-head-type-key) -> dictionary binding name
-    instances: HashMap<(String, String), String>,
+    instances: HashMap<(ast::ClassId, String), String>,
     /// Non-ground instances (dictionary passing). These are selected by unification on the
     /// instance head pattern, and require dictionaries for their context predicates.
     poly_instances: Vec<PolyInstance>,
@@ -3157,7 +3157,7 @@ struct ClassEnv {
 
 #[derive(Debug, Clone)]
 struct PolyInstance {
-    class: String,
+    class: ast::ClassId,
     /// Instance head pattern as an internal type (may contain Ty::Var).
     head_pat: Ty,
     /// How many context dictionary arguments the instance dictionary expects.
@@ -3263,15 +3263,15 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
 }
 
 type ClassDeclInfo = (
-    HashMap<String, Vec<String>>,
-    HashMap<(String, String), ast::Expr>,
+    HashMap<ast::ClassId, Vec<String>>,
+    HashMap<(ast::ClassId, String), ast::Expr>,
 );
 
 fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<ClassDeclInfo> {
     // class name -> method names (declaration order)
-    let mut class_method_names: HashMap<String, Vec<String>> = HashMap::new();
+    let mut class_method_names: HashMap<ast::ClassId, Vec<String>> = HashMap::new();
     // (class, method) -> default implementation expression
-    let mut class_default_methods: HashMap<(String, String), ast::Expr> = HashMap::new();
+    let mut class_default_methods: HashMap<(ast::ClassId, String), ast::Expr> = HashMap::new();
 
     // Collect class method signatures + defaults.
     for it in &module.items {
@@ -3279,23 +3279,25 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
             continue;
         };
 
-        if env.class_params.contains_key(&c.name) {
+        let class_id = ast::ClassId::dummy(c.name.clone());
+
+        if env.class_params.contains_key(&class_id) {
             return Err(Error::msg("duplicate class"));
         }
-        env.class_params.insert(c.name.clone(), c.param.clone());
-        env.class_supers.insert(c.name.clone(), c.supers.clone());
+        env.class_params.insert(class_id.clone(), c.param.clone());
+        env.class_supers.insert(class_id.clone(), c.supers.clone());
 
         for m in &c.methods {
             class_method_names
-                .entry(c.name.clone())
+                .entry(class_id.clone())
                 .or_default()
                 .push(m.name.clone());
             env.method_classes
                 .entry(m.name.clone())
                 .or_default()
-                .push(c.name.clone());
+                .push(class_id.clone());
             env.methods
-                .insert((c.name.clone(), m.name.clone()), m.ty.clone());
+                .insert((class_id.clone(), m.name.clone()), m.ty.clone());
         }
 
         for b in &c.default_methods {
@@ -3304,7 +3306,7 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
                     "MVP: class default methods must be simple variable bindings",
                 ));
             };
-            let key = (c.name.clone(), mname.clone());
+            let key = (class_id.clone(), mname.clone());
             if class_default_methods.contains_key(&key) {
                 return Err(Error::msg("duplicate class default method"));
             }
@@ -3325,7 +3327,11 @@ fn reject_ambiguous_method_names(env: &mut ClassEnv) -> Result<()> {
         if classes.len() > 1 {
             return Err(Error::msg(format!(
                 "ambiguous method name: {m} (defined in classes: {})",
-                classes.join(", ")
+                classes
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
     }
@@ -3355,7 +3361,8 @@ fn validate_superclass_preds(env: &ClassEnv) -> Result<()> {
                 } if v == param => {
                     if !env.class_params.contains_key(sup) {
                         return Err(Error::msg(format!(
-                            "unknown superclass `{sup}` in class `{class}`"
+                            "unknown superclass `{}` in class `{}`",
+                            sup.name, class.name
                         )));
                     }
                 }
@@ -3381,8 +3388,8 @@ fn detect_superclass_cycles(env: &ClassEnv) -> Result<()> {
 
     fn dfs_cycle(
         env: &ClassEnv,
-        node: &str,
-        marks: &mut HashMap<String, Mark>,
+        node: &ast::ClassId,
+        marks: &mut HashMap<ast::ClassId, Mark>,
         stack: &mut Vec<String>,
     ) -> Result<()> {
         if matches!(marks.get(node), Some(Mark::Perm)) {
@@ -3390,15 +3397,15 @@ fn detect_superclass_cycles(env: &ClassEnv) -> Result<()> {
         }
         if matches!(marks.get(node), Some(Mark::Temp)) {
             // Found a cycle; report a readable path.
-            stack.push(node.to_string());
+            stack.push(node.name.clone());
             return Err(Error::msg(format!(
                 "cyclic superclass constraints: {}",
                 stack.join(" => ")
             )));
         }
 
-        marks.insert(node.to_string(), Mark::Temp);
-        stack.push(node.to_string());
+        marks.insert(node.clone(), Mark::Temp);
+        stack.push(node.name.clone());
 
         if let Some(supers) = env.class_supers.get(node) {
             for p in supers {
@@ -3409,11 +3416,11 @@ fn detect_superclass_cycles(env: &ClassEnv) -> Result<()> {
         }
 
         stack.pop();
-        marks.insert(node.to_string(), Mark::Perm);
+        marks.insert(node.clone(), Mark::Perm);
         Ok(())
     }
 
-    let mut marks: HashMap<String, Mark> = HashMap::new();
+    let mut marks: HashMap<ast::ClassId, Mark> = HashMap::new();
     for c in env.class_params.keys() {
         let mut stack: Vec<String> = Vec::new();
         dfs_cycle(env, c, &mut marks, &mut stack)?;
@@ -3443,7 +3450,7 @@ fn preregister_instance_dicts(
         match instance_head_key_ast(&inst.ty) {
             Ok(ty_key) => {
                 let ty_mangled = mangle_ident(&ty_key);
-                let dict_name = format!("__dict_{}_{}", inst.class, ty_mangled);
+                let dict_name = format!("__dict_{}_{}", inst.class.name, ty_mangled);
 
                 let key = (inst.class.clone(), ty_key);
                 if env.instances.contains_key(&key) {
@@ -3453,7 +3460,8 @@ fn preregister_instance_dicts(
             }
             Err(_) => {
                 // Polymorphic (non-ground) instance: pre-register a stable dictionary name.
-                let dict_name = format!("__dict_{}_poly{}", inst.class, poly_to_register.len());
+                let dict_name =
+                    format!("__dict_{}_poly{}", inst.class.name, poly_to_register.len());
 
                 // Lower the instance head type into an internal type pattern.
                 let mut cx = InferCtx::default();
@@ -3486,7 +3494,7 @@ fn ctx_param_name(i: usize) -> String {
 
 fn class_name_of_pred(p: &ast::Predicate) -> Option<&str> {
     match p {
-        ast::Predicate::Class { class, .. } => Some(class.as_str()),
+        ast::Predicate::Class { class, .. } => Some(class.name.as_str()),
         _ => None,
     }
 }
@@ -3520,8 +3528,8 @@ fn add_params_to_expr(span: ast::Span, expr: ast::Expr, params: &[String]) -> as
 fn generate_instance_items(
     env: &ClassEnv,
     instance_decls: &[ast::InstanceDecl],
-    class_method_names: &HashMap<String, Vec<String>>,
-    class_default_methods: &HashMap<(String, String), ast::Expr>,
+    class_method_names: &HashMap<ast::ClassId, Vec<String>>,
+    class_default_methods: &HashMap<(ast::ClassId, String), ast::Expr>,
 ) -> Result<Vec<ast::Item>> {
     // Phase 2: generate impl bindings + dictionary records.
     let mut extra_items: Vec<ast::Item> = Vec::new();
@@ -3540,8 +3548,8 @@ fn generate_instance_items(
 fn append_instance_items(
     env: &ClassEnv,
     inst: &ast::InstanceDecl,
-    class_method_names: &HashMap<String, Vec<String>>,
-    class_default_methods: &HashMap<(String, String), ast::Expr>,
+    class_method_names: &HashMap<ast::ClassId, Vec<String>>,
+    class_default_methods: &HashMap<(ast::ClassId, String), ast::Expr>,
     extra_items: &mut Vec<ast::Item>,
 ) -> Result<()> {
     let (ty_key_opt, ty_mangled, dict_name) = resolve_instance_dict_name(env, inst)?;
@@ -3549,7 +3557,7 @@ fn append_instance_items(
     let Some(method_names) = class_method_names.get(&inst.class) else {
         return Err(Error::msg(format!(
             "unknown class in instance: {}",
-            inst.class
+            inst.class.name
         )));
     };
 
@@ -3576,14 +3584,14 @@ fn append_instance_items(
             return Err(Error::msg(format!(
                 "missing method implementation for `{}` in instance {} {}",
                 mname,
-                inst.class,
+                inst.class.name,
                 ty_key_opt.clone().unwrap_or_else(|| "<poly>".to_string())
             )));
         };
 
         let impl_name = format!(
             "__inst_{}_{}_{}",
-            inst.class,
+            inst.class.name,
             ty_mangled,
             mangle_ident(mname)
         );
@@ -3605,7 +3613,7 @@ fn append_instance_items(
 
     for (sup, sup_dict_name) in direct_supers.into_iter().zip(super_dict_names.into_iter()) {
         dict_fields.push((
-            super_field_name(&sup),
+            super_field_name(&sup.name),
             ast::Expr::new(ast::dummy_span(), ast::ExprKind::Var(sup_dict_name)),
         ));
     }
@@ -3780,8 +3788,8 @@ fn collect_instance_methods(inst: &ast::InstanceDecl) -> Result<HashMap<String, 
     Ok(inst_methods)
 }
 
-fn collect_direct_supers(env: &ClassEnv, inst: &ast::InstanceDecl) -> Vec<String> {
-    let mut direct_supers: Vec<String> = Vec::new();
+fn collect_direct_supers(env: &ClassEnv, inst: &ast::InstanceDecl) -> Vec<ast::ClassId> {
+    let mut direct_supers: Vec<ast::ClassId> = Vec::new();
     if let Some(supers) = env.class_supers.get(&inst.class) {
         for p in supers {
             if let ast::Predicate::Class { class: sup, .. } = p {
@@ -3795,7 +3803,7 @@ fn collect_direct_supers(env: &ClassEnv, inst: &ast::InstanceDecl) -> Vec<String
 }
 
 fn build_extra_param_names(inst: &ast::InstanceDecl) -> Result<Vec<String>> {
-    let mut extra_param_names: Vec<String> = vec![dict_param_name(&inst.class)];
+    let mut extra_param_names: Vec<String> = vec![dict_param_name(&inst.class.name)];
     let mut ctx_dict_by_class: HashMap<String, String> = HashMap::new();
     for (i, p) in inst.preds.iter().enumerate() {
         let Some(cls) = class_name_of_pred(p) else {
@@ -3819,7 +3827,7 @@ fn resolve_super_dict_names(
     env: &ClassEnv,
     inst: &ast::InstanceDecl,
     ty_key_opt: Option<&String>,
-    direct_supers: &[String],
+    direct_supers: &[ast::ClassId],
 ) -> Result<Vec<String>> {
     let mut ctx_dict_by_class: HashMap<String, String> = HashMap::new();
     for (i, p) in inst.preds.iter().enumerate() {
@@ -3830,7 +3838,7 @@ fn resolve_super_dict_names(
 
     let mut super_dict_names: Vec<String> = Vec::new();
     for sup in direct_supers {
-        if let Some(pname) = ctx_dict_by_class.get(sup) {
+        if let Some(pname) = ctx_dict_by_class.get(&sup.name) {
             super_dict_names.push(pname.clone());
             continue;
         }
@@ -3844,7 +3852,7 @@ fn resolve_super_dict_names(
         let Some(sup_dict_name) = env.instances.get(&sup_key) else {
             return Err(Error::msg(format!(
                 "missing superclass instance required by `{}`: {} {}",
-                inst.class, sup, ty_key
+                inst.class.name, sup.name, ty_key
             )));
         };
         super_dict_names.push(sup_dict_name.clone());
@@ -4135,7 +4143,7 @@ fn simplify_process_constraint(
         Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, in_progress)?),
         Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
         Constraint::Class { class, ty } => {
-            let expand_key = format!("{class}:{ty:?}");
+            let expand_key = format!("{}:{ty:?}", class.name);
             if expanded.insert(expand_key, ()).is_none() {
                 if let Some(supers) = class_env.class_supers.get(&class) {
                     for p in supers {
@@ -4150,7 +4158,8 @@ fn simplify_process_constraint(
                 let key = (class.clone(), instance_head_key_ty(&ty)?);
                 if !class_env.instances.contains_key(&key) {
                     return Err(Error::msg(format!(
-                        "cannot satisfy constraint: {class} {ty}"
+                        "cannot satisfy constraint: {} {ty}",
+                        class.name
                     )));
                 }
             }
@@ -4159,16 +4168,20 @@ fn simplify_process_constraint(
     Ok(())
 }
 
-fn is_superclass_of_class_env(class_env: &ClassEnv, sub: &str, sup: &str) -> bool {
+fn is_superclass_of_class_env(
+    class_env: &ClassEnv,
+    sub: &ast::ClassId,
+    sup: &ast::ClassId,
+) -> bool {
     use std::collections::{HashSet, VecDeque};
 
     if sub == sup {
         return false;
     }
 
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut q: VecDeque<String> = VecDeque::new();
-    q.push_back(sub.to_string());
+    let mut seen: HashSet<ast::ClassId> = HashSet::new();
+    let mut q: VecDeque<ast::ClassId> = VecDeque::new();
+    q.push_back(sub.clone());
 
     while let Some(c) = q.pop_front() {
         if !seen.insert(c.clone()) {
@@ -6084,7 +6097,7 @@ fn typecheck_internal_core_with_entry_path(
 
         // If `Monad` is available, desugar `do`-notation into `(>>=)` / `(>>)`. This allows `do` to
         // work for non-IO monads (via type classes).
-        if class_env.class_params.contains_key("Monad") {
+        if class_env.class_params.keys().any(|c| c.name == "Monad") {
             desugar_do_to_monad_ops_in_module(&mut module)?;
         }
 
@@ -6340,7 +6353,8 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
             Some(existing) if existing == param => {}
             Some(_) => {
                 return Err(Error::msg(format!(
-                    "conflicting class param for class {class}"
+                    "conflicting class param for class {}",
+                    class.name
                 )))
             }
             None => {
@@ -6396,7 +6410,8 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
             let qt_n = normalize_qt(qt.clone())?;
             if existing_n != qt_n {
                 return Err(Error::msg(format!(
-                    "conflicting method type for {class}.{method}"
+                    "conflicting method type for {}.{method}",
+                    class.name
                 )));
             }
         } else {
@@ -6540,6 +6555,16 @@ fn desugar_qualified_ref(name: &str, env: &QualEnv) -> Result<String> {
     };
 
     Ok(name.to_string())
+}
+
+fn desugar_qualified_class_id(id: &ast::ClassId, env: &QualEnv) -> Result<ast::ClassId> {
+    // Validate qualifier only. Actual module-id resolution is done later in
+    // `resolve_class_names_to_module_ids` (after we have a ModuleIdInterner).
+    let name = desugar_qualified_ref(&id.name, env)?;
+    Ok(ast::ClassId {
+        module: id.module,
+        name,
+    })
 }
 
 fn desugar_qualified_expr(expr: ast::Expr, env: &QualEnv) -> Result<ast::Expr> {
@@ -6772,7 +6797,7 @@ fn desugar_qualified_predicate(p: ast::Predicate, env: &QualEnv) -> Result<ast::
         ast::Predicate::Eq(t) => ast::Predicate::Eq(desugar_qualified_type(t, env)?),
         ast::Predicate::EqRow(t) => ast::Predicate::EqRow(desugar_qualified_type(t, env)?),
         ast::Predicate::Class { class, ty } => ast::Predicate::Class {
-            class: desugar_qualified_ref(&class, env)?,
+            class: desugar_qualified_class_id(&class, env)?,
             ty: desugar_qualified_type(ty, env)?,
         },
         ast::Predicate::Lacks { label, row } => ast::Predicate::Lacks {
@@ -6791,6 +6816,45 @@ fn desugar_qualified_qual_type(qt: ast::QualType, env: &QualEnv) -> Result<ast::
             .collect::<Result<Vec<_>>>()?,
         ty: desugar_qualified_type(qt.ty, env)?,
     })
+}
+
+fn resolve_class_names_to_module_ids(
+    module: &mut ast::Module,
+    env: &QualEnv,
+    module_ids: &mut ModuleIdInterner,
+) {
+    fn resolve_class_id(id: &mut ast::ClassId, env: &QualEnv, module_ids: &mut ModuleIdInterner) {
+        let Some((qual, name)) = id.name.rsplit_once('.') else {
+            return;
+        };
+        let Some(canonical) = env.local_to_module.get(qual) else {
+            return;
+        };
+        id.module = module_ids.intern(canonical);
+        // Keep the canonical (unqualified) name for identity.
+        id.name = name.to_string();
+    }
+
+    for it in &mut module.items {
+        match it {
+            ast::Item::ClassDecl(c) => {
+                for p in &mut c.supers {
+                    if let ast::Predicate::Class { class, .. } = p {
+                        resolve_class_id(class, env, module_ids);
+                    }
+                }
+            }
+            ast::Item::InstanceDecl(inst) => {
+                for p in &mut inst.preds {
+                    if let ast::Predicate::Class { class, .. } = p {
+                        resolve_class_id(class, env, module_ids);
+                    }
+                }
+                resolve_class_id(&mut inst.class, env, module_ids);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn resolve_ctor_names_to_module_ids(
@@ -7050,6 +7114,7 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
                         .into_iter()
                         .map(|p| desugar_qualified_predicate(p, &env))
                         .collect::<Result<Vec<_>>>()?;
+                    inst.class = desugar_qualified_class_id(&inst.class, &env)?;
                     inst.ty = desugar_qualified_type(inst.ty, &env)?;
                     inst.methods = inst
                         .methods
@@ -7107,6 +7172,8 @@ impl ModuleLoader {
         self.sources.insert(path.to_path_buf(), src.clone());
         let mut m = parser::parse_module(&src)?;
         desugar_module_qualified_names(&mut m)?;
+        let env = module_qual_env(&m);
+        resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
         resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
 
         // Record definition sites for later diagnostics.
@@ -9341,14 +9408,28 @@ impl<'a> ApplyRewriteCtx<'a> {
 fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Option<Vec<String>> {
     use std::collections::{HashMap, VecDeque};
 
+    fn find_unique_class_id_by_name(class_env: &ClassEnv, name: &str) -> Option<ast::ClassId> {
+        let mut found: Option<ast::ClassId> = None;
+        for id in class_env.class_params.keys() {
+            if id.name == name {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(id.clone());
+            }
+        }
+        found
+    }
+
     if from == to {
         return None;
     }
 
-    let mut q: VecDeque<String> = VecDeque::new();
-    let mut prev: HashMap<String, String> = HashMap::new();
-    q.push_back(from.to_string());
-    prev.insert(from.to_string(), "".to_string());
+    let from_id = find_unique_class_id_by_name(class_env, from)?;
+
+    let mut q: VecDeque<ast::ClassId> = VecDeque::new();
+    let mut prev: HashMap<ast::ClassId, ast::ClassId> = HashMap::new();
+    q.push_back(from_id.clone());
 
     while let Some(c) = q.pop_front() {
         let Some(supers) = class_env.class_supers.get(&c) else {
@@ -9362,11 +9443,11 @@ fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Option<Vec<Str
                 continue;
             }
             prev.insert(sup.clone(), c.clone());
-            if sup == to {
+            if sup.name == to {
                 let mut path: Vec<String> = Vec::new();
-                let mut cur = to.to_string();
-                while cur != from {
-                    path.push(cur.clone());
+                let mut cur = sup.clone();
+                while cur != from_id {
+                    path.push(cur.name.clone());
                     cur = prev.get(&cur)?.clone();
                 }
                 path.reverse();
@@ -9458,17 +9539,17 @@ fn rewrite_class_method_var(
             return Err(Error::msg("internal: empty method class list"));
         };
 
-        let dict_var = format!("__dict_{class}");
+        let dict_var = format!("__dict_{}", class.name);
 
         let dict_expr: Option<ast::Expr> = if dicts_in_scope.contains(&dict_var) {
             Some(Expr::new(span, ExprKind::Var(dict_var.clone())))
-        } else if let Some(d) = known_dicts_in_scope.get(class) {
+        } else if let Some(d) = known_dicts_in_scope.get(&class.name) {
             Some(Expr::new(span, ExprKind::Var(d.clone())))
         } else {
             derive_dict_expr_from_candidates(
                 span,
                 class_env,
-                class,
+                &class.name,
                 dicts_in_scope,
                 known_dicts_in_scope,
             )
@@ -9575,12 +9656,24 @@ fn resolve_method_dict_expr(
 
     if class == "Monad" {
         for a in args {
-            if let Some(head) = monad_syntactic_head(a) {
-                let key = (class.to_string(), head);
-                if let Some(d) = ctx.class_env.instances.get(&key) {
-                    dict_name = Some(d.clone());
-                    break;
-                }
+            let Some(head) = monad_syntactic_head(a) else {
+                continue;
+            };
+
+            let Some(class_id) = ctx
+                .class_env
+                .class_params
+                .keys()
+                .find(|id| id.name == class)
+                .cloned()
+            else {
+                continue;
+            };
+
+            let key = (class_id, head);
+            if let Some(d) = ctx.class_env.instances.get(&key) {
+                dict_name = Some(d.clone());
+                break;
             }
         }
     }
@@ -9609,7 +9702,17 @@ fn resolve_method_dict_expr(
                 continue;
             };
 
-            let key = (class.to_string(), head);
+            let Some(class_id) = ctx
+                .class_env
+                .class_params
+                .keys()
+                .find(|id| id.name == class)
+                .cloned()
+            else {
+                continue;
+            };
+
+            let key = (class_id, head);
             if let Some(d) = ctx.class_env.instances.get(&key) {
                 dict_name = Some(d.clone());
                 break;
@@ -9722,11 +9825,11 @@ fn rewrite_class_method_apply(
             };
 
             if let Some((dict_expr, chosen_name_for_known)) =
-                resolve_method_dict_expr(ctx, class, mname, &args)?
+                resolve_method_dict_expr(ctx, &class.name, mname, &args)?
             {
                 let mut known = ctx.known_dicts_in_scope.clone();
                 if let Some(chosen) = chosen_name_for_known.clone() {
-                    known.insert(class.clone(), chosen);
+                    known.insert(class.name.clone(), chosen);
                 }
 
                 let new_args = rewrite_args_with_known(ctx, &known, args)?;
@@ -9734,7 +9837,7 @@ fn rewrite_class_method_apply(
             }
 
             // Polymorphic/ambiguous method application: keep it as a dictionary-taking function.
-            let dict_var = format!("__dict_{class}");
+            let dict_var = format!("__dict_{}", class.name);
             let mut scope = ctx.dicts_in_scope.clone();
             scope.insert(dict_var.clone());
 
@@ -10059,7 +10162,7 @@ fn collect_sorted_methods(class_env: &ClassEnv) -> Vec<(String, String)> {
         let Some(class) = classes.first() else {
             continue;
         };
-        methods.push((mname.clone(), class.clone()));
+        methods.push((mname.clone(), class.name.clone()));
     }
     methods.sort_by(|(a, ca), (b, cb)| (a, ca).cmp(&(b, cb)));
     methods

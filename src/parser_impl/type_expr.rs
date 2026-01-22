@@ -47,7 +47,7 @@ fn parse_predicate(ts: &mut TokenStream, stop: Stop) -> Result<ast::Predicate> {
             Ok(ast::Predicate::Lacks { label, row })
         }
         other => Ok(ast::Predicate::Class {
-            class: other.to_string(),
+            class: ast::ClassId::dummy(other.to_string()),
             ty: parse_type_expr(ts, stop, is_pred_end)?,
         }),
     }

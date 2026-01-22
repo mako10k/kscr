@@ -136,7 +136,7 @@ pub(super) fn hash_module_ast(module: &ast::Module) -> u64 {
             }
             Predicate::Class { class, ty } => {
                 4u8.hash(h);
-                hash_str(h, class);
+                hash_str(h, &class.name);
                 hash_type(h, ty);
             }
             Predicate::Lacks { label, row } => {
@@ -483,7 +483,7 @@ pub(super) fn hash_module_ast(module: &ast::Module) -> u64 {
                 for p in &i.preds {
                     hash_pred(&mut hasher, p);
                 }
-                hash_str(&mut hasher, &i.class);
+                hash_str(&mut hasher, &i.class.name);
                 hash_type(&mut hasher, &i.ty);
                 i.methods.len().hash(&mut hasher);
                 for b in &i.methods {
@@ -701,6 +701,7 @@ pub(super) fn load_ast_stdlib_cached(path: &Path) -> Result<Option<ast::Module>>
     let src = std::fs::read_to_string(path)?;
     let mut m = parser::parse_module(&src)?;
     super::desugar_module_qualified_names(&mut m)?;
+    // Stdlib cache does not have a ModuleLoader/ModuleIdInterner; keep ClassId.module as dummy.
 
     if let Ok(mut cache) = stdlib_ast_cache().lock() {
         cache.insert(

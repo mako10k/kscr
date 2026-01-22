@@ -197,7 +197,7 @@ instance (C a) => C (Maybe a) where
         })
         .expect("expected instance decl");
 
-    assert_eq!(inst.class, "C");
+    assert_eq!(inst.class.name, "C");
     assert_eq!(inst.preds.len(), 1);
 }
 
@@ -221,7 +221,7 @@ instance C a => C (Maybe a) where
         })
         .expect("expected instance decl");
 
-    assert_eq!(inst.class, "C");
+    assert_eq!(inst.class.name, "C");
     assert_eq!(inst.preds.len(), 1);
 }
 

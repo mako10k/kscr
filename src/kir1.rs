@@ -405,7 +405,7 @@ fn collect_strings_constraint(c: &Constraint, interner: &mut StringInterner) {
             collect_strings_ty(t, interner)
         }
         Constraint::Class { class, ty } => {
-            interner.intern(class);
+            interner.intern(&class.name);
             collect_strings_ty(ty, interner);
         }
         Constraint::Lacks { label, row } => {
@@ -518,7 +518,7 @@ fn encode_constraint(out: &mut Vec<u8>, c: &Constraint, interner: &StringInterne
             write_u8(out, 5);
             let id = interner
                 .index
-                .get(class)
+                .get(&class.name)
                 .copied()
                 .expect("constraint class name must be interned");
             write_varu32(out, id);
@@ -548,7 +548,10 @@ fn decode_constraint(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Re
             let class_id = read_varu32(input)?;
             let class = interner.get(class_id)?.to_string();
             let ty = decode_ty(input, interner)?;
-            Ok(Constraint::Class { class, ty })
+            Ok(Constraint::Class {
+                class: crate::ast::ClassId::dummy(class),
+                ty,
+            })
         }
         6 => {
             let label_id = read_varu32(input)?;
