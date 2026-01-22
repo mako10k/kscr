@@ -8256,19 +8256,30 @@ fn qualify_item(
     })
 }
 
-fn qualify_ctor_if_imported(name: String, ctor_map: &HashMap<String, String>) -> String {
+fn qualify_ctor_if_imported(
+    name: ast::ResolvedName,
+    ctor_map: &HashMap<String, String>,
+) -> ast::ResolvedName {
     // If a constructor name is unqualified (no dot) but it is exported by the imported
     // module, rewrite to the qualified ctor name. This is crucial for Haskell-like
     // `import qualified`, where unqualified names are not brought into scope.
-    if !name.contains('.') {
-        if let Some(q) = ctor_map.get(&name) {
-            if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                eprintln!("[KSCR_DEBUG_IMPORTS] qualify_ctor_if_imported: {name} -> {q}");
+    //
+    // Keep `ResolvedName::Resolved` as-is so we don't lose `ModuleId` information gathered
+    // during `load_ast`.
+    match name {
+        ast::ResolvedName::Unresolved(s) => {
+            if !s.contains('.') {
+                if let Some(q) = ctor_map.get(&s) {
+                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                        eprintln!("[KSCR_DEBUG_IMPORTS] qualify_ctor_if_imported: {s} -> {q}");
+                    }
+                    return ast::ResolvedName::unresolved(q.clone());
+                }
             }
-            return q.clone();
+            ast::ResolvedName::Unresolved(s)
         }
+        ast::ResolvedName::Resolved { .. } => name,
     }
-    name
 }
 
 fn qualify_expr_boxed(
@@ -8331,8 +8342,8 @@ fn qualify_expr(
     Ok(match expr.kind {
         ExprKind::Var(n) => Expr::new(span, ExprKind::Var(val_map.get(&n).cloned().unwrap_or(n))),
         ExprKind::Ctor(n) => {
-            let new_n = qualify_ctor_if_imported(n.qualified_text(), ctor_map);
-            Expr::new(span, ExprKind::Ctor(ast::ResolvedName::unresolved(new_n)))
+            let new_n = qualify_ctor_if_imported(n, ctor_map);
+            Expr::new(span, ExprKind::Ctor(new_n))
         }
         ExprKind::Lambda { params, body } => Expr::new(
             span,
@@ -8615,10 +8626,7 @@ fn qualify_pat_nonbinders(
         PatternKind::Constructor { name, args } => Pattern::new(
             span,
             PatternKind::Constructor {
-                name: ast::ResolvedName::unresolved(qualify_ctor_if_imported(
-                    name.qualified_text(),
-                    ctor_map,
-                )),
+                name: qualify_ctor_if_imported(name, ctor_map),
                 args: args
                     .into_iter()
                     .map(|p| qualify_pat_nonbinders(p, ctor_map, val_map, type_map))
