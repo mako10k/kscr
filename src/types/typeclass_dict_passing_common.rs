@@ -23,7 +23,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
             .constraints
             .iter()
             .filter_map(|c| match c {
-                Constraint::Class { class, .. } => Some(class.clone()),
+                Constraint::Class { class, .. } => Some(class.name.clone()),
                 _ => None,
             })
             .collect();
@@ -114,14 +114,28 @@ pub(super) fn super_field_name(class: &str) -> String {
 pub(super) fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Option<Vec<String>> {
     use std::collections::{HashMap, VecDeque};
 
+    fn find_unique_class_id_by_name(class_env: &ClassEnv, name: &str) -> Option<ast::ClassId> {
+        let mut found: Option<ast::ClassId> = None;
+        for id in class_env.class_params.keys() {
+            if id.name == name {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(id.clone());
+            }
+        }
+        found
+    }
+
     if from == to {
         return None;
     }
 
-    let mut q: VecDeque<String> = VecDeque::new();
-    let mut prev: HashMap<String, String> = HashMap::new();
-    q.push_back(from.to_string());
-    prev.insert(from.to_string(), "".to_string());
+    let from_id = find_unique_class_id_by_name(class_env, from)?;
+
+    let mut q: VecDeque<ast::ClassId> = VecDeque::new();
+    let mut prev: HashMap<ast::ClassId, ast::ClassId> = HashMap::new();
+    q.push_back(from_id.clone());
 
     while let Some(c) = q.pop_front() {
         let Some(supers) = class_env.class_supers.get(&c) else {
@@ -136,12 +150,12 @@ pub(super) fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Opt
                 continue;
             }
             prev.insert(sup.clone(), c.clone());
-            if sup == to {
+            if sup.name == to {
                 // Reconstruct path: from -> ... -> to
                 let mut path: Vec<String> = Vec::new();
-                let mut cur = to.to_string();
-                while cur != from {
-                    path.push(cur.clone());
+                let mut cur = sup.clone();
+                while cur != from_id {
+                    path.push(cur.name.clone());
                     cur = prev.get(&cur)?.clone();
                 }
                 path.reverse();
@@ -311,7 +325,9 @@ fn required_classes_in_var(
         insert_all(out, classes);
     }
     if let Some(classes) = class_env.method_classes.get(name) {
-        insert_all(out, classes);
+        for c in classes {
+            out.insert(c.name.clone());
+        }
     }
 }
 
@@ -332,7 +348,7 @@ fn required_classes_in_apply(
         if let Some(arg0) = args.first() {
             if !is_syntactically_ground_value(arg0) {
                 if let Some(c) = classes.first() {
-                    out.insert(c.clone());
+                    out.insert(c.name.clone());
                 }
             }
         }
@@ -396,16 +412,25 @@ pub(super) fn pick_instance_dict_expr_from_scope(
 
     if ftv_ty(ty).is_empty() {
         if let Ok(head) = instance_head_key_ty(ty) {
-            let key = (class.to_string(), head);
-            if let Some(d) = class_env.instances.get(&key).cloned() {
-                return Ok(Some(Expr::new(span, ExprKind::Var(d))));
+            // Stage 2: instances are keyed by ClassId, but dict passing currently selects by
+            // unqualified class name (compatible with existing stdlib dict names).
+            if let Some(class_id) = class_env
+                .class_params
+                .keys()
+                .find(|id| id.name == class)
+                .cloned()
+            {
+                let key = (class_id, head);
+                if let Some(d) = class_env.instances.get(&key).cloned() {
+                    return Ok(Some(Expr::new(span, ExprKind::Var(d))));
+                }
             }
         }
     }
 
     let mut candidates: Vec<&PolyInstance> = Vec::new();
     for pi in &class_env.poly_instances {
-        if pi.class != class {
+        if pi.class.name != class {
             continue;
         }
 
@@ -526,7 +551,7 @@ pub(super) fn call_info_for_call(
         let Constraint::Class { class, ty } = c else {
             continue;
         };
-        class_tys.insert(class, apply(&subst, ty));
+        class_tys.insert(class.name, apply(&subst, ty));
     }
 
     Some(CallInfo {

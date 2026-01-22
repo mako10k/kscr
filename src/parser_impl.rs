@@ -805,7 +805,7 @@ fn parse_instance_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     }
 
     // Allow qualified class name in instance head: `instance M.C T where ...`.
-    let class = parse_maybe_qualified_ident(ts)?;
+    let class = ast::ClassId::dummy(parse_maybe_qualified_ident(ts)?);
     let ty = parse_type_expr(ts, Stop::LineEnd, is_type_end)?;
     ts.expect(TokenKind::KwWhere)?;
     ts.consume_line_end();

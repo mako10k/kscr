@@ -12,12 +12,24 @@ pub struct ModuleId(pub u32);
 
 /// Internal typeclass identity.
 ///
-/// Stage 2 prep: keep this unused for now; later we will replace `class: String` references
-/// in predicates/instances with `ClassId`.
+/// Stage 2: class references in predicates/instances use `ClassId`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClassId {
     pub module: ModuleId,
     pub name: String,
+}
+
+impl ClassId {
+    /// Create a placeholder class id.
+    ///
+    /// During parsing/desugaring, `module` may still be unresolved; later passes can
+    /// resolve it using import qualifiers.
+    pub fn dummy(name: impl Into<String>) -> Self {
+        Self {
+            module: ModuleId(0),
+            name: name.into(),
+        }
+    }
 }
 
 /// A name that can be either syntactic (unresolved) or resolved to a module.
@@ -101,7 +113,7 @@ pub struct ClassMethodSig {
 pub struct InstanceDecl {
     /// Instance context constraints (Haskell-style): `instance (C a, D a) => E (F a) where ...`.
     pub preds: Vec<Predicate>,
-    pub class: String,
+    pub class: ClassId,
     pub ty: Type,
     /// Method bindings inside the instance.
     pub methods: Vec<Binding>,
@@ -332,7 +344,7 @@ pub enum Predicate {
     EqRow(Type),
     /// User-defined typeclass constraint: `C t`.
     Class {
-        class: String,
+        class: ClassId,
         ty: Type,
     },
     Lacks {
