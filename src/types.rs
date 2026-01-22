@@ -5568,6 +5568,7 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
         def_sites: DefSiteIndex::default(),
+        module_ids: ModuleIdInterner::default(),
     };
 
     // Load via ModuleLoader so stdlib cache + qualified-name desugaring stays consistent.
@@ -6156,6 +6157,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
         def_sites: DefSiteIndex::default(),
+        module_ids: ModuleIdInterner::default(),
     };
 
     let t_scan = std::time::Instant::now();
@@ -6241,6 +6243,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
         emitted_qualified: HashSet::new(),
         emitted_unqualified: HashSet::new(),
         def_sites: DefSiteIndex::default(),
+        module_ids: ModuleIdInterner::default(),
     };
 
     let mut injected: Vec<ast::Item> = Vec::new();
@@ -6371,6 +6374,25 @@ struct ImportQualKey {
     qual: String,
 }
 
+#[derive(Debug, Default, Clone)]
+struct ModuleIdInterner {
+    by_canonical_name: HashMap<String, ast::ModuleId>,
+    next: u32,
+}
+
+impl ModuleIdInterner {
+    fn intern(&mut self, canonical_module: &str) -> ast::ModuleId {
+        if let Some(id) = self.by_canonical_name.get(canonical_module) {
+            return *id;
+        }
+        let id = ast::ModuleId(self.next);
+        self.next += 1;
+        self.by_canonical_name
+            .insert(canonical_module.to_string(), id);
+        id
+    }
+}
+
 struct ModuleLoader {
     cache: HashMap<PathBuf, ast::Module>,
     sources: HashMap<PathBuf, String>,
@@ -6378,6 +6400,7 @@ struct ModuleLoader {
     emitted_qualified: HashSet<ImportQualKey>,
     emitted_unqualified: HashSet<ImportQualKey>,
     def_sites: DefSiteIndex,
+    module_ids: ModuleIdInterner,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -6721,6 +6744,226 @@ fn desugar_qualified_qual_type(qt: ast::QualType, env: &QualEnv) -> Result<ast::
     })
 }
 
+fn resolve_ctor_names_to_module_ids(
+    module: &mut ast::Module,
+    module_ids: &mut ModuleIdInterner,
+) -> Result<()> {
+    fn resolve_name(
+        n: ast::ResolvedName,
+        env: &QualEnv,
+        module_ids: &mut ModuleIdInterner,
+    ) -> ast::ResolvedName {
+        let ast::ResolvedName::Unresolved(s) = n else {
+            return n;
+        };
+        let Some((qual, name)) = s.rsplit_once('.') else {
+            return ast::ResolvedName::Unresolved(s);
+        };
+        let Some(canonical) = env.local_to_module.get(qual) else {
+            // Unknown qualifier: keep syntactic name.
+            return ast::ResolvedName::Unresolved(s);
+        };
+        let id = module_ids.intern(canonical);
+        ast::ResolvedName::Resolved {
+            module: id,
+            // Keep the *local* qualifier for printing/diagnostics.
+            module_name: qual.to_string(),
+            name: name.to_string(),
+        }
+    }
+
+    fn go_expr(e: ast::Expr, env: &QualEnv, module_ids: &mut ModuleIdInterner) -> ast::Expr {
+        use ast::ExprKind;
+        let span = e.span;
+        let kind = match e.kind {
+            ExprKind::Ctor(n) => ExprKind::Ctor(resolve_name(n, env, module_ids)),
+            ExprKind::Lambda { params, body } => ExprKind::Lambda {
+                params,
+                body: Box::new(go_expr(*body, env, module_ids)),
+            },
+            ExprKind::Apply { func, args } => ExprKind::Apply {
+                func: Box::new(go_expr(*func, env, module_ids)),
+                args: args
+                    .into_iter()
+                    .map(|x| go_expr(x, env, module_ids))
+                    .collect(),
+            },
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => ExprKind::If {
+                cond: Box::new(go_expr(*cond, env, module_ids)),
+                then_branch: Box::new(go_expr(*then_branch, env, module_ids)),
+                else_branch: Box::new(go_expr(*else_branch, env, module_ids)),
+            },
+            ExprKind::Let { bindings, body } => ExprKind::Let {
+                bindings: bindings
+                    .into_iter()
+                    .map(|b| ast::Binding {
+                        doc: b.doc,
+                        pat: go_pat(b.pat, env, module_ids),
+                        expr: go_expr(b.expr, env, module_ids),
+                        span: b.span,
+                    })
+                    .collect(),
+                body: Box::new(go_expr(*body, env, module_ids)),
+            },
+            ExprKind::Where { expr, bindings } => ExprKind::Where {
+                expr: Box::new(go_expr(*expr, env, module_ids)),
+                bindings: bindings
+                    .into_iter()
+                    .map(|b| ast::Binding {
+                        doc: b.doc,
+                        pat: go_pat(b.pat, env, module_ids),
+                        expr: go_expr(b.expr, env, module_ids),
+                        span: b.span,
+                    })
+                    .collect(),
+            },
+            ExprKind::Annot { expr, ty } => ExprKind::Annot {
+                expr: Box::new(go_expr(*expr, env, module_ids)),
+                ty,
+            },
+            ExprKind::Do(stmts) => ExprKind::Do(
+                stmts
+                    .into_iter()
+                    .map(|s| match s {
+                        ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
+                            pat: go_pat(pat, env, module_ids),
+                            expr: go_expr(expr, env, module_ids),
+                        },
+                        ast::DoStmt::Expr(x) => ast::DoStmt::Expr(go_expr(x, env, module_ids)),
+                    })
+                    .collect(),
+            ),
+            ExprKind::Case { expr, arms } => ExprKind::Case {
+                expr: Box::new(go_expr(*expr, env, module_ids)),
+                arms: arms
+                    .into_iter()
+                    .map(|a| ast::CaseArm {
+                        pat: go_pat(a.pat, env, module_ids),
+                        guard: a.guard.map(|g| go_expr(g, env, module_ids)),
+                        body: go_expr(a.body, env, module_ids),
+                    })
+                    .collect(),
+            },
+            ExprKind::Cons { head, tail } => ExprKind::Cons {
+                head: Box::new(go_expr(*head, env, module_ids)),
+                tail: Box::new(go_expr(*tail, env, module_ids)),
+            },
+            ExprKind::List(es) => ExprKind::List(
+                es.into_iter()
+                    .map(|x| go_expr(x, env, module_ids))
+                    .collect(),
+            ),
+            ExprKind::Tuple(es) => ExprKind::Tuple(
+                es.into_iter()
+                    .map(|x| go_expr(x, env, module_ids))
+                    .collect(),
+            ),
+            ExprKind::Record(fs) => ExprKind::Record(
+                fs.into_iter()
+                    .map(|(l, x)| (l, go_expr(x, env, module_ids)))
+                    .collect(),
+            ),
+            other => other,
+        };
+        ast::Expr::new(span, kind)
+    }
+
+    fn go_pat(p: ast::Pattern, env: &QualEnv, module_ids: &mut ModuleIdInterner) -> ast::Pattern {
+        use ast::PatternKind;
+        let span = p.span;
+        let kind = match p.kind {
+            PatternKind::Tuple(ps) => {
+                PatternKind::Tuple(ps.into_iter().map(|x| go_pat(x, env, module_ids)).collect())
+            }
+            PatternKind::List(ps) => {
+                PatternKind::List(ps.into_iter().map(|x| go_pat(x, env, module_ids)).collect())
+            }
+            PatternKind::Record(fs) => PatternKind::Record(
+                fs.into_iter()
+                    .map(|(l, x)| (l, go_pat(x, env, module_ids)))
+                    .collect(),
+            ),
+            PatternKind::RecordLoose(fs, rest) => PatternKind::RecordLoose(
+                fs.into_iter()
+                    .map(|(l, x)| (l, go_pat(x, env, module_ids)))
+                    .collect(),
+                rest,
+            ),
+            PatternKind::Cons(a, b) => PatternKind::Cons(
+                Box::new(go_pat(*a, env, module_ids)),
+                Box::new(go_pat(*b, env, module_ids)),
+            ),
+            PatternKind::Or(a, b) => PatternKind::Or(
+                Box::new(go_pat(*a, env, module_ids)),
+                Box::new(go_pat(*b, env, module_ids)),
+            ),
+            PatternKind::View(pat, e) => PatternKind::View(
+                Box::new(go_pat(*pat, env, module_ids)),
+                Box::new(go_expr(*e, env, module_ids)),
+            ),
+            PatternKind::Constructor { name, args } => PatternKind::Constructor {
+                name: resolve_name(name, env, module_ids),
+                args: args
+                    .into_iter()
+                    .map(|x| go_pat(x, env, module_ids))
+                    .collect(),
+            },
+            PatternKind::Literal(e) => PatternKind::Literal(go_expr(e, env, module_ids)),
+            other => other,
+        };
+        ast::Pattern::new(span, kind)
+    }
+
+    let env = module_qual_env(module);
+
+    module.items = module
+        .items
+        .clone()
+        .into_iter()
+        .map(|it| match it {
+            ast::Item::Binding(b) => ast::Item::Binding(ast::Binding {
+                doc: b.doc,
+                pat: go_pat(b.pat, &env, module_ids),
+                expr: go_expr(b.expr, &env, module_ids),
+                span: b.span,
+            }),
+            ast::Item::ClassDecl(mut c) => {
+                c.default_methods = c
+                    .default_methods
+                    .into_iter()
+                    .map(|b| ast::Binding {
+                        doc: b.doc,
+                        pat: go_pat(b.pat, &env, module_ids),
+                        expr: go_expr(b.expr, &env, module_ids),
+                        span: b.span,
+                    })
+                    .collect();
+                ast::Item::ClassDecl(c)
+            }
+            ast::Item::InstanceDecl(mut inst) => {
+                inst.methods = inst
+                    .methods
+                    .into_iter()
+                    .map(|b| ast::Binding {
+                        doc: b.doc,
+                        pat: go_pat(b.pat, &env, module_ids),
+                        expr: go_expr(b.expr, &env, module_ids),
+                        span: b.span,
+                    })
+                    .collect();
+                ast::Item::InstanceDecl(inst)
+            }
+            other => other,
+        })
+        .collect();
+
+    Ok(())
+}
+
 fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
     let env = module_qual_env(module);
 
@@ -6815,6 +7058,7 @@ impl ModuleLoader {
         self.sources.insert(path.to_path_buf(), src.clone());
         let mut m = parser::parse_module(&src)?;
         desugar_module_qualified_names(&mut m)?;
+        resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
 
         // Record definition sites for later diagnostics.
         // These spans are file-local offsets; path is canonical.
