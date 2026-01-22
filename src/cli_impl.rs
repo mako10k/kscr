@@ -129,18 +129,16 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
             Ok(())
         }
         "repl" => repl(),
-        "--install-stdlib" | "install-stdlib" => {
-            match types::install_embedded_stdlib() {
-                Ok(p) => {
-                    println!("stdlib installed to: {}", p.display());
-                    Ok(())
-                }
-                Err(e) => Err(crate::error::Error::msg(format!(
-                    "failed to install embedded stdlib: {}",
-                    e
-                ))),
+        "--install-stdlib" | "install-stdlib" => match types::install_embedded_stdlib() {
+            Ok(p) => {
+                println!("stdlib installed to: {}", p.display());
+                Ok(())
             }
-        }
+            Err(e) => Err(crate::error::Error::msg(format!(
+                "failed to install embedded stdlib: {}",
+                e
+            ))),
+        },
         "llvm-ir" => crate::cli::cli_llvm_ir::cmd_llvm_ir(args),
         "compile" => crate::cli::cli_compile::cmd_compile(args),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),

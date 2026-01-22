@@ -7171,7 +7171,13 @@ fn import_qualified_items_for_decl(
     // NOTE: we must also qualify *types inside* these declarations (instance heads, method
     // signatures, superclass predicates) so that instance resolution matches the qualified type
     // constructors introduced by imports (e.g. `Prelude.Maybe`).
-    out.extend(qualify_class_instance_decls(module, qual, exports)?);
+    //
+    // If the same module is imported multiple times under different qualifiers (e.g.
+    // `import Prelude` and `import qualified Prelude as P`), we must not duplicate class/instance
+    // decls; they are global and would trip `desugar_typeclasses` with "duplicate class".
+    if qual == module.name.as_deref().unwrap_or("") {
+        out.extend(qualify_class_instance_decls(module, qual, exports)?);
+    }
     Ok(out)
 }
 
