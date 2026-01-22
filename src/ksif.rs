@@ -320,11 +320,7 @@ impl ModuleShape {
                 }
                 crate::ast::Item::Import(imp) => {
                     // Track dependencies from imports
-                    if !shape
-                        .dependencies
-                        .iter()
-                        .any(|d| d.name == imp.module)
-                    {
+                    if !shape.dependencies.iter().any(|d| d.name == imp.module) {
                         shape.dependencies.push(DependencySpec {
                             name: imp.module.clone(),
                             version_req: "*".to_string(), // Default: any version
@@ -485,7 +481,9 @@ pub fn detect_collision(
 
     // Check if all candidates have the same salt
     let first_salt = &candidates[0].1.header.salt;
-    let all_match = candidates.iter().all(|(_, shape)| &shape.header.salt == first_salt);
+    let all_match = candidates
+        .iter()
+        .all(|(_, shape)| &shape.header.salt == first_salt);
 
     if all_match {
         // All candidates have identical salt - this is acceptable duplication
