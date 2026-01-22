@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
+use std::fs;
+use include_dir::{include_dir, Dir, DirEntry};
+use dirs;
 
 #[derive(Clone)]
 struct CachedAst {
@@ -19,6 +22,8 @@ struct CachedModuleTypecheck {
 static STDLIB_AST_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedAst>>> = OnceLock::new();
 static MODULE_TYPECHECK_CACHE: OnceLock<Mutex<HashMap<u64, CachedModuleTypecheck>>> =
     OnceLock::new();
+
+static EMBED_STDLIB: Dir<'_> = include_dir!("stdlib");
 
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub(super) fn hash_module_ast(module: &ast::Module) -> u64 {
@@ -546,6 +551,65 @@ fn stdlib_root_override() -> Option<PathBuf> {
 
 static STDLIB_ROOT_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
+fn extract_embedded_to(dest: &Path) -> std::io::Result<()> {
+    for entry in EMBED_STDLIB.entries() {
+        match entry {
+            DirEntry::Dir(d) => {
+                let dir_path = dest.join(d.path());
+                fs::create_dir_all(&dir_path)?;
+                // Recurse into sub-entries
+                for sub in d.entries() {
+                    match sub {
+                        DirEntry::Dir(sd) => {
+                            let sub_dir = dest.join(sd.path());
+                            fs::create_dir_all(&sub_dir)?;
+                        }
+                        DirEntry::File(f) => {
+                            let path = dest.join(f.path());
+                            if let Some(parent) = path.parent() {
+                                fs::create_dir_all(parent)?;
+                            }
+                            fs::write(path, f.contents())?;
+                        }
+                    }
+                }
+            }
+            DirEntry::File(f) => {
+                let path = dest.join(f.path());
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, f.contents())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn install_embedded_stdlib() -> Result<PathBuf> {
+    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    let dest = base.join("kscr").join("stdlib");
+
+    if is_valid_stdlib_root(&dest) {
+        return Ok(dest);
+    }
+
+    if let Err(e) = extract_embedded_to(&dest) {
+        return Err(crate::error::Error::msg(format!(
+            "failed to extract embedded stdlib: {}",
+            e
+        )));
+    }
+
+    if is_valid_stdlib_root(&dest) {
+        Ok(dest)
+    } else {
+        Err(crate::error::Error::msg(
+            "embedded stdlib extraction did not produce a valid stdlib".to_string(),
+        ))
+    }
+}
+
 fn resolve_stdlib_root() -> Result<PathBuf> {
     let mut tried: Vec<PathBuf> = Vec::new();
 
@@ -582,6 +646,14 @@ fn resolve_stdlib_root() -> Result<PathBuf> {
     // 4) (dev/test only) CARGO_MANIFEST_DIR/stdlib
     if cfg!(any(test, debug_assertions)) {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+        tried.push(p.clone());
+        if is_valid_stdlib_root(&p) {
+            return Ok(p);
+        }
+    }
+
+    // 5) Embedded stdlib: extract to user data dir (e.g. $XDG_DATA_HOME/kscr/stdlib)
+    if let Ok(p) = install_embedded_stdlib() {
         tried.push(p.clone());
         if is_valid_stdlib_root(&p) {
             return Ok(p);
