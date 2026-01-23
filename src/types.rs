@@ -6438,10 +6438,22 @@ struct ImportQualKey {
     qual: String,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct ModuleIdInterner {
     by_canonical_name: HashMap<String, ast::ModuleId>,
+    /// Next fresh module id.
+    ///
+    /// `ModuleId(0)` is reserved as a dummy/unresolved sentinel.
     next: u32,
+}
+
+impl Default for ModuleIdInterner {
+    fn default() -> Self {
+        Self {
+            by_canonical_name: HashMap::new(),
+            next: 1,
+        }
+    }
 }
 
 impl ModuleIdInterner {
