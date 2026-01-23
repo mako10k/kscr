@@ -10389,7 +10389,7 @@ fn create_method_bindings(
             .find(|(cid, _)| cid.name == class)
         else {
             eprintln!(
-                "[WARN] inject_class_method_value_bindings: no ClassId found for class {}",
+                "[WARN] create_method_bindings: no ClassId found for class {}",
                 class
             );
             continue;
@@ -10398,7 +10398,7 @@ fn create_method_bindings(
         let dict_key = (class_id.clone(), "Integer".to_string());
         let Some(inst_name) = class_env.instances.get(&dict_key).cloned() else {
             eprintln!(
-                "[WARN] inject_class_method_value_bindings: no instance dict for Enum Integer"
+                "[WARN] create_method_bindings: no instance dict for Enum Integer"
             );
             continue;
         };
