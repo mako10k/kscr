@@ -10606,9 +10606,7 @@ fn create_method_bindings(
 
         let dict_key = (class_id.clone(), "Integer".to_string());
         let Some(inst_name) = class_env.instances.get(&dict_key).cloned() else {
-            eprintln!(
-                "[WARN] create_method_bindings: no instance dict for Enum Integer"
-            );
+            eprintln!("[WARN] create_method_bindings: no instance dict for Enum Integer");
             continue;
         };
 
