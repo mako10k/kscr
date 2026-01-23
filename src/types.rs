@@ -10382,8 +10382,20 @@ fn create_method_bindings(
         }
 
         // Look up the instance dict name for Enum Integer
-        let class_id = ast::ClassId::dummy(class.clone());
-        let dict_key = (class_id, "Integer".to_string());
+        // Use the real ClassId from class_env instead of a dummy with ModuleId(0).
+        let Some((class_id, _)) = class_env
+            .class_params
+            .iter()
+            .find(|(cid, _)| cid.name == class)
+        else {
+            eprintln!(
+                "[WARN] inject_class_method_value_bindings: no ClassId found for class {}",
+                class
+            );
+            continue;
+        };
+
+        let dict_key = (class_id.clone(), "Integer".to_string());
         let Some(inst_name) = class_env.instances.get(&dict_key).cloned() else {
             eprintln!(
                 "[WARN] inject_class_method_value_bindings: no instance dict for Enum Integer"
