@@ -137,10 +137,6 @@ impl ExportTable {
         self.entries.extend(names);
     }
 
-    fn get(&self, name: &str) -> Option<SymbolKind> {
-        self.entries.get(name).copied()
-    }
-
     /// Derive the old HashSet<String> view for backward compatibility.
     pub fn as_name_set(&self) -> HashSet<String> {
         self.entries.keys().cloned().collect()
@@ -3244,7 +3240,9 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
     };
 
     // First canonicalize class references inside the module.
-    canonicalize_class_names_in_module(module)?;
+    // Use both import-based and def_module-based canonicalization to handle both
+    // user-defined classes and imported/injected stdlib classes.
+    canonicalize_class_names_in_module_combined(module)?;
 
     // Then collect class decls with canonical ids.
     let (class_method_names, class_default_methods) = collect_class_decls(module, &mut env)?;
@@ -3301,11 +3299,13 @@ fn module_imported_exports(
     Ok(Some((imported, exports)))
 }
 
-fn canonicalize_class_names_in_module(module: &mut ast::Module) -> Result<()> {
-    // Convert unqualified class references (e.g. `Functor`) into canonical `Module.Class`
-    // when the module imports a class of that name.
+fn canonicalize_class_names_in_module_combined(module: &mut ast::Module) -> Result<()> {
+    // Combined canonicalization: use both imports and def_module fields.
+    // This handles both user-defined classes (from imports) and stdlib classes
+    // that were flattened/injected (with def_module set).
     let mut class_origin: HashMap<String, String> = HashMap::new();
 
+    // First, gather class origins from imports (for user-defined classes).
     for it in &module.items {
         let ast::Item::Import(id) = it else {
             continue;
@@ -3323,6 +3323,43 @@ fn canonicalize_class_names_in_module(module: &mut ast::Module) -> Result<()> {
         }
     }
 
+    // Second, gather class origins from def_module fields (for stdlib/flattened classes).
+    for it in &module.items {
+        if let ast::Item::ClassDecl(c) = it {
+            if let Some(ref def_mod) = c.def_module {
+                class_origin
+                    .entry(c.name.clone())
+                    .or_insert_with(|| def_mod.clone());
+            }
+        }
+    }
+
+    canonicalize_class_refs_in_module(module, &class_origin);
+    Ok(())
+}
+
+fn canonicalize_class_names_in_merged_stdlib(module: &mut ast::Module) {
+    // For a merged stdlib module (no imports, just all class/instance decls),
+    // build class_origin from def_module fields of ClassDecls.
+    let mut class_origin: HashMap<String, String> = HashMap::new();
+
+    for it in &module.items {
+        if let ast::Item::ClassDecl(c) = it {
+            if let Some(ref def_mod) = c.def_module {
+                class_origin
+                    .entry(c.name.clone())
+                    .or_insert_with(|| def_mod.clone());
+            }
+        }
+    }
+
+    canonicalize_class_refs_in_module(module, &class_origin);
+}
+
+fn canonicalize_class_refs_in_module(
+    module: &mut ast::Module,
+    class_origin: &HashMap<String, String>,
+) {
     fn qualify_class_id(id: &mut ast::ClassId, class_origin: &HashMap<String, String>) {
         if id.name.contains('.') {
             return;
@@ -3337,23 +3374,21 @@ fn canonicalize_class_names_in_module(module: &mut ast::Module) -> Result<()> {
             ast::Item::ClassDecl(c) => {
                 for p in &mut c.supers {
                     if let ast::Predicate::Class { class, .. } = p {
-                        qualify_class_id(class, &class_origin);
+                        qualify_class_id(class, class_origin);
                     }
                 }
             }
             ast::Item::InstanceDecl(inst) => {
                 for p in &mut inst.preds {
                     if let ast::Predicate::Class { class, .. } = p {
-                        qualify_class_id(class, &class_origin);
+                        qualify_class_id(class, class_origin);
                     }
                 }
-                qualify_class_id(&mut inst.class, &class_origin);
+                qualify_class_id(&mut inst.class, class_origin);
             }
             _ => {}
         }
     }
-
-    Ok(())
 }
 
 type ClassDeclInfo = (
@@ -3373,7 +3408,13 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
             continue;
         };
 
-        let class_id = ast::ClassId::dummy(c.name.clone());
+        // Use canonical class name: def_module.name if available, else just name.
+        let class_name = if let Some(ref m) = c.def_module {
+            format!("{}.{}", m, c.name)
+        } else {
+            c.name.clone()
+        };
+        let class_id = ast::ClassId::dummy(class_name);
 
         if env.class_params.contains_key(&class_id) {
             return Err(Error::msg("duplicate class"));
@@ -6115,6 +6156,7 @@ fn inject_stdlib_class_decls(module: &mut ast::Module) -> Result<()> {
     merged.append(&mut injected);
     merged.append(&mut module.items);
     module.items = merged;
+    
     Ok(())
 }
 
@@ -6191,7 +6233,7 @@ fn typecheck_internal_core_with_entry_path(
 
         // If `Monad` is available, desugar `do`-notation into `(>>=)` / `(>>)`. This allows `do` to
         // work for non-IO monads (via type classes).
-        if class_env.class_params.keys().any(|c| c.name == "Monad") {
+        if class_env.class_params.keys().any(|c| c.name == "Monad" || c.name.ends_with(".Monad")) {
             desugar_do_to_monad_ops_in_module(&mut module)?;
         }
 
@@ -6348,6 +6390,9 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         );
     }
 
+    // Canonicalize class references in superclasses and instance heads using def_module.
+    canonicalize_class_names_in_merged_stdlib(&mut m);
+
     let t_desugar = std::time::Instant::now();
     let env = desugar_typeclasses(&mut m)
         .map_err(|e| e.with_context("while desugaring stdlib typeclasses"))?;
@@ -6402,7 +6447,11 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
         module_ids: ModuleIdInterner::default(),
     };
 
-    let mut injected: Vec<ast::Item> = Vec::new();
+    // Collect all class decls into a temporary merged module.
+    let mut merged = ast::Module {
+        name: Some("<stdlib-classes>".to_string()),
+        items: Vec::new(),
+    };
     let mut seen: HashSet<String> = HashSet::new();
 
     let mut stack: Vec<PathBuf> = vec![stdlib];
@@ -6421,15 +6470,19 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
             let parsed = loader.load_ast(&path).map_err(|e| {
                 e.with_context(format!("while loading stdlib module {}", path.display()))
             })?;
+            
             for it in parsed.items {
                 if let ast::Item::ClassDecl(c) = &it {
                     if seen.insert(c.name.clone()) {
-                        injected.push(it);
+                        merged.items.push(it);
                     }
                 }
             }
         }
     }
+
+    // Canonicalize class names in the merged module using def_module fields.
+    canonicalize_class_names_in_merged_stdlib(&mut merged);
 
     if timing {
         eprintln!(
@@ -6438,7 +6491,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
         );
     }
 
-    Ok(injected)
+    Ok(merged.items)
 }
 
 fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
@@ -6560,21 +6613,6 @@ impl ModuleIdInterner {
         self.by_canonical_name
             .insert(canonical_module.to_string(), id);
         id
-    }
-
-    /// Get the canonical module name for a given ModuleId.
-    ///
-    /// Returns None if the ModuleId was not created by this interner.
-    fn get_canonical_name(&self, id: ast::ModuleId) -> Option<&str> {
-        self.by_canonical_name
-            .iter()
-            .find(|(_, &mid)| mid == id)
-            .map(|(name, _)| name.as_str())
-    }
-
-    /// Check if a canonical module name has been interned.
-    fn contains(&self, canonical_module: &str) -> bool {
-        self.by_canonical_name.contains_key(canonical_module)
     }
 }
 
@@ -7287,6 +7325,18 @@ impl ModuleLoader {
         }
         if let Some(mut m) = stdlib_cache::load_ast_stdlib_cached(path)? {
             // stdlib_cache does not have access to ModuleIdInterner; resolve module IDs here.
+            
+            // Populate def_module for ClassDecls if not already set.
+            if let Some(module_name) = &m.name {
+                for it in &mut m.items {
+                    if let ast::Item::ClassDecl(c) = it {
+                        if c.def_module.is_none() {
+                            c.def_module = Some(module_name.clone());
+                        }
+                    }
+                }
+            }
+            
             let env = module_qual_env(&m);
             resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
             resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
@@ -7298,6 +7348,16 @@ impl ModuleLoader {
         self.sources.insert(path.to_path_buf(), src.clone());
         let mut m = parser::parse_module(&src)?;
         desugar_module_qualified_names(&mut m)?;
+        
+        // Populate def_module for all ClassDecls with the module's name.
+        if let Some(module_name) = &m.name {
+            for it in &mut m.items {
+                if let ast::Item::ClassDecl(c) = it {
+                    c.def_module = Some(module_name.clone());
+                }
+            }
+        }
+        
         let env = module_qual_env(&m);
         resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
         resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
@@ -9488,7 +9548,10 @@ impl<'a> RewriteClassMethodCallsCtx<'a> {
 fn instance_head_key_ty_for_class(class: &str, ty: &Ty) -> Result<String> {
     // MVP: higher-kinded classes select instances by the type constructor head.
     // e.g. `Functor` instance is declared for `Maybe`, but call sites see `Maybe a`.
-    if class == "Monad" || class == "Applicative" || class == "Functor" {
+    let is_hk_class = class == "Monad" || class.ends_with(".Monad")
+        || class == "Applicative" || class.ends_with(".Applicative")
+        || class == "Functor" || class.ends_with(".Functor");
+    if is_hk_class {
         return Ok(match ty {
             Ty::Con(name) => name.clone(),
             Ty::App { head, .. } => match head.as_ref() {
@@ -9780,7 +9843,8 @@ fn resolve_method_dict_expr(
     let mut first_missing_instance: Option<Ty> = None;
     let mut dict_name: Option<String> = None;
 
-    if class == "Monad" {
+    let is_monad = class == "Monad" || class.ends_with(".Monad");
+    if is_monad {
         for a in args {
             let Some(head) = monad_syntactic_head(a) else {
                 continue;
@@ -9819,7 +9883,7 @@ fn resolve_method_dict_expr(
                 if first_non_ground.is_none() {
                     first_non_ground = Some(a_ty.clone());
                 }
-                if class != "Monad" {
+                if !is_monad {
                     continue;
                 }
             }
@@ -10255,7 +10319,7 @@ fn inject_class_method_value_bindings(
 ) {
     let defined = collect_defined_names(module);
     let methods = collect_sorted_methods(class_env);
-    let injected = create_method_bindings(methods, &defined);
+    let injected = create_method_bindings(methods, &defined, class_env);
 
     if std::env::var("KSCR_DEBUG_METHOD_VALUES").ok().as_deref() == Some("1") {
         debug_print_method_injection(class_env, inferred, &injected);
@@ -10297,21 +10361,31 @@ fn collect_sorted_methods(class_env: &ClassEnv) -> Vec<(String, String)> {
 fn create_method_bindings(
     methods: Vec<(String, String)>,
     defined: &std::collections::HashSet<String>,
+    class_env: &ClassEnv,
 ) -> Vec<ast::Item> {
     use ast::{Binding, Expr, ExprKind, Pattern, PatternKind};
 
     let mut injected: Vec<ast::Item> = Vec::new();
 
     for (mname, class) in methods {
-        if defined.contains(&mname) || class != "Enum" {
+        // Check if class is Enum (unqualified or qualified like Prelude.Enum)
+        let is_enum = class == "Enum" || class.ends_with(".Enum");
+        if defined.contains(&mname) || !is_enum {
             continue;
         }
 
-        let inst_name = "__dict_Enum_Integer".to_string();
+        // Look up the instance dict name for Enum Integer
+        let class_id = ast::ClassId::dummy(class.clone());
+        let dict_key = (class_id, "Integer".to_string());
+        let Some(inst_name) = class_env.instances.get(&dict_key).cloned() else {
+            eprintln!("[WARN] inject_class_method_value_bindings: no instance dict for Enum Integer");
+            continue;
+        };
+        
         let method_fn = create_record_get_expr(&inst_name, &mname);
         let dict_arg = Expr::new(
             ast::dummy_span(),
-            ExprKind::Var("__dict_Enum_Integer".to_string()),
+            ExprKind::Var(inst_name.clone()),
         );
 
         let (params, args) = match mname.as_str() {
@@ -11391,6 +11465,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+            def_module: c.def_module,
         })),
         ast::Item::InstanceDecl(inst) => Ok(ast::Item::InstanceDecl(ast::InstanceDecl {
             preds: inst

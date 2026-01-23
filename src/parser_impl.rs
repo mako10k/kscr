@@ -760,6 +760,7 @@ fn parse_class_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::It
             supers,
             methods: Vec::new(),
             default_methods: Vec::new(),
+            def_module: None,
         }));
     }
 
@@ -772,6 +773,7 @@ fn parse_class_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::It
         supers,
         methods,
         default_methods,
+        def_module: None,
     }))
 }
 
