@@ -3234,6 +3234,11 @@ fn mangle_ident(s: &str) -> String {
 }
 
 fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
+    desugar_typeclasses_with_strict(module, false)
+}
+
+/// Process classes and instances with optional strict canonicalization.
+fn desugar_typeclasses_with_strict(module: &mut ast::Module, strict: bool) -> Result<ClassEnv> {
     let mut env = ClassEnv {
         aliases: collect_type_aliases(module),
         ..Default::default()
@@ -3242,7 +3247,7 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
     // First canonicalize class references inside the module.
     // Use both import-based and def_module-based canonicalization to handle both
     // user-defined classes and imported/injected stdlib classes.
-    canonicalize_class_names_in_module_combined(module)?;
+    canonicalize_class_names_in_module_combined(module, strict)?;
 
     // Then collect class decls with canonical ids.
     let (class_method_names, class_default_methods) = collect_class_decls(module, &mut env)?;
@@ -3267,6 +3272,88 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         .collect();
 
     Ok(env)
+}
+
+/// Collect only class declarations from a module, without processing instances.
+/// Returns ClassEnv with class definitions, and metadata for later instance processing.
+/// Skips superclass validation (should be done after all classes are collected).
+fn collect_class_env_only(
+    module: &mut ast::Module,
+    strict: bool,
+) -> Result<(ClassEnv, ClassDeclInfo)> {
+    let mut env = ClassEnv {
+        aliases: collect_type_aliases(module),
+        ..Default::default()
+    };
+
+    // Canonicalize class references
+    canonicalize_class_names_in_module_combined(module, strict)?;
+
+    // Collect class decls only
+    let class_decl_info = collect_class_decls(module, &mut env)?;
+    reject_ambiguous_method_names(&mut env)?;
+    // Note: Skip validate_superclass_preds and detect_superclass_cycles here.
+    // They will be called after all classes are collected and merged.
+
+    Ok((env, class_decl_info))
+}
+
+/// Process instances against an existing merged ClassEnv.
+/// This assumes all classes have already been collected.
+fn process_instances_with_env(
+    module: &mut ast::Module,
+    merged_env: &ClassEnv,
+    class_method_names: &HashMap<ast::ClassId, Vec<String>>,
+    class_default_methods: &HashMap<(ast::ClassId, String), ast::Expr>,
+    strict: bool,
+) -> Result<ClassEnv> {
+    // Canonicalize class references in instance declarations
+    canonicalize_class_names_in_module_combined(module, strict)?;
+
+    // Collect instances and generate dictionary items
+    let instance_decls = collect_instance_decls(module);
+
+    // Create a working env that combines merged classes with local instances
+    let mut working_env = merged_env.clone();
+    working_env.aliases = collect_type_aliases(module);
+
+    preregister_instance_dicts(&mut working_env, &instance_decls)?;
+
+    // Generate instance items using the working env (has both classes and instances)
+    let extra_items = generate_instance_items(
+        &working_env,
+        &instance_decls,
+        class_method_names,
+        class_default_methods,
+    )?;
+
+    module.items = module
+        .items
+        .drain(..)
+        .filter(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
+        .chain(extra_items)
+        .collect();
+
+    // Return only the instance registrations (not the full working_env)
+    let mut local_env = ClassEnv {
+        aliases: collect_type_aliases(module),
+        instances: working_env.instances.clone(),
+        poly_instances: working_env.poly_instances.clone(),
+        ..Default::default()
+    };
+
+    // Filter to only instances that were added (not from merged_env)
+    local_env
+        .instances
+        .retain(|k, _| !merged_env.instances.contains_key(k));
+    local_env.poly_instances.retain(|pi| {
+        !merged_env
+            .poly_instances
+            .iter()
+            .any(|mpi| mpi.dict_name == pi.dict_name)
+    });
+
+    Ok(local_env)
 }
 
 fn module_imported_exports(
@@ -3299,7 +3386,10 @@ fn module_imported_exports(
     Ok(Some((imported, exports)))
 }
 
-fn canonicalize_class_names_in_module_combined(module: &mut ast::Module) -> Result<()> {
+fn canonicalize_class_names_in_module_combined(
+    module: &mut ast::Module,
+    strict: bool,
+) -> Result<()> {
     // Combined canonicalization: use both imports and def_module fields.
     // This handles both user-defined classes (from imports) and stdlib classes
     // that were flattened/injected (with def_module set).
@@ -3334,7 +3424,7 @@ fn canonicalize_class_names_in_module_combined(module: &mut ast::Module) -> Resu
         }
     }
 
-    canonicalize_class_refs_in_module(module, &class_origin);
+    canonicalize_class_refs_in_module(module, &class_origin, strict)?;
     Ok(())
 }
 
@@ -3353,19 +3443,37 @@ fn canonicalize_class_names_in_merged_stdlib(module: &mut ast::Module) {
         }
     }
 
-    canonicalize_class_refs_in_module(module, &class_origin);
+    // Use non-strict mode for backwards compatibility
+    let _ = canonicalize_class_refs_in_module(module, &class_origin, false);
 }
 
 fn canonicalize_class_refs_in_module(
     module: &mut ast::Module,
     class_origin: &HashMap<String, String>,
-) {
-    fn qualify_class_id(id: &mut ast::ClassId, class_origin: &HashMap<String, String>) {
+    strict: bool,
+) -> Result<()> {
+    fn qualify_class_id(
+        id: &mut ast::ClassId,
+        class_origin: &HashMap<String, String>,
+        strict: bool,
+    ) -> Result<()> {
         if id.name.contains('.') {
-            return;
+            return Ok(());
         }
         if let Some(m) = class_origin.get(&id.name) {
             id.name = format!("{m}.{}", id.name);
+            Ok(())
+        } else if strict {
+            Err(Error::msg(format!(
+                "Unresolved class reference: '{}'. \
+                This class is not imported or exported. \
+                Hint: Add an import statement for the module containing this class, \
+                or check for typos in the class name.",
+                id.name
+            )))
+        } else {
+            // Best-effort: leave unqualified if not found
+            Ok(())
         }
     }
 
@@ -3374,21 +3482,22 @@ fn canonicalize_class_refs_in_module(
             ast::Item::ClassDecl(c) => {
                 for p in &mut c.supers {
                     if let ast::Predicate::Class { class, .. } = p {
-                        qualify_class_id(class, class_origin);
+                        qualify_class_id(class, class_origin, strict)?;
                     }
                 }
             }
             ast::Item::InstanceDecl(inst) => {
                 for p in &mut inst.preds {
                     if let ast::Predicate::Class { class, .. } = p {
-                        qualify_class_id(class, class_origin);
+                        qualify_class_id(class, class_origin, strict)?;
                     }
                 }
-                qualify_class_id(&mut inst.class, class_origin);
+                qualify_class_id(&mut inst.class, class_origin, strict)?;
             }
             _ => {}
         }
     }
+    Ok(())
 }
 
 type ClassDeclInfo = (
@@ -6333,7 +6442,7 @@ fn load_stdlib_class_env() -> Result<ClassEnv> {
 }
 
 fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
-    // Collect class + instance declarations across the whole stdlib.
+    // Approach B: Build per-module ClassEnv then merge, without constructing a single merged AST module.
     //
     // Important: CLI `run`/`typecheck` goes through `typecheck_file()` which flattens imports.
     // Some programs rely on typeclass instances from stdlib even without an explicit
@@ -6344,10 +6453,6 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
     let t_all = std::time::Instant::now();
 
     let stdlib = stdlib_root();
-    let mut m = ast::Module {
-        name: Some("<stdlib>".to_string()),
-        items: Vec::new(),
-    };
 
     // Important: stdlib modules are allowed to have imports.
     // Parsing them by raw text here bypasses the stdlib cache + import logic and can
@@ -6363,6 +6468,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
     };
 
     let t_scan = std::time::Instant::now();
+    let mut module_paths = Vec::new();
     let mut stack: Vec<PathBuf> = vec![stdlib];
     while let Some(dir) = stack.pop() {
         for ent in std::fs::read_dir(&dir).map_err(Error::Io)? {
@@ -6375,16 +6481,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
             if path.extension().and_then(|s| s.to_str()) != Some("ks") {
                 continue;
             }
-
-            // Load AST via the loader so stdlib cache and parsing stays consistent.
-            let parsed = loader.load_ast(&path).map_err(|e| {
-                e.with_context(format!("while loading stdlib module {}", path.display()))
-            })?;
-            for it in parsed.items {
-                if matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)) {
-                    m.items.push(it);
-                }
-            }
+            module_paths.push(path);
         }
     }
     if timing {
@@ -6394,12 +6491,124 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         );
     }
 
-    // Canonicalize class references in superclasses and instance heads using def_module.
-    canonicalize_class_names_in_merged_stdlib(&mut m);
-
+    // Build a merged ClassEnv by processing each module separately in two passes:
+    // Pass 1: Collect all class declarations (creates merged class definitions)
+    // Pass 2: Process all instances (now all classes are known)
+    let mut merged_env = ClassEnv::default();
+    let mut all_class_method_names: HashMap<ast::ClassId, Vec<String>> = HashMap::new();
+    let mut all_class_default_methods: HashMap<(ast::ClassId, String), ast::Expr> = HashMap::new();
     let t_desugar = std::time::Instant::now();
-    let env = desugar_typeclasses(&mut m)
-        .map_err(|e| e.with_context("while desugaring stdlib typeclasses"))?;
+
+    // Pass 1: Collect class declarations from all modules
+    for path in &module_paths {
+        // Load AST via the loader so stdlib cache and parsing stays consistent.
+        let parsed = loader.load_ast(path).map_err(|e| {
+            e.with_context(format!("while loading stdlib module {}", path.display()))
+        })?;
+
+        // Create a temporary module containing ClassDecl and Import items only.
+        // We need Import items for canonicalization to work correctly.
+        let mut tmp_module = ast::Module {
+            name: parsed.name.clone(),
+            items: parsed
+                .items
+                .into_iter()
+                .filter(|it| matches!(it, ast::Item::ClassDecl(_) | ast::Item::Import(_)))
+                .collect(),
+        };
+
+        // Skip modules with no class declarations.
+        if !tmp_module
+            .items
+            .iter()
+            .any(|it| matches!(it, ast::Item::ClassDecl(_)))
+        {
+            continue;
+        }
+
+        // Collect class declarations only
+        let (module_env, (class_method_names, class_default_methods)) =
+            collect_class_env_only(&mut tmp_module, true).map_err(|e| {
+                e.with_context(format!(
+                    "while collecting class decls in stdlib module {}",
+                    path.display()
+                ))
+            })?;
+
+        // Merge into the global stdlib_env
+        merge_class_env(&mut merged_env, &module_env).map_err(|e| {
+            e.with_context(format!(
+                "while merging ClassEnv from stdlib module {}",
+                path.display()
+            ))
+        })?;
+
+        // Accumulate class method metadata for Pass 2
+        all_class_method_names.extend(class_method_names);
+        all_class_default_methods.extend(class_default_methods);
+    }
+
+    // After all classes are collected, validate superclasses and check for cycles
+    reject_ambiguous_method_names(&mut merged_env)?;
+    validate_superclass_preds(&merged_env)?;
+    detect_superclass_cycles(&merged_env)?;
+
+    // Pass 2: Process instance declarations with the merged ClassEnv
+    for path in &module_paths {
+        // Re-load AST (cached by loader)
+        let parsed = loader.load_ast(path).map_err(|e| {
+            e.with_context(format!("while loading stdlib module {}", path.display()))
+        })?;
+
+        // Create a temporary module containing InstanceDecl, ClassDecl, and Import items.
+        // We need ClassDecl items for canonicalization to resolve locally-defined classes.
+        let mut tmp_module = ast::Module {
+            name: parsed.name.clone(),
+            items: parsed
+                .items
+                .into_iter()
+                .filter(|it| {
+                    matches!(
+                        it,
+                        ast::Item::InstanceDecl(_) | ast::Item::ClassDecl(_) | ast::Item::Import(_)
+                    )
+                })
+                .collect(),
+        };
+
+        // Skip modules with no instance declarations.
+        if !tmp_module
+            .items
+            .iter()
+            .any(|it| matches!(it, ast::Item::InstanceDecl(_)))
+        {
+            continue;
+        }
+
+        // Process instances against the merged ClassEnv
+        let module_env = process_instances_with_env(
+            &mut tmp_module,
+            &merged_env,
+            &all_class_method_names,
+            &all_class_default_methods,
+            true,
+        )
+        .map_err(|e| {
+            e.with_context(format!(
+                "while processing instances in stdlib module {}",
+                path.display()
+            ))
+        })?;
+
+        // Merge instance registrations into the global env
+        merge_class_env(&mut merged_env, &module_env).map_err(|e| {
+            e.with_context(format!(
+                "while merging instances from stdlib module {}",
+                path.display()
+            ))
+        })?;
+    }
+
     if timing {
         eprintln!(
             "[KSCR_DEBUG_TIMING] desugar stdlib typeclasses: {:.3}s",
@@ -6410,7 +6619,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
             t_all.elapsed().as_secs_f64()
         );
     }
-    Ok(env)
+    Ok(merged_env)
 }
 
 fn load_stdlib_class_decl_items() -> Result<Vec<ast::Item>> {
