@@ -3390,26 +3390,35 @@ fn canonicalize_class_names_in_module_combined(
     module: &mut ast::Module,
     strict: bool,
 ) -> Result<()> {
+    fn push_origin(map: &mut HashMap<String, Vec<String>>, name: &str, module: String) {
+        let v = map.entry(name.to_string()).or_default();
+        if !v.iter().any(|m| m == &module) {
+            v.push(module);
+        }
+    }
+
     // Combined canonicalization: use both imports and def_module fields.
     // This handles both user-defined classes (from imports) and stdlib classes
     // that were flattened/injected (with def_module set).
-    let mut class_origin: HashMap<String, String> = HashMap::new();
+    let mut class_origin: HashMap<String, Vec<String>> = HashMap::new();
 
-    // First, gather class origins from imports (for user-defined classes).
+    // First, gather class origins from unqualified imports (for user-defined classes).
     for it in &module.items {
         let ast::Item::Import(id) = it else {
             continue;
         };
+        if id.qualified {
+            continue;
+        }
         let Some((imported, exports)) = module_imported_exports(module, id)? else {
             continue;
         };
+        let imported_name = imported.name.clone().unwrap_or_else(|| id.module.clone());
         for (name, kind) in exports.entries.iter() {
             if *kind != SymbolKind::Class {
                 continue;
             }
-            class_origin
-                .entry(name.clone())
-                .or_insert_with(|| imported.name.clone().unwrap_or_else(|| id.module.clone()));
+            push_origin(&mut class_origin, name, imported_name.clone());
         }
     }
 
@@ -3417,9 +3426,7 @@ fn canonicalize_class_names_in_module_combined(
     for it in &module.items {
         if let ast::Item::ClassDecl(c) = it {
             if let Some(ref def_mod) = c.def_module {
-                class_origin
-                    .entry(c.name.clone())
-                    .or_insert_with(|| def_mod.clone());
+                push_origin(&mut class_origin, &c.name, def_mod.clone());
             }
         }
     }
@@ -3429,16 +3436,21 @@ fn canonicalize_class_names_in_module_combined(
 }
 
 fn canonicalize_class_names_in_merged_stdlib(module: &mut ast::Module) {
+    fn push_origin(map: &mut HashMap<String, Vec<String>>, name: &str, module: String) {
+        let v = map.entry(name.to_string()).or_default();
+        if !v.iter().any(|m| m == &module) {
+            v.push(module);
+        }
+    }
+
     // For a merged stdlib module (no imports, just all class/instance decls),
     // build class_origin from def_module fields of ClassDecls.
-    let mut class_origin: HashMap<String, String> = HashMap::new();
+    let mut class_origin: HashMap<String, Vec<String>> = HashMap::new();
 
     for it in &module.items {
         if let ast::Item::ClassDecl(c) = it {
             if let Some(ref def_mod) = c.def_module {
-                class_origin
-                    .entry(c.name.clone())
-                    .or_insert_with(|| def_mod.clone());
+                push_origin(&mut class_origin, &c.name, def_mod.clone());
             }
         }
     }
@@ -3449,50 +3461,103 @@ fn canonicalize_class_names_in_merged_stdlib(module: &mut ast::Module) {
 
 fn canonicalize_class_refs_in_module(
     module: &mut ast::Module,
-    class_origin: &HashMap<String, String>,
+    class_origin: &HashMap<String, Vec<String>>,
     strict: bool,
 ) -> Result<()> {
+    fn dot_count(s: &str) -> usize {
+        s.bytes().filter(|b| *b == b'.').count()
+    }
+
     fn qualify_class_id(
+        current_module: Option<&str>,
         id: &mut ast::ClassId,
-        class_origin: &HashMap<String, String>,
+        class_origin: &HashMap<String, Vec<String>>,
         strict: bool,
     ) -> Result<()> {
         if id.name.contains('.') {
             return Ok(());
         }
-        if let Some(m) = class_origin.get(&id.name) {
-            id.name = format!("{m}.{}", id.name);
-            Ok(())
-        } else if strict {
-            Err(Error::msg(format!(
-                "Unresolved class reference: '{}'. \
-                This class is not imported or exported. \
-                Hint: Add an import statement for the module containing this class, \
-                or check for typos in the class name.",
-                id.name
-            )))
-        } else {
+
+        let Some(candidates) = class_origin.get(&id.name) else {
+            if strict {
+                return Err(Error::msg(format!(
+                    "Unresolved class reference: '{}'. \
+                    This class is not imported or exported. \
+                    Hint: Add an import statement for the module containing this class, \
+                    or check for typos in the class name.",
+                    id.name
+                )));
+            }
             // Best-effort: leave unqualified if not found
-            Ok(())
+            return Ok(());
+        };
+
+        // 1) Same-module wins (e.g., a class defined locally).
+        if let Some(cur) = current_module {
+            if candidates.iter().any(|m| m == cur) {
+                id.name = format!("{cur}.{}", id.name);
+                return Ok(());
+            }
         }
+
+        if candidates.len() == 1 {
+            let m = &candidates[0];
+            id.name = format!("{m}.{}", id.name);
+            return Ok(());
+        }
+
+        // 2) More specific qualifier wins (more dots in module path).
+        let max_dots = candidates.iter().map(|m| dot_count(m)).max().unwrap_or(0);
+        let mut best: Vec<&str> = candidates
+            .iter()
+            .filter_map(|m| {
+                if dot_count(m) == max_dots {
+                    Some(m.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if best.len() == 1 {
+            let m = best[0];
+            id.name = format!("{m}.{}", id.name);
+            return Ok(());
+        }
+
+        // 3) Still ambiguous.
+        best.sort();
+        if strict {
+            return Err(Error::msg(format!(
+                "Ambiguous class reference: '{}'. Candidates: {}",
+                id.name,
+                best.join(", ")
+            )));
+        }
+
+        // Best-effort for user code: pick deterministically.
+        let m = best[0];
+        id.name = format!("{m}.{}", id.name);
+        Ok(())
     }
 
+    let current_module = module.name.as_deref();
     for it in &mut module.items {
         match it {
             ast::Item::ClassDecl(c) => {
                 for p in &mut c.supers {
                     if let ast::Predicate::Class { class, .. } = p {
-                        qualify_class_id(class, class_origin, strict)?;
+                        qualify_class_id(current_module, class, class_origin, strict)?;
                     }
                 }
             }
             ast::Item::InstanceDecl(inst) => {
                 for p in &mut inst.preds {
                     if let ast::Predicate::Class { class, .. } = p {
-                        qualify_class_id(class, class_origin, strict)?;
+                        qualify_class_id(current_module, class, class_origin, strict)?;
                     }
                 }
-                qualify_class_id(&mut inst.class, class_origin, strict)?;
+                qualify_class_id(current_module, &mut inst.class, class_origin, strict)?;
             }
             _ => {}
         }
@@ -12136,6 +12201,105 @@ mod import_type_forwarder_tests {
         let typed = typecheck_file(Path::new(&tmp)).unwrap();
         assert!(typed.inferred.contains_key("pureP"));
         let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod class_ambiguity_resolution_tests {
+    use super::*;
+
+    fn write(path: &std::path::Path, body: &str) {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn prefers_more_specific_module_for_unqualified_class_ref() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_class_ambiguity_more_specific_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        write(
+            &dir.join("A.ks"),
+            "module A where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
+        );
+        write(
+            &dir.join("A/B.ks"),
+            "module A.B where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
+        );
+
+        let src = "module Main where\n  import A\n  import A.B\n  class C a => D a where\n    d :: a -> a\n";
+        let mut m = parser::parse_module(src).unwrap();
+        desugar_module_qualified_names(&mut m).unwrap();
+        for it in &mut m.items {
+            if let ast::Item::ClassDecl(c) = it {
+                c.def_module = Some("Main".to_string());
+            }
+        }
+
+        canonicalize_class_names_in_module_combined(&mut m, true).unwrap();
+
+        let d = m
+            .items
+            .iter()
+            .find_map(|it| match it {
+                ast::Item::ClassDecl(c) if c.name == "D" => Some(c),
+                _ => None,
+            })
+            .unwrap();
+        let class = match &d.supers[0] {
+            ast::Predicate::Class { class, .. } => class,
+            _ => panic!("expected class predicate"),
+        };
+        assert_eq!(class.name, "A.B.C");
+
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn strict_mode_errors_on_ambiguous_same_specificity() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_class_ambiguity_strict_error_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
+        write(
+            &dir.join("X.ks"),
+            "module X where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
+        );
+        write(
+            &dir.join("Y.ks"),
+            "module Y where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
+        );
+
+        let src = "module Main where\n  import X\n  import Y\n  class C a => D a where\n    d :: a -> a\n";
+        let mut m = parser::parse_module(src).unwrap();
+        desugar_module_qualified_names(&mut m).unwrap();
+        for it in &mut m.items {
+            if let ast::Item::ClassDecl(c) = it {
+                c.def_module = Some("Main".to_string());
+            }
+        }
+
+        let err = canonicalize_class_names_in_module_combined(&mut m, true).unwrap_err();
+        assert!(err.to_string().contains("Ambiguous class reference: 'C'"));
+
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
