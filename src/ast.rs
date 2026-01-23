@@ -101,6 +101,9 @@ pub struct ClassDecl {
     ///
     /// These are optional; instances may omit methods that have defaults.
     pub default_methods: Vec<Binding>,
+    /// Module where this class was originally defined (e.g., "Prelude.Functor").
+    /// Set after parsing; used to construct canonical ClassId keys.
+    pub def_module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

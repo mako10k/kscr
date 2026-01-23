@@ -180,6 +180,37 @@ All existing tests pass (339 tests total):
    - Ensure reproducible builds
    - Warn when resolution would differ from lockfile
 
+## Class Name Resolution in Imports
+
+### Ambiguous Resolution Rules
+
+When resolving unqualified class names (e.g., `Show` instead of `Prelude.Show`) in import contexts, the type checker follows these rules:
+
+1. **Import-based resolution**: Classes explicitly imported via `import` declarations take priority
+2. **def_module-based resolution**: For stdlib/flattened classes with `def_module` field set
+3. **More specific qualifier wins**: If multiple modules export the same class name, prefer the module with the most specific qualifier
+4. **Aliasing support**: Module aliases (`import Foo as F`) are respected in qualified references
+5. **Implicit Prelude import (optional)**: Some common classes may be available without explicit import
+
+### Strict Mode (Stdlib Only)
+
+For stdlib modules, canonical resolution is **mandatory**:
+- All unqualified class references must be resolvable via imports or `def_module` fields
+- Unresolved references produce an error with a helpful message suggesting:
+  - Adding the missing import
+  - Checking for typos in the class name
+  - Verifying the class is exported from the expected module
+
+User code currently uses best-effort resolution for backwards compatibility.
+
+### Implementation Status
+
+- ✅ Per-module ClassEnv building and merging (no single merged AST)
+- ✅ Strict canonicalization mode for stdlib modules
+- ⏳ Ambiguous resolution priority rules (designed but not yet implemented)
+- ⏳ Module aliasing in class references (partial support)
+- ⏳ Implicit Prelude import configuration (not yet implemented)
+
 ## References
 
 - Issue: mako10k/kscr#31 (Design: module objects + interned IDs + local package resolution + KSIF vNext)
