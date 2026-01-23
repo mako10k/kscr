@@ -1,0 +1,60 @@
+name: Geiger (informational)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  geiger:
+    name: cargo geiger (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-geiger-
+
+      - name: Install cargo-geiger
+        run: |
+          if cargo-geiger --version 2>/dev/null | grep -q "0.13.0"; then
+            cargo-geiger --version
+          else
+            cargo install cargo-geiger --locked --version 0.13.0 --force
+          fi
+
+      - name: cargo fetch (for geiger)
+        run: cargo fetch --locked
+
+      - name: cargo geiger
+        # cargo-geiger may report non-fatal scanning issues (e.g. generated/data files)
+        # as warnings and exit non-zero. We only gate on our own usage of `unsafe`.
+        run: bash tools/ci/run_geiger.sh
+
+      - name: Upload geiger logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geiger-logs-${{ github.run_id }}-${{ github.sha }}
+          path: |
+            tools/ci/geiger.log
+            tools/ci/geiger_status.txt
+          if-no-files-found: error

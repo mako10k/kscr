@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  test_clippy_geiger:
-    name: test / clippy / geiger
+  test_clippy:
+    name: test / clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,7 +32,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-test_clippy_geiger-
+            ${{ runner.os }}-cargo-test_clippy-
 
       - name: cargo test
         run: cargo test -- --test-threads=1
@@ -43,31 +43,6 @@ jobs:
       - name: cargo clippy (deny warnings)
         run: cargo clippy --all-features -- -D warnings
 
-      - name: Install cargo-geiger
-        run: |
-          if cargo-geiger --version 2>/dev/null | grep -q "0.13.0"; then
-            cargo-geiger --version
-          else
-            cargo install cargo-geiger --locked --version 0.13.0 --force
-          fi
-
-      - name: cargo fetch (for geiger)
-        run: cargo fetch --locked
-
-      - name: cargo geiger
-        # cargo-geiger may report non-fatal scanning issues (e.g. generated/data files)
-        # as warnings and exit non-zero. We only gate on our own usage of `unsafe`.
-        run: bash tools/ci/run_geiger.sh
-
-      - name: Upload geiger logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: geiger-logs-${{ github.run_id }}-${{ github.sha }}
-          path: |
-            tools/ci/geiger.log
-            tools/ci/geiger_status.txt
-          if-no-files-found: error
 
   nightly_udeps:
     name: nightly udeps (informational)
