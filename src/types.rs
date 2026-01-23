@@ -137,6 +137,10 @@ impl ExportTable {
         self.entries.extend(names);
     }
 
+    fn get(&self, name: &str) -> Option<SymbolKind> {
+        self.entries.get(name).copied()
+    }
+
     /// Derive the old HashSet<String> view for backward compatibility.
     pub fn as_name_set(&self) -> HashSet<String> {
         self.entries.keys().cloned().collect()
@@ -3238,6 +3242,11 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         aliases: collect_type_aliases(module),
         ..Default::default()
     };
+
+    // First canonicalize class references inside the module.
+    canonicalize_class_names_in_module(module)?;
+
+    // Then collect class decls with canonical ids.
     let (class_method_names, class_default_methods) = collect_class_decls(module, &mut env)?;
     reject_ambiguous_method_names(&mut env)?;
     validate_superclass_preds(&env)?;
@@ -3260,6 +3269,91 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
         .collect();
 
     Ok(env)
+}
+
+fn module_imported_exports(
+    _module: &ast::Module,
+    id: &ast::ImportDecl,
+) -> Result<Option<(ast::Module, ExportTable)>> {
+    // Only handle the common case where the import was already flattened into the module.
+    // We can look up the imported module path via the loader-independent resolution function.
+    let module_dir = Path::new(".");
+    let rel = id.module.replace('.', "/");
+    let local = module_dir.join(format!("{}.ks", rel));
+    let stdlib_root = stdlib_cache::stdlib_root()?;
+    let stdlib = stdlib_root.join(format!("{}.ks", rel));
+    let path = std::fs::canonicalize(&local).or_else(|_| std::fs::canonicalize(&stdlib));
+    let Ok(path) = path else {
+        return Ok(None);
+    };
+
+    // Load via stdlib cache/parser directly (no recursive imports here; we just need exports).
+    let src = std::fs::read_to_string(&path)?;
+    let mut imported = parser::parse_module(&src)?;
+    desugar_module_qualified_names(&mut imported)?;
+
+    // Keep internal qualifier env consistent and allow canonical names.
+    if imported.name.as_deref() != Some(&id.module) {
+        // Best effort; module name mismatch will be caught later in ModuleLoader.
+    }
+
+    let exports = module_exported_names(&imported)?;
+    Ok(Some((imported, exports)))
+}
+
+fn canonicalize_class_names_in_module(module: &mut ast::Module) -> Result<()> {
+    // Convert unqualified class references (e.g. `Functor`) into canonical `Module.Class`
+    // when the module imports a class of that name.
+    let mut class_origin: HashMap<String, String> = HashMap::new();
+
+    for it in &module.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        let Some((imported, exports)) = module_imported_exports(module, id)? else {
+            continue;
+        };
+        for (name, kind) in exports.entries.iter() {
+            if *kind != SymbolKind::Class {
+                continue;
+            }
+            class_origin
+                .entry(name.clone())
+                .or_insert_with(|| imported.name.clone().unwrap_or_else(|| id.module.clone()));
+        }
+    }
+
+    fn qualify_class_id(id: &mut ast::ClassId, class_origin: &HashMap<String, String>) {
+        if id.name.contains('.') {
+            return;
+        }
+        if let Some(m) = class_origin.get(&id.name) {
+            id.name = format!("{m}.{}", id.name);
+        }
+    }
+
+    for it in &mut module.items {
+        match it {
+            ast::Item::ClassDecl(c) => {
+                for p in &mut c.supers {
+                    if let ast::Predicate::Class { class, .. } = p {
+                        qualify_class_id(class, &class_origin);
+                    }
+                }
+            }
+            ast::Item::InstanceDecl(inst) => {
+                for p in &mut inst.preds {
+                    if let ast::Predicate::Class { class, .. } = p {
+                        qualify_class_id(class, &class_origin);
+                    }
+                }
+                qualify_class_id(&mut inst.class, &class_origin);
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
 }
 
 type ClassDeclInfo = (
