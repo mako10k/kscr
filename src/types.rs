@@ -6156,7 +6156,7 @@ fn inject_stdlib_class_decls(module: &mut ast::Module) -> Result<()> {
     merged.append(&mut injected);
     merged.append(&mut module.items);
     module.items = merged;
-    
+
     Ok(())
 }
 
@@ -6233,7 +6233,11 @@ fn typecheck_internal_core_with_entry_path(
 
         // If `Monad` is available, desugar `do`-notation into `(>>=)` / `(>>)`. This allows `do` to
         // work for non-IO monads (via type classes).
-        if class_env.class_params.keys().any(|c| c.name == "Monad" || c.name.ends_with(".Monad")) {
+        if class_env
+            .class_params
+            .keys()
+            .any(|c| c.name == "Monad" || c.name.ends_with(".Monad"))
+        {
             desugar_do_to_monad_ops_in_module(&mut module)?;
         }
 
@@ -6470,7 +6474,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
             let parsed = loader.load_ast(&path).map_err(|e| {
                 e.with_context(format!("while loading stdlib module {}", path.display()))
             })?;
-            
+
             for it in parsed.items {
                 if let ast::Item::ClassDecl(c) = &it {
                     if seen.insert(c.name.clone()) {
@@ -7325,7 +7329,7 @@ impl ModuleLoader {
         }
         if let Some(mut m) = stdlib_cache::load_ast_stdlib_cached(path)? {
             // stdlib_cache does not have access to ModuleIdInterner; resolve module IDs here.
-            
+
             // Populate def_module for ClassDecls if not already set.
             if let Some(module_name) = &m.name {
                 for it in &mut m.items {
@@ -7336,7 +7340,7 @@ impl ModuleLoader {
                     }
                 }
             }
-            
+
             let env = module_qual_env(&m);
             resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
             resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
@@ -7348,7 +7352,7 @@ impl ModuleLoader {
         self.sources.insert(path.to_path_buf(), src.clone());
         let mut m = parser::parse_module(&src)?;
         desugar_module_qualified_names(&mut m)?;
-        
+
         // Populate def_module for all ClassDecls with the module's name.
         if let Some(module_name) = &m.name {
             for it in &mut m.items {
@@ -7357,7 +7361,7 @@ impl ModuleLoader {
                 }
             }
         }
-        
+
         let env = module_qual_env(&m);
         resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
         resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
@@ -9548,9 +9552,12 @@ impl<'a> RewriteClassMethodCallsCtx<'a> {
 fn instance_head_key_ty_for_class(class: &str, ty: &Ty) -> Result<String> {
     // MVP: higher-kinded classes select instances by the type constructor head.
     // e.g. `Functor` instance is declared for `Maybe`, but call sites see `Maybe a`.
-    let is_hk_class = class == "Monad" || class.ends_with(".Monad")
-        || class == "Applicative" || class.ends_with(".Applicative")
-        || class == "Functor" || class.ends_with(".Functor");
+    let is_hk_class = class == "Monad"
+        || class.ends_with(".Monad")
+        || class == "Applicative"
+        || class.ends_with(".Applicative")
+        || class == "Functor"
+        || class.ends_with(".Functor");
     if is_hk_class {
         return Ok(match ty {
             Ty::Con(name) => name.clone(),
@@ -10378,15 +10385,14 @@ fn create_method_bindings(
         let class_id = ast::ClassId::dummy(class.clone());
         let dict_key = (class_id, "Integer".to_string());
         let Some(inst_name) = class_env.instances.get(&dict_key).cloned() else {
-            eprintln!("[WARN] inject_class_method_value_bindings: no instance dict for Enum Integer");
+            eprintln!(
+                "[WARN] inject_class_method_value_bindings: no instance dict for Enum Integer"
+            );
             continue;
         };
-        
+
         let method_fn = create_record_get_expr(&inst_name, &mname);
-        let dict_arg = Expr::new(
-            ast::dummy_span(),
-            ExprKind::Var(inst_name.clone()),
-        );
+        let dict_arg = Expr::new(ast::dummy_span(), ExprKind::Var(inst_name.clone()));
 
         let (params, args) = match mname.as_str() {
             "enumFromTo" => {
