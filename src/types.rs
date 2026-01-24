@@ -5940,6 +5940,7 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
         emitted_unqualified: HashSet::new(),
         def_sites: DefSiteIndex::default(),
         module_ids: ModuleIdInterner::default(),
+        module_name_to_paths: HashMap::new(),
     };
 
     // Load via ModuleLoader so stdlib cache + qualified-name desugaring stays consistent.
@@ -6530,6 +6531,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         emitted_unqualified: HashSet::new(),
         def_sites: DefSiteIndex::default(),
         module_ids: ModuleIdInterner::default(),
+        module_name_to_paths: HashMap::new(),
     };
 
     let t_scan = std::time::Instant::now();
@@ -6723,6 +6725,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
         emitted_unqualified: HashSet::new(),
         def_sites: DefSiteIndex::default(),
         module_ids: ModuleIdInterner::default(),
+        module_name_to_paths: HashMap::new(),
     };
 
     // Collect all class decls into a temporary merged module.
@@ -6902,6 +6905,8 @@ struct ModuleLoader {
     emitted_unqualified: HashSet<ImportQualKey>,
     def_sites: DefSiteIndex,
     module_ids: ModuleIdInterner,
+    /// Track module names to their file paths to detect collisions
+    module_name_to_paths: HashMap<String, Vec<PathBuf>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -7620,6 +7625,28 @@ impl ModuleLoader {
             resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
 
             self.cache.insert(path.to_path_buf(), m.clone());
+
+            // Track module names to detect collisions
+            if let Some(module_name) = &m.name {
+                self.module_name_to_paths
+                    .entry(module_name.clone())
+                    .or_insert_with(Vec::new)
+                    .push(path.to_path_buf());
+
+                // Check for collision after adding this path
+                let paths = &self.module_name_to_paths[module_name];
+                if paths.len() > 1 {
+                    let mut msg = format!(
+                        "module '{}' is defined in multiple files:",
+                        module_name
+                    );
+                    for p in paths {
+                        msg.push_str(&format!("\n  - {}", p.display()));
+                    }
+                    return Err(Error::msg(msg));
+                }
+            }
+
             return Ok(m);
         }
         let src = std::fs::read_to_string(path)?;
@@ -7685,6 +7712,28 @@ impl ModuleLoader {
             }
         }
         self.cache.insert(path.to_path_buf(), m.clone());
+
+        // Track module names to detect collisions
+        if let Some(module_name) = &m.name {
+            self.module_name_to_paths
+                .entry(module_name.clone())
+                .or_insert_with(Vec::new)
+                .push(path.to_path_buf());
+
+            // Check for collision after adding this path
+            let paths = &self.module_name_to_paths[module_name];
+            if paths.len() > 1 {
+                let mut msg = format!(
+                    "module '{}' is defined in multiple files:",
+                    module_name
+                );
+                for p in paths {
+                    msg.push_str(&format!("\n  - {}", p.display()));
+                }
+                return Err(Error::msg(msg));
+            }
+        }
+
         Ok(m)
     }
 
@@ -10220,9 +10269,12 @@ fn resolve_method_dict_expr(
     }
 
     if let Some(ty) = first_missing_instance {
-        return Err(Error::msg(format!(
-            "no instance found for method call `{mname}`: {class} {ty}"
-        )));
+        return Err(Error::msg_with_span(
+            format!(
+                "no instance found for method call `{mname}`: {class} {ty}"
+            ),
+            ctx.span,
+        ));
     }
 
     // No in-scope dictionary and no ground type to pick an instance: keep it polymorphic.
