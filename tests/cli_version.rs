@@ -9,7 +9,8 @@ fn cli_version_flag() {
 
     assert!(out.status.success(), "kscr --version should succeed");
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("kscr 0.3.2"), "output should contain version: {s}");
+    let expected = format!("kscr {}", env!("CARGO_PKG_VERSION"));
+    assert!(s.contains(&expected), "output should contain version: {s}");
     assert!(s.contains("git:"), "output should contain git SHA: {s}");
     assert!(s.contains("features:"), "output should contain features: {s}");
 }
@@ -23,7 +24,8 @@ fn cli_version_command() {
 
     assert!(out.status.success(), "kscr version should succeed");
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("kscr 0.3.2"), "output should contain version: {s}");
+    let expected = format!("kscr {}", env!("CARGO_PKG_VERSION"));
+    assert!(s.contains(&expected), "output should contain version: {s}");
     assert!(s.contains("git:"), "output should contain git SHA: {s}");
     assert!(s.contains("features:"), "output should contain features: {s}");
 }
@@ -37,7 +39,8 @@ fn cli_version_short_flag() {
 
     assert!(out.status.success(), "kscr -v should succeed");
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("kscr 0.3.2"), "output should contain version: {s}");
+    let expected = format!("kscr {}", env!("CARGO_PKG_VERSION"));
+    assert!(s.contains(&expected), "output should contain version: {s}");
     assert!(s.contains("git:"), "output should contain git SHA: {s}");
     assert!(s.contains("features:"), "output should contain features: {s}");
 }
