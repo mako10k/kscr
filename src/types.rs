@@ -7630,16 +7630,13 @@ impl ModuleLoader {
             if let Some(module_name) = &m.name {
                 self.module_name_to_paths
                     .entry(module_name.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(path.to_path_buf());
 
                 // Check for collision after adding this path
                 let paths = &self.module_name_to_paths[module_name];
                 if paths.len() > 1 {
-                    let mut msg = format!(
-                        "module '{}' is defined in multiple files:",
-                        module_name
-                    );
+                    let mut msg = format!("module '{}' is defined in multiple files:", module_name);
                     for p in paths {
                         msg.push_str(&format!("\n  - {}", p.display()));
                     }
@@ -7717,16 +7714,13 @@ impl ModuleLoader {
         if let Some(module_name) = &m.name {
             self.module_name_to_paths
                 .entry(module_name.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(path.to_path_buf());
 
             // Check for collision after adding this path
             let paths = &self.module_name_to_paths[module_name];
             if paths.len() > 1 {
-                let mut msg = format!(
-                    "module '{}' is defined in multiple files:",
-                    module_name
-                );
+                let mut msg = format!("module '{}' is defined in multiple files:", module_name);
                 for p in paths {
                     msg.push_str(&format!("\n  - {}", p.display()));
                 }
@@ -10270,9 +10264,7 @@ fn resolve_method_dict_expr(
 
     if let Some(ty) = first_missing_instance {
         return Err(Error::msg_with_span(
-            format!(
-                "no instance found for method call `{mname}`: {class} {ty}"
-            ),
+            format!("no instance found for method call `{mname}`: {class} {ty}"),
             ctx.span,
         ));
     }
