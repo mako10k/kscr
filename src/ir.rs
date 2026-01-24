@@ -1940,7 +1940,9 @@ fn list_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
     let mut a = force_value(g, a)?;
     
     // Force again if still a thunk (can happen with nested lazy evaluation)
-    a = force_value(g, a)?;
+    if matches!(a, Value::Thunk(_)) {
+        a = force_value(g, a)?;
+    }
 
     match a {
         Value::ListNil => Ok(b),
