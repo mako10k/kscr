@@ -747,12 +747,14 @@ fn auto_apply_io_monad_dict(g: &Globals, v: Value) -> Result<Value> {
         env: _,
     } = &v
     {
-        if params.len() == 1 && params[0].starts_with("__dict_") && params[0].contains("Monad") {
-            if g.defs.contains_key(IO_MONAD_DICT_NAME) {
-                let io_dict = eval_var(g, &std::collections::HashMap::new(), IO_MONAD_DICT_NAME)?;
-                let v = apply_one(g, v, io_dict)?;
-                return force_value(g, v);
-            }
+        if params.len() == 1
+            && params[0].starts_with("__dict_")
+            && params[0].contains("Monad")
+            && g.defs.contains_key(IO_MONAD_DICT_NAME)
+        {
+            let io_dict = eval_var(g, &std::collections::HashMap::new(), IO_MONAD_DICT_NAME)?;
+            let v = apply_one(g, v, io_dict)?;
+            return force_value(g, v);
         }
     }
     Ok(v)
