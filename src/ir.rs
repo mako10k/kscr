@@ -1937,7 +1937,12 @@ fn bool_to_string(g: &Globals, a: Value) -> Result<Value> {
 }
 
 fn list_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
+    let mut a = force_value(g, a)?;
+
+    // Force again if still a thunk (can happen with nested lazy evaluation)
+    if matches!(a, Value::Thunk(_)) {
+        a = force_value(g, a)?;
+    }
 
     match a {
         Value::ListNil => Ok(b),
@@ -1945,6 +1950,12 @@ fn list_append(g: &Globals, a: Value, b: Value) -> Result<Value> {
             // NOTE: this is eager in the left spine (MVP), but does not force elements.
             let rest = list_append(g, *t, b)?;
             Ok(Value::ListCons(h, Box::new(rest)))
+        }
+        Value::String(ref s) => {
+            // Convert string literal to [Char] and append with b.
+            // This supports mixing String literals with [Char] since String = [Char] in Prelude.
+            let char_list = string_to_char_list(s);
+            list_append(g, char_list, b)
         }
         _ => Err(Error::msg("++ expects List")),
     }
