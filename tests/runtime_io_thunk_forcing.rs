@@ -10,10 +10,14 @@ fn runtime_forces_thunks_in_main() {
         .output()
         .expect("run kscr");
 
-    assert!(out.status.success(), "exit code should be 0, stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "exit code should be 0, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
-    
+
     assert_eq!(lines.len(), 3, "should have 3 output lines");
     assert_eq!(lines[0], "a");
     assert_eq!(lines[1], "b");
@@ -31,15 +35,24 @@ fn runtime_forces_thunks_in_io_bind() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn kscr");
-    
+
     use std::io::Write;
-    child.stdin.as_mut().unwrap().write_all(b"test\n").expect("write to stdin");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"test\n")
+        .expect("write to stdin");
     let out = child.wait_with_output().expect("wait for kscr");
 
-    assert!(out.status.success(), "exit code should be 0, stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "exit code should be 0, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
-    
+
     assert_eq!(lines.len(), 2, "should have 2 output lines");
     assert_eq!(lines[0], "test");
     assert_eq!(lines[1], "done");

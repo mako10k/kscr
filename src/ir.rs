@@ -682,7 +682,7 @@ pub fn run_main(module: &IrModule) -> Result<Value> {
     let v = eval_var(&g, &std::collections::HashMap::new(), "main")?;
     let v = force_value(&g, v)?;
     let v = auto_apply_io_monad_dict(&g, v)?;
-    
+
     let Value::IoAction(action) = v else {
         return Err(Error::msg(format!(
             "main did not evaluate to an IO action (got {})",
@@ -733,15 +733,20 @@ fn value_type_name(v: &Value) -> &'static str {
 
 /// Auto-apply the IO Monad dictionary if the value is a Closure expecting one.
 /// This handles do-notation that desugars to lambdas expecting dictionaries.
-/// 
+///
 /// The heuristic checks if the Closure has exactly one parameter that:
 /// - Starts with "__dict_" (convention for dictionary parameters)
 /// - Contains "Monad" (indicating it's a Monad dictionary)
-/// 
+///
 /// While this relies on naming conventions, it matches the desugaring behavior
 /// of the typechecker/compiler, which generates these parameter names.
 fn auto_apply_io_monad_dict(g: &Globals, v: Value) -> Result<Value> {
-    if let Value::Closure { params, body: _, env: _ } = &v {
+    if let Value::Closure {
+        params,
+        body: _,
+        env: _,
+    } = &v
+    {
         if params.len() == 1 && params[0].starts_with("__dict_") && params[0].contains("Monad") {
             if g.defs.contains_key(IO_MONAD_DICT_NAME) {
                 let io_dict = eval_var(g, &std::collections::HashMap::new(), IO_MONAD_DICT_NAME)?;
