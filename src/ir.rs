@@ -519,7 +519,10 @@ pub enum IoAction {
     StdinReadLine,
     GetArgs,
     ReadFile(String),
-    WriteFile { path: String, content: String },
+    WriteFile {
+        path: String,
+        content: String,
+    },
     ExitWith(i64),
 
     #[cfg(feature = "unsafe_ffi")]

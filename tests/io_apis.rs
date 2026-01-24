@@ -3,13 +3,7 @@ use std::process::Command;
 #[test]
 fn test_getargs_api() {
     let out = Command::new(env!("CARGO_BIN_EXE_kscr"))
-        .args([
-            "run",
-            "tests/test_getargs.ks",
-            "arg1",
-            "arg2",
-            "arg3",
-        ])
+        .args(["run", "tests/test_getargs.ks", "arg1", "arg2", "arg3"])
         .output()
         .expect("run kscr");
 
