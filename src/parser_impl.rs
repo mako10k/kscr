@@ -1956,7 +1956,7 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             // Or-pattern arms are parsed by `pattern::parse_pattern` itself.
 
             ts.expect(TokenKind::Arrow)?;
-            let body = parse_expr(ts, Stop::LineEnd)?;
+            let body = parse_expr_after_newline(ts, Stop::LineEnd)?;
             arms.push(ast::CaseArm { pat, guard, body });
             ts.consume_line_end();
         }
@@ -1997,7 +1997,7 @@ fn parse_case(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
         // Or-pattern arms are parsed by `pattern::parse_pattern` itself.
 
         ts.expect(TokenKind::Arrow)?;
-        let body = parse_expr(ts, Stop::SemiOrRBrace)?;
+        let body = parse_expr_after_newline(ts, Stop::SemiOrRBrace)?;
         arms.push(ast::CaseArm { pat, guard, body });
 
         if matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {

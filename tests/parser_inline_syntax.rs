@@ -82,3 +82,27 @@ fn parser_where_braces_semicolons() {
     assert!(matches!(&bindings[0].pat.kind, PatternKind::Var(s) if s == "a"));
     assert!(matches!(&bindings[1].pat.kind, PatternKind::Var(s) if s == "b"));
 }
+
+#[test]
+fn parser_case_arrow_allow_newline_and_indent() {
+    let src = "f = \\xs -> case xs of\n  [] ->\n    1\n  _ -> 2\n";
+    let module = kscr::parser::parse_module(src).unwrap();
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let ExprKind::Lambda { body, .. } = &b.expr.kind else {
+        panic!("expected lambda");
+    };
+
+    let ExprKind::Case { arms, .. } = &body.kind else {
+        panic!("expected case");
+    };
+
+    assert_eq!(arms.len(), 2);
+    // First arm should have parsed with newline after ->
+    assert!(matches!(&arms[0].body.kind, ExprKind::Integer(_)));
+    // Second arm should work as before (no newline)
+    assert!(matches!(&arms[1].body.kind, ExprKind::Integer(_)));
+}
