@@ -31,3 +31,5 @@ kscr
 
 # Generated interface artifacts (KSIF)
 *.ksif
+test.txt
+test_output.txt
