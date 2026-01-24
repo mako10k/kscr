@@ -1145,6 +1145,12 @@ fn run_io_write_file(path: String, content: String) -> Result<IoOutcome> {
 
 fn run_io_exit_with(code: i64) -> Result<IoOutcome> {
     std::process::exit(code as i32);
+    // Note: std::process::exit never returns, but Rust doesn't have a ! return type for functions
+    // that call exit, so we need this unreachable code to satisfy the type checker
+    #[allow(unreachable_code)]
+    {
+        Ok(IoOutcome::Value(Value::Unit))
+    }
 }
 
 #[cfg(feature = "unsafe_ffi")]
