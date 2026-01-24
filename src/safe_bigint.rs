@@ -301,6 +301,12 @@ impl Integer {
             .parse::<i32>()
             .expect("range-checked Integer should parse to i32")
     }
+
+    pub fn into_i64_range_checked(self) -> i64 {
+        self.to_string()
+            .parse::<i64>()
+            .expect("range-checked Integer should parse to i64")
+    }
 }
 
 impl From<i64> for Integer {
@@ -532,4 +538,8 @@ pub fn in_i64_range(n: &Integer) -> bool {
 
 pub fn to_i32_range_checked(n: Integer) -> i32 {
     n.into_i32_range_checked()
+}
+
+pub fn to_i64_range_checked(n: Integer) -> i64 {
+    n.into_i64_range_checked()
 }
