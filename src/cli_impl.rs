@@ -286,31 +286,31 @@ fn print_help() {
 fn print_version() {
     // Get version from Cargo.toml
     let version = env!("CARGO_PKG_VERSION");
-    
+
     // Get git SHA from build.rs
     let git_sha = env!("KSCR_GIT_SHA");
-    
+
     // Check enabled features
     let mut features: Vec<&str> = Vec::new();
-    
+
     #[cfg(feature = "llvm")]
     features.push("llvm");
-    
+
     #[cfg(feature = "readline")]
     features.push("readline");
-    
+
     #[cfg(feature = "unsafe_ffi")]
     features.push("unsafe_ffi");
-    
+
     #[cfg(feature = "unsafe_bigint")]
     features.push("unsafe_bigint");
-    
+
     let features_str = if features.is_empty() {
         "none".to_string()
     } else {
         features.join(", ")
     };
-    
+
     println!("kscr {}", version);
     println!("git: {}", git_sha);
     println!("features: {}", features_str);

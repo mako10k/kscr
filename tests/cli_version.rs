@@ -12,7 +12,10 @@ fn cli_version_flag() {
     let expected = format!("kscr {}", env!("CARGO_PKG_VERSION"));
     assert!(s.contains(&expected), "output should contain version: {s}");
     assert!(s.contains("git:"), "output should contain git SHA: {s}");
-    assert!(s.contains("features:"), "output should contain features: {s}");
+    assert!(
+        s.contains("features:"),
+        "output should contain features: {s}"
+    );
 }
 
 #[test]
@@ -27,7 +30,10 @@ fn cli_version_command() {
     let expected = format!("kscr {}", env!("CARGO_PKG_VERSION"));
     assert!(s.contains(&expected), "output should contain version: {s}");
     assert!(s.contains("git:"), "output should contain git SHA: {s}");
-    assert!(s.contains("features:"), "output should contain features: {s}");
+    assert!(
+        s.contains("features:"),
+        "output should contain features: {s}"
+    );
 }
 
 #[test]
@@ -42,5 +48,8 @@ fn cli_version_short_flag() {
     let expected = format!("kscr {}", env!("CARGO_PKG_VERSION"));
     assert!(s.contains(&expected), "output should contain version: {s}");
     assert!(s.contains("git:"), "output should contain git SHA: {s}");
-    assert!(s.contains("features:"), "output should contain features: {s}");
+    assert!(
+        s.contains("features:"),
+        "output should contain features: {s}"
+    );
 }
