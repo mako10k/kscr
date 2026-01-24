@@ -677,8 +677,14 @@ pub fn run_main(module: &IrModule) -> Result<Value> {
         return Err(Error::msg("main does not exist"));
     }
     let v = eval_var(&g, &std::collections::HashMap::new(), "main")?;
+    let v = force_value(&g, v)?;
+    let v = auto_apply_io_monad_dict(&g, v)?;
+    
     let Value::IoAction(action) = v else {
-        return Err(Error::msg("main did not evaluate to an IO action"));
+        return Err(Error::msg(format!(
+            "main did not evaluate to an IO action (got {})",
+            value_type_name(&v)
+        )));
     };
     match run_io(&g, *action)? {
         IoOutcome::Value(v) => Ok(v),
@@ -700,6 +706,41 @@ impl Globals {
             memo: std::cell::RefCell::new(memo),
         }
     }
+}
+
+fn value_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Unit => "Unit",
+        Value::Integer(_) => "Integer",
+        Value::Float64(_) => "Float64",
+        Value::Bool(_) => "Bool",
+        Value::String(_) => "String",
+        Value::Char(_) => "Char",
+        Value::Tuple(_) => "Tuple",
+        Value::ListNil => "List",
+        Value::ListCons(_, _) => "List",
+        Value::Record(_) => "Record",
+        Value::Thunk(_) => "Thunk",
+        Value::IoAction(_) => "IoAction",
+        Value::IoCtor => "IoCtor",
+        Value::Closure { .. } => "Closure",
+        _ => "Builtin",
+    }
+}
+
+/// Auto-apply the IO Monad dictionary if the value is a Closure expecting one.
+/// This handles do-notation that desugars to lambdas expecting dictionaries.
+fn auto_apply_io_monad_dict(g: &Globals, v: Value) -> Result<Value> {
+    if let Value::Closure { params, body: _, env: _ } = &v {
+        if params.len() == 1 && params[0].starts_with("__dict_") && params[0].contains("Monad") {
+            if g.defs.contains_key("__dict_Prelude.Monad.Monad_IO") {
+                let io_dict = eval_var(g, &std::collections::HashMap::new(), "__dict_Prelude.Monad.Monad_IO")?;
+                let v = apply_one(g, v, io_dict)?;
+                return force_value(g, v);
+            }
+        }
+    }
+    Ok(v)
 }
 
 fn force_value(g: &Globals, v: Value) -> Result<Value> {
@@ -1149,10 +1190,13 @@ fn run_io_bind_value(g: &Globals, action: IoAction, func: Value) -> Result<IoOut
     };
     let func = force_value(g, func)?;
     let act = apply_one(g, func, v)?;
+    let act = force_value(g, act)?;
+    let act = auto_apply_io_monad_dict(g, act)?;
     let Value::IoAction(act) = act else {
-        return Err(Error::msg(
-            "__ioBind: body did not evaluate to an IO action",
-        ));
+        return Err(Error::msg(format!(
+            "__ioBind: body did not evaluate to an IO action (got {})",
+            value_type_name(&act)
+        )));
     };
     run_io(g, *act)
 }
@@ -1178,8 +1222,13 @@ fn run_io_bind(
     };
     env.insert(param, v);
     let act = eval_expr(g, &env, &body)?;
+    let act = force_value(g, act)?;
+    let act = auto_apply_io_monad_dict(g, act)?;
     let Value::IoAction(act) = act else {
-        return Err(Error::msg("IoBind body did not evaluate to an IO action"));
+        return Err(Error::msg(format!(
+            "IoBind body did not evaluate to an IO action (got {})",
+            value_type_name(&act)
+        )));
     };
     run_io(g, *act)
 }
@@ -1195,8 +1244,13 @@ fn run_io_then(
         IoOutcome::Thrown(e) => return Ok(IoOutcome::Thrown(e)),
     }
     let act = eval_expr(g, &env, &then_expr)?;
+    let act = force_value(g, act)?;
+    let act = auto_apply_io_monad_dict(g, act)?;
     let Value::IoAction(act) = act else {
-        return Err(Error::msg("IoThen body did not evaluate to an IO action"));
+        return Err(Error::msg(format!(
+            "IoThen body did not evaluate to an IO action (got {})",
+            value_type_name(&act)
+        )));
     };
     run_io(g, *act)
 }
@@ -1339,8 +1393,12 @@ fn builtin_try(g: &Globals, arg: Value) -> Result<Value> {
 
 fn builtin_io_bind1(g: &Globals, act: Value, func: Value) -> Result<Value> {
     let act = force_value(g, act)?;
+    let act = auto_apply_io_monad_dict(g, act)?;
     let Value::IoAction(act) = act else {
-        return Err(Error::msg("__ioBind expects IO action"));
+        return Err(Error::msg(format!(
+            "__ioBind expects IO action (got {})",
+            value_type_name(&act)
+        )));
     };
     Ok(Value::IoAction(Box::new(IoAction::BindValue {
         action: act,
@@ -1350,12 +1408,20 @@ fn builtin_io_bind1(g: &Globals, act: Value, func: Value) -> Result<Value> {
 
 fn builtin_io_then1(g: &Globals, first: Value, then_action: Value) -> Result<Value> {
     let first = force_value(g, first)?;
+    let first = auto_apply_io_monad_dict(g, first)?;
     let Value::IoAction(first) = first else {
-        return Err(Error::msg("__ioThen expects IO action"));
+        return Err(Error::msg(format!(
+            "__ioThen expects IO action (got {} for first argument)",
+            value_type_name(&first)
+        )));
     };
     let then_action = force_value(g, then_action)?;
+    let then_action = auto_apply_io_monad_dict(g, then_action)?;
     let Value::IoAction(then_action) = then_action else {
-        return Err(Error::msg("__ioThen expects IO action"));
+        return Err(Error::msg(format!(
+            "__ioThen expects IO action (got {} for second argument)",
+            value_type_name(&then_action)
+        )));
     };
     Ok(Value::IoAction(Box::new(IoAction::ThenValue {
         first,
