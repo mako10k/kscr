@@ -640,14 +640,10 @@ pub enum Value {
     BuiltinFfiAddF32_1(Box<Value>),
     #[cfg(feature = "unsafe_ffi")]
     BuiltinFfiPuts,
-    BuiltinGetArgs,
     BuiltinReadFile,
-    BuiltinReadFile1(Box<Value>),
     BuiltinWriteFile,
     BuiltinWriteFile1(Box<Value>),
-    BuiltinWriteFile2(Box<Value>, Box<Value>),
     BuiltinExitWith,
-    BuiltinExitWith1(Box<Value>),
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -855,7 +851,7 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         #[cfg(feature = "unsafe_ffi")]
         "ffiPuts" => Value::BuiltinFfiPuts,
 
-        "getArgs" => Value::BuiltinGetArgs,
+        "getArgs" => Value::IoAction(Box::new(IoAction::GetArgs)),
         "readFile" => Value::BuiltinReadFile,
         "writeFile" => Value::BuiltinWriteFile,
         "exitWith" => Value::BuiltinExitWith,
@@ -1330,14 +1326,10 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         #[cfg(feature = "unsafe_ffi")]
         Value::BuiltinFfiPuts => builtin_ffi_puts(g, arg),
 
-        Value::BuiltinGetArgs => builtin_get_args(g, arg),
-        Value::BuiltinReadFile => Ok(Value::BuiltinReadFile1(Box::new(arg))),
-        Value::BuiltinReadFile1(path) => builtin_read_file(g, *path, arg),
+        Value::BuiltinReadFile => builtin_read_file(g, arg),
         Value::BuiltinWriteFile => Ok(Value::BuiltinWriteFile1(Box::new(arg))),
-        Value::BuiltinWriteFile1(path) => Ok(Value::BuiltinWriteFile2(path, Box::new(arg))),
-        Value::BuiltinWriteFile2(path, content) => builtin_write_file(g, *path, *content, arg),
-        Value::BuiltinExitWith => Ok(Value::BuiltinExitWith1(Box::new(arg))),
-        Value::BuiltinExitWith1(code) => builtin_exit_with(g, *code, arg),
+        Value::BuiltinWriteFile1(path) => builtin_write_file(g, *path, arg),
+        Value::BuiltinExitWith => builtin_exit_with(g, arg),
 
         Value::Closure { params, body, env } => apply_closure(g, params, body, env, arg),
 
@@ -1362,23 +1354,13 @@ fn apply_builtin_stdout_write(g: &Globals, arg: Value) -> Result<Value> {
     Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
 }
 
-fn builtin_get_args(_g: &Globals, _arg: Value) -> Result<Value> {
-    // getArgs is a zero-argument IO action, but in a curried language
-    // it's represented as a function from Unit to IO [[Char]]
-    // However, looking at stdinReadLine, it's just an IoAction directly
-    // So getArgs should also be an IoAction directly
-    // This function shouldn't be called - getArgs is defined as Value::BuiltinGetArgs
-    // which returns IoAction directly. But let's implement it for consistency
-    Ok(Value::IoAction(Box::new(IoAction::GetArgs)))
-}
-
-fn builtin_read_file(g: &Globals, path: Value, _unit: Value) -> Result<Value> {
+fn builtin_read_file(g: &Globals, path: Value) -> Result<Value> {
     let path = force_value(g, path)?;
     let path_str = value_to_string(g, path)?;
     Ok(Value::IoAction(Box::new(IoAction::ReadFile(path_str))))
 }
 
-fn builtin_write_file(g: &Globals, path: Value, content: Value, _unit: Value) -> Result<Value> {
+fn builtin_write_file(g: &Globals, path: Value, content: Value) -> Result<Value> {
     let path = force_value(g, path)?;
     let path_str = value_to_string(g, path)?;
     let content = force_value(g, content)?;
@@ -1389,7 +1371,7 @@ fn builtin_write_file(g: &Globals, path: Value, content: Value, _unit: Value) ->
     })))
 }
 
-fn builtin_exit_with(g: &Globals, code: Value, _unit: Value) -> Result<Value> {
+fn builtin_exit_with(g: &Globals, code: Value) -> Result<Value> {
     let code = force_value(g, code)?;
     let Value::Integer(i) = code else {
         return Err(Error::msg("exitWith: expected Integer"));
