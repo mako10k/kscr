@@ -1988,7 +1988,9 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
                     let next = ts.tokens.get(ts.i + 1).map(|t| &t.kind);
                     if matches!(
                         next,
-                        Some(TokenKind::Semicolon) | Some(TokenKind::RBrace) | Some(TokenKind::Newline)
+                        Some(TokenKind::Semicolon)
+                            | Some(TokenKind::RBrace)
+                            | Some(TokenKind::Newline)
                     ) {
                         ts.bump();
                     }
