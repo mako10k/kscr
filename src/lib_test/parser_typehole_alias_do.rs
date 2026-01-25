@@ -108,3 +108,42 @@ pub(crate) fn parser_do_blocks() {
     assert!(matches!(stmts[1], DoStmt::Bind { .. }));
     assert!(matches!(stmts[2], DoStmt::Expr(_)));
 }
+
+pub(crate) fn parser_do_let_blocks() {
+    let src = std::fs::read_to_string("tests/parser_do_let.ks").unwrap();
+    let module = crate::parser::parse_module(&src).unwrap();
+    assert_eq!(module.items.len(), 2);
+
+    use crate::ast::{DoStmt, ExprKind, Item, PatternKind};
+
+    for (idx, item) in module.items.iter().enumerate() {
+        let Item::Binding(b) = item else {
+            panic!("expected binding");
+        };
+
+        let expected_name = if idx == 0 { "main" } else { "main2" };
+        assert!(matches!(&b.pat.kind, PatternKind::Var(s) if s == expected_name));
+
+        let ExprKind::Do(stmts) = &b.expr.kind else {
+            panic!("expected do");
+        };
+
+        // do-let desugars to a single Expr stmt: (let ... in do { ... })
+        assert_eq!(stmts.len(), 1);
+        let DoStmt::Expr(let_expr) = &stmts[0] else {
+            panic!("expected Expr stmt");
+        };
+
+        let ExprKind::Let { bindings, body } = &let_expr.kind else {
+            panic!("expected let");
+        };
+        assert_eq!(bindings.len(), 1);
+
+        let ExprKind::Do(inner) = &body.kind else {
+            panic!("expected inner do");
+        };
+        assert_eq!(inner.len(), 2);
+        assert!(matches!(inner[0], DoStmt::Bind { .. }));
+        assert!(matches!(inner[1], DoStmt::Expr(_)));
+    }
+}

@@ -2654,6 +2654,11 @@ fn parser_do_blocks() {
     crate::lib_test::parser_typehole_alias_do::parser_do_blocks();
 }
 
+#[test]
+fn parser_do_let_blocks() {
+    crate::lib_test::parser_typehole_alias_do::parser_do_let_blocks();
+}
+
 // ============================================================================
 // IR Optimization Tests
 // ============================================================================

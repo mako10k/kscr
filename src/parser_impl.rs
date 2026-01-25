@@ -1755,7 +1755,15 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
     let start = ts.peek_span().map(|s| s.start).unwrap_or(0);
     ts.expect(TokenKind::KwLet)?;
 
-    let bindings = if matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+    let bindings = parse_let_bindings_after_kw_let(ts)?;
+
+    ts.expect(TokenKind::KwIn)?;
+    let body = Box::new(parse_expr_after_newline(ts, stop)?);
+    Ok(expr_from(ts, start, ast::ExprKind::Let { bindings, body }))
+}
+
+fn parse_let_bindings_after_kw_let(ts: &mut TokenStream) -> Result<Vec<ast::Binding>> {
+    if matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
         ts.consume_line_end();
         ts.skip_newlines();
         ts.expect(TokenKind::Indent)?;
@@ -1785,7 +1793,7 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
 
         ts.expect(TokenKind::Dedent)?;
         ts.consume_line_end();
-        bs
+        Ok(bs)
     } else {
         let mut bs = Vec::new();
         let mut pending: Option<PendingFun> = None;
@@ -1807,12 +1815,150 @@ fn parse_let(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
             }
         }
         flush_pending_fun_binding(ts, &mut bs, pending.take());
-        bs
-    };
+        Ok(bs)
+    }
+}
 
-    ts.expect(TokenKind::KwIn)?;
-    let body = Box::new(parse_expr_after_newline(ts, stop)?);
-    Ok(expr_from(ts, start, ast::ExprKind::Let { bindings, body }))
+fn parse_do_let_bindings_after_kw_let(ts: &mut TokenStream) -> Result<Vec<ast::Binding>> {
+    // Like parse_let_bindings_after_kw_let, but for do-let statements that have no `in`.
+    // For the inline form, we only treat `;` as a binding separator if another binding parses.
+    if matches!(ts.peek_kind(), Some(TokenKind::Newline)) {
+        parse_let_bindings_after_kw_let(ts)
+    } else {
+        let mut bs = Vec::new();
+        let mut pending: Option<PendingFun> = None;
+
+        match parse_binding_or_fun_clause(ts, Stop::LetBind)? {
+            ParsedBind::Binding(b) => bs.push(b),
+            ParsedBind::FunClause(c) => push_fun_clause_binding(ts, &mut bs, &mut pending, None, c),
+        }
+
+        loop {
+            if !matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
+                break;
+            }
+
+            let save = (ts.i, ts.last_span_end);
+            ts.bump();
+            match parse_binding_or_fun_clause(ts, Stop::LetBind) {
+                Ok(ParsedBind::Binding(b)) => {
+                    flush_pending_fun_binding(ts, &mut bs, pending.take());
+                    bs.push(b);
+                }
+                Ok(ParsedBind::FunClause(c)) => {
+                    push_fun_clause_binding(ts, &mut bs, &mut pending, None, c)
+                }
+                Err(_) => {
+                    (ts.i, ts.last_span_end) = save;
+                    break;
+                }
+            }
+        }
+
+        flush_pending_fun_binding(ts, &mut bs, pending.take());
+        Ok(bs)
+    }
+}
+
+fn do_stmt_span(stmt: &ast::DoStmt) -> ast::Span {
+    match stmt {
+        ast::DoStmt::Bind { pat, expr } => ast::Span {
+            start: pat.span.start,
+            end: expr.span.end,
+        },
+        ast::DoStmt::Expr(e) => e.span,
+    }
+}
+
+fn do_stmts_span(stmts: &[ast::DoStmt], fallback: ast::Span) -> ast::Span {
+    let Some(first) = stmts.first() else {
+        return fallback;
+    };
+    let Some(last) = stmts.last() else {
+        return fallback;
+    };
+    let s0 = do_stmt_span(first);
+    let s1 = do_stmt_span(last);
+    ast::Span {
+        start: s0.start,
+        end: s1.end.max(s0.start),
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ParsedDoItem {
+    Stmt(ast::DoStmt),
+    Let {
+        bindings: Vec<ast::Binding>,
+        span: ast::Span,
+    },
+}
+
+fn desugar_do_let_items(items: Vec<ParsedDoItem>) -> Result<Vec<ast::DoStmt>> {
+    // Desugar do-let statements:
+    //   do { ...; let bs; s; ... }
+    // into:
+    //   do { ...; (let bs in do { s; ... }) }
+    for (i, it) in items.iter().enumerate() {
+        if matches!(it, ParsedDoItem::Let { .. }) {
+            let mut prefix = Vec::new();
+            for p in &items[..i] {
+                match p {
+                    ParsedDoItem::Stmt(s) => prefix.push(s.clone()),
+                    ParsedDoItem::Let { .. } => {
+                        return Err(Error::msg_with_span(
+                            "internal error: unexpected nested do-let marker".to_string(),
+                            ast::dummy_span(),
+                        ));
+                    }
+                }
+            }
+
+            let ParsedDoItem::Let { bindings, span } = items[i].clone() else {
+                unreachable!();
+            };
+
+            if i + 1 >= items.len() {
+                return Err(Error::msg_with_span(
+                    "do-let must be followed by a statement".to_string(),
+                    span,
+                ));
+            }
+
+            let rest_items = items[i + 1..].to_vec();
+            let rest = desugar_do_let_items(rest_items)?;
+            let do_span = do_stmts_span(&rest, span);
+            let do_expr = ast::Expr::new(do_span, ast::ExprKind::Do(rest));
+            let let_span = ast::Span {
+                start: span.start,
+                end: do_expr.span.end.max(span.start),
+            };
+            let let_expr = ast::Expr::new(
+                let_span,
+                ast::ExprKind::Let {
+                    bindings,
+                    body: Box::new(do_expr),
+                },
+            );
+
+            prefix.push(ast::DoStmt::Expr(let_expr));
+            return Ok(prefix);
+        }
+    }
+
+    let mut out = Vec::new();
+    for it in items {
+        match it {
+            ParsedDoItem::Stmt(s) => out.push(s),
+            ParsedDoItem::Let { span, .. } => {
+                return Err(Error::msg_with_span(
+                    "internal error: unexpected do-let marker".to_string(),
+                    span,
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
@@ -1822,7 +1968,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
     // do { stmt; stmt; ... }
     if matches!(ts.peek_kind(), Some(TokenKind::LBrace)) {
         ts.bump();
-        let mut stmts = Vec::new();
+        let mut items: Vec<ParsedDoItem> = Vec::new();
         loop {
             if matches!(ts.peek_kind(), Some(TokenKind::RBrace)) {
                 break;
@@ -1831,22 +1977,48 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
                 return Err(ts.err_here("unexpected EOF in do"));
             }
 
-            // Bind statement is `pat <- expr`.
-            let save = (ts.i, ts.last_span_end);
-            if let Ok(pat) = pattern::parse_pattern(ts) {
-                if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
-                    ts.bump();
-                    let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
-                    stmts.push(ast::DoStmt::Bind { pat, expr });
+            // do-let statement: `let ...` (optionally tolerate a trailing `in` at end-of-stmt).
+            if matches!(ts.peek_kind(), Some(TokenKind::KwLet)) {
+                let let_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
+                ts.expect(TokenKind::KwLet)?;
+                let bindings = parse_do_let_bindings_after_kw_let(ts)?;
+
+                // Accept `let ... in` when `in` is immediately followed by a stmt terminator.
+                if matches!(ts.peek_kind(), Some(TokenKind::KwIn)) {
+                    let next = ts.tokens.get(ts.i + 1).map(|t| &t.kind);
+                    if matches!(
+                        next,
+                        Some(TokenKind::Semicolon)
+                            | Some(TokenKind::RBrace)
+                            | Some(TokenKind::Newline)
+                    ) {
+                        ts.bump();
+                    }
+                }
+
+                let span = ast::Span {
+                    start: let_start,
+                    end: ts.last_span_end.max(let_start),
+                };
+                items.push(ParsedDoItem::Let { bindings, span });
+            } else {
+                // Bind statement is `pat <- expr`.
+                let save = (ts.i, ts.last_span_end);
+                if let Ok(pat) = pattern::parse_pattern(ts) {
+                    if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
+                        ts.bump();
+                        let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
+                        items.push(ParsedDoItem::Stmt(ast::DoStmt::Bind { pat, expr }));
+                    } else {
+                        (ts.i, ts.last_span_end) = save;
+                        let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
+                        items.push(ParsedDoItem::Stmt(ast::DoStmt::Expr(expr)));
+                    }
                 } else {
                     (ts.i, ts.last_span_end) = save;
                     let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
-                    stmts.push(ast::DoStmt::Expr(expr));
+                    items.push(ParsedDoItem::Stmt(ast::DoStmt::Expr(expr)));
                 }
-            } else {
-                (ts.i, ts.last_span_end) = save;
-                let expr = parse_expr(ts, Stop::SemiOrRBrace)?;
-                stmts.push(ast::DoStmt::Expr(expr));
             }
 
             if matches!(ts.peek_kind(), Some(TokenKind::Semicolon)) {
@@ -1856,6 +2028,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             }
         }
         ts.expect(TokenKind::RBrace)?;
+        let stmts = desugar_do_let_items(items)?;
         return Ok(expr_from(ts, start, ast::ExprKind::Do(stmts)));
     }
 
@@ -1868,7 +2041,7 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
     ts.skip_newlines();
     ts.expect(TokenKind::Indent)?;
 
-    let mut stmts = Vec::new();
+    let mut items: Vec<ParsedDoItem> = Vec::new();
     loop {
         ts.skip_newlines();
         if matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
@@ -1878,13 +2051,36 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
             return Err(ts.err_here("unexpected EOF in do"));
         }
 
+        // do-let statement: `let ...` (optionally tolerate a trailing `in` at end-of-line).
+        if matches!(ts.peek_kind(), Some(TokenKind::KwLet)) {
+            let let_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
+            ts.expect(TokenKind::KwLet)?;
+            let bindings = parse_do_let_bindings_after_kw_let(ts)?;
+            if matches!(ts.peek_kind(), Some(TokenKind::KwIn)) {
+                let next = ts.tokens.get(ts.i + 1).map(|t| &t.kind);
+                if matches!(
+                    next,
+                    Some(TokenKind::Newline) | Some(TokenKind::Dedent) | Some(TokenKind::Semicolon)
+                ) {
+                    ts.bump();
+                }
+            }
+            let span = ast::Span {
+                start: let_start,
+                end: ts.last_span_end.max(let_start),
+            };
+            items.push(ParsedDoItem::Let { bindings, span });
+            ts.consume_line_end();
+            continue;
+        }
+
         // Bind statement is `pat <- expr`.
         let save = (ts.i, ts.last_span_end);
         if let Ok(pat) = pattern::parse_pattern(ts) {
             if matches!(ts.peek_kind(), Some(TokenKind::LeftArrow)) {
                 ts.bump();
                 let expr = parse_expr(ts, Stop::LineEnd)?;
-                stmts.push(ast::DoStmt::Bind { pat, expr });
+                items.push(ParsedDoItem::Stmt(ast::DoStmt::Bind { pat, expr }));
                 ts.consume_line_end();
                 continue;
             }
@@ -1892,13 +2088,14 @@ fn parse_do(ts: &mut TokenStream, _stop: Stop) -> Result<ast::Expr> {
         (ts.i, ts.last_span_end) = save;
 
         let expr = parse_expr(ts, Stop::LineEnd)?;
-        stmts.push(ast::DoStmt::Expr(expr));
+        items.push(ParsedDoItem::Stmt(ast::DoStmt::Expr(expr)));
         ts.consume_line_end();
     }
 
     ts.expect(TokenKind::Dedent)?;
     ts.consume_line_end();
 
+    let stmts = desugar_do_let_items(items)?;
     Ok(expr_from(ts, start, ast::ExprKind::Do(stmts)))
 }
 
