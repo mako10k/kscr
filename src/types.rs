@@ -2869,7 +2869,7 @@ fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
         "exitWith".to_string(),
         EnvEntry {
             scheme: Scheme {
-                vars: vec![a.clone()],
+                vars: vec![a],
                 constraints: vec![],
                 ty: Ty::Func(
                     Box::new(Ty::Con("Integer".to_string())),
