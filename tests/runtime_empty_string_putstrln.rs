@@ -2,7 +2,7 @@ use std::process::Command;
 
 #[test]
 fn empty_string_putstrln() {
-    // Regression test for v0.3.3: putStrLn "" and putStrLn [] should work
+    // Regression test for v0.3.3+: putStrLn "" and putStrLn [] should work
     // Previously failed with "error: expected String/[Char]"
     let out = Command::new(env!("CARGO_BIN_EXE_kscr"))
         .args(["run", "tests/runtime_empty_string_putstrln.ks"])
