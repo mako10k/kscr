@@ -1684,6 +1684,7 @@ fn string_to_char_list(s: &str) -> Value {
 }
 
 fn value_to_string(g: &Globals, v: Value) -> Result<String> {
+    let v = force_value(g, v)?;
     match v {
         Value::String(s) => Ok(s),
         Value::ListNil | Value::ListCons(_, _) => {
