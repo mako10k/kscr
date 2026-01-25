@@ -2721,6 +2721,64 @@ fn add_io_basic_primitives(env: &mut TypeEnv) {
             def_site: None,
         },
     );
+
+    // getArgs :: IO [[Char]]
+    let list_of_strings = Ty::List(Box::new(char_list.clone()));
+    env.insert(
+        "getArgs".to_string(),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::App {
+                    head: Box::new(Ty::Con("IO".to_string())),
+                    args: vec![list_of_strings],
+                },
+            },
+            def_site: None,
+        },
+    );
+
+    // readFile :: [Char] -> IO [Char]
+    env.insert(
+        "readFile".to_string(),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(char_list.clone()),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![char_list.clone()],
+                    }),
+                ),
+            },
+            def_site: None,
+        },
+    );
+
+    // writeFile :: [Char] -> [Char] -> IO Unit
+    env.insert(
+        "writeFile".to_string(),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(char_list.clone()),
+                    Box::new(Ty::Func(
+                        Box::new(char_list.clone()),
+                        Box::new(Ty::App {
+                            head: Box::new(Ty::Con("IO".to_string())),
+                            args: vec![Ty::Con("Unit".to_string())],
+                        }),
+                    )),
+                ),
+            },
+            def_site: None,
+        },
+    );
 }
 
 fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
@@ -2795,6 +2853,29 @@ fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
                     Box::new(Ty::App {
                         head: Box::new(Ty::Con("IO".to_string())),
                         args: vec![either],
+                    }),
+                ),
+            },
+            def_site: None,
+        },
+    );
+
+    // exitWith :: forall a. Integer -> IO a
+    // Note: exitWith never returns, so it can have any return type 'a'
+    let Ty::Var(a) = cx.fresh() else {
+        unreachable!()
+    };
+    env.insert(
+        "exitWith".to_string(),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![a],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(Ty::Con("Integer".to_string())),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![Ty::Var(a)],
                     }),
                 ),
             },

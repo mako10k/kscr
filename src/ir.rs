@@ -520,6 +520,13 @@ pub enum IoAction {
     Pure(Value),
     StdoutWrite(String),
     StdinReadLine,
+    GetArgs,
+    ReadFile(String),
+    WriteFile {
+        path: String,
+        content: String,
+    },
+    ExitWith(i64),
 
     #[cfg(feature = "unsafe_ffi")]
     FfiPuts(String),
@@ -639,6 +646,10 @@ pub enum Value {
     BuiltinFfiAddF32_1(Box<Value>),
     #[cfg(feature = "unsafe_ffi")]
     BuiltinFfiPuts,
+    BuiltinReadFile,
+    BuiltinWriteFile,
+    BuiltinWriteFile1(Box<Value>),
+    BuiltinExitWith,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -901,6 +912,11 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         #[cfg(feature = "unsafe_ffi")]
         "ffiPuts" => Value::BuiltinFfiPuts,
 
+        "getArgs" => Value::IoAction(Box::new(IoAction::GetArgs)),
+        "readFile" => Value::BuiltinReadFile,
+        "writeFile" => Value::BuiltinWriteFile,
+        "exitWith" => Value::BuiltinExitWith,
+
         "stdinReadLine" => Value::IoAction(Box::new(IoAction::StdinReadLine)),
         "readLine" => {
             return only_if_undefined(g, name, Value::IoAction(Box::new(IoAction::StdinReadLine)));
@@ -1119,6 +1135,10 @@ fn run_io(g: &Globals, action: IoAction) -> Result<IoOutcome> {
         IoAction::Pure(v) => Ok(IoOutcome::Value(force_value(g, v)?)),
         IoAction::StdoutWrite(s) => run_io_stdout_write(s),
         IoAction::StdinReadLine => run_io_stdin_readline(),
+        IoAction::GetArgs => run_io_get_args(),
+        IoAction::ReadFile(path) => run_io_read_file(path),
+        IoAction::WriteFile { path, content } => run_io_write_file(path, content),
+        IoAction::ExitWith(code) => run_io_exit_with(code),
 
         #[cfg(feature = "unsafe_ffi")]
         IoAction::FfiPuts(s) => run_io_ffi_puts(&s),
@@ -1159,6 +1179,39 @@ fn run_io_stdin_readline() -> Result<IoOutcome> {
         s.pop();
     }
     Ok(IoOutcome::Value(string_to_char_list(&s)))
+}
+
+fn run_io_get_args() -> Result<IoOutcome> {
+    let args: Vec<Value> = std::env::args()
+        .map(|arg| string_to_char_list(&arg))
+        .collect();
+    let mut list = Value::ListNil;
+    for arg in args.into_iter().rev() {
+        list = Value::ListCons(Box::new(arg), Box::new(list));
+    }
+    Ok(IoOutcome::Value(list))
+}
+
+fn run_io_read_file(path: String) -> Result<IoOutcome> {
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| Error::msg(format!("readFile: failed to read '{}': {}", path, e)))?;
+    Ok(IoOutcome::Value(string_to_char_list(&content)))
+}
+
+fn run_io_write_file(path: String, content: String) -> Result<IoOutcome> {
+    std::fs::write(&path, &content)
+        .map_err(|e| Error::msg(format!("writeFile: failed to write '{}': {}", path, e)))?;
+    Ok(IoOutcome::Value(Value::Unit))
+}
+
+fn run_io_exit_with(code: i64) -> Result<IoOutcome> {
+    std::process::exit(code as i32);
+    // Note: std::process::exit never returns, but Rust doesn't have a ! return type for functions
+    // that call exit, so we need this unreachable code to satisfy the type checker
+    #[allow(unreachable_code)]
+    {
+        Ok(IoOutcome::Value(Value::Unit))
+    }
 }
 
 #[cfg(feature = "unsafe_ffi")]
@@ -1353,6 +1406,11 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         #[cfg(feature = "unsafe_ffi")]
         Value::BuiltinFfiPuts => builtin_ffi_puts(g, arg),
 
+        Value::BuiltinReadFile => builtin_read_file(g, arg),
+        Value::BuiltinWriteFile => Ok(Value::BuiltinWriteFile1(Box::new(arg))),
+        Value::BuiltinWriteFile1(path) => builtin_write_file(g, *path, arg),
+        Value::BuiltinExitWith => builtin_exit_with(g, arg),
+
         Value::Closure { params, body, env } => apply_closure(g, params, body, env, arg),
 
         Value::Integer(_)
@@ -1374,6 +1432,32 @@ fn apply_builtin_stdout_write(g: &Globals, arg: Value) -> Result<Value> {
     let arg = force_value(g, arg)?;
     let s = value_to_string(g, arg)?;
     Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
+}
+
+fn builtin_read_file(g: &Globals, path: Value) -> Result<Value> {
+    let path = force_value(g, path)?;
+    let path_str = value_to_string(g, path)?;
+    Ok(Value::IoAction(Box::new(IoAction::ReadFile(path_str))))
+}
+
+fn builtin_write_file(g: &Globals, path: Value, content: Value) -> Result<Value> {
+    let path = force_value(g, path)?;
+    let path_str = value_to_string(g, path)?;
+    let content = force_value(g, content)?;
+    let content_str = value_to_string(g, content)?;
+    Ok(Value::IoAction(Box::new(IoAction::WriteFile {
+        path: path_str,
+        content: content_str,
+    })))
+}
+
+fn builtin_exit_with(g: &Globals, code: Value) -> Result<Value> {
+    let code = force_value(g, code)?;
+    let Value::Integer(i) = code else {
+        return Err(Error::msg("exitWith: expected Integer"));
+    };
+    let code_i64 = int_to_i64(&i)?;
+    Ok(Value::IoAction(Box::new(IoAction::ExitWith(code_i64))))
 }
 
 fn builtin_error(g: &Globals, arg: Value) -> Result<Value> {
@@ -1777,6 +1861,24 @@ fn to_i32_checked(n: Integer, ctx: &str) -> Result<i32> {
             return Err(Error::msg(format!("{ctx}: integer out of range for i32")));
         }
         Ok(crate::safe_bigint::to_i32_range_checked(n))
+    }
+}
+
+fn int_to_i64(n: &Integer) -> Result<i64> {
+    #[cfg(feature = "unsafe_bigint")]
+    {
+        if !kscr_unsafe_bigint::in_i64_range(n) {
+            return Err(Error::msg("integer out of range for i64"));
+        }
+        Ok(kscr_unsafe_bigint::to_i64_range_checked(n.clone()))
+    }
+
+    #[cfg(not(feature = "unsafe_bigint"))]
+    {
+        if !crate::safe_bigint::in_i64_range(n) {
+            return Err(Error::msg("integer out of range for i64"));
+        }
+        Ok(crate::safe_bigint::to_i64_range_checked(n.clone()))
     }
 }
 
