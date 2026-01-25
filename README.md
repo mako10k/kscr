@@ -43,6 +43,9 @@ cargo build --features readline
 # Show help
 cargo run -- help
 
+# Show version information
+cargo run -- version
+
 # Run a program (requires main :: IO Unit)
 cargo run -- run path/to/file.ks
 

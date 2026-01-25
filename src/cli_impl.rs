@@ -38,6 +38,10 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
             print_help();
             Ok(())
         }
+        "version" | "-v" | "--version" => {
+            print_version();
+            Ok(())
+        }
         "parse" => {
             let path = args
                 .next()
@@ -275,8 +279,37 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   Options: --all, --stdlib-dir <path>\n  ir <file>         Typecheck then lower to IR (debug)\n                   Options: --stdlib-dir <path>\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable\n                   Default: embeds packed IR and runs via Rust executor\n                   Emits `.ksif` by default to `./target/ksif/<file>.ksif`\n                   Options: -o/--output <path>, --release, --llvm, --ksif-out <dir>\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n                   Default: uses `.ksif` for imports when available\n                   Opt out: set `KSCR_USE_KSIF=0`\n                   Options: --stdlib-dir <path>\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n\nENV:\n  KSCR_STDLIB_DIR   Stdlib root directory (fallback)\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   Options: --all, --stdlib-dir <path>\n  ir <file>         Typecheck then lower to IR (debug)\n                   Options: --stdlib-dir <path>\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable\n                   Default: embeds packed IR and runs via Rust executor\n                   Emits `.ksif` by default to `./target/ksif/<file>.ksif`\n                   Options: -o/--output <path>, --release, --llvm, --ksif-out <dir>\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n                   Default: uses `.ksif` for imports when available\n                   Opt out: set `KSCR_USE_KSIF=0`\n                   Options: --stdlib-dir <path>\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n  version           Show version information\n\nENV:\n  KSCR_STDLIB_DIR   Stdlib root directory (fallback)\n"
     );
+}
+
+fn print_version() {
+    // Get version from Cargo.toml
+    let version = env!("CARGO_PKG_VERSION");
+
+    // Get git SHA from build.rs
+    let git_sha = env!("KSCR_GIT_SHA");
+
+    // Check enabled features
+    let features: Vec<&'static str> = [
+        cfg!(feature = "llvm").then_some("llvm"),
+        cfg!(feature = "readline").then_some("readline"),
+        cfg!(feature = "unsafe_ffi").then_some("unsafe_ffi"),
+        cfg!(feature = "unsafe_bigint").then_some("unsafe_bigint"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let features_str = if features.is_empty() {
+        "none".to_string()
+    } else {
+        features.join(", ")
+    };
+
+    println!("kscr {}", version);
+    println!("git: {}", git_sha);
+    println!("features: {}", features_str);
 }
 
 struct ReplState {
