@@ -291,19 +291,15 @@ fn print_version() {
     let git_sha = env!("KSCR_GIT_SHA");
 
     // Check enabled features
-    let mut features: Vec<&str> = Vec::new();
-
-    #[cfg(feature = "llvm")]
-    features.push("llvm");
-
-    #[cfg(feature = "readline")]
-    features.push("readline");
-
-    #[cfg(feature = "unsafe_ffi")]
-    features.push("unsafe_ffi");
-
-    #[cfg(feature = "unsafe_bigint")]
-    features.push("unsafe_bigint");
+    let features: Vec<&'static str> = [
+        cfg!(feature = "llvm").then_some("llvm"),
+        cfg!(feature = "readline").then_some("readline"),
+        cfg!(feature = "unsafe_ffi").then_some("unsafe_ffi"),
+        cfg!(feature = "unsafe_bigint").then_some("unsafe_bigint"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
     let features_str = if features.is_empty() {
         "none".to_string()
