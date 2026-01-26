@@ -1,10 +1,14 @@
 module Data.List where
   export List, Maybe(..), null, singleton, head, tail, map, filter, append, concat, concatMap, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip
 
+  import Prelude
+
+  -- Re-export `Maybe(..)` without duplicating `data Maybe`.
+  -- This alias enables `L.Just` / `L.Nothing`.
+  type Maybe a = Prelude.Maybe a
+
   -- Haskell-like alias: List a ~ [a]
   type List a = [a]
-
-  data Maybe a = Nothing | Just a
 
   null [] = True
   null _:_ = False
@@ -25,6 +29,10 @@ module Data.List where
   append (x:xs) ys = x : append xs ys
 
   concat xss = concatMap (\xs -> xs) xss
+
+  concatMap f xs = case xs of
+    [] -> []
+    x:xt -> append (f x) (concatMap f xt)
 
   length [] = 0
   length (_:xs) = 1 + length xs

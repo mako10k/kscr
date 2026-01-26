@@ -1,9 +1,12 @@
 module Data.Maybe where
   export Maybe(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
-  -- No Prelude import here to avoid name conflicts with Prelude's `maybe`.
+  import Prelude
 
-  data Maybe a = Nothing | Just a
+  -- Single-source of truth: `data Maybe` lives in Prelude.
+  -- This alias enables qualified ctor re-export in the compiler:
+  -- `import qualified Data.Maybe as M; M.Just / M.Nothing`.
+  type Maybe a = Prelude.Maybe a
 
   id x = x
 

@@ -768,10 +768,21 @@ fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
     Ok(v)
 }
 
-fn force_value(g: &Globals, v: Value) -> Result<Value> {
-    match v {
-        Value::Thunk(t) => force_thunk(g, &t),
-        other => Ok(other),
+fn force_value(g: &Globals, mut v: Value) -> Result<Value> {
+    loop {
+        match v {
+            Value::Thunk(t) => {
+                let forced = force_thunk(g, &t)?;
+                // Handle indirection thunks (e.g. `[] ++ xs` returns `xs` without forcing).
+                if let Value::Thunk(t2) = &forced {
+                    if std::rc::Rc::ptr_eq(&t, t2) {
+                        return Ok(forced);
+                    }
+                }
+                v = forced;
+            }
+            other => return Ok(other),
+        }
     }
 }
 

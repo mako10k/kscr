@@ -848,9 +848,9 @@ fn collect_unify_def_hints(a: &Ty, b: &Ty, hints: &NameHints) -> Vec<DefHint> {
 }
 
 fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHints {
-    // After import-flattening, imported modules are qualified (e.g. `Prelude.Maybe`) and
-    // unqualified forwarders may be emitted as `type Maybe = Prelude.Maybe ...`.
-    // Collect both as lightweight “definition origin” hints.
+    // After `.ksif` import forwarders are injected, imported modules are referenced as
+    // qualified names (e.g. `Prelude.Maybe`) and unqualified forwarders may be emitted as
+    // `type Maybe = Prelude.Maybe ...`. Collect both as lightweight “definition origin” hints.
     let mut out = NameHints::default();
     for it in &module.items {
         match it {
@@ -905,14 +905,20 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
             ast::Item::DataDecl(dd) => {
                 // Qualified data decls: `data Prelude.Maybe a = ...`
                 // Allow mapping `Maybe` -> `Prelude.Maybe`.
+                // Prefer `Prelude.*` as the canonical resolution hint.
                 if let Some((qual, base)) = dd.name.rsplit_once('.') {
                     let base = base.to_string();
                     if base.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                         let k = UnqualName(base.clone());
-                        out.type_ctor.entry(k).or_insert_with(|| QualName {
+                        let q = QualName {
                             module: ModuleName(qual.to_string()),
                             name: UnqualName(base.clone()),
-                        });
+                        };
+                        if q.module.0 == "Prelude" {
+                            out.type_ctor.insert(k, q);
+                        } else {
+                            out.type_ctor.entry(k).or_insert(q);
+                        }
                     }
                 }
 
@@ -3959,7 +3965,7 @@ fn append_instance_items(
 
     // Method impl bindings (instance overrides or class defaults).
     //
-    // IMPORTANT (Plan A / Haskell-like imports): after import-flattening we may have
+    // IMPORTANT (Plan A / Haskell-like imports): after import lowering we may have
     // instance decls whose method bodies refer to constructors unqualified (e.g. `Nothing`).
     // Under `import qualified Prelude as P`, those constructors are only available as
     // `P.Nothing` / `P.Just`, so we must qualify ctor references inside the generated
@@ -6009,7 +6015,7 @@ pub fn install_embedded_stdlib() -> Result<PathBuf> {
 
 pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // Prelude is auto-imported unless the module has explicit imports.
-    // Implement this before import-flattening.
+    // Note: import-flattening is removed; `.ksif` artifacts provide imported schemes.
     let entry = std::fs::canonicalize(entry)?;
     let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
 
@@ -6035,47 +6041,21 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
         entry_mod = ensure_implicit_prelude_import(entry_mod);
     }
 
-    let mut module =
-        load_module_with_imports_ast_with_loader(&mut loader, &entry, entry_dir, &entry_mod)?;
+    // Module-unit compilation: imports must be satisfied via `.ksif`.
+    // Import-flattening is intentionally removed.
+    let mut module = ast::Module {
+        name: entry_mod.name.clone(),
+        items: entry_mod.items.clone(),
+    };
 
     let def_ctx = DefEvidenceCtx::from_loader(&loader);
 
-    // Stage 2 (MVP): Default to loading interface-only artifacts (.ksif) for imports.
-    // Opt out via `KSCR_USE_KSIF=0`.
-    let use_ksif = std::env::var("KSCR_USE_KSIF").ok().as_deref() != Some("0");
-    if use_ksif {
-        // Use the *entry* module's import decls (pre-flatten), because import-flattening removes
-        // `Item::Import` from the final module.
-        let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
-        inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
-        return WithDefEvidence::run(def_ctx, || {
-            typecheck_with_stdlib_class_env_with_imported_with_entry_path(
-                module,
-                imported,
-                Some(&entry),
-            )
-        });
-    }
-
-    WithDefEvidence::run(def_ctx, || {
-        // Ensure the entry module's type alias def-sites are registered. When using the
-        // ModuleLoader path, we must explicitly merge these, otherwise unify evidence for
-        // file-local aliases won't resolve.
-        let alias_def_sites = collect_type_alias_def_sites(&module, Some(&entry));
-        TL_DEF_EVIDENCE.with(|slot| {
-            if let Some(ev) = &mut *slot.borrow_mut() {
-                for (name, site) in alias_def_sites {
-                    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                        ev.def_sites.type_ctor.insert(name, site);
-                    } else {
-                        ev.def_sites.type_alias.insert(name, site);
-                    }
-                }
-            }
-        });
-
-        typecheck_with_stdlib_class_env_with_entry_path(module, Some(&entry))
-    })
+    // Default: use `.ksif` for imports. (No opt-out; import-flattening is removed.)
+    let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
+    inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
+    return WithDefEvidence::run(def_ctx, || {
+        typecheck_with_stdlib_class_env_with_imported_with_entry_path(module, imported, Some(&entry))
+    });
 }
 
 fn inject_imported_ksif_forwarders(
@@ -6083,6 +6063,11 @@ fn inject_imported_ksif_forwarders(
     entry_mod: &ast::Module,
     imported: &HashMap<String, HashMap<String, Scheme>>,
 ) -> Result<()> {
+    // Mimic the old import-flattening behavior: for every imported value name `x`,
+    // inject a binding `<Qual>.x = <ImportedModule>.x`.
+    //
+    // This makes qualified references like `M.fromMaybe` work in `.ksif` mode
+    // without needing the full imported AST.
     let mut defined: HashMap<String, String> = HashMap::new();
     for it in &module.items {
         let mut names = HashSet::new();
@@ -6097,30 +6082,46 @@ fn inject_imported_ksif_forwarders(
         let ast::Item::Import(id) = it else {
             continue;
         };
-        if id.qualified {
-            continue;
-        }
         let Some(schemes) = imported.get(&id.module) else {
             continue;
         };
+
         let qual = id.as_name.as_deref().unwrap_or(&id.module);
         for name in schemes.keys() {
-            if defined.contains_key(name) {
+            let qual_name = format!("{qual}.{name}");
+            if defined.contains_key(&qual_name) {
                 continue;
             }
-            defined.insert(name.clone(), format!("import {qual} (.ksif)"));
+            defined.insert(qual_name.clone(), format!("import {qual} (.ksif)"));
             injected.push(ast::Item::Binding(ast::Binding {
                 doc: None,
                 pat: ast::Pattern {
-                    kind: ast::PatternKind::Var(name.clone()),
+                    kind: ast::PatternKind::Var(qual_name.clone()),
                     span: ast::dummy_span(),
                 },
                 expr: ast::Expr {
-                    kind: ast::ExprKind::Var(format!("{qual}.{name}")),
+                    kind: ast::ExprKind::Var(format!("{}.{}", id.module, name)),
                     span: ast::dummy_span(),
                 },
                 span: ast::dummy_span(),
             }));
+
+            // For unqualified imports, also inject `x = <Qual>.x` if not already defined.
+            if !id.qualified && !defined.contains_key(name) {
+                defined.insert(name.clone(), format!("import {qual} (.ksif)"));
+                injected.push(ast::Item::Binding(ast::Binding {
+                    doc: None,
+                    pat: ast::Pattern {
+                        kind: ast::PatternKind::Var(name.clone()),
+                        span: ast::dummy_span(),
+                    },
+                    expr: ast::Expr {
+                        kind: ast::ExprKind::Var(qual_name),
+                        span: ast::dummy_span(),
+                    },
+                    span: ast::dummy_span(),
+                }));
+            }
         }
     }
 
@@ -6135,19 +6136,202 @@ fn inject_imported_ksif_forwarders(
     Ok(())
 }
 
-fn load_imported_ksif_schemes(
+/// Ensure KSIF artifact exists for the given module by typechecking it if needed.
+/// Recursively ensures KSIF for transitive imports.
+fn ensure_ksif_for_module(
+    module_name: &str,
+    entry_dir: &Path,
+    visited: &mut HashSet<String>,
+) -> Result<()> {
+    use std::path::PathBuf;
+
+    // Avoid infinite recursion
+    if visited.contains(module_name) {
+        return Ok(());
+    }
+    visited.insert(module_name.to_string());
+
+    let default_artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("ksif");
+
+    // Check if KSIF already exists
+    let ksif_path = default_artifact_dir.join(format!("{}.ksif", module_name));
+    if ksif_path.exists() {
+        return Ok(());
+    }
+
+    // Resolve module .ks file
+    let rel = module_name.replace('.', "/");
+    let local = entry_dir.join(format!("{}.ks", rel));
+    let stdlib_root = stdlib_cache::stdlib_root()?;
+    let stdlib = stdlib_root.join(format!("{}.ks", rel));
+
+    let module_path = std::fs::canonicalize(&local)
+        .or_else(|_| std::fs::canonicalize(&stdlib))
+        .map_err(|_| {
+            Error::msg(format!(
+                "cannot find module file for {module_name} (tried: {}, {})",
+                local.display(),
+                stdlib.display()
+            ))
+        })?;
+
+    // Load and parse module
+    let src = std::fs::read_to_string(&module_path)?;
+    let mut module_ast = parser::parse_module(&src)?;
+    desugar_module_qualified_names(&mut module_ast)?;
+
+    // Populate def_module for ClassDecls
+    if let Some(name) = &module_ast.name {
+        for it in &mut module_ast.items {
+            if let ast::Item::ClassDecl(c) = it {
+                c.def_module = Some(name.clone());
+            }
+        }
+    }
+
+    // Recursively ensure KSIF for imports
+    let module_dir = module_path.parent().unwrap_or_else(|| Path::new("."));
+    for it in &module_ast.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        ensure_ksif_for_module(&id.module, module_dir, visited)?;
+    }
+
+    // For stdlib modules, generate KSIF by extracting exports from AST
+    // (stdlib definitions are injected globally, so KSIF just acts as a manifest)
+    let tm = if is_stdlib_path(&module_path) {
+        // For stdlib, we create a simple KSIF with exported names only.
+        // The actual type schemes will come from stdlib injection.
+        // We create placeholder schemes just so KSIF encoding works.
+        
+        // Load the module to check for exports
+        let parsed = std::fs::read_to_string(&module_path)?;
+        let parsed_mod = parser::parse_module(&parsed)?;
+        
+        // Extract exported names
+        let mut exported_names: Vec<String> = Vec::new();
+        
+        // Try to get explicit exports
+        for it in &parsed_mod.items {
+            if let ast::Item::Export(exports) = it {
+                for spec in &exports.specs {
+                    match spec {
+                        ast::ExportSpec::Name(name) => {
+                            exported_names.push(name.clone());
+                        }
+                        ast::ExportSpec::Type { name, ctors } => {
+                            match ctors {
+                                ast::ExportCtors::All => {
+                                    // Find the data decl and export all constructors
+                                    for it2 in &parsed_mod.items {
+                                        if let ast::Item::DataDecl(d) = it2 {
+                                            if &d.name == name {
+                                                for ctor in &d.ctors {
+                                                    exported_names.push(ctor.name.clone());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                ast::ExportCtors::Some(ctor_names) => {
+                                    exported_names.extend(ctor_names.iter().cloned());
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        
+        // If no explicit exports, collect all bindings and constructors
+        if exported_names.is_empty() {
+            for it in &parsed_mod.items {
+                match it {
+                    ast::Item::Binding(b) => {
+                        if let ast::PatternKind::Var(name) = &b.pat.kind {
+                            exported_names.push(name.clone());
+                        }
+                    }
+                    ast::Item::DataDecl(d) => {
+                        for ctor in &d.ctors {
+                            exported_names.push(ctor.name.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // Create placeholder schemes for all exported names
+        // These will be overridden by stdlib injection at runtime
+        let placeholder_scheme = Scheme {
+            vars: vec![],
+            constraints: vec![],
+            ty: Ty::Var(0), // Dummy type variable
+        };
+        
+        let mut inferred = HashMap::new();
+        for name in exported_names {
+            inferred.insert(name, placeholder_scheme.clone());
+        }
+        
+        // Create TypedModule for KSIF generation
+        TypedModule {
+            module: parsed_mod.clone(),
+            inferred,
+            docs: HashMap::new(),
+        }
+    } else {
+        // Non-stdlib modules use KSIF for imports and proper typechecking
+        let imported = load_imported_ksif_schemes_internal(&module_ast, module_dir)?;
+
+        // Inject forwarders for imported names
+        let mut module_to_typecheck = ast::Module {
+            name: module_ast.name.clone(),
+            items: module_ast.items.clone(),
+        };
+        inject_imported_ksif_forwarders(&mut module_to_typecheck, &module_ast, &imported)?;
+
+        typecheck_with_stdlib_class_env_with_imported_with_entry_path(
+            module_to_typecheck,
+            imported,
+            Some(&module_path),
+        )?
+    };
+
+    // Extract exported schemes
+    let exported = crate::cli_impl::filter_inferred_by_exports(&tm.module, tm.inferred.clone());
+    let values: Vec<(String, Scheme)> = exported;
+
+    let ksif = crate::kir1::KsifModule {
+        module_name: module_name.to_string(),
+        values,
+    };
+    let bytes = crate::kir1::encode_ksif_module(&ksif);
+
+    // Write KSIF artifact
+    std::fs::create_dir_all(&default_artifact_dir)?;
+    std::fs::write(&ksif_path, bytes)?;
+
+    Ok(())
+}
+
+/// Internal helper that loads KSIF schemes from disk without ensuring they exist first.
+/// Used by ensure_ksif_for_module to avoid infinite recursion.
+fn load_imported_ksif_schemes_internal(
     module: &ast::Module,
     entry_dir: &Path,
 ) -> Result<HashMap<String, HashMap<String, Scheme>>> {
     use std::path::PathBuf;
 
-    // Heuristic search path (MVP):
-    // 1) Default artifact dir: `./target/ksif/<module>.ksif`
-    // 2) Next to the entry file (legacy): `<module>.ksif`
-    // Dot-separated module names map to directories.
     let default_artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("target")
         .join("ksif");
+
     let mut imported: HashMap<String, HashMap<String, Scheme>> = HashMap::new();
     for it in &module.items {
         let ast::Item::Import(id) = it else {
@@ -6166,14 +6350,15 @@ fn load_imported_ksif_schemes(
 
         let mut bytes: Option<Vec<u8>> = None;
         let mut chosen: Option<PathBuf> = None;
-        for p in candidates {
-            if let Ok(b) = std::fs::read(&p) {
+        for p in &candidates {
+            if let Ok(b) = std::fs::read(p) {
                 bytes = Some(b);
-                chosen = Some(p);
+                chosen = Some(p.clone());
                 break;
             }
         }
         let Some(bytes) = bytes else {
+            // For stdlib modules, missing KSIF is tolerated (rely on stdlib cache/injection)
             continue;
         };
         let ksif_path = chosen.unwrap();
@@ -6192,6 +6377,23 @@ fn load_imported_ksif_schemes(
     }
 
     Ok(imported)
+}
+
+fn load_imported_ksif_schemes(
+    module: &ast::Module,
+    entry_dir: &Path,
+) -> Result<HashMap<String, HashMap<String, Scheme>>> {
+    // Ensure KSIF artifacts exist for all imports (including stdlib)
+    let mut visited = HashSet::new();
+    for it in &module.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        ensure_ksif_for_module(&id.module, entry_dir, &mut visited)?;
+    }
+
+    // Load KSIF schemes
+    load_imported_ksif_schemes_internal(module, entry_dir)
 }
 
 fn is_stdlib_path(path: &Path) -> bool {
@@ -6349,7 +6551,7 @@ fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
 }
 
 fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()> {
-    // Collect all qualified stdlib dict bindings present in the flattened module.
+    // Collect all qualified stdlib dict bindings present in the module.
     let mut exports: HashSet<String> = HashSet::new();
     for it in import_items(module) {
         let ast::Item::Binding(b) = it else {
@@ -6358,9 +6560,9 @@ fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()
         let ast::PatternKind::Var(n) = b.pat.kind else {
             continue;
         };
-        // Note: after import-flattening, stdlib-provided dictionaries appear as qualified
-        // value bindings like `Prelude.__dict_Monad_IO`. Later passes refer to the *unqualified*
-        // name `__dict_Monad_IO`, so we need a forwarder.
+        // Note: stdlib-provided dictionaries appear as qualified value bindings like
+        // `Prelude.__dict_Monad_IO`. Later passes refer to the *unqualified* name
+        // `__dict_Monad_IO`, so we need a forwarder.
         if let Some((qual, rest)) = n.split_once('.') {
             if qual == "Prelude" && rest.starts_with("__dict_") {
                 exports.insert(rest.to_string());
@@ -6437,13 +6639,7 @@ fn typecheck_internal_core_with_entry_path(
     let source_docs = collect_toplevel_docs(&module);
 
     WithAliasEvidence::run(|| {
-        if module
-            .items
-            .iter()
-            .any(|it| matches!(it, ast::Item::Import(_)))
-        {
-            return Err(Error::msg("imports are not supported yet"));
-        }
+        // Module-unit compilation: imports remain as syntax, but are satisfied via `.ksif`.
 
         // Try to hit the module-level typecheck cache.
         // NOTE: cache is only used when imported schemes are not provided.

@@ -1,5 +1,5 @@
 module Prelude where
-  export String, print, readLine, getLine, putStr, putStrLn, getArgs, readFile, writeFile, exitWith, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Rational(..), numerator, denominator, toPair, Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, map, filter, concat, append, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export String, print, readLine, getLine, putStr, putStrLn, getArgs, readFile, writeFile, exitWith, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Rational(..), numerator, denominator, toPair, Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, concatMap, map, filter, concat, append, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   import Prelude.Functor
   import Prelude.Applicative
@@ -60,6 +60,10 @@ module Prelude where
 
   const = \x -> \_ -> x
 
+  concatMap = \f -> \xs -> case xs of
+    [] -> []
+    x:xt -> f x ++ concatMap f xt
+
   map = \f -> \xs -> concatMap (\x -> [f x]) xs
 
   filter = \p -> \xs -> concatMap (\x -> if p x then [x] else []) xs
@@ -67,6 +71,63 @@ module Prelude where
   concat = \xss -> concatMap (\xs -> xs) xss
 
   append = \a -> \b -> a ++ b
+
+  length = \xs -> case xs of
+    [] -> 0
+    _:xt -> 1 + length xt
+
+  foldr = \f -> \z -> \xs -> case xs of
+    [] -> z
+    x:xt -> f x (foldr f z xt)
+
+  foldl = \f -> \z -> \xs -> case xs of
+    [] -> z
+    x:xt -> foldl f (f z x) xt
+
+  reverse = \xs -> foldl (\acc -> \x -> x:acc) [] xs
+
+  take = \n -> \xs -> if n == 0 then [] else case xs of
+    [] -> []
+    x:xt -> x : take (n - 1) xt
+
+  drop = \n -> \xs -> if n == 0 then xs else case xs of
+    [] -> []
+    _:xt -> drop (n - 1) xt
+
+  takeWhile = \p -> \xs -> case xs of
+    [] -> []
+    x:xt -> if p x then x : takeWhile p xt else []
+
+  dropWhile = \p -> \xs -> case xs of
+    [] -> []
+    x:xt -> if p x then dropWhile p xt else x:xt
+
+  any = \p -> \xs -> case xs of
+    [] -> False
+    x:xt -> if p x then True else any p xt
+
+  all = \p -> \xs -> case xs of
+    [] -> True
+    x:xt -> if p x then all p xt else False
+
+  elem = \x -> \xs -> case xs of
+    [] -> False
+    y:yt -> if x == y then True else elem x yt
+
+  find = \p -> \xs -> case xs of
+    [] -> Nothing
+    x:xt -> if p x then Just x else find p xt
+
+  zip = \xs -> \ys -> case xs of
+    [] -> []
+    x:xt -> case ys of
+      [] -> []
+      y:yt -> (x, y) : zip xt yt
+
+  unzip = \xys -> case xys of
+    [] -> ([], [])
+    (x, y):xt -> case unzip xt of
+      (xs, ys) -> (x:xs, y:ys)
 
   data Maybe a = Nothing | Just a deriving Show
 
