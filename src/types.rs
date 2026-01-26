@@ -9963,16 +9963,47 @@ impl<'a> RewriteClassMethodCallsCtx<'a> {
     }
 }
 
-fn instance_head_key_ty_for_class(class: &str, ty: &Ty) -> Result<String> {
+fn class_is_higher_kinded(class_env: &ClassEnv, class_id: &ast::ClassId) -> bool {
+    use ast::Type;
+
+    fn has_app_head_var(ty: &Type, v: &str) -> bool {
+        match ty {
+            Type::App { head, args } => {
+                matches!(head.as_ref(), Type::Var(name) if name == v)
+                    || has_app_head_var(head, v)
+                    || args.iter().any(|a| has_app_head_var(a, v))
+            }
+            Type::List(t) => has_app_head_var(t, v),
+            Type::Tuple(ts) => ts.iter().any(|t| has_app_head_var(t, v)),
+            Type::Record(fields) => fields.iter().any(|(_, t)| has_app_head_var(t, v)),
+            Type::RecordOpen(fields, rest) => {
+                fields.iter().any(|(_, t)| has_app_head_var(t, v)) || has_app_head_var(rest, v)
+            }
+            Type::Func(a, b) => has_app_head_var(a, v) || has_app_head_var(b, v),
+            _ => false,
+        }
+    }
+
+    let Some(param) = class_env.class_params.get(class_id) else {
+        return false;
+    };
+
+    for ((cid, _), qt) in &class_env.methods {
+        if cid == class_id && has_app_head_var(&qt.ty, param) {
+            return true;
+        }
+    }
+    false
+}
+
+fn instance_head_key_ty_for_class(
+    class_env: &ClassEnv,
+    class_id: &ast::ClassId,
+    ty: &Ty,
+) -> Result<String> {
     // MVP: higher-kinded classes select instances by the type constructor head.
     // e.g. `Functor` instance is declared for `Maybe`, but call sites see `Maybe a`.
-    let is_hk_class = class == "Monad"
-        || class.ends_with(".Monad")
-        || class == "Applicative"
-        || class.ends_with(".Applicative")
-        || class == "Functor"
-        || class.ends_with(".Functor");
-    if is_hk_class {
+    if class_is_higher_kinded(class_env, class_id) {
         return Ok(match ty {
             Ty::Con(name) => name.clone(),
             Ty::App { head, .. } => match head.as_ref() {
@@ -10233,16 +10264,6 @@ fn rewrite_class_method_lambda(
     ))
 }
 
-fn monad_syntactic_head(e: &ast::Expr) -> Option<String> {
-    match &e.kind {
-        ast::ExprKind::Ctor(n) => Some(n.qualified_text()),
-        ast::ExprKind::Apply { func, .. } => match &func.kind {
-            ast::ExprKind::Ctor(n) => Some(n.qualified_text()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 fn resolve_method_dict_expr(
     ctx: &ApplyRewriteCtx<'_>,
@@ -10354,7 +10375,7 @@ fn resolve_method_dict_expr(
             app_expr,
         ) {
             if ftv_ty(&app_ty).is_empty() {
-                if let Ok(head) = instance_head_key_ty_for_class(class, &app_ty) {
+                if let Ok(head) = instance_head_key_ty_for_class(ctx.class_env, class_id, &app_ty) {
                     if let Some(d) = ctx.class_env.instances.get(&(class_id.clone(), head)) {
                         let chosen_name_for_known = Some(d.clone());
                         return Ok(Some((
@@ -10375,56 +10396,39 @@ fn resolve_method_dict_expr(
     let mut first_missing_instance: Option<Ty> = None;
     let mut dict_name: Option<String> = None;
 
-    let is_monad = class == "Monad" || class.ends_with(".Monad");
+    let hk_class = class_is_higher_kinded(ctx.class_env, class_id);
 
     if determined_by_args {
-        if is_monad {
-            for a in args {
-                let Some(head) = monad_syntactic_head(a) else {
-                    continue;
-                };
+        for a in args {
+            let Ok(a_ty) = infer_in_module_with_class_env(
+                ctx.module_snapshot,
+                ctx.class_env,
+                ctx.inferred,
+                a.clone(),
+            ) else {
+                continue;
+            };
 
-                let key = (class_id.clone(), head);
-                if let Some(d) = ctx.class_env.instances.get(&key) {
-                    dict_name = Some(d.clone());
-                    break;
+            // For first-order classes, instance selection needs a ground type key.
+            if !hk_class && !ftv_ty(&a_ty).is_empty() {
+                if first_non_ground.is_none() {
+                    first_non_ground = Some(a_ty.clone());
                 }
+                continue;
             }
-        }
 
-        if dict_name.is_none() {
-            for a in args {
-                let Ok(a_ty) = infer_in_module_with_class_env(
-                    ctx.module_snapshot,
-                    ctx.class_env,
-                    ctx.inferred,
-                    a.clone(),
-                ) else {
-                    continue;
-                };
+            let Ok(head) = instance_head_key_ty_for_class(ctx.class_env, class_id, &a_ty) else {
+                continue;
+            };
 
-                if !ftv_ty(&a_ty).is_empty() {
-                    if first_non_ground.is_none() {
-                        first_non_ground = Some(a_ty.clone());
-                    }
-                    if !is_monad {
-                        continue;
-                    }
-                }
+            let key = (class_id.clone(), head);
+            if let Some(d) = ctx.class_env.instances.get(&key) {
+                dict_name = Some(d.clone());
+                break;
+            }
 
-                let Ok(head) = instance_head_key_ty_for_class(class, &a_ty) else {
-                    continue;
-                };
-
-                let key = (class_id.clone(), head);
-                if let Some(d) = ctx.class_env.instances.get(&key) {
-                    dict_name = Some(d.clone());
-                    break;
-                }
-
-                if first_missing_instance.is_none() {
-                    first_missing_instance = Some(a_ty);
-                }
+            if first_missing_instance.is_none() {
+                first_missing_instance = Some(a_ty);
             }
         }
     }
