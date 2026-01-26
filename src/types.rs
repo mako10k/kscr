@@ -6487,12 +6487,13 @@ fn typecheck_internal_core_with_entry_path(
             merge_class_env(&mut class_env, stdlib_env)?;
         }
 
-        // If `Monad` is available, desugar `do`-notation into `(>>=)` / `(>>)`. This allows `do` to
-        // work for non-IO monads (via type classes).
-        if class_env
-            .class_params
-            .keys()
-            .any(|c| c.name == "Monad" || c.name.ends_with(".Monad"))
+        // If `>>=` and `>>` operators are available (typically from a Monad-like type class),
+        // desugar `do`-notation into those operators. This allows `do` to work for any monad
+        // (via type classes), not just IO.
+        // If these operators are not available, do-notation remains as ExprKind::Do and is
+        // lowered directly to IR IoBind/IoThen constructs (IO-only fallback).
+        if class_env.method_classes.contains_key(">>=")
+            && class_env.method_classes.contains_key(">>")
         {
             desugar_do_to_monad_ops_in_module(&mut module)?;
         }
