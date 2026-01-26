@@ -10230,18 +10230,129 @@ fn monad_syntactic_head(e: &ast::Expr) -> Option<String> {
 
 fn resolve_method_dict_expr(
     ctx: &ApplyRewriteCtx<'_>,
-    class: &str,
+    class_id: &ast::ClassId,
     mname: &str,
     args: &[ast::Expr],
 ) -> Result<Option<(ast::Expr, Option<String>)>> {
-    use ast::{Expr, ExprKind};
+    use ast::{Expr, ExprKind, Type};
 
+    fn unqualified_class_name(class: &str) -> &str {
+        class.rsplit('.').next().unwrap_or(class)
+    }
+
+    fn type_contains_var(ty: &Type, v: &str) -> bool {
+        match ty {
+            Type::Unit
+            | Type::Integer
+            | Type::Bool
+            | Type::Float64
+            | Type::Char
+            | Type::String
+            | Type::Hole(_) => false,
+            Type::Var(name) => name == v,
+            Type::List(t) => type_contains_var(t, v),
+            Type::Tuple(ts) => ts.iter().any(|t| type_contains_var(t, v)),
+            Type::Record(fields) => fields.iter().any(|(_, t)| type_contains_var(t, v)),
+            Type::RecordOpen(fields, rest) => {
+                fields.iter().any(|(_, t)| type_contains_var(t, v)) || type_contains_var(rest, v)
+            }
+            Type::App { head, args } => {
+                type_contains_var(head, v) || args.iter().any(|t| type_contains_var(t, v))
+            }
+            Type::Func(a, b) => type_contains_var(a, v) || type_contains_var(b, v),
+        }
+    }
+
+    fn method_class_param_determined_by_args(
+        class_env: &ClassEnv,
+        class_id: &ast::ClassId,
+        mname: &str,
+    ) -> bool {
+        let Some(param) = class_env.class_params.get(class_id) else {
+            return true;
+        };
+        let Some(qt) = class_env
+            .methods
+            .get(&(class_id.clone(), mname.to_string()))
+        else {
+            return true;
+        };
+
+        let mut cur = &qt.ty;
+        while let Type::Func(a, b) = cur {
+            if type_contains_var(a, param) {
+                return true;
+            }
+            cur = b;
+        }
+        false
+    }
+
+    let class = class_id.name.as_str();
+
+    // Prefer an in-scope dictionary param when available.
     let dict_var = format!("__dict_{class}");
+    let dict_var_unqual = format!("__dict_{}", unqualified_class_name(class));
     if ctx.dicts_in_scope.contains(&dict_var) {
         return Ok(Some((
             Expr::new(ctx.span, ExprKind::Var(dict_var.clone())),
             Some(dict_var),
         )));
+    }
+    if ctx.dicts_in_scope.contains(&dict_var_unqual) {
+        return Ok(Some((
+            Expr::new(ctx.span, ExprKind::Var(dict_var_unqual.clone())),
+            Some(dict_var_unqual),
+        )));
+    }
+
+    // Prefer a dictionary already fixed by surrounding context.
+    if let Some(d) = ctx
+        .known_dicts_in_scope
+        .get(class)
+        .or_else(|| ctx.known_dicts_in_scope.get(unqualified_class_name(class)))
+    {
+        let chosen_name_for_known = Some(d.clone());
+        return Ok(Some((
+            Expr::new(ctx.span, ExprKind::Var(d.clone())),
+            chosen_name_for_known,
+        )));
+    }
+
+    let determined_by_args = method_class_param_determined_by_args(ctx.class_env, class_id, mname);
+
+    // If the class parameter is not determined by argument types (e.g. `pure`, `return`),
+    // try to use the inferred type of the whole application to pick an instance.
+    if !determined_by_args {
+        let app_expr = Expr::new(
+            ctx.span,
+            ExprKind::Apply {
+                func: Box::new(Expr::new(ctx.span, ExprKind::Var(mname.to_string()))),
+                args: args.to_vec(),
+            },
+        );
+        if let Ok(app_ty) = infer_in_module_with_class_env(
+            ctx.module_snapshot,
+            ctx.class_env,
+            ctx.inferred,
+            app_expr,
+        ) {
+            if ftv_ty(&app_ty).is_empty() {
+                if let Ok(head) = instance_head_key_ty_for_class(class, &app_ty) {
+                    if let Some(d) = ctx.class_env.instances.get(&(class_id.clone(), head)) {
+                        let chosen_name_for_known = Some(d.clone());
+                        return Ok(Some((
+                            Expr::new(ctx.span, ExprKind::Var(d.clone())),
+                            chosen_name_for_known,
+                        )));
+                    }
+                    return Err(Error::msg_with_span(
+                        format!("no instance found for method call `{mname}`: {class} {app_ty}"),
+                        ctx.span,
+                    ));
+                }
+            }
+        }
     }
 
     let mut first_non_ground: Option<Ty> = None;
@@ -10249,72 +10360,55 @@ fn resolve_method_dict_expr(
     let mut dict_name: Option<String> = None;
 
     let is_monad = class == "Monad" || class.ends_with(".Monad");
-    if is_monad {
-        for a in args {
-            let Some(head) = monad_syntactic_head(a) else {
-                continue;
-            };
 
-            let Some(class_id) = ctx
-                .class_env
-                .class_params
-                .keys()
-                .find(|id| id.name == class)
-                .cloned()
-            else {
-                continue;
-            };
+    if determined_by_args {
+        if is_monad {
+            for a in args {
+                let Some(head) = monad_syntactic_head(a) else {
+                    continue;
+                };
 
-            let key = (class_id, head);
-            if let Some(d) = ctx.class_env.instances.get(&key) {
-                dict_name = Some(d.clone());
-                break;
+                let key = (class_id.clone(), head);
+                if let Some(d) = ctx.class_env.instances.get(&key) {
+                    dict_name = Some(d.clone());
+                    break;
+                }
             }
         }
-    }
 
-    if dict_name.is_none() {
-        for a in args {
-            let Ok(a_ty) = infer_in_module_with_class_env(
-                ctx.module_snapshot,
-                ctx.class_env,
-                ctx.inferred,
-                a.clone(),
-            ) else {
-                continue;
-            };
-
-            if !ftv_ty(&a_ty).is_empty() {
-                if first_non_ground.is_none() {
-                    first_non_ground = Some(a_ty.clone());
-                }
-                if !is_monad {
+        if dict_name.is_none() {
+            for a in args {
+                let Ok(a_ty) = infer_in_module_with_class_env(
+                    ctx.module_snapshot,
+                    ctx.class_env,
+                    ctx.inferred,
+                    a.clone(),
+                ) else {
                     continue;
+                };
+
+                if !ftv_ty(&a_ty).is_empty() {
+                    if first_non_ground.is_none() {
+                        first_non_ground = Some(a_ty.clone());
+                    }
+                    if !is_monad {
+                        continue;
+                    }
                 }
-            }
 
-            let Ok(head) = instance_head_key_ty_for_class(class, &a_ty) else {
-                continue;
-            };
+                let Ok(head) = instance_head_key_ty_for_class(class, &a_ty) else {
+                    continue;
+                };
 
-            let Some(class_id) = ctx
-                .class_env
-                .class_params
-                .keys()
-                .find(|id| id.name == class)
-                .cloned()
-            else {
-                continue;
-            };
+                let key = (class_id.clone(), head);
+                if let Some(d) = ctx.class_env.instances.get(&key) {
+                    dict_name = Some(d.clone());
+                    break;
+                }
 
-            let key = (class_id, head);
-            if let Some(d) = ctx.class_env.instances.get(&key) {
-                dict_name = Some(d.clone());
-                break;
-            }
-
-            if first_missing_instance.is_none() {
-                first_missing_instance = Some(a_ty);
+                if first_missing_instance.is_none() {
+                    first_missing_instance = Some(a_ty);
+                }
             }
         }
     }
@@ -10326,13 +10420,7 @@ fn resolve_method_dict_expr(
             chosen_name_for_known,
         )));
     }
-    if let Some(d) = ctx.known_dicts_in_scope.get(class) {
-        let chosen_name_for_known = Some(d.clone());
-        return Ok(Some((
-            Expr::new(ctx.span, ExprKind::Var(d.clone())),
-            chosen_name_for_known,
-        )));
-    }
+
     if let Some(d) = derive_dict_expr_from_candidates(
         ctx.span,
         ctx.class_env,
@@ -10343,15 +10431,37 @@ fn resolve_method_dict_expr(
         return Ok(Some((d, None)));
     }
 
-    if let Some(ty) = first_missing_instance {
+    // If we saw only concrete (ground) argument types and still couldn't find an instance,
+    // this is a real “missing instance” error.
+    // If we saw any non-ground arg type, treat it as ambiguity and defer (non-strict mode).
+    if determined_by_args && first_non_ground.is_none() {
+        if let Some(ty) = first_missing_instance {
+            return Err(Error::msg_with_span(
+                format!("no instance found for method call `{mname}`: {class} {ty}"),
+                ctx.span,
+            ));
+        }
+    }
+
+    // IMPORTANT: Dictionary choice failure means we don't have enough information at this
+    // rewrite stage. Historically we kept such calls polymorphic by producing a dict-lambda.
+    // This behaves like a fallback and can mask bugs, so allow opting into strict fail-fast.
+    let failfast = std::env::var("KSCR_FAILFAST_METHOD_DICT").ok().as_deref() == Some("1");
+    if failfast {
+        eprintln!(
+            "[KSCR_FAILFAST_METHOD_DICT] cannot choose dictionary for `{mname}` (class={class}) args_len={} span={:?}",
+            args.len(),
+            ctx.span
+        );
         return Err(Error::msg_with_span(
-            format!("no instance found for method call `{mname}`: {class} {ty}"),
+            format!(
+                "cannot choose dictionary for method call `{mname}`: {class} (insufficient information)"
+            ),
             ctx.span,
         ));
     }
 
-    // No in-scope dictionary and no ground type to pick an instance: keep it polymorphic.
-    // The caller will wrap this in a dict-lambda.
+    // Non-strict mode: keep it polymorphic (caller will wrap in a dict-lambda).
     Ok(None)
 }
 
@@ -10421,7 +10531,7 @@ fn rewrite_class_method_apply(
             };
 
             if let Some((dict_expr, chosen_name_for_known)) =
-                resolve_method_dict_expr(ctx, &class.name, mname, &args)?
+                resolve_method_dict_expr(ctx, class, mname, &args)?
             {
                 let mut known = ctx.known_dicts_in_scope.clone();
                 if let Some(chosen) = chosen_name_for_known.clone() {
