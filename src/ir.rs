@@ -13,8 +13,6 @@ type Integer = crate::safe_bigint::Integer;
 
 // NOTE: IR data types are defined in `crates/kscr_ir` and re-exported here.
 
-
-
 /// Apply default optimization passes to an IR module.
 ///
 /// This applies a standard set of safe optimizations:

@@ -6523,20 +6523,17 @@ fn typecheck_internal_core_with_entry_path(
             // can be instantiated to `IO a` with all constraints solved.
             let mut cx = InferCtx::default();
             let (cs, ty) = instantiate_qual(&mut cx, main);
-            let Ty::Var(a) = cx.fresh() else { unreachable!() };
+            let Ty::Var(a) = cx.fresh() else {
+                unreachable!()
+            };
             let io_a = Ty::App {
                 head: Box::new(Ty::Con("IO".to_string())),
                 args: vec![Ty::Var(a)],
             };
-            let subst = unify(ty, io_a)
-                .map_err(|_| Error::msg("main must have type IO _"))?;
+            let subst = unify(ty, io_a).map_err(|_| Error::msg("main must have type IO _"))?;
 
             let data_env = collect_data_env(&module);
-            let cs = simplify_constraints(
-                &data_env,
-                &class_env,
-                apply_constraints(&subst, cs),
-            )?;
+            let cs = simplify_constraints(&data_env, &class_env, apply_constraints(&subst, cs))?;
             if !cs.is_empty() {
                 return Err(Error::msg("main must have type IO _"));
             }
@@ -10263,7 +10260,6 @@ fn rewrite_class_method_lambda(
         },
     ))
 }
-
 
 fn resolve_method_dict_expr(
     ctx: &ApplyRewriteCtx<'_>,
