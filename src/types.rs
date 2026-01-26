@@ -6517,12 +6517,27 @@ fn typecheck_internal_core_with_entry_path(
         };
 
         if let Some(main) = inferred.get("main") {
-            let expected = Ty::App {
+            // Haskell-like: accept any `IO a` as an entry point.
+            // If `main` is polymorphic (e.g. `forall m. Monad m => m Unit`), we accept it iff it
+            // can be instantiated to `IO a` with all constraints solved.
+            let mut cx = InferCtx::default();
+            let (cs, ty) = instantiate_qual(&mut cx, main);
+            let Ty::Var(a) = cx.fresh() else { unreachable!() };
+            let io_a = Ty::App {
                 head: Box::new(Ty::Con("IO".to_string())),
-                args: vec![Ty::Con("Unit".to_string())],
+                args: vec![Ty::Var(a)],
             };
-            if !main.vars.is_empty() || !main.constraints.is_empty() || main.ty != expected {
-                return Err(Error::msg("main must have type IO Unit"));
+            let subst = unify(ty, io_a)
+                .map_err(|_| Error::msg("main must have type IO _"))?;
+
+            let data_env = collect_data_env(&module);
+            let cs = simplify_constraints(
+                &data_env,
+                &class_env,
+                apply_constraints(&subst, cs),
+            )?;
+            if !cs.is_empty() {
+                return Err(Error::msg("main must have type IO _"));
             }
         }
 

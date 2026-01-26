@@ -1017,8 +1017,9 @@ fn typecheck_main_must_be_io_unit() {
     let m_bad = crate::parser::parse_module("main = 1\n").unwrap();
     assert!(crate::types::typecheck(m_bad).is_err());
 
-    let m_bad2 = crate::parser::parse_module("main = IO 1\n").unwrap();
-    assert!(crate::types::typecheck(m_bad2).is_err());
+    // Haskell-like: main may return any `IO a`.
+    let m_ok2 = crate::parser::parse_module("main = IO 1\n").unwrap();
+    crate::types::typecheck(m_ok2).unwrap();
 }
 
 #[test]
