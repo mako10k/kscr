@@ -2936,7 +2936,7 @@ fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
         },
     );
 
-    // try :: forall a. IO a -> IO (Prelude.Either [Char] a)
+    // try :: forall a. IO a -> IO (Either [Char] a)
     let Ty::Var(a) = cx.fresh() else {
         unreachable!()
     };
@@ -2945,7 +2945,7 @@ fn add_io_exception_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
         args: vec![Ty::Var(a)],
     };
     let either = Ty::App {
-        head: Box::new(Ty::Con("Prelude.Either".to_string())),
+        head: Box::new(Ty::Con("Either".to_string())),
         args: vec![char_list, Ty::Var(a)],
     };
     env.insert(
@@ -6466,8 +6466,13 @@ fn ensure_ksif_for_module(
         module_path.with_extension("ksif")
     };
 
-    // Check if KSIF already exists
+    // Check if KSIF already exists.
+    // IMPORTANT: this function is called in a shared DFS with `visiting`/`done`.
+    // If we return early here, we must still mark the module as done; otherwise a later
+    // import of the same module will look like a cycle.
     if ksif_path.exists() {
+        visiting.remove(module_name);
+        done.insert(module_name.to_string());
         return Ok(());
     }
 
