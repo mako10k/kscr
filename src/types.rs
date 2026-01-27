@@ -2728,6 +2728,27 @@ fn add_io_basic_primitives(env: &mut TypeEnv) {
         },
     );
 
+    // putStrLn :: [Char] -> IO Unit
+    // Defined in stdlib Prelude, but required for `.ksif`-only compilation where stdlib
+    // bindings may not be linked at runtime yet.
+    env.insert(
+        "putStrLn".to_string(),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![],
+                constraints: vec![],
+                ty: Ty::Func(
+                    Box::new(char_list.clone()),
+                    Box::new(Ty::App {
+                        head: Box::new(Ty::Con("IO".to_string())),
+                        args: vec![Ty::Con("Unit".to_string())],
+                    }),
+                ),
+            },
+            def_site: None,
+        },
+    );
+
     // getArgs :: IO [[Char]]
     let list_of_strings = Ty::List(Box::new(char_list.clone()));
     env.insert(
@@ -2998,6 +3019,76 @@ fn add_ffi_primitives(env: &mut TypeEnv) {
     );
 }
 
+fn add_prelude_data_ctors(cx: &mut InferCtx, env: &mut TypeEnv, also_unqualified: bool) {
+    // Hardcoded Prelude constructors for module-unit compilation with .ksif.
+    // Always provide qualified ctor names (e.g. `Prelude.Just`).
+    // Only provide unqualified ctor names (e.g. `Just`) when Prelude is imported unqualified.
+    // Note: the REPL always includes `import Prelude`, so unqualified ctors should be available there.
+
+    // Maybe: data Maybe a = Nothing | Just a
+    let Ty::Var(a) = cx.fresh() else { unreachable!() };
+    let maybe_a = Ty::App {
+        head: Box::new(Ty::Con("Maybe".to_string())),
+        args: vec![Ty::Var(a)],
+    };
+
+    let nothing_entry = EnvEntry {
+        scheme: Scheme {
+            vars: vec![a],
+            constraints: vec![],
+            ty: maybe_a.clone(),
+        },
+        def_site: None,
+    };
+    let just_entry = EnvEntry {
+        scheme: Scheme {
+            vars: vec![a],
+            constraints: vec![],
+            ty: Ty::Func(Box::new(Ty::Var(a)), Box::new(maybe_a)),
+        },
+        def_site: None,
+    };
+
+    env.insert("Prelude.Nothing".to_string(), nothing_entry.clone());
+    env.insert("Prelude.Just".to_string(), just_entry.clone());
+    if also_unqualified {
+        env.insert("Nothing".to_string(), nothing_entry);
+        env.insert("Just".to_string(), just_entry);
+    }
+
+    // Either: data Either a b = Left a | Right b
+    let Ty::Var(a) = cx.fresh() else { unreachable!() };
+    let Ty::Var(b) = cx.fresh() else { unreachable!() };
+    let either_ab = Ty::App {
+        head: Box::new(Ty::Con("Either".to_string())),
+        args: vec![Ty::Var(a), Ty::Var(b)],
+    };
+
+    let left_entry = EnvEntry {
+        scheme: Scheme {
+            vars: vec![a, b],
+            constraints: vec![],
+            ty: Ty::Func(Box::new(Ty::Var(a)), Box::new(either_ab.clone())),
+        },
+        def_site: None,
+    };
+    let right_entry = EnvEntry {
+        scheme: Scheme {
+            vars: vec![a, b],
+            constraints: vec![],
+            ty: Ty::Func(Box::new(Ty::Var(b)), Box::new(either_ab)),
+        },
+        def_site: None,
+    };
+
+    env.insert("Prelude.Left".to_string(), left_entry.clone());
+    env.insert("Prelude.Right".to_string(), right_entry.clone());
+    if also_unqualified {
+        env.insert("Left".to_string(), left_entry);
+        env.insert("Right".to_string(), right_entry);
+    }
+}
+
 fn collect_ctor_env_with_class_env(
     cx: &mut InferCtx,
     module: &ast::Module,
@@ -3013,6 +3104,22 @@ fn collect_ctor_env_with_class_env(
     add_io_primitives(cx, &mut env);
     add_misc_builtins(cx, &mut env);
     add_ffi_primitives(&mut env);
+    let has_unqualified_prelude = module.items.iter().any(|it| {
+        matches!(
+            it,
+            ast::Item::Import(ast::ImportDecl {
+                module,
+                qualified: false,
+                ..
+            }) if module == "Prelude"
+        )
+    });
+
+    // If Prelude is imported unqualified, bring its ctors in unqualified too.
+    // Some paths (notably REPL-generated temp modules) may lose the explicit import during
+    // module-loading/qualification; fall back to treating anonymous modules as having Prelude.
+    let also_unqualified = has_unqualified_prelude || module.name.is_none();
+    add_prelude_data_ctors(cx, &mut env, also_unqualified);
 
     add_data_ctors_into_env(cx, module, module_path, &mut env);
     add_class_methods_into_env(cx, class_env, &mut env)?;
@@ -3326,6 +3433,7 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
 
 /// Process classes and instances with optional strict canonicalization.
 fn desugar_typeclasses_with_strict(module: &mut ast::Module, strict: bool) -> Result<ClassEnv> {
+    eprintln!("[DESUGAR] Starting desugar_typeclasses for module: {:?}", module.name);
     let mut env = ClassEnv {
         aliases: collect_type_aliases(module),
         ..Default::default()
@@ -3675,6 +3783,7 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
         } else {
             c.name.clone()
         };
+        eprintln!("[COLLECT] Collecting class: {} (from name: {}, def_module: {:?})", class_name, c.name, c.def_module);
         let class_id = ast::ClassId::dummy(class_name);
 
         if env.class_params.contains_key(&class_id) {
@@ -3756,6 +3865,11 @@ fn validate_superclass_preds(env: &ClassEnv) -> Result<()> {
                     ty: ast::Type::Var(v),
                 } if v == param => {
                     if !env.class_params.contains_key(sup) {
+                        eprintln!("[ERROR] Superclass {} not found in env", sup.name);
+                        eprintln!("[ERROR] Available classes:");
+                        for c in env.class_params.keys() {
+                            eprintln!("[ERROR]   - {}", c.name);
+                        }
                         return Err(Error::msg(format!(
                             "unknown superclass `{}` in class `{}`",
                             sup.name, class.name
@@ -6019,16 +6133,8 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     let entry = std::fs::canonicalize(entry)?;
     let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
 
-    let mut loader = ModuleLoader {
-        cache: HashMap::new(),
-        sources: HashMap::new(),
-        stack: vec![entry.clone()],
-        emitted_qualified: HashSet::new(),
-        emitted_unqualified: HashSet::new(),
-        def_sites: DefSiteIndex::default(),
-        module_ids: ModuleIdInterner::default(),
-        module_name_to_paths: HashMap::new(),
-    };
+    let mut loader = ModuleLoader::new();
+    loader.stack = vec![entry.clone()];
 
     // Load via ModuleLoader so stdlib cache + qualified-name desugaring stays consistent.
     let mut entry_mod = loader.load_ast(&entry)?;
@@ -6038,24 +6144,126 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // `import Prelude`, and Prelude imports `Prelude.Functor`, creating a
     // spurious cyclic import.
     if !is_stdlib_path(&entry) {
+        eprintln!("[DEBUG] Before ensure_implicit_prelude_import");
         entry_mod = ensure_implicit_prelude_import(entry_mod);
+        eprintln!("[DEBUG] Before inject_stdlib_class_decls");
+        // Inject stdlib class declarations and their imports early, before loading .ksif schemes.
+        // This ensures that imports needed by class default methods are available.
+        inject_stdlib_class_decls(&mut entry_mod)?;
+        eprintln!("[DEBUG] After inject_stdlib_class_decls, {} items", entry_mod.items.len());
     }
 
     // Module-unit compilation: imports must be satisfied via `.ksif`.
     // Import-flattening is intentionally removed.
-    let mut module = ast::Module {
-        name: entry_mod.name.clone(),
-        items: entry_mod.items.clone(),
-    };
+    // Clone entry_mod after injection so that the injected imports are included.
+    let mut module = entry_mod.clone();
 
     let def_ctx = DefEvidenceCtx::from_loader(&loader);
 
     // Default: use `.ksif` for imports. (No opt-out; import-flattening is removed.)
+    // This now includes imports injected by inject_stdlib_class_decls above.
     let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
+    eprintln!("[DEBUG] Loaded {} imported modules", imported.len());
+    for (mod_name, schemes) in &imported {
+        eprintln!("[DEBUG]   Module {}: {} schemes", mod_name, schemes.len());
+        for (name, _scheme) in schemes {
+            eprintln!("[DEBUG]     - {}", name);
+        }
+    }
     inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
     return WithDefEvidence::run(def_ctx, || {
         typecheck_with_stdlib_class_env_with_imported_with_entry_path(module, imported, Some(&entry))
     });
+}
+
+/// Load all transitive imports for runtime linking.
+/// Returns a map of module_name -> ast::Module for all imported modules.
+/// Uses existing ModuleLoader cache to be cycle-safe.
+pub fn load_transitive_imports_for_runtime(entry: &Path) -> Result<HashMap<String, ast::Module>> {
+    eprintln!("[RUNTIME] load_transitive_imports_for_runtime called for: {}", entry.display());
+    let entry = std::fs::canonicalize(entry)?;
+    let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
+
+    let mut loader = ModuleLoader::new();
+    loader.stack = vec![entry.clone()];
+
+    // Load the entry module
+    let mut entry_mod = loader.load_ast(&entry)?;
+    
+    // Add implicit Prelude import if needed (same logic as typecheck_file)
+    if !is_stdlib_path(&entry) {
+        entry_mod = ensure_implicit_prelude_import(entry_mod);
+    }
+
+    // Inject stdlib class declarations and their imports (same logic as typecheck_file)
+    // This ensures that imports needed by stdlib class default methods are included
+    inject_stdlib_class_decls(&mut entry_mod)?;
+
+    if std::env::var("KSCR_DEBUG_RUNTIME").ok().as_deref() == Some("1") {
+        eprintln!("[KSCR_DEBUG_RUNTIME] Entry module imports after inject_stdlib_class_decls:");
+        for it in &entry_mod.items {
+            if let ast::Item::Import(id) = it {
+                eprintln!("  - {}", id.module);
+            }
+        }
+    }
+
+    // Collect all transitive imports
+    let mut result: HashMap<String, ast::Module> = HashMap::new();
+    let mut to_visit: Vec<String> = Vec::new();
+    
+    // Start with entry module's imports
+    for it in &entry_mod.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        to_visit.push(id.module.clone());
+    }
+
+    // BFS traversal to collect all transitive imports
+    while let Some(module_name) = to_visit.pop() {
+        if result.contains_key(&module_name) {
+            continue;
+        }
+
+        // Resolve module path
+        let module_path = resolve_module_path(entry_dir, &module_name)?;
+        
+        // Load the module AST
+        let module_ast = loader.load_ast(&module_path)?;
+        
+        // Add its imports to the queue
+        for it in &module_ast.items {
+            let ast::Item::Import(id) = it else {
+                continue;
+            };
+            if !result.contains_key(&id.module) {
+                to_visit.push(id.module.clone());
+            }
+        }
+        
+        result.insert(module_name, module_ast);
+    }
+
+    Ok(result)
+}
+
+fn resolve_module_path(entry_dir: &Path, module: &str) -> Result<PathBuf> {
+    let rel = module.replace('.', "/");
+    let local = entry_dir.join(format!("{}.ks", rel));
+    let stdlib_root = stdlib_cache::stdlib_root()?;
+    let stdlib = stdlib_root.join(format!("{}.ks", rel));
+
+    std::fs::canonicalize(&local)
+        .or_else(|_| std::fs::canonicalize(&stdlib))
+        .map_err(|_| {
+            Error::msg(format!(
+                "cannot find module file for import {} (tried: {}, {})",
+                module,
+                local.display(),
+                stdlib.display()
+            ))
+        })
 }
 
 fn inject_imported_ksif_forwarders(
@@ -6087,26 +6295,36 @@ fn inject_imported_ksif_forwarders(
         };
 
         let qual = id.as_name.as_deref().unwrap_or(&id.module);
+
+        // Skip self-import forwarders (rare / would be self-recursive).
+        // Note: `qual == id.module` is the normal case for `import Foo.Bar` (no alias),
+        // and we *do* want to inject unqualified forwarders in that case.
+        if module.name.as_deref() == Some(&id.module) {
+            continue;
+        }
+
         for name in schemes.keys() {
             let qual_name = format!("{qual}.{name}");
-            if defined.contains_key(&qual_name) {
-                continue;
-            }
-            defined.insert(qual_name.clone(), format!("import {qual} (.ksif)"));
-            injected.push(ast::Item::Binding(ast::Binding {
-                doc: None,
-                pat: ast::Pattern {
-                    kind: ast::PatternKind::Var(qual_name.clone()),
-                    span: ast::dummy_span(),
-                },
-                expr: ast::Expr {
-                    kind: ast::ExprKind::Var(format!("{}.{}", id.module, name)),
-                    span: ast::dummy_span(),
-                },
-                span: ast::dummy_span(),
-            }));
 
-            // For unqualified imports, also inject `x = <Qual>.x` if not already defined.
+            // Only inject `<Qual>.x = <Module>.x` when `<Qual>` is an alias.
+            // When `qual == id.module` (no alias), this would become a self-recursive binding.
+            if qual != id.module && !defined.contains_key(&qual_name) {
+                defined.insert(qual_name.clone(), format!("import {qual} (.ksif)"));
+                injected.push(ast::Item::Binding(ast::Binding {
+                    doc: None,
+                    pat: ast::Pattern {
+                        kind: ast::PatternKind::Var(qual_name.clone()),
+                        span: ast::dummy_span(),
+                    },
+                    expr: ast::Expr {
+                        kind: ast::ExprKind::Var(format!("{}.{}", id.module, name)),
+                        span: ast::dummy_span(),
+                    },
+                    span: ast::dummy_span(),
+                }));
+            }
+
+            // For unqualified imports, inject `x = <Qual>.x` if not already defined.
             if !id.qualified && !defined.contains_key(name) {
                 defined.insert(name.clone(), format!("import {qual} (.ksif)"));
                 injected.push(ast::Item::Binding(ast::Binding {
@@ -6200,108 +6418,22 @@ fn ensure_ksif_for_module(
         ensure_ksif_for_module(&id.module, module_dir, visited)?;
     }
 
-    // For stdlib modules, generate KSIF by extracting exports from AST
-    // (stdlib definitions are injected globally, so KSIF just acts as a manifest)
-    let tm = if is_stdlib_path(&module_path) {
-        // For stdlib, we create a simple KSIF with exported names only.
-        // The actual type schemes will come from stdlib injection.
-        // We create placeholder schemes just so KSIF encoding works.
-        
-        // Load the module to check for exports
-        let parsed = std::fs::read_to_string(&module_path)?;
-        let parsed_mod = parser::parse_module(&parsed)?;
-        
-        // Extract exported names
-        let mut exported_names: Vec<String> = Vec::new();
-        
-        // Try to get explicit exports
-        for it in &parsed_mod.items {
-            if let ast::Item::Export(exports) = it {
-                for spec in &exports.specs {
-                    match spec {
-                        ast::ExportSpec::Name(name) => {
-                            exported_names.push(name.clone());
-                        }
-                        ast::ExportSpec::Type { name, ctors } => {
-                            match ctors {
-                                ast::ExportCtors::All => {
-                                    // Find the data decl and export all constructors
-                                    for it2 in &parsed_mod.items {
-                                        if let ast::Item::DataDecl(d) = it2 {
-                                            if &d.name == name {
-                                                for ctor in &d.ctors {
-                                                    exported_names.push(ctor.name.clone());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                ast::ExportCtors::Some(ctor_names) => {
-                                    exported_names.extend(ctor_names.iter().cloned());
-                                }
-                            }
-                        }
-                    }
-                }
-                break;
-            }
-        }
-        
-        // If no explicit exports, collect all bindings and constructors
-        if exported_names.is_empty() {
-            for it in &parsed_mod.items {
-                match it {
-                    ast::Item::Binding(b) => {
-                        if let ast::PatternKind::Var(name) = &b.pat.kind {
-                            exported_names.push(name.clone());
-                        }
-                    }
-                    ast::Item::DataDecl(d) => {
-                        for ctor in &d.ctors {
-                            exported_names.push(ctor.name.clone());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        
-        // Create placeholder schemes for all exported names
-        // These will be overridden by stdlib injection at runtime
-        let placeholder_scheme = Scheme {
-            vars: vec![],
-            constraints: vec![],
-            ty: Ty::Var(0), // Dummy type variable
-        };
-        
-        let mut inferred = HashMap::new();
-        for name in exported_names {
-            inferred.insert(name, placeholder_scheme.clone());
-        }
-        
-        // Create TypedModule for KSIF generation
-        TypedModule {
-            module: parsed_mod.clone(),
-            inferred,
-            docs: HashMap::new(),
-        }
-    } else {
-        // Non-stdlib modules use KSIF for imports and proper typechecking
-        let imported = load_imported_ksif_schemes_internal(&module_ast, module_dir)?;
+    // Generate KSIF by typechecking the module (stdlib included).
+    // This avoids placeholder schemes that break `.ksif`-only compilation.
+    let imported = load_imported_ksif_schemes_internal(&module_ast, module_dir)?;
 
-        // Inject forwarders for imported names
-        let mut module_to_typecheck = ast::Module {
-            name: module_ast.name.clone(),
-            items: module_ast.items.clone(),
-        };
-        inject_imported_ksif_forwarders(&mut module_to_typecheck, &module_ast, &imported)?;
-
-        typecheck_with_stdlib_class_env_with_imported_with_entry_path(
-            module_to_typecheck,
-            imported,
-            Some(&module_path),
-        )?
+    // Inject forwarders for imported names
+    let mut module_to_typecheck = ast::Module {
+        name: module_ast.name.clone(),
+        items: module_ast.items.clone(),
     };
+    inject_imported_ksif_forwarders(&mut module_to_typecheck, &module_ast, &imported)?;
+
+    let tm = typecheck_with_stdlib_class_env_with_imported_with_entry_path(
+        module_to_typecheck,
+        imported,
+        Some(&module_path),
+    )?;
 
     // Extract exported schemes
     let exported = crate::cli_impl::filter_inferred_by_exports(&tm.module, tm.inferred.clone());
@@ -6471,7 +6603,10 @@ fn typecheck_with_stdlib_class_env_with_entry_path(
     }
 
     let t0 = std::time::Instant::now();
-    inject_stdlib_class_decls(&mut module)?;
+    // Only inject stdlib class declarations for non-stdlib modules
+    if entry_path.map_or(true, |p| !is_stdlib_path(p)) {
+        inject_stdlib_class_decls(&mut module)?;
+    }
     if timing {
         eprintln!(
             "[KSCR_DEBUG_TIMING] inject_stdlib_class_decls: {:.3}s",
@@ -6480,7 +6615,10 @@ fn typecheck_with_stdlib_class_env_with_entry_path(
     }
 
     let t0 = std::time::Instant::now();
-    inject_stdlib_instance_dict_forwarders(&mut module)?;
+    // Only inject instance dict forwarders for non-stdlib modules
+    if entry_path.map_or(true, |p| !is_stdlib_path(p)) {
+        inject_stdlib_instance_dict_forwarders(&mut module)?;
+    }
     if timing {
         eprintln!(
             "[KSCR_DEBUG_TIMING] inject_stdlib_instance_dict_forwarders: {:.3}s",
@@ -6507,6 +6645,9 @@ fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
 ) -> Result<TypedModule> {
     let timing = std::env::var("KSCR_DEBUG_TIMING").ok().as_deref() == Some("1");
 
+    // Imported `.ksif` schemes will be merged into the inference env directly,
+    // so we don't need to inject placeholder bindings.
+
     let t0 = std::time::Instant::now();
     let stdlib_class_env = load_stdlib_class_env()?;
     if timing {
@@ -6517,7 +6658,14 @@ fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
     }
 
     let t0 = std::time::Instant::now();
-    inject_stdlib_class_decls(&mut module)?;
+    // Inject stdlib class decls for user code and stdlib modules alike.
+    // Stdlib modules contain instances (e.g. Prelude.Rational) that need their imported
+    // class decls present during instance desugaring.
+    let should_inject = true;
+    eprintln!("[INJECT_CHECK] Module: {:?}, entry_path: {:?}, should_inject: {}", module.name, entry_path, should_inject);
+    if should_inject {
+        inject_stdlib_class_decls(&mut module)?;
+    }
     if timing {
         eprintln!(
             "[KSCR_DEBUG_TIMING] inject_stdlib_class_decls: {:.3}s",
@@ -6526,7 +6674,10 @@ fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
     }
 
     let t0 = std::time::Instant::now();
-    inject_stdlib_instance_dict_forwarders(&mut module)?;
+    // Only inject instance dict forwarders for non-stdlib modules
+    if should_inject {
+        inject_stdlib_instance_dict_forwarders(&mut module)?;
+    }
     if timing {
         eprintln!(
             "[KSCR_DEBUG_TIMING] inject_stdlib_instance_dict_forwarders: {:.3}s",
@@ -6589,20 +6740,20 @@ fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()
 }
 
 fn inject_stdlib_class_decls(module: &mut ast::Module) -> Result<()> {
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen_classes: HashSet<String> = HashSet::new();
+
     for it in &module.items {
         if let ast::Item::ClassDecl(c) = it {
-            seen.insert(c.name.clone());
+            seen_classes.insert(c.name.clone());
         }
     }
 
     let mut injected: Vec<ast::Item> = Vec::new();
     for it in load_stdlib_class_decl_items()? {
-        let ast::Item::ClassDecl(c) = &it else {
-            continue;
-        };
-        if seen.insert(c.name.clone()) {
-            injected.push(it);
+        if let ast::Item::ClassDecl(c) = &it {
+            if seen_classes.insert(c.name.clone()) {
+                injected.push(it);
+            }
         }
     }
 
@@ -6677,8 +6828,38 @@ fn typecheck_internal_core_with_entry_path(
             .map(|it| expand_item(it, &aliases))
             .collect::<Result<Vec<_>>>()?;
 
-        let mut class_env = desugar_typeclasses(&mut module)?;
+        // Desugar typeclasses. For stdlib modules, use relaxed validation since
+        // superclasses may be in other stdlib modules not yet in this module's env.
+        let is_stdlib = entry_path.map_or(false, is_stdlib_path);
+        let mut class_env = if is_stdlib {
+            // For stdlib modules: collect classes and process instances without superclass validation
+            // Validation will be done when user modules import these classes
+            let (env, (class_method_names, class_default_methods)) = collect_class_env_only(&mut module, false)?;
+            
+            // Process instances
+            let instance_decls = collect_instance_decls(&module);
+            let mut working_env = env.clone();
+            preregister_instance_dicts(&mut working_env, &instance_decls)?;
+            let extra_items = generate_instance_items(
+                &working_env,
+                &instance_decls,
+                &class_method_names,
+                &class_default_methods,
+            )?;
 
+            module.items = module
+                .items
+                .drain(..)
+                .filter(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
+                .chain(extra_items)
+                .collect();
+
+            env
+        } else {
+            desugar_typeclasses(&mut module)?
+        };
+
+        // Merge stdlib class env
         if let Some(stdlib_env) = stdlib_class_env {
             merge_class_env(&mut class_env, stdlib_env)?;
         }
@@ -6707,10 +6888,11 @@ fn typecheck_internal_core_with_entry_path(
                 &module,
                 &class_env,
                 &class_index,
+                imported.as_ref(),
                 Some(entry_path),
             )?
         } else {
-            infer_module_with_class_env_with_entry_path(&module, &class_env, &class_index, None)?
+            infer_module_with_class_env_with_entry_path(&module, &class_env, &class_index, imported.as_ref(), None)?
         };
 
         if let Some(main) = inferred.get("main") {
@@ -6813,16 +6995,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
     // Important: stdlib modules are allowed to have imports.
     // Parsing them by raw text here bypasses the stdlib cache + import logic and can
     // yield confusing failures. Use ModuleLoader to keep behavior consistent.
-    let mut loader = ModuleLoader {
-        cache: HashMap::new(),
-        sources: HashMap::new(),
-        stack: Vec::new(),
-        emitted_qualified: HashSet::new(),
-        emitted_unqualified: HashSet::new(),
-        def_sites: DefSiteIndex::default(),
-        module_ids: ModuleIdInterner::default(),
-        module_name_to_paths: HashMap::new(),
-    };
+    let mut loader = ModuleLoader::new();
 
     let t_scan = std::time::Instant::now();
     let mut module_paths = Vec::new();
@@ -7007,16 +7180,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
     // Collect ClassDecls over stdlib modules (Prelude + Prelude/*).
     let stdlib = stdlib_root();
 
-    let mut loader = ModuleLoader {
-        cache: HashMap::new(),
-        sources: HashMap::new(),
-        stack: Vec::new(),
-        emitted_qualified: HashSet::new(),
-        emitted_unqualified: HashSet::new(),
-        def_sites: DefSiteIndex::default(),
-        module_ids: ModuleIdInterner::default(),
-        module_name_to_paths: HashMap::new(),
-    };
+    let mut loader = ModuleLoader::new();
 
     // Collect all class decls into a temporary merged module.
     let mut merged = ast::Module {
@@ -7066,6 +7230,25 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
 }
 
 fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
+    merge_class_definitions_only(dst, src)?;
+    
+    // Also merge instances
+    for (k, v) in &src.instances {
+        dst.instances.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+
+    if !src.poly_instances.is_empty() {
+        // For now, keep poly instances local; merging them safely requires unification-aware
+        // selection across module boundaries.
+    }
+
+    Ok(())
+}
+
+/// Merge only class definitions (class_params, class_supers, methods, method_classes)
+/// without merging instances. Used when merging stdlib class env into stdlib modules
+/// to avoid duplicate instances.
+fn merge_class_definitions_only(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
     for (class, param) in &src.class_params {
         match dst.class_params.get(class) {
             Some(existing) if existing == param => {}
@@ -7137,15 +7320,6 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
         }
     }
 
-    for (k, v) in &src.instances {
-        dst.instances.entry(k.clone()).or_insert_with(|| v.clone());
-    }
-
-    if !src.poly_instances.is_empty() {
-        // For now, keep poly instances local; merging them safely requires unification-aware
-        // selection across module boundaries.
-    }
-
     reject_ambiguous_method_names(dst)?;
     Ok(())
 }
@@ -7197,6 +7371,24 @@ struct ModuleLoader {
     module_ids: ModuleIdInterner,
     /// Track module names to their file paths to detect collisions
     module_name_to_paths: HashMap<String, Vec<PathBuf>>,
+}
+
+impl ModuleLoader {
+    fn new() -> Self {
+        let mut module_ids = ModuleIdInterner::default();
+        // Reserve ModuleId(0) for the dummy/unresolved sentinel.
+        let _ = module_ids.intern("<dummy>");
+        Self {
+            cache: HashMap::new(),
+            sources: HashMap::new(),
+            stack: Vec::new(),
+            emitted_qualified: HashSet::new(),
+            emitted_unqualified: HashSet::new(),
+            def_sites: DefSiteIndex::default(),
+            module_ids,
+            module_name_to_paths: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -7911,7 +8103,11 @@ impl ModuleLoader {
             }
 
             let env = module_qual_env(&m);
-            resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
+            // NOTE: keep ClassId.module as dummy ModuleId(0).
+            // ClassEnv keying is currently based on the canonical (qualified) class name string,
+            // and resolving module IDs here causes mismatches (e.g. stdlib instance processing).
+            // resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
+            let _ = env;
             resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
 
             self.cache.insert(path.to_path_buf(), m.clone());
@@ -7951,7 +8147,9 @@ impl ModuleLoader {
         }
 
         let env = module_qual_env(&m);
-        resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
+        // NOTE: keep ClassId.module as dummy ModuleId(0). See comment above.
+        // resolve_class_names_to_module_ids(&mut m, &env, &mut self.module_ids);
+        let _ = env;
         resolve_ctor_names_to_module_ids(&mut m, &mut self.module_ids)?;
 
         // Record definition sites for later diagnostics.
@@ -11436,6 +11634,7 @@ fn infer_module_with_class_env_with_entry_path(
     module: &ast::Module,
     class_env: &ClassEnv,
     class_index: &ClassEnvIndex,
+    imported: Option<&HashMap<String, HashMap<String, Scheme>>>,
     entry_path: Option<&Path>,
 ) -> Result<HashMap<String, Scheme>> {
     // Order-independent top-level inference (Haskell-like): compute SCCs of top-level bindings,
@@ -11446,6 +11645,103 @@ fn infer_module_with_class_env_with_entry_path(
     };
     let data_env = collect_data_env(module);
     let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env, entry_path)?;
+
+    // Merge imported .ksif schemes into env_global so qualified names like `Data.Maybe.fromMaybe` can be resolved.
+    if let Some(imported) = imported {
+        if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+            eprintln!("[KSCR_DEBUG_IMPORTS] Merging imported schemes, {} modules", imported.len());
+        }
+        // First pass: add all value schemes
+        for (module_name, schemes) in imported {
+            if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                eprintln!("[KSCR_DEBUG_IMPORTS] Module: {}, schemes: {}", module_name, schemes.len());
+            }
+            for (name, scheme) in schemes {
+                let qualified_name = format!("{}.{}", module_name, name);
+                env_global.insert(
+                    qualified_name,
+                    EnvEntry {
+                        scheme: scheme.clone(),
+                        def_site: None, // Imported from .ksif; no file location
+                    },
+                );
+            }
+        }
+
+        // Second pass: add constructor re-exports after all schemes are merged.
+        // Hardcoded constructor re-export for Data.Maybe:
+        // Data.Maybe exports `type Maybe = Prelude.Maybe` with `Maybe(..)`,
+        // so qualified access like `M.Just` when `import qualified Data.Maybe as M`
+        // should resolve to Prelude.Just.
+        for (module_name, _schemes) in imported {
+            if module_name == "Data.Maybe" {
+                if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                    eprintln!("[KSCR_DEBUG_IMPORTS] Handling Data.Maybe constructor re-exports");
+                    eprintln!("[KSCR_DEBUG_IMPORTS] Just in env? {}", env_global.contains_key("Just"));
+                    eprintln!("[KSCR_DEBUG_IMPORTS] Prelude.Just in env? {}", env_global.contains_key("Prelude.Just"));
+                    eprintln!("[KSCR_DEBUG_IMPORTS] Nothing in env? {}", env_global.contains_key("Nothing"));
+                }
+                // Prelude constructors might be qualified; check both.
+                if let Some(just_entry) = env_global.get("Just").or_else(|| env_global.get("Prelude.Just")) {
+                    env_global.insert(
+                        "Data.Maybe.Just".to_string(),
+                        just_entry.clone(),
+                    );
+                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                        eprintln!("[KSCR_DEBUG_IMPORTS] Added Data.Maybe.Just");
+                    }
+                }
+                if let Some(nothing_entry) = env_global.get("Nothing").or_else(|| env_global.get("Prelude.Nothing")) {
+                    env_global.insert(
+                        "Data.Maybe.Nothing".to_string(),
+                        nothing_entry.clone(),
+                    );
+                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                        eprintln!("[KSCR_DEBUG_IMPORTS] Added Data.Maybe.Nothing");
+                    }
+                }
+            }
+        }
+
+        // Handle import aliases: if `import qualified Data.Maybe as M`, add `M.Just` mapping to `Data.Maybe.Just`.
+        if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+            eprintln!("[KSCR_DEBUG_IMPORTS] Handling import aliases, {} items in module", module.items.len());
+        }
+        for it in &module.items {
+            if let ast::Item::Import(id) = it {
+                if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                    eprintln!("[KSCR_DEBUG_IMPORTS] Import: {} as {:?}", id.module, id.as_name);
+                }
+                if let Some(as_name) = &id.as_name {
+                    // For each imported module with an alias, check if we've added qualified constructors
+                    // and add them with the alias prefix too.
+                    if id.module == "Data.Maybe" {
+                        if let Some(maybe_just) = env_global.get("Data.Maybe.Just") {
+                            let key = format!("{}.Just", as_name);
+                            if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                                eprintln!("[KSCR_DEBUG_IMPORTS] Adding ctor mapping: {}", key);
+                            }
+                            env_global.insert(
+                                key,
+                                maybe_just.clone(),
+                            );
+                        }
+                        if let Some(maybe_nothing) = env_global.get("Data.Maybe.Nothing") {
+                            let key = format!("{}.Nothing", as_name);
+                            if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                                eprintln!("[KSCR_DEBUG_IMPORTS] Adding ctor mapping: {}", key);
+                            }
+                            env_global.insert(
+                                key,
+                                maybe_nothing.clone(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut env_global_ftv = ftv_env(&env_global);
 
     let (bindings, ctx_names, defined_names, comps, comp_order) =

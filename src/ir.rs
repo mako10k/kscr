@@ -368,7 +368,19 @@ fn lower_expr(
         ExprKind::String(s) => IrExpr::String(s.clone()),
         ExprKind::Char(c) => IrExpr::Char(*c),
         ExprKind::Var(v) => IrExpr::Var(v.clone()),
-        ExprKind::Ctor(v) => IrExpr::Var(v.qualified_text()),
+        ExprKind::Ctor(v) => {
+            let name = v.qualified_text();
+            if name.contains('.') {
+                IrExpr::Var(name)
+            } else {
+                IrExpr::Var(
+                    ctor_aliases
+                        .get(v.local_name())
+                        .cloned()
+                        .unwrap_or(name),
+                )
+            }
+        }
         ExprKind::Lambda { params, body } => IrExpr::Lambda {
             params: params.clone(),
             body: Box::new(lower_expr(body, fresh, ctor_aliases)?),
@@ -577,6 +589,7 @@ pub enum Value {
     IoAction(Box<IoAction>),
     IoCtor,
     BuiltinStdoutWrite,
+    BuiltinPutStrLn,
     BuiltinConcatMap,
     BuiltinConcatMap1(Box<Value>),
     BuiltinAdd,
@@ -756,12 +769,14 @@ fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
     } = &v
     {
         if params.len() == 1 && params[0].starts_with("__dict_") {
-            // Try to find an IO instance by appending "_IO" to the class dictionary name.
-            let io_dict_name = format!("{}_IO", params[0]);
-            if g.defs.contains_key(&io_dict_name) {
-                let io_dict = eval_var(g, &std::collections::HashMap::new(), &io_dict_name)?;
-                let v = apply_one(g, v, io_dict)?;
-                return force_value(g, v);
+            // Most dictionary-passing rewrites use the concrete dictionary name directly
+            // (e.g. `__dict_Monad_IO`).
+            let candidates = [params[0].clone(), format!("{}_IO", params[0])];
+            for name in candidates {
+                if let Ok(dict) = eval_var(g, &std::collections::HashMap::new(), &name) {
+                    let v = apply_one(g, v, dict)?;
+                    return force_value(g, v);
+                }
             }
         }
     }
@@ -870,6 +885,9 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         "IO" => Value::IoCtor,
 
         "stdoutWrite" => Value::BuiltinStdoutWrite,
+        // Prelude defines `putStrLn` as `stdoutWrite (s ++ "\n")`. Provide it as a builtin
+        // so `.ksif`-only compilation can still run programs that use Prelude I/O.
+        "putStrLn" => Value::BuiltinPutStrLn,
         "concatMap" => Value::BuiltinConcatMap,
 
         "+" => Value::BuiltinAdd,
@@ -904,6 +922,63 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
 
         "__eq" => Value::BuiltinEqDictApply,
         "__builtinEqDict" => Value::Record(vec![("eq".to_string(), Value::BuiltinEq)]),
+
+        // Minimal dictionaries for `.ksif`-only execution.
+        // These are methods that accept the dictionary as their first argument; we ignore it.
+        "__dict_Prelude.Monad.Monad" | "__dict_Prelude.Monad.Monad_IO" => Value::Record(vec![
+            (">>".to_string(), Value::Closure {
+                params: vec!["_dict".to_string(), "first".to_string(), "second".to_string()],
+                body: Box::new(IrExpr::Apply {
+                    func: Box::new(IrExpr::Var("__ioThen".to_string())),
+                    args: vec![IrExpr::Var("first".to_string()), IrExpr::Var("second".to_string())],
+                }),
+                env: std::collections::HashMap::new(),
+            }),
+            (">>=".to_string(), Value::Closure {
+                params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
+                body: Box::new(IrExpr::Apply {
+                    func: Box::new(IrExpr::Var("__ioBind".to_string())),
+                    args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
+                }),
+                env: std::collections::HashMap::new(),
+            }),
+            ("return".to_string(), Value::Closure {
+                params: vec!["_dict".to_string(), "x".to_string()],
+                body: Box::new(IrExpr::Apply {
+                    func: Box::new(IrExpr::Var("IO".to_string())),
+                    args: vec![IrExpr::Var("x".to_string())],
+                }),
+                env: std::collections::HashMap::new(),
+            }),
+        ]),
+
+        // Backwards-compat / alternate naming.
+        "__dict_Monad_IO" => Value::Record(vec![
+            (">>".to_string(), Value::Closure {
+                params: vec!["_dict".to_string(), "first".to_string(), "second".to_string()],
+                body: Box::new(IrExpr::Apply {
+                    func: Box::new(IrExpr::Var("__ioThen".to_string())),
+                    args: vec![IrExpr::Var("first".to_string()), IrExpr::Var("second".to_string())],
+                }),
+                env: std::collections::HashMap::new(),
+            }),
+            (">>=".to_string(), Value::Closure {
+                params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
+                body: Box::new(IrExpr::Apply {
+                    func: Box::new(IrExpr::Var("__ioBind".to_string())),
+                    args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
+                }),
+                env: std::collections::HashMap::new(),
+            }),
+            ("return".to_string(), Value::Closure {
+                params: vec!["_dict".to_string(), "x".to_string()],
+                body: Box::new(IrExpr::Apply {
+                    func: Box::new(IrExpr::Var("IO".to_string())),
+                    args: vec![IrExpr::Var("x".to_string())],
+                }),
+                env: std::collections::HashMap::new(),
+            }),
+        ]),
 
         "__recordGet" => Value::BuiltinRecordGet,
         "error" => Value::BuiltinError,
@@ -1337,6 +1412,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
     match fun {
         Value::IoCtor => Ok(Value::IoAction(Box::new(IoAction::Pure(arg)))),
         Value::BuiltinStdoutWrite => apply_builtin_stdout_write(g, arg),
+        Value::BuiltinPutStrLn => apply_builtin_put_str_ln(g, arg),
         Value::BuiltinConcatMap => Ok(Value::BuiltinConcatMap1(Box::new(arg))),
         Value::BuiltinConcatMap1(f) => concat_map(g, *f, arg),
 
@@ -1440,6 +1516,12 @@ fn apply_builtin_stdout_write(g: &Globals, arg: Value) -> Result<Value> {
     let arg = force_value(g, arg)?;
     let s = value_to_string(g, arg)?;
     Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(s))))
+}
+
+fn apply_builtin_put_str_ln(g: &Globals, arg: Value) -> Result<Value> {
+    let arg = force_value(g, arg)?;
+    let s = value_to_string(g, arg)?;
+    Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(format!("{s}\n")))))
 }
 
 fn builtin_read_file(g: &Globals, path: Value) -> Result<Value> {

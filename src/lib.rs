@@ -4,6 +4,7 @@ pub mod ast;
 // `src/cli.rs` is intentionally compiled as a private module (`cli_impl`) for now,
 // while we gradually split it into the `src/cli/` module tree.
 pub mod cli;
+mod ctor_reexport;
 pub mod debug;
 pub mod error;
 pub mod ir;

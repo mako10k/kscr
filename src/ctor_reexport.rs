@@ -4,7 +4,8 @@ pub fn resolve_qualified_ctor_via_type_alias(
     module: &ast::Module,
     qctor: &ast::ResolvedName,
 ) -> Option<ast::ResolvedName> {
-    let (qual, ctor) = match qctor.qualified_text().rsplit_once('.') {
+    let binding = qctor.qualified_text();
+    let (_qual, ctor) = match binding.rsplit_once('.') {
         Some(x) => x,
         None => return None,
     };
