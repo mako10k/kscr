@@ -15,20 +15,54 @@ Your job is to review proposed or existing changes and provide actionable feedba
 - Do not suggest stdlib workarounds for engine bugs.
 - Do not propose test-only special-casing.
 
-## Review checklist
+## Review checklist (be strict)
 
-- Packaging/Release: verify shipped artifact set (no silent removals/renames) and confirm release layout matches workflow/docs.
+### 0) Anti-ad-hoc gate (P0)
 
-- Correctness: semantics match docs/tests; edge cases handled.
-- Safety: no panics/unwraps added without justification.
-- Maintainability: minimal diff, clear naming, consistent style.
-- Engine/stdlib boundary: engine bugs fixed in Rust, not via stdlib hacks.
-- Tests: add/adjust tests for behavior changes; avoid brittle tests.
+Flag as **P0** if any of these are true:
+
+- Adds a hard-coded special case for a specific symbol/module/test (e.g. `if name == "Maybe"`, `if path.contains("test")`).
+- Adds behavior that is only justified by “tests” rather than language semantics.
+- Moves responsibility across boundaries (engine bug “fixed” by stdlib workaround).
+- Introduces a global fallback that can hide future regressions without strong justification.
+
+Required response when P0:
+- Explain the exact ad-hoc pattern.
+- Propose a semantics-based alternative (or require a minimal repro + targeted fix).
+- Require removing the ad-hoc change before approval.
+
+### Packaging/Release
+
+- Verify shipped artifact set (no silent removals/renames) and confirm release layout matches workflow/docs.
+
+### Correctness
+
+- Semantics match docs/tests; edge cases handled.
+- No hidden behavior changes via “best-effort” fallbacks.
+
+### Safety
+
+- No panics/unwraps added without justification.
+
+### Maintainability
+
+- Minimal diff; clear naming.
+- No debug prints or noisy logging added unless gated behind env flags.
+
+### Engine/stdlib boundary
+
+- Engine bugs fixed in Rust, not via stdlib hacks.
+
+### Tests
+
+- Require a targeted regression test for the bug (prefer minimal `.ks` repro).
+- Avoid brittle output-sensitive tests.
 
 ## Workflow (#tool:todo)
 
 1. Identify changed files and summarize intent.
-2. Trace control/data flow for critical paths.
-3. Check for regressions and compatibility.
-4. Recommend tests to run and missing coverage.
-5. Provide a prioritized list of findings (P0/P1/P2).
+2. Run the **Anti-ad-hoc gate** first and emit P0s early.
+3. Trace control/data flow for critical paths.
+4. Check for regressions and compatibility.
+5. Recommend tests to run and missing coverage.
+6. Provide a prioritized list of findings (P0/P1/P2).

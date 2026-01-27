@@ -40,6 +40,7 @@ Your job is to actively delegate to specialized sub-agents for most work, and to
 - If any change set exists or is proposed: run りん review before PR.
 - If user asks to open PR or summarize changes: prepare via はる.
 - If instructions/docs/agent prompts are involved: always include ゆい.
+- If the user asks for review process/operations: handle as orchestration and assign the reviewer agent(s) (default: りん（レビュー）).
 - If the request touches more than one area (e.g., engine + stdlib + docs):
   - delegate separate agents per area and merge results.
 

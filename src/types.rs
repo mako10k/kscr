@@ -903,9 +903,9 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                 }
             }
             ast::Item::DataDecl(dd) => {
-                // Qualified data decls: `data Prelude.Maybe a = ...`
-                // Allow mapping `Maybe` -> `Prelude.Maybe`.
-                // Prefer `Prelude.*` as the canonical resolution hint.
+                // Data decls can be qualified (e.g. `data Prelude.Maybe a = ...`) or unqualified
+                // (e.g. `data Maybe a = ...` inside `module Prelude`).
+                // Collect `Maybe -> Prelude.Maybe` style hints.
                 if let Some((qual, base)) = dd.name.rsplit_once('.') {
                     let base = base.to_string();
                     if base.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
@@ -919,6 +919,23 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
                         } else {
                             out.type_ctor.entry(k).or_insert(q);
                         }
+                    }
+                } else if dd
+                    .name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+                {
+                    let mname = module.name.as_deref().unwrap_or("Main");
+                    let k = UnqualName(dd.name.clone());
+                    let q = QualName {
+                        module: ModuleName(mname.to_string()),
+                        name: UnqualName(dd.name.clone()),
+                    };
+                    if mname == "Prelude" {
+                        out.type_ctor.insert(k, q);
+                    } else {
+                        out.type_ctor.entry(k).or_insert(q);
                     }
                 }
 
@@ -939,6 +956,68 @@ fn collect_unqualified_name_hints_from_imported(module: &ast::Module) -> NameHin
             _ => {}
         }
     }
+
+    // Also seed hints from stdlib Prelude so diagnostics can point to canonical names even when
+    // Prelude isn't explicitly imported in the entry module.
+    if let Ok(stdlib_root) = try_stdlib_root() {
+        let prelude_path = stdlib_root.join("Prelude.ks");
+        if let Ok(Some(prelude_mod)) = stdlib_cache::load_ast_stdlib_cached(&prelude_path) {
+            for it in &prelude_mod.items {
+                match it {
+                    ast::Item::TypeAlias(ta) => {
+                        if let ast::Type::Var(rhs) = &ta.ty {
+                            if rhs.ends_with(&format!(".{}", ta.name)) {
+                                if ta
+                                    .name
+                                    .chars()
+                                    .next()
+                                    .is_some_and(|c| c.is_ascii_uppercase())
+                                {
+                                    if let Some(q) = QualName::parse(rhs) {
+                                        out.type_ctor
+                                            .entry(UnqualName(ta.name.clone()))
+                                            .or_insert(q);
+                                    }
+                                } else if let Some(q) = QualName::parse(rhs) {
+                                    out.type_alias
+                                        .entry(UnqualName(ta.name.clone()))
+                                        .or_insert(q);
+                                }
+                            }
+                        }
+                    }
+                    ast::Item::DataDecl(dd) => {
+                        if let Some((qual, base)) = dd.name.rsplit_once('.') {
+                            let base = base.to_string();
+                            if base.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                                out.type_ctor
+                                    .entry(UnqualName(base.clone()))
+                                    .or_insert_with(|| QualName {
+                                        module: ModuleName(qual.to_string()),
+                                        name: UnqualName(base),
+                                    });
+                            }
+                        } else if dd
+                            .name
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_uppercase())
+                        {
+                            let mname = prelude_mod.name.as_deref().unwrap_or("Main");
+                            out.type_ctor
+                                .entry(UnqualName(dd.name.clone()))
+                                .or_insert_with(|| QualName {
+                                    module: ModuleName(mname.to_string()),
+                                    name: UnqualName(dd.name.clone()),
+                                });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     out
 }
 
@@ -4586,21 +4665,12 @@ fn check_case_adt_exhaustive(
         return Ok(Some(Ok(())));
     };
 
-    // If a module defines a local ADT that reuses standard constructor names
-    // (notably `Just`/`Nothing`), the global environment may still contain the stdlib
-    // `Prelude.Maybe` metadata under the unqualified head name `Maybe`.
-    // In that ambiguous situation, treat the exhaustiveness check as best-effort
+    // If we got an unqualified head name but the stored constructors are qualified
+    // (contain dots), we might be looking at stdlib metadata while the local module
+    // defines its own ADT with the same unqualified name. Treat this as best-effort
     // and avoid false negatives.
-    if ty_name == "Maybe" {
-        let stdlib_ctor_just = d
-            .ctors
-            .iter()
-            .any(|c| c.name == "Just" || c.name.ends_with(".Just"));
-        if stdlib_ctor_just {
-            // The presence of a qualified stdlib constructor name suggests this is
-            // not the local `data Maybe` in the current module.
-            return Ok(Some(Ok(())));
-        }
+    if !ty_name.contains('.') && d.ctors.iter().any(|c| c.name.contains('.')) {
+        return Ok(Some(Ok(())));
     }
 
     let mut missing: Vec<String> = Vec::new();
@@ -6271,11 +6341,11 @@ fn inject_imported_ksif_forwarders(
     entry_mod: &ast::Module,
     imported: &HashMap<String, HashMap<String, Scheme>>,
 ) -> Result<()> {
-    // Mimic the old import-flattening behavior: for every imported value name `x`,
-    // inject a binding `<Qual>.x = <ImportedModule>.x`.
-    //
-    // This makes qualified references like `M.fromMaybe` work in `.ksif` mode
-    // without needing the full imported AST.
+    // Only inject *unqualified* forwarders (e.g. `x = A.x`).
+    // Qualified names (`A.x` / `OM.x`) are resolved via imported `.ksif` schemes merged into
+    // the inference environment; injecting extra qualified bindings can:
+    // - break alias imports (`OM.x = A.x` where `A.x` is intentionally unavailable)
+    // - introduce name-conflict masking that should be reported to the user.
     let mut defined: HashMap<String, String> = HashMap::new();
     for it in &module.items {
         let mut names = HashSet::new();
@@ -6306,27 +6376,21 @@ fn inject_imported_ksif_forwarders(
         for name in schemes.keys() {
             let qual_name = format!("{qual}.{name}");
 
-            // Only inject `<Qual>.x = <Module>.x` when `<Qual>` is an alias.
-            // When `qual == id.module` (no alias), this would become a self-recursive binding.
-            if qual != id.module && !defined.contains_key(&qual_name) {
-                defined.insert(qual_name.clone(), format!("import {qual} (.ksif)"));
-                injected.push(ast::Item::Binding(ast::Binding {
-                    doc: None,
-                    pat: ast::Pattern {
-                        kind: ast::PatternKind::Var(qual_name.clone()),
-                        span: ast::dummy_span(),
-                    },
-                    expr: ast::Expr {
-                        kind: ast::ExprKind::Var(format!("{}.{}", id.module, name)),
-                        span: ast::dummy_span(),
-                    },
-                    span: ast::dummy_span(),
-                }));
-            }
+            // For unqualified imports, inject `x = <Qual>.x`.
+            // If multiple imports try to provide the same unqualified name, report a conflict.
+            if !id.qualified {
+                let origin = format!("import {qual}");
+                if let Some(prev) = defined.get(name) {
+                    // Local definitions win silently, but import-vs-import should error.
+                    if prev != "local" && prev.starts_with("import ") && prev != &origin {
+                        return Err(Error::msg(format!(
+                            "name conflict: {name} (previously from {prev}, now from {origin}); try `import ... as ...` or qualify",
+                        )));
+                    }
+                    continue;
+                }
 
-            // For unqualified imports, inject `x = <Qual>.x` if not already defined.
-            if !id.qualified && !defined.contains_key(name) {
-                defined.insert(name.clone(), format!("import {qual} (.ksif)"));
+                defined.insert(name.clone(), origin);
                 injected.push(ast::Item::Binding(ast::Binding {
                     doc: None,
                     pat: ast::Pattern {
@@ -6356,28 +6420,24 @@ fn inject_imported_ksif_forwarders(
 
 /// Ensure KSIF artifact exists for the given module by typechecking it if needed.
 /// Recursively ensures KSIF for transitive imports.
+///
+/// NOTE: we must detect import cycles here; otherwise `typecheck_file` would silently accept
+/// cyclic imports due to the old `visited` short-circuit.
 fn ensure_ksif_for_module(
     module_name: &str,
     entry_dir: &Path,
-    visited: &mut HashSet<String>,
+    visiting: &mut HashSet<String>,
+    done: &mut HashSet<String>,
 ) -> Result<()> {
     use std::path::PathBuf;
 
-    // Avoid infinite recursion
-    if visited.contains(module_name) {
+    if done.contains(module_name) {
         return Ok(());
     }
-    visited.insert(module_name.to_string());
-
-    let default_artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join("ksif");
-
-    // Check if KSIF already exists
-    let ksif_path = default_artifact_dir.join(format!("{}.ksif", module_name));
-    if ksif_path.exists() {
-        return Ok(());
+    if visiting.contains(module_name) {
+        return Err(Error::msg(format!("cyclic imports: {module_name}")));
     }
+    visiting.insert(module_name.to_string());
 
     // Resolve module .ks file
     let rel = module_name.replace('.', "/");
@@ -6389,16 +6449,42 @@ fn ensure_ksif_for_module(
         .or_else(|_| std::fs::canonicalize(&stdlib))
         .map_err(|_| {
             Error::msg(format!(
-                "cannot find module file for {module_name} (tried: {}, {})",
+                "cannot find module file for import {module_name} (tried: {}, {})",
                 local.display(),
                 stdlib.display()
             ))
         })?;
 
+    // Stdlib KSIFs go to a stable shared cache dir; local/user modules go next to their source
+    // to avoid cross-project/module-name collisions (tests often use module names like `A`).
+    let default_artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("ksif");
+    let ksif_path = if module_path.starts_with(&stdlib_root) {
+        default_artifact_dir.join(format!("{}.ksif", module_name))
+    } else {
+        module_path.with_extension("ksif")
+    };
+
+    // Check if KSIF already exists
+    if ksif_path.exists() {
+        return Ok(());
+    }
+
+
     // Load and parse module
     let src = std::fs::read_to_string(&module_path)?;
     let mut module_ast = parser::parse_module(&src)?;
     desugar_module_qualified_names(&mut module_ast)?;
+
+    // Ensure module header matches the requested module name.
+    if module_ast.name.as_deref() != Some(module_name) {
+        return Err(Error::msg(format!(
+            "module name mismatch: import {} but file declares module {}",
+            module_name,
+            module_ast.name.as_deref().unwrap_or("<missing>")
+        )));
+    }
 
     // Populate def_module for ClassDecls
     if let Some(name) = &module_ast.name {
@@ -6415,7 +6501,7 @@ fn ensure_ksif_for_module(
         let ast::Item::Import(id) = it else {
             continue;
         };
-        ensure_ksif_for_module(&id.module, module_dir, visited)?;
+        ensure_ksif_for_module(&id.module, module_dir, visiting, done)?;
     }
 
     // Generate KSIF by typechecking the module (stdlib included).
@@ -6436,8 +6522,26 @@ fn ensure_ksif_for_module(
     )?;
 
     // Extract exported schemes
-    let exported = crate::cli_impl::filter_inferred_by_exports(&tm.module, tm.inferred.clone());
-    let values: Vec<(String, Scheme)> = exported;
+    let mut values: Vec<(String, Scheme)> = crate::cli_impl::filter_inferred_by_exports(
+        &tm.module,
+        tm.inferred.clone(),
+    );
+
+    // `.ksif` must also carry exported data constructors (they are values at term-level).
+    // Without this, `import qualified A as M; M.Just` cannot typecheck in `.ksif` mode.
+    let exports = module_exported_names(&tm.module)?;
+    let mut seen: HashSet<String> = values.iter().map(|(n, _)| n.clone()).collect();
+
+    let mut cx = InferCtx::default();
+    let mut ctor_env = TypeEnv::new();
+    add_data_ctors_into_env(&mut cx, &tm.module, Some(&module_path), &mut ctor_env);
+    for (name, entry) in ctor_env {
+        if matches!(exports.entries.get(&name), Some(SymbolKind::Ctor))
+            && seen.insert(name.clone())
+        {
+            values.push((name, entry.scheme));
+        }
+    }
 
     let ksif = crate::kir1::KsifModule {
         module_name: module_name.to_string(),
@@ -6446,8 +6550,13 @@ fn ensure_ksif_for_module(
     let bytes = crate::kir1::encode_ksif_module(&ksif);
 
     // Write KSIF artifact
-    std::fs::create_dir_all(&default_artifact_dir)?;
+    if let Some(parent) = ksif_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     std::fs::write(&ksif_path, bytes)?;
+
+    visiting.remove(module_name);
+    done.insert(module_name.to_string());
 
     Ok(())
 }
@@ -6470,14 +6579,15 @@ fn load_imported_ksif_schemes_internal(
             continue;
         };
         let candidates = [
-            // Default output location: `target/ksif/<Module>.ksif`
-            default_artifact_dir.join(format!("{}.ksif", id.module)),
-            // Common convention in this repo's tests: `ksif_<Module>.ksif`
-            entry_dir.join(format!("ksif_{}.ksif", id.module)),
+            // Prefer local `.ksif` next to the module source (avoids collisions with the shared cache).
             // Dot-separated module names map to directories.
             entry_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
             // Plain `<Module>.ksif`
             entry_dir.join(format!("{}.ksif", id.module)),
+            // Common convention in this repo's tests: `ksif_<Module>.ksif`
+            entry_dir.join(format!("ksif_{}.ksif", id.module)),
+            // Fallback shared cache: `target/ksif/<Module>.ksif`
+            default_artifact_dir.join(format!("{}.ksif", id.module)),
         ];
 
         let mut bytes: Option<Vec<u8>> = None;
@@ -6516,12 +6626,13 @@ fn load_imported_ksif_schemes(
     entry_dir: &Path,
 ) -> Result<HashMap<String, HashMap<String, Scheme>>> {
     // Ensure KSIF artifacts exist for all imports (including stdlib)
-    let mut visited = HashSet::new();
+    let mut visiting = HashSet::new();
+    let mut done = HashSet::new();
     for it in &module.items {
         let ast::Item::Import(id) = it else {
             continue;
         };
-        ensure_ksif_for_module(&id.module, entry_dir, &mut visited)?;
+        ensure_ksif_for_module(&id.module, entry_dir, &mut visiting, &mut done)?;
     }
 
     // Load KSIF schemes
@@ -6570,6 +6681,7 @@ fn load_module_with_imports_ast_with_loader(
 }
 
 fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
+    // Repo semantics: Prelude is auto-imported only when there are no explicit imports.
     let has_any_import = module
         .items
         .iter()
@@ -6791,6 +6903,11 @@ fn typecheck_internal_core_with_entry_path(
 
     WithAliasEvidence::run(|| {
         // Module-unit compilation: imports remain as syntax, but are satisfied via `.ksif`.
+
+        // `typecheck` (AST-only) does not resolve imports; require `typecheck_file` for that.
+        if imported.is_none() && module.items.iter().any(|it| matches!(it, ast::Item::Import(_))) {
+            return Err(Error::msg("imports require typecheck_file"));
+        }
 
         // Try to hit the module-level typecheck cache.
         // NOTE: cache is only used when imported schemes are not provided.
@@ -7418,39 +7535,14 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
         let local = id.as_name.clone().unwrap_or_else(|| id.module.clone());
         env.allowed.insert(local.clone());
         env.local_to_module.insert(local, id.module.clone());
-    }
 
-    // `import qualified M as Q` introduces the canonical prefix `M.x` as well.
-    // This is required since internal module code may use its own canonical qualifier
-    // after `collect_imports` qualifies exported names.
-    for it in &module.items {
-        let ast::Item::Import(id) = it else {
-            continue;
-        };
-        if !id.qualified {
-            continue;
+        // Keep canonical module qualifier syntactically valid under `import qualified M as Q`.
+        // This ensures errors surface as "unbound variable: M.x" (not "unknown qualifier").
+        if id.qualified {
+            env.allowed.insert(id.module.clone());
+            env.local_to_module
+                .insert(id.module.clone(), id.module.clone());
         }
-        env.allowed.insert(id.module.clone());
-        env.local_to_module
-            .insert(id.module.clone(), id.module.clone());
-    }
-
-    // If a module was imported qualified with an alias (`import qualified M as Q`),
-    // the module's own internal references may still use `M.*`. Allow `M` as a
-    // qualifier even if it wasn't imported with that local name.
-    for it in &module.items {
-        let ast::Item::Import(id) = it else {
-            continue;
-        };
-        if !id.qualified {
-            continue;
-        }
-        if id.as_name.is_none() {
-            continue;
-        }
-        env.allowed.insert(id.module.clone());
-        env.local_to_module
-            .insert(id.module.clone(), id.module.clone());
     }
 
     for module_name in env.local_to_module.values() {
@@ -7476,7 +7568,7 @@ fn desugar_qualified_ref(name: &str, env: &QualEnv) -> Result<String> {
             "unknown qualifier {qual} in {name} (allowed: {})",
             allowed.join(", ")
         )));
-    };
+    }
 
     Ok(name.to_string())
 }
@@ -11656,15 +11748,40 @@ fn infer_module_with_class_env_with_entry_path(
             if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
                 eprintln!("[KSCR_DEBUG_IMPORTS] Module: {}, schemes: {}", module_name, schemes.len());
             }
+
+            let aliases: Vec<String> = module
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    ast::Item::Import(id) if id.module == *module_name => id.as_name.clone(),
+                    _ => None,
+                })
+                .collect();
+
             for (name, scheme) in schemes {
-                let qualified_name = format!("{}.{}", module_name, name);
-                env_global.insert(
-                    qualified_name,
-                    EnvEntry {
-                        scheme: scheme.clone(),
-                        def_site: None, // Imported from .ksif; no file location
-                    },
-                );
+                if aliases.is_empty() {
+                    // No alias: expose canonical qualified name.
+                    let qualified_name = format!("{}.{}", module_name, name);
+                    env_global.insert(
+                        qualified_name,
+                        EnvEntry {
+                            scheme: scheme.clone(),
+                            def_site: None, // Imported from .ksif; no file location
+                        },
+                    );
+                } else {
+                    // Aliased import: expose only alias-qualified names.
+                    for a in &aliases {
+                        let qualified_name = format!("{}.{}", a, name);
+                        env_global.insert(
+                            qualified_name,
+                            EnvEntry {
+                                scheme: scheme.clone(),
+                                def_site: None,
+                            },
+                        );
+                    }
+                }
             }
         }
 

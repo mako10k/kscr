@@ -9,7 +9,7 @@ This folder contains reusable GitHub Copilot Chat agents for this repository.
 - `implement.agent.md` (こうた（実装）): make focused code changes + validate via tests
 - `review.agent.md` (りん（レビュー）): review changes; identify risk and missing tests
 - `pr.agent.md` (はる（PR）): draft PR title/description/checklist/release notes
-- `maintenance.agent.md` (ゆい（保守）): maintain instructions/docs/agent prompts consistency
+- `maintenance.agent.md` (ゆい（保守） / Yui): maintain instructions/docs/agent prompts consistency
 - `orchestrator.agent.md` (あおい（司令）): route work to the right agent and integrate outputs
 
 ## Conventions
