@@ -143,10 +143,22 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
             match types::load_transitive_imports_for_runtime(path_ref) {
                 Ok(imports) => {
                     eprintln!("[RUNTIME] Successfully loaded {} import modules", imports.len());
-                    // Lower each imported module to IR and merge with qualified names
+                    // Lower each imported module to IR and merge with qualified names.
+                    // Also provide `import M as Q` runtime aliases: `Q.x` should resolve to `M.x`.
                     for (module_name, module_ast) in &imports {
                         if let Ok(imported_ir) = ir::lower_to_ir(module_ast) {
-                            merge_imported_ir(&mut irm, &imported_ir, module_name);
+                            let aliases: Vec<String> = tm
+                                .module
+                                .items
+                                .iter()
+                                .filter_map(|it| match it {
+                                    ast::Item::Import(id) if id.module == *module_name => {
+                                        id.as_name.clone()
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            merge_imported_ir(&mut irm, &imported_ir, module_name, &aliases);
                         }
                     }
                     
@@ -485,7 +497,7 @@ impl ReplState {
         if let Ok(imports) = types::load_transitive_imports_for_runtime(&self.repl_path) {
             for (module_name, module_ast) in &imports {
                 if let Ok(imported_ir) = ir::lower_to_ir(module_ast) {
-                    merge_imported_ir(&mut irm, &imported_ir, module_name);
+                    merge_imported_ir(&mut irm, &imported_ir, module_name, &[]);
                 }
             }
             inject_constructor_forwarders(&mut irm, &imports, &module);
@@ -917,7 +929,12 @@ mod repl_tests {
 /// Merge imported IR module bindings into the main module with qualified names.
 /// For each binding in `imported_ir`, qualify its name with `module_name` prefix
 /// and add it to `main_ir` if not already present.
-fn merge_imported_ir(main_ir: &mut ir::IrModule, imported_ir: &ir::IrModule, module_name: &str) {
+fn merge_imported_ir(
+    main_ir: &mut ir::IrModule,
+    imported_ir: &ir::IrModule,
+    module_name: &str,
+    aliases: &[String],
+) {
     use ir::IrItem;
     
     // Collect existing names in main_ir to avoid duplicates
@@ -950,17 +967,32 @@ fn merge_imported_ir(main_ir: &mut ir::IrModule, imported_ir: &ir::IrModule, mod
             // Unqualified, add module prefix
             format!("{}.{}", module_name, name)
         };
-        
+
         // Only add if not already present
         if !existing_names.contains(&qualified_name) {
             // Qualify variable references within the expression
             let qualified_expr = qualify_ir_expr(expr, module_name, &local_names);
-            
+
             main_ir.items.push(IrItem::Binding {
                 name: qualified_name.clone(),
                 expr: qualified_expr,
             });
-            existing_names.insert(qualified_name);
+            existing_names.insert(qualified_name.clone());
+        }
+
+        // If the entry module imported this module with an alias (`import M as Q` or
+        // `import qualified M as Q`), provide `Q.name = M.name` at runtime.
+        if !name.contains('.') {
+            for a in aliases {
+                let alias_name = format!("{}.{}", a, name);
+                if !existing_names.contains(&alias_name) {
+                    main_ir.items.push(IrItem::Binding {
+                        name: alias_name.clone(),
+                        expr: ir::IrExpr::Var(qualified_name.clone()),
+                    });
+                    existing_names.insert(alias_name);
+                }
+            }
         }
     }
 }
