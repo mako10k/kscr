@@ -7,6 +7,21 @@ Goal: improve and expand `stdlib/` while keeping the Rust execution engine (lexe
 - The codebase is English-first: write code comments, docs, commit messages, identifiers, and this instruction file in English.
 - Keep wording short and concrete; prefer examples over prose.
 
+## Default operation mode (MANDATORY)
+
+- By default, route work through the **orchestrator agent** (あおい（司令）).
+- The orchestrator should delegate to specialized agents for execution:
+  - こうた（実装） for code changes + tests
+  - りん（レビュー） for review (be strict about ad-hoc fixes)
+  - はる（PR） for PR text
+  - まなみ（要望） / さくら（計画） for requirements / plans
+  - ゆい（保守） only for instructions/docs/agent prompt maintenance
+
+Exceptions (allowed to skip orchestrator):
+- Trivial one-file doc edit
+- Single grep/view lookup
+- Running an existing command to confirm a fact
+
 ## Git Safety (MANDATORY)
 
 - Do not run destructive git commands without explicit user permission.
@@ -25,6 +40,46 @@ Goal: improve and expand `stdlib/` while keeping the Rust execution engine (lexe
     - `git status`, `git diff`, `git log`, `git show`
     - `git reset --soft ...`, `git reset --mixed ...`
     - `git checkout -b ...`, `git switch -c ...` (new branch)
+
+### Non-destructive workflow (MANDATORY)
+
+The agent must avoid “panic edits” and preserve work by default.
+
+- Never propose discarding local edits (e.g. `git restore …`) as a first response.
+  - First, explain *why* rollback is being considered (scope, blast radius, failing tests).
+  - Then propose a **work-preserving** option:
+    - make a WIP commit, or
+    - create a new branch and commit there.
+- Do not run any rollback/discard action (`git restore`, `git reset`, etc.) without explicit user confirmation.
+- When a change touches multiple subsystems, prefer: **save → isolate → minimize → verify**.
+
+### Change scope discipline (MANDATORY)
+
+To avoid “ad-hoc / band-aid” behavior:
+
+- Keep the diff proportional to the symptom. If one test fails, do not redesign imports/runtime in the same patch.
+- If experimentation is necessary, keep it on a separate branch or a clearly-labeled WIP commit.
+- Before making a broad change, state:
+  - what will change,
+  - what might break,
+  - how it will be validated (which tests).
+
+### Communication integrity (MANDATORY)
+
+The agent must not rewrite history or minimize prior intent.
+
+- If the agent previously proposed or attempted a risky action (e.g. rollback/discard), it must acknowledge that fact explicitly.
+- If the agent misspoke, it must correct itself clearly ("I was wrong earlier; I previously said X").
+- Distinguish **proposed** actions vs **executed** actions.
+  - When relevant, include a short action log in the reply:
+    - Proposed: `…`
+    - Executed: `…`
+    - Blocked by user gate: `…`
+
+### Explicit approval prompts (MANDATORY)
+
+For any rollback/discard operation proposal (`git restore`, `git reset`, etc.), the agent must ask a yes/no confirmation using wording like:
+- "I am proposing `git restore …`. I will NOT run it unless you explicitly confirm. Proceed?"
 
 ## Packaging / Release Guardrails (MANDATORY)
 
@@ -59,6 +114,22 @@ Confirmation questions (copy/paste):
   - Add a minimal `.ks` reproduction.
   - Fix the Rust subsystem (Lexer/Parser/Typechecker/IR/Runtime).
   - Add regression coverage.
+
+## Review delegation workflow (MANDATORY)
+
+When the user requests “review of fix policy + fix results should be handled by agents”, follow this workflow:
+
+1. **Orchestrator assigns reviewer agent(s)**
+   - Default reviewer: りん（レビュー）.
+   - If the change touches packaging/release/workflows, require a reviewer pass focused on shipped artifacts.
+
+2. **Reviewer runs before declaring done**
+   - Reviewer must produce: risk assessment + test recommendations.
+
+3. **Final response must separate intent vs action**
+   - Proposed actions
+   - Executed actions
+   - Blocked by user gate (if any)
 
 ## `lsp-cli` Usage (REQUIRED)
 
