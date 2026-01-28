@@ -207,6 +207,75 @@ fn test_ksif_force_rebuild_flag() {
 }
 
 #[test]
+fn test_suppress_recursive_rebuild_errors_on_missing_dependency_ksif() {
+    let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
+    let _policy_guard = PolicyResetGuard;
+
+    let temp = TempDir::new().expect("create temp dir");
+    let temp_path = temp.path();
+
+    // Create module A (no dependencies)
+    let a_content = r#"module A where
+  export id
+
+  id x = x
+"#;
+    fs::write(temp_path.join("A.ks"), a_content).expect("write A.ks");
+
+    // Create module B that imports A
+    let b_content = r#"module B where
+  import A
+
+  export foo
+
+  foo = A.id 1
+"#;
+    fs::write(temp_path.join("B.ks"), b_content).expect("write B.ks");
+
+    // Create Main that imports B, so building B.ksif is required.
+    let main_content = r#"module Main where
+  import B
+
+  export test
+
+  test = B.foo
+"#;
+    fs::write(temp_path.join("Main.ks"), main_content).expect("write Main.ks");
+
+    // With dependency rebuild suppressed, we should NOT silently proceed if A.ksif is missing.
+    kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy {
+        force_rebuild: true,
+        suppress_recursive_rebuild: true,
+    });
+
+    let result = kscr::types::typecheck_file(&temp_path.join("Main.ks"));
+    assert!(result.is_err(), "typecheck should fail due to missing A.ksif");
+    let msg = format!("{:?}", result.err().unwrap());
+    assert!(msg.contains("A.ksif"), "error should mention A.ksif: {msg}");
+
+    // Create A.ksif and retry (should succeed)
+    let dummy_content = r#"module DummyA where
+  import A
+
+  export dummy
+
+  dummy = A.id 1
+"#;
+    fs::write(temp_path.join("DummyA.ks"), dummy_content).expect("write DummyA.ks");
+
+    kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy::default());
+    let result = kscr::types::typecheck_file(&temp_path.join("DummyA.ks"));
+    assert!(result.is_ok(), "creating A.ksif should succeed");
+
+    kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy {
+        force_rebuild: true,
+        suppress_recursive_rebuild: true,
+    });
+    let result = kscr::types::typecheck_file(&temp_path.join("Main.ks"));
+    assert!(result.is_ok(), "typecheck should succeed once A.ksif exists");
+}
+
+#[test]
 fn test_suppress_recursive_rebuild_skips_dependency_validation() {
     let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
     let _policy_guard = PolicyResetGuard;

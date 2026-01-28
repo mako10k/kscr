@@ -6725,12 +6725,33 @@ fn ensure_ksif_for_module(
             ensure_ksif_for_module(&id.module, module_dir, visiting, done)?;
         }
     } else {
-        // When recursive rebuild is suppressed, we still need to check that dependencies exist
-        // but we don't rebuild them. Mark them as done to avoid cycle detection issues.
+        // When recursive rebuild is suppressed, we do not build dependencies.
+        // But we must NOT silently accept missing dependency `.ksif` files, otherwise
+        // we can write an incomplete dependency manifest.
         for it in &module_ast.items {
             let ast::Item::Import(id) = it else {
                 continue;
             };
+
+            let candidates = [
+                module_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
+                module_dir.join(format!("{}.ksif", id.module)),
+                module_dir.join(format!("ksif_{}.ksif", id.module)),
+                default_artifact_dir.join(format!("{}.ksif", id.module)),
+            ];
+
+            let dep_ksif_exists = candidates.iter().any(|p| p.exists());
+            if !dep_ksif_exists {
+                let dep_module_path = resolve_module_path(module_dir, &id.module)?;
+                if !is_stdlib_path(&dep_module_path) {
+                    return Err(Error::msg(format!(
+                        "missing dependency ksif for import {} (expected {}.ksif); build it first or run without --no-ksif-rebuild-deps",
+                        id.module, id.module
+                    )));
+                }
+            }
+
+            // Mark as done to avoid cycle detection issues.
             done.insert(id.module.clone());
         }
     }
@@ -6760,6 +6781,14 @@ fn ensure_ksif_for_module(
         if let Some(dep_path) = dep_ksif_path {
             let hash = compute_file_sha256(&dep_path)?;
             dep_hashes.push((id.module.clone(), hash));
+        } else if policy.suppress_recursive_rebuild {
+            let dep_module_path = resolve_module_path(module_dir, &id.module)?;
+            if !is_stdlib_path(&dep_module_path) {
+                return Err(Error::msg(format!(
+                    "missing dependency ksif for import {} (expected {}.ksif); build it first or run without --no-ksif-rebuild-deps",
+                    id.module, id.module
+                )));
+            }
         }
         // If no .ksif found, skip (stdlib modules might not have .ksif)
     }
