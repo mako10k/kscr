@@ -7174,6 +7174,14 @@ fn typecheck_internal_core_with_entry_path(
             merge_class_env(&mut class_env, stdlib_env)?;
         }
 
+        // Load and merge class instances from imported user modules.
+        // This allows Main to use instances defined in module A when Main imports A.
+        if let Some(ep) = entry_path {
+            let entry_dir = ep.parent().unwrap_or_else(|| Path::new("."));
+            let imported_instances = load_imported_instances(&module, entry_dir)?;
+            merge_class_env(&mut class_env, &imported_instances)?;
+        }
+
         // If `>>=` and `>>` operators are available (typically from a Monad-like type class),
         // desugar `do`-notation into those operators. This allows `do` to work for any monad
         // (via type classes), not just IO.
@@ -7537,6 +7545,73 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
     }
 
     Ok(merged.items)
+}
+
+/// Load class instances from all imported user modules (non-stdlib).
+/// This is needed so that instances defined in module A are available when Main imports A.
+fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<ClassEnv> {
+    let mut merged_env = ClassEnv::default();
+    let stdlib_root = stdlib_cache::stdlib_root()?;
+
+    for it in &module.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+
+        // Skip stdlib modules - they're handled via load_stdlib_class_env.
+        let rel = id.module.replace('.', "/");
+        let local = entry_dir.join(format!("{}.ks", rel));
+        
+        // Only process if it's a local (non-stdlib) module
+        let Ok(module_path) = std::fs::canonicalize(&local) else {
+            continue;
+        };
+        
+        if module_path.starts_with(&stdlib_root) {
+            continue;
+        }
+
+        // Load and parse the imported module
+        let src = std::fs::read_to_string(&module_path)?;
+        let mut imported_ast = parser::parse_module(&src)?;
+        desugar_module_qualified_names(&mut imported_ast)?;
+
+        // Populate def_module for ClassDecls
+        if let Some(name) = &imported_ast.name {
+            for it in &mut imported_ast.items {
+                if let ast::Item::ClassDecl(c) = it {
+                    c.def_module = Some(name.clone());
+                }
+            }
+        }
+
+        // Create a temporary module with only class and instance declarations
+        let mut tmp_module = ast::Module {
+            name: imported_ast.name.clone(),
+            items: imported_ast
+                .items
+                .into_iter()
+                .filter(|it| matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_) | ast::Item::Import(_)))
+                .collect(),
+        };
+
+        // Skip if no instances
+        if !tmp_module
+            .items
+            .iter()
+            .any(|it| matches!(it, ast::Item::InstanceDecl(_)))
+        {
+            continue;
+        }
+
+        // Canonicalize class names and desugar typeclasses to get instances
+        let module_env = desugar_typeclasses(&mut tmp_module)?;
+        
+        // Merge this module's instances into the accumulated env
+        merge_class_env(&mut merged_env, &module_env)?;
+    }
+
+    Ok(merged_env)
 }
 
 fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
