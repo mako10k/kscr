@@ -6670,6 +6670,10 @@ fn ensure_ksif_for_module(
         if policy.force_rebuild {
             // Force rebuild requested
             true
+        } else if policy.suppress_recursive_rebuild {
+            // When suppress_recursive_rebuild is true, trust existing ksif without validating
+            // dependency hashes. This prevents cascading rebuilds when dependencies change.
+            false
         } else {
             // Check dependency hashes
             match validate_ksif_dependencies(&ksif_path, module_dir, &default_artifact_dir) {
@@ -6762,7 +6766,7 @@ fn ensure_ksif_for_module(
 
     // Generate KSIF by typechecking the module (stdlib included).
     // This avoids placeholder schemes that break `.ksif`-only compilation.
-    let imported = load_imported_ksif_schemes_internal(&module_ast, module_dir)?;
+    let imported = load_imported_ksif_schemes_internal(&module_ast, module_dir, &policy)?;
 
     // Inject forwarders for imported names
     let mut module_to_typecheck = ast::Module {
@@ -6890,6 +6894,7 @@ fn ensure_ksif_for_module(
 fn load_imported_ksif_schemes_internal(
     module: &ast::Module,
     entry_dir: &Path,
+    policy: &KsifRebuildPolicy,
 ) -> Result<HashMap<String, HashMap<String, Scheme>>> {
     use std::path::PathBuf;
 
@@ -6930,19 +6935,22 @@ fn load_imported_ksif_schemes_internal(
         let ksif_path = chosen.unwrap();
 
         // Safety: if a cached KSIF's dependency hashes don't match, fail early.
-        match validate_ksif_dependencies(&ksif_path, entry_dir, &default_artifact_dir) {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(Error::msg(format!(
-                    "stale ksif {} (dependencies changed); re-run with --ksif-rebuild",
-                    ksif_path.display()
-                )));
-            }
-            Err(e) => {
-                return Err(Error::msg(format!(
-                    "failed to validate ksif dependencies for {}: {e}",
-                    ksif_path.display()
-                )));
+        // However, skip this validation when suppress_recursive_rebuild is true.
+        if !policy.suppress_recursive_rebuild {
+            match validate_ksif_dependencies(&ksif_path, entry_dir, &default_artifact_dir) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(Error::msg(format!(
+                        "stale ksif {} (dependencies changed); re-run with --ksif-rebuild",
+                        ksif_path.display()
+                    )));
+                }
+                Err(e) => {
+                    return Err(Error::msg(format!(
+                        "failed to validate ksif dependencies for {}: {e}",
+                        ksif_path.display()
+                    )));
+                }
             }
         }
 
@@ -6978,7 +6986,8 @@ fn load_imported_ksif_schemes(
     }
 
     // Load KSIF schemes
-    load_imported_ksif_schemes_internal(module, entry_dir)
+    let policy = get_ksif_rebuild_policy();
+    load_imported_ksif_schemes_internal(module, entry_dir, &policy)
 }
 
 fn is_stdlib_path(path: &Path) -> bool {

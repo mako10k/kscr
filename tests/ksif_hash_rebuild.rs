@@ -1,7 +1,6 @@
 //! Test .ksif hash validation and rebuild policy
 
 use std::fs;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[test]
@@ -187,4 +186,116 @@ fn test_ksif_force_rebuild_flag() {
 
     // Reset policy
     kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy::default());
+}
+
+#[test]
+fn test_suppress_recursive_rebuild_skips_dependency_validation() {
+    let temp = TempDir::new().expect("create temp dir");
+    let temp_path = temp.path();
+
+    // Create module D (leaf dependency)
+    let d_content = r#"module D where
+  export value
+  
+  value = 100
+"#;
+    fs::write(temp_path.join("D.ks"), d_content).expect("write D.ks");
+
+    // Create module E (imports D)
+    let e_content = r#"module E where
+  import D
+  
+  export result
+  
+  result = D.value
+"#;
+    fs::write(temp_path.join("E.ks"), e_content).expect("write E.ks");
+
+    // Create module F (imports E, which imports D)
+    let f_content = r#"module F where
+  import E
+  
+  export test
+  
+  test = E.result
+"#;
+    fs::write(temp_path.join("F.ks"), f_content).expect("write F.ks");
+
+    // Initial build - generate all ksif files
+    kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy::default());
+    let result = kscr::types::typecheck_file(&temp_path.join("F.ks"));
+    assert!(result.is_ok(), "initial typecheck should succeed: {:?}", result.err());
+
+    let d_ksif = temp_path.join("D.ksif");
+    let e_ksif = temp_path.join("E.ksif");
+    assert!(d_ksif.exists(), "D.ksif should exist");
+    assert!(e_ksif.exists(), "E.ksif should exist");
+
+    let e_ksif_mtime_1 = fs::metadata(&e_ksif).unwrap().modified().unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Modify D.ks and force rebuild only D.ksif
+    let d_content_modified = r#"module D where
+  export value, newValue
+  
+  value = 100
+  newValue = 200
+"#;
+    fs::write(temp_path.join("D.ks"), d_content_modified).expect("write modified D.ks");
+
+    // Force rebuild with suppress_recursive_rebuild=true
+    // This should rebuild D.ksif but not E.ksif
+    kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy {
+        force_rebuild: true,
+        suppress_recursive_rebuild: true,
+    });
+    
+    // Typecheck a module that imports D to force D.ksif rebuild
+    let dummy_content = r#"module DummyD where
+  import D
+  
+  export dummy
+  
+  dummy = D.value
+"#;
+    fs::write(temp_path.join("DummyD.ks"), dummy_content).expect("write DummyD.ks");
+    let result = kscr::types::typecheck_file(&temp_path.join("DummyD.ks"));
+    assert!(result.is_ok(), "rebuild D should succeed: {:?}", result.err());
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Now typecheck F with suppress_recursive_rebuild=true
+    // Even though D.ksif hash changed, E.ksif should NOT be rebuilt
+    // because suppress_recursive_rebuild skips dependency validation
+    kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy {
+        force_rebuild: false,
+        suppress_recursive_rebuild: true,
+    });
+    let result = kscr::types::typecheck_file(&temp_path.join("F.ks"));
+    assert!(result.is_ok(), "typecheck with suppress should succeed: {:?}", result.err());
+
+    let e_ksif_mtime_2 = fs::metadata(&e_ksif).unwrap().modified().unwrap();
+    
+    // E.ksif should NOT have been rebuilt (dependency validation was skipped)
+    assert_eq!(
+        e_ksif_mtime_1, e_ksif_mtime_2,
+        "E.ksif should not be rebuilt when suppress_recursive_rebuild=true, even with D.ksif hash mismatch"
+    );
+
+    // Reset policy and verify normal rebuild behavior
+    kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy::default());
+    
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    
+    let result = kscr::types::typecheck_file(&temp_path.join("F.ks"));
+    assert!(result.is_ok(), "final typecheck should succeed: {:?}", result.err());
+
+    let e_ksif_mtime_3 = fs::metadata(&e_ksif).unwrap().modified().unwrap();
+    
+    // Now E.ksif SHOULD be rebuilt (dependency validation detects hash mismatch)
+    assert_ne!(
+        e_ksif_mtime_2, e_ksif_mtime_3,
+        "E.ksif should be rebuilt when dependency hash validation is enabled"
+    );
 }
