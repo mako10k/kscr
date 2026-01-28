@@ -910,19 +910,13 @@ fn merge_imported_ir(
     let mut local_names: HashSet<String> = HashSet::new();
     for item in &imported_ir.items {
         let IrItem::Binding { name, .. } = item;
-        // Dictionary and instance impl names contain dots (from qualified class names) but may need module qualification.
+        // Dictionary names no longer contain dots (we use unqualified class names now).
         // Pattern: __dict_<class>_<type> or __inst_<class>_<type>_<method>
-        // If the class part already starts with this module's name, it's already module-qualified.
+        // These always need module qualification.
         let is_dict_or_inst = name.starts_with("__dict_") || name.starts_with("__inst_");
         let already_module_qualified = if is_dict_or_inst {
-            // Extract the class part and check if it starts with module_name
-            // E.g., __dict_Prelude.Enum_Integer -> class part is "Prelude.Enum"
-            let after_prefix = if name.starts_with("__dict_") {
-                &name["__dict_".len()..]
-            } else {
-                &name["__inst_".len()..]
-            };
-            after_prefix.starts_with(&format!("{}.", module_name))
+            // Dict/inst names should always be qualified with module prefix
+            false
         } else {
             name.contains('.')
         };
@@ -939,12 +933,8 @@ fn merge_imported_ir(
         // Determine the qualified name for this binding
         let is_dict_or_inst = name.starts_with("__dict_") || name.starts_with("__inst_");
         let already_module_qualified = if is_dict_or_inst {
-            let after_prefix = if name.starts_with("__dict_") {
-                &name["__dict_".len()..]
-            } else {
-                &name["__inst_".len()..]
-            };
-            after_prefix.starts_with(&format!("{}.", module_name))
+            // Dict/inst names should always be qualified with module prefix
+            false
         } else {
             name.contains('.')
         };

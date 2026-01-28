@@ -3533,7 +3533,7 @@ fn desugar_typeclasses_with_strict(module: &mut ast::Module, strict: bool) -> Re
     expand_deriving_clauses(module)?;
 
     let instance_decls = collect_instance_decls(module);
-    preregister_instance_dicts(&mut env, &instance_decls)?;
+    preregister_instance_dicts(&mut env, &instance_decls, module.name.as_deref())?;
     let extra_items = generate_instance_items(
         &env,
         &instance_decls,
@@ -3600,7 +3600,7 @@ fn process_instances_with_env(
     let mut working_env = merged_env.clone();
     working_env.aliases = collect_type_aliases(module);
 
-    preregister_instance_dicts(&mut working_env, &instance_decls)?;
+    preregister_instance_dicts(&mut working_env, &instance_decls, module.name.as_deref())?;
 
     // Generate instance items using the working env (has both classes and instances)
     let extra_items = generate_instance_items(
@@ -4093,15 +4093,21 @@ fn collect_instance_decls(module: &ast::Module) -> Vec<ast::InstanceDecl> {
 fn preregister_instance_dicts(
     env: &mut ClassEnv,
     instance_decls: &[ast::InstanceDecl],
+    _module_name: Option<&str>,
 ) -> Result<()> {
     // Phase 1: pre-register all instance dictionary names.
     // We also collect polymorphic instance metadata for later selection.
+    // Dictionary names are unqualified here; they will be qualified during IR merging.
     let mut poly_to_register: Vec<PolyInstance> = Vec::new();
     for inst in instance_decls {
+        // Use unqualified class name for dictionary names to avoid dots
+        // E.g., "Prelude.Ring.Ring" -> "Ring"
+        let unqualified_class = inst.class.name.rsplit('.').next().unwrap_or(&inst.class.name);
+        
         match instance_head_key_ast(&inst.ty) {
             Ok(ty_key) => {
                 let ty_mangled = mangle_ident(&ty_key);
-                let dict_name = format!("__dict_{}_{}", inst.class.name, ty_mangled);
+                let dict_name = format!("__dict_{}_{}", unqualified_class, ty_mangled);
 
                 let key = (inst.class.clone(), ty_key);
                 if env.instances.contains_key(&key) {
@@ -4112,7 +4118,7 @@ fn preregister_instance_dicts(
             Err(_) => {
                 // Polymorphic (non-ground) instance: pre-register a stable dictionary name.
                 let dict_name =
-                    format!("__dict_{}_poly{}", inst.class.name, poly_to_register.len());
+                    format!("__dict_{}_poly{}", unqualified_class, poly_to_register.len());
 
                 // Lower the instance head type into an internal type pattern.
                 let mut cx = InferCtx::default();
@@ -4240,9 +4246,11 @@ fn append_instance_items(
             )));
         };
 
+        // Use unqualified class name to avoid dots in instance method names
+        let unqualified_class = inst.class.name.rsplit('.').next().unwrap_or(&inst.class.name);
         let impl_name = format!(
             "__inst_{}_{}_{}",
-            inst.class.name,
+            unqualified_class,
             ty_mangled,
             mangle_ident(mname)
         );
@@ -7149,7 +7157,7 @@ fn typecheck_internal_core_with_entry_path(
             // Process instances
             let instance_decls = collect_instance_decls(&module);
             let mut working_env = env.clone();
-            preregister_instance_dicts(&mut working_env, &instance_decls)?;
+            preregister_instance_dicts(&mut working_env, &instance_decls, module.name.as_deref())?;
             let extra_items = generate_instance_items(
                 &working_env,
                 &instance_decls,
@@ -7434,7 +7442,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         }
 
         // Process instances against the merged ClassEnv
-        let module_env = process_instances_with_env(
+        let mut module_env = process_instances_with_env(
             &mut tmp_module,
             &merged_env,
             &all_class_method_names,
@@ -7447,6 +7455,11 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
                 path.display()
             ))
         })?;
+
+        // Qualify instance dict names with the module name before merging
+        if let Some(mod_name) = &tmp_module.name {
+            qualify_instance_dict_names(&mut module_env, mod_name);
+        }
 
         // Merge instance registrations into the global env
         merge_class_env(&mut merged_env, &module_env).map_err(|e| {
@@ -7607,8 +7620,11 @@ fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<Cla
         // Canonicalize class names and desugar typeclasses to get instances
         let module_env = desugar_typeclasses(&mut tmp_module)?;
         
+        // Don't qualify dict names here - they should remain unqualified within the module.
+        // Qualification happens when merging into the importing module's class_env.
+        
         // Merge this module's instances into the accumulated env
-        merge_class_env(&mut merged_env, &module_env)?;
+        merge_class_env_with_module_prefix(&mut merged_env, &module_env, &id.module)?;
     }
 
     Ok(merged_env)
@@ -7628,6 +7644,60 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Merge class env with module prefix qualification for instance dict names.
+/// This is used when merging instances from imported user modules so they're accessible
+/// with module-qualified names.
+fn merge_class_env_with_module_prefix(dst: &mut ClassEnv, src: &ClassEnv, module_prefix: &str) -> Result<()> {
+    merge_class_definitions_only(dst, src)?;
+    
+    // Merge instances with qualified dict names
+    for (k, v) in &src.instances {
+        let qualified_name = if v.contains('.') {
+            v.clone()
+        } else {
+            format!("{}.{}", module_prefix, v)
+        };
+        dst.instances.entry(k.clone()).or_insert(qualified_name);
+    }
+
+    // Merge poly instances with qualified dict names
+    for pi in &src.poly_instances {
+        let qualified_dict_name = if pi.dict_name.contains('.') {
+            pi.dict_name.clone()
+        } else {
+            format!("{}.{}", module_prefix, pi.dict_name)
+        };
+        let qualified_pi = PolyInstance {
+            class: pi.class.clone(),
+            head_pat: pi.head_pat.clone(),
+            ctx_len: pi.ctx_len,
+            dict_name: qualified_dict_name,
+        };
+        dst.poly_instances.push(qualified_pi);
+    }
+
+    Ok(())
+}
+
+/// Qualify instance dictionary names with a module prefix.
+/// This is needed when merging instances from stdlib modules so that Main can reference them
+/// with module-qualified names like `Prelude.Rational.__dict_Ring_Rational`.
+fn qualify_instance_dict_names(env: &mut ClassEnv, module_name: &str) {
+    // Qualify dict names in the instances map
+    for (_, dict_name) in env.instances.iter_mut() {
+        if !dict_name.contains('.') {
+            *dict_name = format!("{}.{}", module_name, dict_name);
+        }
+    }
+    
+    // Qualify dict names in poly_instances
+    for pi in env.poly_instances.iter_mut() {
+        if !pi.dict_name.contains('.') {
+            pi.dict_name = format!("{}.{}", module_name, pi.dict_name);
+        }
+    }
 }
 
 /// Merge only class definitions (class_params, class_supers, methods, method_classes)
