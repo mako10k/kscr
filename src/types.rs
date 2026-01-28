@@ -6866,59 +6866,6 @@ fn ensure_ksif_for_module(
         }
     }
 
-    // Also export class methods with their schemes.
-    // Methods are injected after inference, but they need to be in KSIF for cross-module resolution.
-    // For each class declared in this module, export its methods with constrained schemes.
-    for it in &module_ast.items {
-        if let ast::Item::ClassDecl(c) = it {
-            for method in &c.methods {
-                if seen.contains(&method.name) {
-                    continue; // Already exported
-                }
-                // Build the method scheme from the QualType in the class method signature
-                let mut holes = HashMap::new();
-                let param_var = {
-                    let Ty::Var(v) = cx.fresh() else { unreachable!() };
-                    v
-                };
-                let params: HashMap<String, Ty> = [(c.param.clone(), Ty::Var(param_var))].iter().cloned().collect();
-                let method_ty = lower_surface_type_with_tys(&method.ty.ty, &mut holes, &params)?;
-                
-                // Convert predicates from the method signature
-                let mut constraints: Vec<Constraint> = Vec::new();
-                // Add the class constraint itself (e.g., C a for class C a)
-                constraints.push(Constraint::Class {
-                    class: ast::ClassId::dummy(if let Some(ref m) = c.def_module {
-                        format!("{}.{}", m, c.name)
-                    } else {
-                        c.name.clone()
-                    }),
-                    ty: Ty::Var(param_var),
-                });
-                // Also add predicates from the method signature
-                for pred in &method.ty.preds {
-                    if let ast::Predicate::Class { class, ty } = pred {
-                        let pred_ty = lower_surface_type_with_tys(ty, &mut holes, &params)?;
-                        constraints.push(Constraint::Class {
-                            class: class.clone(),
-                            ty: pred_ty,
-                        });
-                    }
-                }
-                
-                let vars: Vec<u32> = ftv_ty(&method_ty).into_iter().collect();
-                let scheme = Scheme {
-                    vars,
-                    constraints,
-                    ty: method_ty,
-                };
-                
-                values.push((method.name.clone(), scheme));
-                seen.insert(method.name.clone());
-            }
-        }
-    }
-
     let ksif = crate::kir1::KsifModule {
         module_name: module_name.to_string(),
         values,
