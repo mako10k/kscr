@@ -3529,6 +3529,9 @@ fn desugar_typeclasses_with_strict(module: &mut ast::Module, strict: bool) -> Re
     validate_superclass_preds(&env)?;
     detect_superclass_cycles(&env)?;
 
+    // Expand deriving clauses into synthetic instance declarations
+    expand_deriving_clauses(module)?;
+
     let instance_decls = collect_instance_decls(module);
     preregister_instance_dicts(&mut env, &instance_decls)?;
     let extra_items = generate_instance_items(
@@ -3560,6 +3563,9 @@ fn collect_class_env_only(
         ..Default::default()
     };
 
+    // Expand deriving clauses before canonicalization so they get canonicalized too
+    expand_deriving_clauses(module)?;
+
     // Canonicalize class references
     canonicalize_class_names_in_module_combined(module, strict)?;
 
@@ -3581,6 +3587,9 @@ fn process_instances_with_env(
     class_default_methods: &HashMap<(ast::ClassId, String), ast::Expr>,
     strict: bool,
 ) -> Result<ClassEnv> {
+    // Expand deriving clauses before canonicalization
+    expand_deriving_clauses(module)?;
+
     // Canonicalize class references in instance declarations
     canonicalize_class_names_in_module_combined(module, strict)?;
 
@@ -4014,6 +4023,59 @@ fn detect_superclass_cycles(env: &ClassEnv) -> Result<()> {
         let mut stack: Vec<String> = Vec::new();
         dfs_cycle(env, c, &mut marks, &mut stack)?;
     }
+    Ok(())
+}
+
+/// Expand `deriving (Eq, Show)` clauses into explicit instance declarations.
+/// This ensures that derived instances are available via the normal instance mechanism,
+/// which is needed for cross-module imports (KSIF doesn't carry deriving info).
+fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
+    let mut synthetic_instances = Vec::new();
+    
+    for item in &module.items {
+        let ast::Item::DataDecl(d) = item else {
+            continue;
+        };
+        
+        // For each deriving clause, create a synthetic instance declaration
+        for class_name in &d.deriving {
+            // Skip Eq and Show - they're special-cased in the constraint solver, not real classes
+            if class_name == "Show" || class_name == "Eq" {
+                continue;
+            }
+            
+            // Create the instance type (apply type params if any)
+            let inst_ty = if d.params.is_empty() {
+                ast::Type::Var(d.name.clone())
+            } else {
+                let head = Box::new(ast::Type::Var(d.name.clone()));
+                let args = d.params.iter().map(|p| ast::Type::Var(p.clone())).collect();
+                ast::Type::App { head, args }
+            };
+            
+            // Create predicates for type parameters
+            let preds: Vec<ast::Predicate> = d.params.iter().map(|p| {
+                ast::Predicate::Class {
+                    class: ast::ClassId::dummy(class_name.clone()),
+                    ty: ast::Type::Var(p.clone()),
+                }
+            }).collect();
+            
+            // Create empty instance (deriving instances don't need method implementations;
+            // they're handled by entails in the constraint solver)
+            let inst = ast::InstanceDecl {
+                preds,
+                class: ast::ClassId::dummy(class_name.clone()),
+                ty: inst_ty,
+                methods: vec![], // Empty - the actual implementation is handled by the constraint solver
+            };
+            
+            synthetic_instances.push(ast::Item::InstanceDecl(inst));
+        }
+    }
+    
+    // Add synthetic instances to the module
+    module.items.extend(synthetic_instances);
     Ok(())
 }
 
@@ -4850,8 +4912,20 @@ fn data_derives_show(d: &ast::DataDecl) -> bool {
     d.deriving.iter().any(|c| c == "Show")
 }
 
+fn stdlib_derives_show(ty_name: &str) -> bool {
+    // Hardcoded list of stdlib types that derive Show.
+    // TODO: Proper fix requires exporting deriving info in KSIF.
+    matches!(ty_name, "Rational")
+}
+
 fn data_derives_eq(d: &ast::DataDecl) -> bool {
     d.deriving.iter().any(|c| c == "Eq")
+}
+
+fn stdlib_derives_eq(ty_name: &str) -> bool {
+    // Hardcoded list of stdlib types that derive Eq.
+    // TODO: Proper fix requires exporting deriving info in KSIF.
+    matches!(ty_name, "Rational")
 }
 
 fn entails_show(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
@@ -4859,6 +4933,10 @@ fn entails_show(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Resul
         Ty::Var(_) => vec![Constraint::Show(ty.clone())],
         Ty::Con(name) => {
             if show_primitives(name) {
+                vec![]
+            } else if stdlib_derives_show(name) {
+                // Hardcoded list of stdlib types that derive Show but are in separate modules.
+                // TODO: Proper fix requires exporting deriving info in KSIF.
                 vec![]
             } else if let Some(d) = data_env.get(name) {
                 if !data_derives_show(d) {
@@ -4949,6 +5027,10 @@ fn entails_eq(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<
         Ty::Var(_) => vec![Constraint::Eq(ty.clone())],
         Ty::Con(name) => {
             if eq_primitives(name) {
+                vec![]
+            } else if stdlib_derives_eq(name) {
+                // Hardcoded list of stdlib types that derive Eq but are in separate modules.
+                // TODO: Proper fix requires exporting deriving info in KSIF.
                 vec![]
             } else if let Some(d) = data_env.get(name) {
                 if !data_derives_eq(d) {
@@ -6541,6 +6623,49 @@ fn ensure_ksif_for_module(
             && seen.insert(name.clone())
         {
             values.push((name, entry.scheme));
+        }
+    }
+
+    // Also export class methods with their schemes.
+    // Methods are injected after inference, but they need to be in KSIF for cross-module resolution.
+    // For each class declared in this module, export its methods with constrained schemes.
+    for it in &module_ast.items {
+        if let ast::Item::ClassDecl(c) = it {
+            for method in &c.methods {
+                if seen.contains(&method.name) {
+                    continue; // Already exported
+                }
+                // Build the method scheme from the QualType in the class method signature
+                let mut holes = HashMap::new();
+                let param_var = {
+                    let Ty::Var(v) = cx.fresh() else { unreachable!() };
+                    v
+                };
+                let params: HashMap<String, Ty> = [(c.param.clone(), Ty::Var(param_var))].iter().cloned().collect();
+                let method_ty = lower_surface_type_with_tys(&method.ty.ty, &mut holes, &params)?;
+                
+                // Convert predicates from the method signature
+                let mut constraints: Vec<Constraint> = Vec::new();
+                for pred in &method.ty.preds {
+                    if let ast::Predicate::Class { class, ty } = pred {
+                        let pred_ty = lower_surface_type_with_tys(ty, &mut holes, &params)?;
+                        constraints.push(Constraint::Class {
+                            class: class.clone(),
+                            ty: pred_ty,
+                        });
+                    }
+                }
+                
+                let vars: Vec<u32> = ftv_ty(&method_ty).into_iter().collect();
+                let scheme = Scheme {
+                    vars,
+                    constraints,
+                    ty: method_ty,
+                };
+                
+                values.push((method.name.clone(), scheme));
+                seen.insert(method.name.clone());
+            }
         }
     }
 
@@ -11750,28 +11875,46 @@ fn infer_module_with_class_env_with_entry_path(
                 eprintln!("[KSCR_DEBUG_IMPORTS] Module: {}, schemes: {}", module_name, schemes.len());
             }
 
-            let aliases: Vec<String> = module
-                .items
-                .iter()
-                .filter_map(|it| match it {
-                    ast::Item::Import(id) if id.module == *module_name => id.as_name.clone(),
-                    _ => None,
-                })
-                .collect();
+            // Collect aliases and check if import is qualified
+            let mut is_qualified = false;
+            let mut aliases: Vec<String> = Vec::new();
+            for it in &module.items {
+                if let ast::Item::Import(id) = it {
+                    if id.module == *module_name {
+                        is_qualified = id.qualified;
+                        if let Some(ref as_name) = id.as_name {
+                            aliases.push(as_name.clone());
+                        }
+                    }
+                }
+            }
 
             for (name, scheme) in schemes {
-                if aliases.is_empty() {
-                    // No alias: expose canonical qualified name.
+                // For unqualified imports without aliases, expose both qualified and unqualified names
+                if !is_qualified && aliases.is_empty() {
+                    // Unqualified import: `import A` - expose both A.name and name
                     let qualified_name = format!("{}.{}", module_name, name);
+                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                        eprintln!("[KSCR_DEBUG_IMPORTS] Adding unqualified: {} and {}", name, qualified_name);
+                    }
                     env_global.insert(
                         qualified_name,
                         EnvEntry {
                             scheme: scheme.clone(),
-                            def_site: None, // Imported from .ksif; no file location
+                            def_site: None,
                         },
                     );
-                } else {
-                    // Aliased import: expose only alias-qualified names.
+                    // Also expose unqualified name
+                    env_global.insert(
+                        name.clone(),
+                        EnvEntry {
+                            scheme: scheme.clone(),
+                            def_site: None,
+                        },
+                    );
+                } else if !aliases.is_empty() {
+                    // Aliased import: `import A as M` or `import qualified A as M`
+                    // Expose only alias-qualified names
                     for a in &aliases {
                         let qualified_name = format!("{}.{}", a, name);
                         env_global.insert(
@@ -11782,6 +11925,16 @@ fn infer_module_with_class_env_with_entry_path(
                             },
                         );
                     }
+                } else {
+                    // Qualified import without alias: `import qualified A` - expose only A.name
+                    let qualified_name = format!("{}.{}", module_name, name);
+                    env_global.insert(
+                        qualified_name,
+                        EnvEntry {
+                            scheme: scheme.clone(),
+                            def_site: None,
+                        },
+                    );
                 }
             }
         }
