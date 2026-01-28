@@ -11453,6 +11453,69 @@ fn rewrite_class_method_lambda(
     ))
 }
 
+/// Find the name of the binding that encloses the given span.
+/// Returns the binding name if found.
+fn find_enclosing_binding(module: &ast::Module, span: ast::Span) -> Option<String> {
+    use ast::{Item, PatternKind};
+    
+    fn span_contains(outer: ast::Span, inner: ast::Span) -> bool {
+        outer.start <= inner.start && inner.end <= outer.end
+    }
+    
+    fn expr_contains_span(expr: &ast::Expr, target: ast::Span) -> bool {
+        span_contains(expr.span, target)
+    }
+    
+    for item in &module.items {
+        if let Item::Binding(b) = item {
+            if expr_contains_span(&b.expr, span) {
+                if let PatternKind::Var(name) = &b.pat.kind {
+                    return Some(name.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract the monad type from a function's return type.
+/// Given a function type like `a -> b -> m c` and a polymorphic type like `m ()`,
+/// try to unify them to determine what `m` should be.
+fn extract_return_monad_type(func_ty: &Ty, poly_ty: &Ty) -> Option<Ty> {
+    // Get the return type of the function (rightmost type in chain of ->)
+    fn get_return_type(ty: &Ty) -> &Ty {
+        match ty {
+            Ty::Func(_, b) => get_return_type(b),
+            _ => ty,
+        }
+    }
+    
+    // Simple unification: given poly_ty like `m ()` where m is a tyvar,
+    // and ret_ty like `IO ()`, extract the IO part.
+    fn extract_monad_constructor(poly: &Ty, concrete: &Ty) -> Option<Ty> {
+        match (poly, concrete) {
+            // Both are applications with same number of args
+            (Ty::App { head: poly_head, args: poly_args }, Ty::App { head: conc_head, args: conc_args }) 
+                if poly_args.len() == conc_args.len() => 
+            {
+                // If poly head is a type variable, the concrete head is our monad constructor
+                if matches!(poly_head.as_ref(), Ty::Var(_)) {
+                    // Check if it's a single-arg application (typical for monads)
+                    if poly_args.len() == 1 && conc_args.len() == 1 {
+                        // Return the full concrete type (e.g., IO Unit)
+                        return Some(concrete.clone());
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+    
+    let ret_ty = get_return_type(func_ty);
+    extract_monad_constructor(poly_ty, ret_ty)
+}
+
 fn resolve_method_dict_expr(
     ctx: &ApplyRewriteCtx<'_>,
     class_id: &ast::ClassId,
@@ -11575,6 +11638,26 @@ fn resolve_method_dict_expr(
                         format!("no instance found for method call `{mname}`: {class} {app_ty}"),
                         ctx.span,
                     ));
+                }
+            } else {
+                // If `app_ty` still has free variables, try to resolve them by looking at
+                // the enclosing binding's inferred type. This helps when `return ()` appears
+                // in one branch of a pattern match and the monad is determined by other branches.
+                if let Some(binding_name) = find_enclosing_binding(ctx.module_snapshot, ctx.span) {
+                    if let Some(scheme) = ctx.inferred.get(&binding_name) {
+                        // Extract the return type from the function's scheme
+                        if let Some(monad_ty) = extract_return_monad_type(&scheme.ty, &app_ty) {
+                            if let Ok(head) = instance_head_key_ty_for_class(ctx.class_env, class_id, &monad_ty) {
+                                if let Some(d) = ctx.class_env.instances.get(&(class_id.clone(), head)) {
+                                    let chosen_name_for_known = Some(d.clone());
+                                    return Ok(Some((
+                                        Expr::new(ctx.span, ExprKind::Var(d.clone())),
+                                        chosen_name_for_known,
+                                    )));
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
