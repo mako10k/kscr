@@ -333,15 +333,9 @@ fn lower_pat(
             Box::new(lower_expr(e, fresh, ctor_aliases)?),
         ),
         PatternKind::Constructor { name, args } => {
-            let name_text = name.qualified_text();
-            let name = if name_text.contains('.') {
-                name_text
-            } else {
-                ctor_aliases
-                    .get(name.local_name())
-                    .cloned()
-                    .unwrap_or(name_text)
-            };
+            // Use the local (unqualified) constructor name for runtime pattern matching.
+            // Qualification is only needed for compile-time resolution, not runtime matching.
+            let name = name.local_name().to_string();
             IrPattern::Constructor {
                 name,
                 args: args

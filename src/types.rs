@@ -6618,6 +6618,73 @@ fn ensure_ksif_for_module(
     let mut cx = InferCtx::default();
     let mut ctor_env = TypeEnv::new();
     add_data_ctors_into_env(&mut cx, &tm.module, Some(&module_path), &mut ctor_env);
+    
+    // Also add constructors from type alias re-exports (e.g., `type Maybe a = Prelude.Maybe a; export Maybe(..)`)
+    // These constructors need to be in the KSIF so qualified imports work.
+    for it in &tm.module.items {
+        if let ast::Item::TypeAlias(ta) = it {
+            if let Some(alias_ctors) = extract_aliased_type_ctors(&tm.module, ta) {
+                if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                    eprintln!("[KSCR_DEBUG_IMPORTS] Type alias {} re-exports constructors: {:?}", ta.name, alias_ctors);
+                }
+                // Extract the qualified type name that the alias refers to
+                // E.g., from `type Maybe a = Prelude.Maybe a`, extract "Prelude.Maybe"
+                let target_ty_name = match &ta.ty {
+                    ast::Type::Var(name) => Some(name.clone()),
+                    ast::Type::App { head, .. } => match &**head {
+                        ast::Type::Var(name) => Some(name.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                
+                if let Some(qual_type_name) = target_ty_name {
+                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                        eprintln!("[KSCR_DEBUG_IMPORTS] Qualified type name: {}", qual_type_name);
+                    }
+                    // Look up each constructor with the qualified module prefix
+                    // E.g., "Prelude.Just", "Prelude.Nothing"
+                    for ctor_name in &alias_ctors {
+                        let qual_ctor_name = if let Some((module_part, _)) = qual_type_name.rsplit_once('.') {
+                            format!("{}.{}", module_part, ctor_name)
+                        } else {
+                            ctor_name.clone()
+                        };
+                        
+                        if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                            eprintln!("[KSCR_DEBUG_IMPORTS] Looking for constructor: {} (qual: {})", ctor_name, qual_ctor_name);
+                            eprintln!("[KSCR_DEBUG_IMPORTS] Found in tm.inferred: {}", tm.inferred.contains_key(&qual_ctor_name));
+                            if !tm.inferred.contains_key(&qual_ctor_name) {
+                                eprintln!("[KSCR_DEBUG_IMPORTS] Available keys matching {}: {:?}", ctor_name, 
+                                    tm.inferred.keys().filter(|k| k.contains(ctor_name)).collect::<Vec<_>>());
+                            }
+                        }
+                        
+                        // Try to find this constructor in the inferred schemes
+                        // Try both qualified and unqualified names
+                        let scheme = tm.inferred.get(&qual_ctor_name).or_else(|| tm.inferred.get(ctor_name));
+                        
+                        if let Some(scheme) = scheme {
+                            if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                                eprintln!("[KSCR_DEBUG_IMPORTS] Adding {} to ctor_env", ctor_name);
+                            }
+                            ctor_env.insert(
+                                ctor_name.clone(),
+                                EnvEntry {
+                                    scheme: scheme.clone(),
+                                    def_site: Some(DefSite {
+                                        path: module_path.clone(),
+                                        span: ta.span,
+                                    }),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     for (name, entry) in ctor_env {
         if matches!(exports.entries.get(&name), Some(SymbolKind::Ctor))
             && seen.insert(name.clone())
@@ -8648,6 +8715,78 @@ fn import_items(module: &ast::Module) -> Vec<ast::Item> {
         .collect()
 }
 
+/// Extract constructors from a type alias that re-exports a qualified type.
+/// For example, if `type Maybe a = Prelude.Maybe a`, return ["Just", "Nothing"]
+/// by looking up the imported Prelude.Maybe type.
+fn extract_aliased_type_ctors(module: &ast::Module, ta: &ast::TypeAlias) -> Option<Vec<String>> {
+    let debug = std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some();
+    
+    // Extract the target type constructor from the RHS
+    // This is a simple heuristic: if the RHS is an App or Var with a qualified name,
+    // we try to resolve it
+    let target_ty_name = match &ta.ty {
+        ast::Type::Var(name) => Some(name.clone()),
+        ast::Type::App { head, .. } => {
+            // For applications like `Prelude.Maybe a`, extract the base constructor
+            match &**head {
+                ast::Type::Var(name) => Some(name.clone()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }?;
+
+    if debug {
+        eprintln!("[KSCR_DEBUG_IMPORTS] extract_aliased_type_ctors: type alias {} -> target type {}", ta.name, target_ty_name);
+    }
+
+    // If the target type name is qualified (e.g., "Prelude.Maybe"), look it up in imports
+    if let Some((module_part, type_name)) = target_ty_name.rsplit_once('.') {
+        if debug {
+            eprintln!("[KSCR_DEBUG_IMPORTS] Qualified type: module={}, type={}", module_part, type_name);
+        }
+        // Find the import for this module
+        for it in &module.items {
+            let ast::Item::Import(id) = it else {
+                continue;
+            };
+            if id.module != module_part {
+                continue;
+            }
+
+            // Try to load the imported module and get its data declaration
+            if let Ok(Some((imported, _))) = module_imported_exports(module, id) {
+                // Look for the data declaration in the imported module
+                for imp_it in &imported.items {
+                    if let ast::Item::DataDecl(dd) = imp_it {
+                        if dd.name == type_name {
+                            let ctors: Vec<String> = dd.ctors.iter().map(|c| c.name.clone()).collect();
+                            if debug {
+                                eprintln!("[KSCR_DEBUG_IMPORTS] Found data decl {} with constructors: {:?}", dd.name, ctors);
+                            }
+                            return Some(ctors);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Unqualified name - look for it in the current module
+        for it in &module.items {
+            if let ast::Item::DataDecl(dd) = it {
+                if dd.name == target_ty_name {
+                    return Some(dd.ctors.iter().map(|c| c.name.clone()).collect());
+                }
+            }
+        }
+    }
+
+    if debug {
+        eprintln!("[KSCR_DEBUG_IMPORTS] No constructors found for type alias {}", ta.name);
+    }
+    None
+}
+
 fn module_exported_names(module: &ast::Module) -> Result<ExportTable> {
     let mut exports = ExportTable::new();
     let mut has_export_decl = false;
@@ -8670,35 +8809,59 @@ fn module_exported_names(module: &ast::Module) -> Result<ExportTable> {
                     let kind = classify_type_export(module, name);
                     exports.insert(name.clone(), kind);
 
+                    // Try to find a data declaration with this name
                     let dd = module.items.iter().find_map(|it| match it {
                         ast::Item::DataDecl(d) if d.name == *name => Some(d),
                         _ => None,
                     });
-                    let Some(dd) = dd else {
-                        // Type exports can refer to classes too (e.g. `Monad(..)`), which are not
-                        // `DataDecl`s. For MVP export checking, allow these through.
-                        continue;
-                    };
 
-                    match ctors {
-                        ast::ExportCtors::All => {
-                            exports.extend(
-                                dd.ctors.iter().map(|c| (c.name.clone(), SymbolKind::Ctor)),
-                            );
-                        }
-                        ast::ExportCtors::Some(cs) => {
-                            let known: HashSet<&str> =
-                                dd.ctors.iter().map(|c| c.name.as_str()).collect();
-                            for c in cs {
-                                if !known.contains(c.as_str()) {
-                                    return Err(Error::msg(format!(
-                                        "export list references unknown constructor: {name}({c})"
-                                    )));
+                    if let Some(dd) = dd {
+                        // Direct data declaration - export its constructors
+                        match ctors {
+                            ast::ExportCtors::All => {
+                                exports.extend(
+                                    dd.ctors.iter().map(|c| (c.name.clone(), SymbolKind::Ctor)),
+                                );
+                            }
+                            ast::ExportCtors::Some(cs) => {
+                                let known: HashSet<&str> =
+                                    dd.ctors.iter().map(|c| c.name.as_str()).collect();
+                                for c in cs {
+                                    if !known.contains(c.as_str()) {
+                                        return Err(Error::msg(format!(
+                                            "export list references unknown constructor: {name}({c})"
+                                        )));
+                                    }
+                                    exports.insert(c.clone(), SymbolKind::Ctor);
                                 }
-                                exports.insert(c.clone(), SymbolKind::Ctor);
                             }
                         }
+                        continue;
                     }
+
+                    // Check if it's a type alias that re-exports constructors
+                    let ta = module.items.iter().find_map(|it| match it {
+                        ast::Item::TypeAlias(t) if t.name == *name => Some(t),
+                        _ => None,
+                    });
+
+                    if let Some(ta) = ta {
+                        // Type alias - try to resolve the constructors from the aliased type
+                        // This handles cases like: type Maybe a = Prelude.Maybe a
+                        // where we want to re-export Just and Nothing
+                        if let ast::ExportCtors::All = ctors {
+                            // Try to extract the target type name from the alias RHS
+                            if let Some(target_ctors) = extract_aliased_type_ctors(module, ta) {
+                                exports.extend(
+                                    target_ctors.into_iter().map(|c| (c, SymbolKind::Ctor)),
+                                );
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Type exports can refer to classes too (e.g. `Monad(..)`), which are not
+                    // `DataDecl`s or TypeAliases. For MVP export checking, allow these through.
                 }
             }
         }
@@ -9426,6 +9589,14 @@ fn qualify_items(
             ast::Item::Binding(b) => pat_defined_names(&b.pat, &mut values),
             ast::Item::TypeAlias(ta) => {
                 types.insert(ta.name.clone());
+                // Also collect constructors from type alias re-exports
+                // E.g., if we have `type Maybe a = Prelude.Maybe a` and export `Maybe(..)`
+                if let Some(alias_ctors) = extract_aliased_type_ctors(module, ta) {
+                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
+                        eprintln!("[KSCR_DEBUG_IMPORTS] Type alias {} re-exports constructors: {:?}", ta.name, alias_ctors);
+                    }
+                    ctors.extend(alias_ctors);
+                }
             }
             ast::Item::DataDecl(d) => {
                 types.insert(d.name.clone());
@@ -11861,7 +12032,29 @@ fn infer_module_with_class_env_with_entry_path(
         class_env: class_index.clone(),
         ..Default::default()
     };
-    let data_env = collect_data_env(module);
+    let mut data_env = collect_data_env(module);
+    
+    // IMPORTANT: Also collect DataDecls from imported modules for deriving info.
+    // KSIF doesn't carry deriving info, so we need to load source files.
+    if let Some(entry_path) = entry_path {
+        let entry_dir = entry_path.parent().unwrap_or_else(|| Path::new("."));
+        for it in &module.items {
+            let ast::Item::Import(id) = it else {
+                continue;
+            };
+            // Try to load the imported module's source to get DataDecls with deriving info
+            if let Ok(imported_path) = resolve_module_path(entry_dir, &id.module) {
+                if let Ok(src) = std::fs::read_to_string(&imported_path) {
+                    if let Ok(mut imported_mod) = parser::parse_module(&src) {
+                        let _ = desugar_module_qualified_names(&mut imported_mod);
+                        let imported_data_env = collect_data_env(&imported_mod);
+                        data_env.extend(imported_data_env);
+                    }
+                }
+            }
+        }
+    }
+    
     let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env, entry_path)?;
 
     // Merge imported .ksif schemes into env_global so qualified names like `Data.Maybe.fromMaybe` can be resolved.

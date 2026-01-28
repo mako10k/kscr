@@ -1,8 +1,9 @@
 module Prelude.Read where
   export Parser, runParser, pureP, failP, mapP, bindP, orP, satisfy, char, many, many1, whitespace, token, eof
 
+  import Prelude
+
   -- A tiny parser over String ([Char]).
-  -- Keep this module Prelude-independent to avoid cyclic stdlib imports.
 
   type Parser a = String -> Maybe (a, String)
 
