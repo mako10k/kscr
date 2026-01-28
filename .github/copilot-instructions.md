@@ -53,6 +53,55 @@ The agent must avoid “panic edits” and preserve work by default.
 - Do not run any rollback/discard action (`git restore`, `git reset`, etc.) without explicit user confirmation.
 - When a change touches multiple subsystems, prefer: **save → isolate → minimize → verify**.
 
+### Rollback decision gate (MANDATORY)
+
+Rollback is a last resort. Before proposing rollback, the agent **MUST** complete evidence collection and stabilization attempts.
+
+#### Evidence collection (required first)
+
+1. **Re-run with isolation**: Run failing tests with `--test-threads=1` or `-- --test <single_test_name>` to rule out parallel interference.
+2. **Check global state**: Verify whether tests modify `env::set_current_dir()`, `env::set_var()`, process-wide policy, or other shared state without proper guards.
+3. **Check flakiness**: Re-run failing tests 3+ times to identify non-deterministic failures.
+4. **Minimal reproduction**: Isolate to a single test or minimal `.ks` file that demonstrates the regression.
+5. **Identify cause**: Compare behavior before/after the recent change; verify the change is the actual root cause.
+
+#### Stabilization attempts (required second)
+
+Before suggesting rollback, **attempt these fixes first**:
+
+- Serialize tests: Use `#[serial]` (via `serial_test` crate) or `--test-threads=1` flag.
+- Guard global state: Add `Drop` guards to restore `cwd`, `env`, or policies after tests.
+- Fix test isolation: Ensure tests clean up side effects (files, env vars, mocks).
+- Minimal targeted fix: If the root cause is a typo, logic error, or missing null check, fix it directly rather than rolling back.
+
+#### Rollback is justified ONLY IF
+
+- **(a)** Regression is clearly from the recent change (confirmed by git bisect or manual rollback test), **AND**
+- **(b)** Minimal fix attempts have failed or are infeasible within reasonable time.
+
+#### Work-preserving fallback (default)
+
+If rollback appears necessary, **do not discard work**. Instead:
+
+1. Make a WIP commit: `git commit -am "WIP: preserve work before rollback investigation"`
+2. Create a branch: `git switch -c fix/<issue-id>-preserve-work`
+3. Propose rollback on main branch only after preserving the work.
+
+#### Rollback decision checklist
+
+Before proposing rollback, answer YES to all:
+
+- [ ] Have I re-run tests with `--test-threads=1`?
+- [ ] Have I checked for global state changes (cwd/env/policy)?
+- [ ] Have I reproduced the failure in isolation (single test or minimal `.ks`)?
+- [ ] Have I verified flakiness by re-running 3+ times?
+- [ ] Have I attempted stabilization (serialize tests, add Drop guards, fix isolation)?
+- [ ] Have I attempted a minimal targeted fix?
+- [ ] Is the regression clearly caused by the recent change (not pre-existing)?
+- [ ] Has a minimal fix attempt failed or been deemed infeasible?
+
+**If any answer is NO, do not propose rollback.** Instead, report progress and ask for guidance.
+
 ### Change scope discipline (MANDATORY)
 
 To avoid “ad-hoc / band-aid” behavior:

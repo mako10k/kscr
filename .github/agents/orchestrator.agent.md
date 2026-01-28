@@ -33,6 +33,7 @@ Your job is to actively delegate to specialized sub-agents for most work, and to
 ## Routing rules (more aggressive)
 
 - If a request touches packaging/release/workflows, require review (りん) specifically for shipped artifact regressions.
+- **If rollback/revert is proposed or considered**, delegate rollback assessment to りん (reviewer) first; reviewer must check for flakiness, global state issues, and reproduction before approving rollback.
 
 - If requirements are unclear: start with まなみ.
 - If requirements exist but plan is missing: use さくら.

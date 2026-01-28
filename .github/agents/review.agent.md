@@ -31,6 +31,38 @@ Required response when P0:
 - Propose a semantics-based alternative (or require a minimal repro + targeted fix).
 - Require removing the ad-hoc change before approval.
 
+### 0b) Rollback assessment (P0 if premature)
+
+When rollback/revert is proposed or considered, apply the **Rollback decision gate** from `.github/copilot-instructions.md`.
+
+**Required evidence collection (must be completed first)**:
+
+1. Re-run failing tests with `--test-threads=1` to rule out parallel test interference.
+2. Check for global state modifications (cwd, env vars, process-wide policy) without proper guards/cleanup.
+3. Reproduce the failure in isolation (single test, minimal `.ks` repro).
+4. Re-run 3+ times to identify flakiness.
+5. Verify the recent change is the actual root cause (not pre-existing or unrelated).
+
+**Required stabilization attempts (before rollback)**:
+
+- Serialize tests (`#[serial]` or `--test-threads=1`).
+- Add `Drop` guards to restore global state after tests.
+- Fix test isolation (cleanup side effects).
+- Attempt minimal targeted fix (if root cause is clear).
+
+**Flag as P0 (block rollback) if**:
+
+- Evidence collection is incomplete.
+- Stabilization attempts have not been tried.
+- Root cause is flakiness, global state, or parallel interference (not the change itself).
+- A minimal fix is feasible but not attempted.
+
+**Approve rollback ONLY IF**:
+
+- All evidence collected confirms regression is from the recent change, **AND**
+- Stabilization attempts failed or are infeasible, **AND**
+- Work has been preserved (WIP commit or branch created).
+
 ### Packaging/Release
 
 - Verify shipped artifact set (no silent removals/renames) and confirm release layout matches workflow/docs.
