@@ -6721,6 +6721,16 @@ fn ensure_ksif_for_module(
                 
                 // Convert predicates from the method signature
                 let mut constraints: Vec<Constraint> = Vec::new();
+                // Add the class constraint itself (e.g., C a for class C a)
+                constraints.push(Constraint::Class {
+                    class: ast::ClassId::dummy(if let Some(ref m) = c.def_module {
+                        format!("{}.{}", m, c.name)
+                    } else {
+                        c.name.clone()
+                    }),
+                    ty: Ty::Var(param_var),
+                });
+                // Also add predicates from the method signature
                 for pred in &method.ty.preds {
                     if let ast::Predicate::Class { class, ty } = pred {
                         let pred_ty = lower_surface_type_with_tys(ty, &mut holes, &params)?;
@@ -7186,8 +7196,10 @@ fn typecheck_internal_core_with_entry_path(
         // This allows Main to use instances defined in module A when Main imports A.
         if let Some(ep) = entry_path {
             let entry_dir = ep.parent().unwrap_or_else(|| Path::new("."));
-            let imported_instances = load_imported_instances(&module, entry_dir)?;
+            let (imported_instances, dict_bindings) = load_imported_instances(&module, entry_dir)?;
             merge_class_env(&mut class_env, &imported_instances)?;
+            // Inject dictionary bindings into the module so they're available at runtime
+            module.items.extend(dict_bindings);
         }
 
         // If `>>=` and `>>` operators are available (typically from a Monad-like type class),
@@ -7562,8 +7574,47 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
 
 /// Load class instances from all imported user modules (non-stdlib).
 /// This is needed so that instances defined in module A are available when Main imports A.
-fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<ClassEnv> {
+fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<(ClassEnv, Vec<ast::Item>)> {
+    fn qualify_dict_refs_in_expr(expr: ast::Expr, module_prefix: &str) -> ast::Expr {
+        use ast::{Expr, ExprKind};
+        let span = expr.span;
+        match expr.kind {
+            ExprKind::Var(name) if name.starts_with("__dict_") || name.starts_with("__inst_") => {
+                Expr::new(span, ExprKind::Var(format!("{}.{}", module_prefix, name)))
+            }
+            ExprKind::Lambda { params, body } => Expr::new(
+                span,
+                ExprKind::Lambda {
+                    params,
+                    body: Box::new(qualify_dict_refs_in_expr(*body, module_prefix)),
+                },
+            ),
+            ExprKind::Apply { func, args } => Expr::new(
+                span,
+                ExprKind::Apply {
+                    func: Box::new(qualify_dict_refs_in_expr(*func, module_prefix)),
+                    args: args
+                        .into_iter()
+                        .map(|e| qualify_dict_refs_in_expr(e, module_prefix))
+                        .collect(),
+                },
+            ),
+            ExprKind::Record(fields) => Expr::new(
+                span,
+                ExprKind::Record(
+                    fields
+                        .into_iter()
+                        .map(|(k, v)| (k, qualify_dict_refs_in_expr(v, module_prefix)))
+                        .collect(),
+                ),
+            ),
+            // For other expression kinds, return as-is
+            _ => expr,
+        }
+    }
+
     let mut merged_env = ClassEnv::default();
+    let mut dict_bindings: Vec<ast::Item> = Vec::new();
     let stdlib_root = stdlib_cache::stdlib_root()?;
 
     for it in &module.items {
@@ -7608,17 +7659,38 @@ fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<Cla
                 .collect(),
         };
 
-        // Skip if no instances
+        // Skip if no instances or class declarations
         if !tmp_module
             .items
             .iter()
-            .any(|it| matches!(it, ast::Item::InstanceDecl(_)))
+            .any(|it| matches!(it, ast::Item::InstanceDecl(_) | ast::Item::ClassDecl(_)))
         {
             continue;
         }
 
         // Canonicalize class names and desugar typeclasses to get instances
         let module_env = desugar_typeclasses(&mut tmp_module)?;
+        
+        // Collect dictionary bindings from the desugared module
+        // These need to be injected into the importing module with qualified names
+        for it in &tmp_module.items {
+            if let ast::Item::Binding(b) = it {
+                if let ast::PatternKind::Var(name) = &b.pat.kind {
+                    if name.starts_with("__dict_") || name.starts_with("__inst_") {
+                        // Qualify the binding name and all __dict_/__inst_ references in the expression
+                        let qual_name = format!("{}.{}", id.module, name);
+                        let qual_expr = qualify_dict_refs_in_expr(b.expr.clone(), &id.module);
+                        let qual_binding = ast::Binding {
+                            doc: b.doc.clone(),
+                            pat: ast::Pattern::new(b.pat.span, ast::PatternKind::Var(qual_name)),
+                            expr: qual_expr,
+                            span: b.span,
+                        };
+                        dict_bindings.push(ast::Item::Binding(qual_binding));
+                    }
+                }
+            }
+        }
         
         // Don't qualify dict names here - they should remain unqualified within the module.
         // Qualification happens when merging into the importing module's class_env.
@@ -7627,7 +7699,7 @@ fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<Cla
         merge_class_env_with_module_prefix(&mut merged_env, &module_env, &id.module)?;
     }
 
-    Ok(merged_env)
+    Ok((merged_env, dict_bindings))
 }
 
 fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
