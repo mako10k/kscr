@@ -6928,6 +6928,24 @@ fn load_imported_ksif_schemes_internal(
             continue;
         };
         let ksif_path = chosen.unwrap();
+
+        // Safety: if a cached KSIF's dependency hashes don't match, fail early.
+        match validate_ksif_dependencies(&ksif_path, entry_dir, &default_artifact_dir) {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Error::msg(format!(
+                    "stale ksif {} (dependencies changed); re-run with --ksif-rebuild",
+                    ksif_path.display()
+                )));
+            }
+            Err(e) => {
+                return Err(Error::msg(format!(
+                    "failed to validate ksif dependencies for {}: {e}",
+                    ksif_path.display()
+                )));
+            }
+        }
+
         let ksif = crate::kir1::decode_ksif_module(&bytes).map_err(|e| {
             Error::msg(format!(
                 "failed to decode ksif {}: {e:?}",
