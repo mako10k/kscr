@@ -428,11 +428,15 @@ fn encode_interface_section(module: &KsifModule, interner: &StringInterner) -> V
     // - repeated value entries:
     //   - name: StringId
     //   - scheme: Scheme
-    // - dep_count: varu32
-    // - repeated dependency entries:
-    //   - module_name: StringId
-    //   - hash_len: varu32
-    //   - hash_bytes: [u8; hash_len]
+    // - optional deps block:
+    //   - marker: [u8; 4] = "DEPS"
+    //   - dep_count: varu32
+    //   - repeated dependency entries:
+    //     - module_name: StringId
+    //     - hash_len: varu32
+    //     - hash_bytes: [u8; hash_len]
+    //
+    // The marker avoids accidentally interpreting trailing bytes as deps.
     let mut out = Vec::new();
     let module_name_id = interner
         .index
@@ -450,7 +454,8 @@ fn encode_interface_section(module: &KsifModule, interner: &StringInterner) -> V
         write_varu32(&mut out, name_id);
         encode_scheme(&mut out, scheme, interner);
     }
-    // Encode dependencies
+    // Encode dependencies (tagged)
+    out.extend_from_slice(b"DEPS");
     write_varu32(&mut out, module.dependencies.len() as u32);
     for (dep_name, hash_hex) in &module.dependencies {
         let dep_name_id = interner
@@ -481,8 +486,11 @@ fn decode_interface_section(
         let scheme = decode_scheme(&mut input, interner)?;
         values.push((name, scheme));
     }
-    // Decode dependencies (may not exist in older .ksif files)
-    let dependencies = if !input.is_empty() {
+    // Decode dependencies (tagged; may not exist in older .ksif files)
+    let dependencies = if input.is_empty() {
+        Vec::new()
+    } else if input.starts_with(b"DEPS") {
+        input = &input[4..];
         let dep_count = read_varu32(&mut input)? as usize;
         let mut deps = Vec::with_capacity(dep_count);
         for _ in 0..dep_count {
@@ -498,13 +506,15 @@ fn decode_interface_section(
             input = &input[hash_len..];
             deps.push((dep_name, hash_hex));
         }
+        if !input.is_empty() {
+            return Err(Kir1Error::Msg("trailing bytes in INTERFACE".to_string()));
+        }
         deps
     } else {
-        Vec::new()
+        return Err(Kir1Error::Msg(
+            "unsupported INTERFACE trailing bytes (missing DEPS marker)".to_string(),
+        ));
     };
-    if !input.is_empty() {
-        return Err(Kir1Error::Msg("trailing bytes in INTERFACE".to_string()));
-    }
     Ok(KsifModule {
         module_name,
         values,
