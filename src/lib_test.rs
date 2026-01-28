@@ -1055,8 +1055,7 @@ fn ir_run_main_list_range_sugar() {
     let src = "module Main where\n  import Prelude\n  main = case [1..3] of\n    1:2:3:[] -> IO ()\n    _ -> throw \"assert failed\"\n";
     std::fs::write(&main_path, src).unwrap();
 
-    let tm = crate::types::typecheck_file(&main_path).unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let ir = crate::cli_impl::typecheck_and_link_ir(&main_path).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 
@@ -1075,11 +1074,10 @@ fn ir_run_main_list_range_sugar_infinite() {
     std::fs::create_dir_all(&dir).unwrap();
 
     let main_path = dir.join("Main.ks");
-    let src = "module Main where\n  import Prelude\n  main = case [1..] of\n    1:2:3:_ -> IO ()\n    _ -> throw \"assert failed\"\n";
+    let src = "module Main where\n  import Prelude\n  import Prelude\n  main = case [1..] of\n    1:2:3:_ -> IO ()\n    _ -> throw \"assert failed\"\n";
     std::fs::write(&main_path, src).unwrap();
 
-    let tm = crate::types::typecheck_file(&main_path).unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let ir = crate::cli_impl::typecheck_and_link_ir(&main_path).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 
@@ -1101,8 +1099,7 @@ fn ir_run_main_list_range_sugar_step_finite() {
     let src = "module Main where\n  import Prelude\n  main = case [1,3..10] of\n    1:3:5:7:9:[] -> IO ()\n    _ -> throw \"assert failed\"\n";
     std::fs::write(&main_path, src).unwrap();
 
-    let tm = crate::types::typecheck_file(&main_path).unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let ir = crate::cli_impl::typecheck_and_link_ir(&main_path).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 
@@ -1124,8 +1121,7 @@ fn ir_run_main_list_range_sugar_step_infinite() {
     let src = "module Main where\n  import Prelude\n  main = case [1,3..] of\n    1:3:5:_ -> IO ()\n    _ -> throw \"assert failed\"\n";
     std::fs::write(&main_path, src).unwrap();
 
-    let tm = crate::types::typecheck_file(&main_path).unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let ir = crate::cli_impl::typecheck_and_link_ir(&main_path).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 
@@ -1827,34 +1823,30 @@ main = do
 
 #[test]
 fn ir_run_main_user_defined_typeclass_imports_instance() {
-    let tm = crate::types::typecheck_file(std::path::Path::new("tests/typeclass_import_main.ks"))
+    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/typeclass_import_main.ks"))
         .unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]
 fn ir_run_main_stdlib_classes_smoke() {
-    let tm = crate::types::typecheck_file(std::path::Path::new("tests/stdlib_classes_smoke.ks"))
+    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/stdlib_classes_smoke.ks"))
         .unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]
 fn ir_run_main_rational_smoke() {
-    let tm = crate::types::typecheck_file(std::path::Path::new("tests/rational_smoke.ks")).unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/rational_smoke.ks")).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]
 fn ir_run_main_p0_import_data_case_do_smoke() {
-    let tm = crate::types::typecheck_file(std::path::Path::new("tests/P0/Main.ks")).unwrap();
-    let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
+    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/P0/Main.ks")).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 }

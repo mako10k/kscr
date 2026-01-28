@@ -6377,16 +6377,12 @@ fn inject_imported_ksif_forwarders(
             let qual_name = format!("{qual}.{name}");
 
             // For unqualified imports, inject `x = <Qual>.x`.
-            // If multiple imports try to provide the same unqualified name, report a conflict.
+            // If multiple imports try to provide the same unqualified name, first import wins.
             if !id.qualified {
                 let origin = format!("import {qual}");
                 if let Some(prev) = defined.get(name) {
-                    // Local definitions win silently, but import-vs-import should error.
-                    if prev != "local" && prev.starts_with("import ") && prev != &origin {
-                        return Err(Error::msg(format!(
-                            "name conflict: {name} (previously from {prev}, now from {origin}); try `import ... as ...` or qualify",
-                        )));
-                    }
+                    // Local definitions win silently.
+                    // For import-vs-import conflicts: first import wins, skip silently.
                     continue;
                 }
 
@@ -13410,7 +13406,9 @@ mod inference_tests {
     }
 
     #[test]
-    fn typecheck_file_reports_name_conflict_with_sources() {
+    fn typecheck_file_first_import_wins_for_name_conflicts() {
+        // Test that when multiple imports provide the same unqualified name,
+        // the first import wins (no error, just silently use first definition).
         let dir = std::env::temp_dir().join(format!(
             "kscr_typecheck_file_name_conflict_{}",
             std::process::id()
@@ -13431,11 +13429,8 @@ mod inference_tests {
         )
         .unwrap();
 
-        let e = typecheck_file(&main).unwrap_err();
-        let msg = format!("{e}");
-        assert!(msg.contains("name conflict: x"));
-        assert!(msg.contains("import A"));
-        assert!(msg.contains("import B"));
+        // Should succeed (first import wins: x comes from A)
+        let _tm = typecheck_file(&main).unwrap();
 
         let _ = std::fs::remove_dir_all(dir);
     }

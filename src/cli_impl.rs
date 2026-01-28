@@ -129,47 +129,8 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
                 types::set_stdlib_dir_override(dir);
             }
             let path_ref = Path::new(&path);
-            eprintln!("[CLI] Typechecking file: {}", path_ref.display());
-            let tm = types::typecheck_file(path_ref)?;
-            eprintln!("[CLI] Typecheck complete");
-            
-            // Lower entry module to IR
-            let mut irm = ir::lower_to_ir(&tm.module)?;
-            eprintln!("[CLI] Entry module lowered to IR");
-            
-            // Try to load and merge transitive imports for runtime linking.
-            // This is best-effort: if it fails (e.g., for test modules), we fall back to just running the entry module.
-            eprintln!("[CLI] Loading transitive imports...");
-            match types::load_transitive_imports_for_runtime(path_ref) {
-                Ok(imports) => {
-                    eprintln!("[RUNTIME] Successfully loaded {} import modules", imports.len());
-                    // Lower each imported module to IR and merge with qualified names.
-                    // Also provide `import M as Q` runtime aliases: `Q.x` should resolve to `M.x`.
-                    for (module_name, module_ast) in &imports {
-                        if let Ok(imported_ir) = ir::lower_to_ir(module_ast) {
-                            let aliases: Vec<String> = tm
-                                .module
-                                .items
-                                .iter()
-                                .filter_map(|it| match it {
-                                    ast::Item::Import(id) if id.module == *module_name => {
-                                        id.as_name.clone()
-                                    }
-                                    _ => None,
-                                })
-                                .collect();
-                            merge_imported_ir(&mut irm, &imported_ir, module_name, &aliases);
-                        }
-                    }
-                    
-                    // Inject constructor forwarders for re-exported types (e.g., Data.Maybe.Just -> Prelude.Just)
-                    inject_constructor_forwarders(&mut irm, &imports, &tm.module);
-                }
-                Err(e) => {
-                    eprintln!("[RUNTIME] Failed to load transitive imports: {}", e);
-                }
-            }
-            
+            eprintln!("[CLI] Typechecking and linking: {}", path_ref.display());
+            let irm = typecheck_and_link_ir(path_ref)?;
             eprintln!("[CLI] Running main...");
             let _ = ir::run_main(&irm)?;
             Ok(())
@@ -1227,6 +1188,188 @@ fn inject_constructor_forwarders(
                     expr: IrExpr::Var(source.to_string()),
                 });
                 existing.insert(target.to_string());
+            }
+        }
+    }
+}
+
+/// Typecheck a file and produce IR with all transitive imports linked.
+/// This is the standard path for running programs that matches CLI behavior.
+///
+/// Returns an IrModule with:
+/// - All bindings from the entry module
+/// - All bindings from imported modules (qualified with module names)
+/// - Alias bindings for `import M as Q` (Q.x -> M.x)
+/// - Dict variables for typeclass instances
+/// - Constructor forwarders for re-exported types
+pub fn typecheck_and_link_ir(entry: &Path) -> Result<ir::IrModule> {
+    // Typecheck the entry module
+    let tm = types::typecheck_file(entry)?;
+    
+    // Lower entry module to IR
+    let mut irm = ir::lower_to_ir(&tm.module)?;
+    
+    // Load and merge transitive imports for runtime linking.
+    // We need to TYPECHECK imported modules (not just load AST) because:
+    // - Instance dict bindings are generated during typecheck desugaring
+    // - Without typechecking, __dict_* bindings won't exist
+    match load_and_typecheck_transitive_imports(entry) {
+        Ok(imports) => {
+            // Lower each typechecked imported module to IR and merge with qualified names
+            for (module_name, typechecked_module) in &imports {
+                let imported_ir = ir::lower_to_ir(&typechecked_module.module)?;
+                
+                // Collect aliases from the entry module for this import
+                let entry_aliases: Vec<String> = tm
+                    .module
+                    .items
+                    .iter()
+                    .filter_map(|it| match it {
+                        ast::Item::Import(id) if id.module == *module_name => {
+                            id.as_name.clone()
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                
+                merge_imported_ir(&mut irm, &imported_ir, module_name, &entry_aliases);
+                
+                // ALSO handle transitive import aliases: if module B imports A as OM,
+                // we need to provide OM.x bindings when we merge B.
+                inject_transitive_import_aliases(&mut irm, &typechecked_module.module, module_name, &imports);
+            }
+            
+            // Inject constructor forwarders for re-exported types
+            // Convert TypedModule map to ast::Module map for compatibility
+            let ast_imports: std::collections::HashMap<String, ast::Module> = imports
+                .into_iter()
+                .map(|(name, tm)| (name, tm.module))
+                .collect();
+            inject_constructor_forwarders(&mut irm, &ast_imports, &tm.module);
+        }
+        Err(e) => {
+            eprintln!("[WARN] Failed to load transitive imports: {}", e);
+            eprintln!("[WARN] IR may be incomplete; runtime errors may occur");
+        }
+    }
+    
+    Ok(irm)
+}
+
+/// Load and typecheck all transitive imports.
+/// Returns a map of module_name -> TypedModule.
+/// This is more expensive than loading raw AST but necessary for dict bindings.
+fn load_and_typecheck_transitive_imports(entry: &Path) -> Result<HashMap<String, types::TypedModule>> {
+    let entry = std::fs::canonicalize(entry)?;
+    let entry_dir = entry.parent().unwrap_or_else(|| std::path::Path::new("."));
+    
+    // First, get the list of all transitive imports
+    let raw_imports = types::load_transitive_imports_for_runtime(&entry)?;
+    
+    // Now typecheck each imported module
+    let mut result: HashMap<String, types::TypedModule> = HashMap::new();
+    for (module_name, _module_ast) in raw_imports {
+        // Resolve module path using the same logic as load_transitive_imports_for_runtime
+        let module_path = match resolve_module_path_for_runtime(entry_dir, &module_name) {
+            Ok(p) => p,
+            Err(_) => continue, // Skip modules we can't resolve
+        };
+        
+        match types::typecheck_file(&module_path) {
+            Ok(tm) => {
+                result.insert(module_name, tm);
+            }
+            Err(e) => {
+                eprintln!("[WARN] Failed to typecheck import {}: {}", module_name, e);
+            }
+        }
+    }
+    
+    Ok(result)
+}
+
+/// Resolve a module path for runtime linking (same logic as in types.rs).
+fn resolve_module_path_for_runtime(entry_dir: &std::path::Path, module: &str) -> Result<PathBuf> {
+    let rel = module.replace('.', "/");
+    let local = entry_dir.join(format!("{}.ks", rel));
+    let stdlib_root = types::stdlib_root();
+    let stdlib = stdlib_root.join(format!("{}.ks", rel));
+
+    std::fs::canonicalize(&local)
+        .or_else(|_| std::fs::canonicalize(&stdlib))
+        .map_err(|_| {
+            crate::error::Error::msg(format!(
+                "cannot find module file for import {} (tried: {}, {})",
+                module,
+                local.display(),
+                stdlib.display()
+            ))
+        })
+}
+
+/// Inject alias bindings for transitive imports.
+/// When module B imports A as OM and uses OM.x, we need to provide OM.x = A.x bindings.
+/// This function processes B's imports and creates those alias bindings.
+fn inject_transitive_import_aliases(
+    main_ir: &mut ir::IrModule,
+    imported_module: &ast::Module,
+    imported_module_name: &str,
+    all_imports: &HashMap<String, types::TypedModule>,
+) {
+    use ir::{IrItem, IrExpr};
+    
+    // Collect existing bindings to avoid duplicates
+    let mut existing: HashSet<String> = HashSet::new();
+    for item in &main_ir.items {
+        let IrItem::Binding { name, .. } = item;
+        existing.insert(name.clone());
+    }
+    
+    // For each import in the imported module
+    for it in &imported_module.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        
+        // Skip if no alias
+        let Some(alias) = &id.as_name else {
+            continue;
+        };
+        
+        // Check if this import is available in all_imports
+        if !all_imports.contains_key(&id.module) {
+            continue;
+        }
+        
+        // Get the imported module's IR to find what bindings to alias
+        let imported_mod = &all_imports[&id.module];
+        let imported_ir = match ir::lower_to_ir(&imported_mod.module) {
+            Ok(ir) => ir,
+            Err(_) => continue,
+        };
+        
+        // For each binding in the imported module, create an alias binding
+        for item in &imported_ir.items {
+            let IrItem::Binding { name, .. } = item;
+            
+            // Determine the target name (qualified with the imported module name)
+            let target_qualified = if name.contains('.') {
+                // Already qualified
+                name.clone()
+            } else {
+                // Need to qualify
+                format!("{}.{}", id.module, name)
+            };
+            
+            // Create alias binding: alias.name -> target_qualified
+            let alias_name = format!("{}.{}", alias, name.split('.').last().unwrap_or(name));
+            
+            if !existing.contains(&alias_name) {
+                main_ir.items.push(IrItem::Binding {
+                    name: alias_name.clone(),
+                    expr: IrExpr::Var(target_qualified),
+                });
+                existing.insert(alias_name);
             }
         }
     }
