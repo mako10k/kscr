@@ -682,9 +682,14 @@ fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
                     if rhs.as_str() != "String" {
                         continue;
                     }
-                    let Some(q0) = hints.type_alias.get(&UnqualName("String".to_string())) else {
-                        continue;
-                    };
+                    // If String is in the type_alias map, use that; otherwise default to Prelude.String
+                    // (since Prelude is implicitly imported in most modules).
+                    let q0 = hints.type_alias.get(&UnqualName("String".to_string())).cloned().unwrap_or_else(|| {
+                        QualName {
+                            module: ModuleName("Prelude".to_string()),
+                            name: UnqualName("String".to_string()),
+                        }
+                    });
                     // Prefer canonical stdlib alias in notes.
                     let q = if q0.to_string() == "Main.String" {
                         QualName {
