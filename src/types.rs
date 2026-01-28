@@ -7,6 +7,7 @@
 //! - Potentially lossy conversions happen only at boundaries as checked casts.
 
 use crate::{ast, error::Error, parser, Result};
+use sha2::{Sha256, Digest};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -16,6 +17,45 @@ mod stdlib_cache;
 mod toposort;
 mod typeclass_dict_passing_common;
 mod typeclass_dict_passing_rewrite;
+
+/// Global configuration for KSIF rebuild policy.
+#[derive(Debug, Clone, Copy)]
+pub struct KsifRebuildPolicy {
+    /// Force rebuild all .ksif files regardless of hash validity.
+    pub force_rebuild: bool,
+    /// If true, when forcing rebuild, only rebuild the target module, not its dependencies.
+    pub suppress_recursive_rebuild: bool,
+}
+
+impl Default for KsifRebuildPolicy {
+    fn default() -> Self {
+        Self {
+            force_rebuild: false,
+            suppress_recursive_rebuild: false,
+        }
+    }
+}
+
+static KSIF_REBUILD_POLICY: OnceLock<std::sync::Mutex<KsifRebuildPolicy>> = OnceLock::new();
+
+/// Set the global KSIF rebuild policy.
+pub fn set_ksif_rebuild_policy(policy: KsifRebuildPolicy) {
+    KSIF_REBUILD_POLICY
+        .get_or_init(|| std::sync::Mutex::new(KsifRebuildPolicy::default()))
+        .lock()
+        .unwrap()
+        .clone_from(&policy);
+}
+
+/// Get the current KSIF rebuild policy.
+fn get_ksif_rebuild_policy() -> KsifRebuildPolicy {
+    KSIF_REBUILD_POLICY
+        .get_or_init(|| std::sync::Mutex::new(KsifRebuildPolicy::default()))
+        .lock()
+        .unwrap()
+        .clone()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypedModule {
     pub module: ast::Module,
@@ -6509,6 +6549,67 @@ fn inject_imported_ksif_forwarders(
     Ok(())
 }
 
+/// Compute SHA256 hash of a file's contents and return as hex string.
+fn compute_file_sha256(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let result = hasher.finalize();
+    Ok(format!("{:x}", result))
+}
+
+/// Validate that all dependencies in a KSIF have matching hashes.
+/// Returns Ok(true) if all hashes match, Ok(false) if any mismatch, Err on I/O or decode errors.
+fn validate_ksif_dependencies(
+    ksif_path: &Path,
+    module_dir: &Path,
+    default_artifact_dir: &Path,
+) -> Result<bool> {
+    // Load the KSIF to get its dependency manifest
+    let ksif_bytes = std::fs::read(ksif_path)?;
+    let ksif = crate::kir1::decode_ksif_module(&ksif_bytes).map_err(|e| {
+        Error::msg(format!(
+            "failed to decode ksif {}: {:?}",
+            ksif_path.display(),
+            e
+        ))
+    })?;
+
+    // Check each dependency's hash
+    for (dep_name, expected_hash) in &ksif.dependencies {
+        // Find the dependency's .ksif file (same logic as load_imported_ksif_schemes_internal)
+        let candidates = [
+            module_dir.join(format!("{}.ksif", dep_name.replace('.', "/"))),
+            module_dir.join(format!("{}.ksif", dep_name)),
+            module_dir.join(format!("ksif_{}.ksif", dep_name)),
+            default_artifact_dir.join(format!("{}.ksif", dep_name)),
+        ];
+
+        let mut dep_ksif_path: Option<PathBuf> = None;
+        for p in &candidates {
+            if p.exists() {
+                dep_ksif_path = Some(p.clone());
+                break;
+            }
+        }
+
+        let Some(dep_path) = dep_ksif_path else {
+            // Dependency .ksif not found - consider invalid
+            return Ok(false);
+        };
+
+        // Compute current hash and compare
+        let actual_hash = compute_file_sha256(&dep_path)?;
+        if &actual_hash != expected_hash {
+            // Hash mismatch - rebuild needed
+            return Ok(false);
+        }
+    }
+
+    // All hashes match
+    Ok(true)
+}
+
 /// Ensure KSIF artifact exists for the given module by typechecking it if needed.
 /// Recursively ensures KSIF for transitive imports.
 ///
@@ -6546,6 +6647,8 @@ fn ensure_ksif_for_module(
             ))
         })?;
 
+    let module_dir = module_path.parent().unwrap_or_else(|| Path::new("."));
+
     // Stdlib KSIFs go to a stable shared cache dir; local/user modules go next to their source
     // to avoid cross-project/module-name collisions (tests often use module names like `A`).
     let default_artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -6557,11 +6660,29 @@ fn ensure_ksif_for_module(
         module_path.with_extension("ksif")
     };
 
-    // Check if KSIF already exists.
+    let policy = get_ksif_rebuild_policy();
+
+    // Check if KSIF already exists and validate dependency hashes.
     // IMPORTANT: this function is called in a shared DFS with `visiting`/`done`.
     // If we return early here, we must still mark the module as done; otherwise a later
     // import of the same module will look like a cycle.
-    if ksif_path.exists() {
+    let needs_rebuild = if ksif_path.exists() {
+        if policy.force_rebuild {
+            // Force rebuild requested
+            true
+        } else {
+            // Check dependency hashes
+            match validate_ksif_dependencies(&ksif_path, module_dir, &default_artifact_dir) {
+                Ok(valid) => !valid, // Rebuild if invalid
+                Err(_) => true, // Rebuild on validation error
+            }
+        }
+    } else {
+        // KSIF doesn't exist, need to build
+        true
+    };
+
+    if !needs_rebuild {
         visiting.remove(module_name);
         done.insert(module_name.to_string());
         return Ok(());
@@ -6591,13 +6712,52 @@ fn ensure_ksif_for_module(
         }
     }
 
-    // Recursively ensure KSIF for imports
-    let module_dir = module_path.parent().unwrap_or_else(|| Path::new("."));
+    // Recursively ensure KSIF for imports (unless suppressed)
+    if !policy.suppress_recursive_rebuild {
+        for it in &module_ast.items {
+            let ast::Item::Import(id) = it else {
+                continue;
+            };
+            ensure_ksif_for_module(&id.module, module_dir, visiting, done)?;
+        }
+    } else {
+        // When recursive rebuild is suppressed, we still need to check that dependencies exist
+        // but we don't rebuild them. Mark them as done to avoid cycle detection issues.
+        for it in &module_ast.items {
+            let ast::Item::Import(id) = it else {
+                continue;
+            };
+            done.insert(id.module.clone());
+        }
+    }
+
+    // Compute dependency hashes after ensuring all KSIFs exist
+    let mut dep_hashes: Vec<(String, String)> = Vec::new();
     for it in &module_ast.items {
         let ast::Item::Import(id) = it else {
             continue;
         };
-        ensure_ksif_for_module(&id.module, module_dir, visiting, done)?;
+        // Find the .ksif file for this dependency (same logic as load_imported_ksif_schemes_internal)
+        let candidates = [
+            module_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
+            module_dir.join(format!("{}.ksif", id.module)),
+            module_dir.join(format!("ksif_{}.ksif", id.module)),
+            default_artifact_dir.join(format!("{}.ksif", id.module)),
+        ];
+        
+        let mut dep_ksif_path: Option<PathBuf> = None;
+        for p in &candidates {
+            if p.exists() {
+                dep_ksif_path = Some(p.clone());
+                break;
+            }
+        }
+        
+        if let Some(dep_path) = dep_ksif_path {
+            let hash = compute_file_sha256(&dep_path)?;
+            dep_hashes.push((id.module.clone(), hash));
+        }
+        // If no .ksif found, skip (stdlib modules might not have .ksif)
     }
 
     // Generate KSIF by typechecking the module (stdlib included).
@@ -6762,6 +6922,7 @@ fn ensure_ksif_for_module(
     let ksif = crate::kir1::KsifModule {
         module_name: module_name.to_string(),
         values,
+        dependencies: dep_hashes,
     };
     let bytes = crate::kir1::encode_ksif_module(&ksif);
 

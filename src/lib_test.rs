@@ -44,6 +44,7 @@ fn ksif_default_output_and_import_search_path_smoke() {
     let ksif = crate::kir1::KsifModule {
         module_name,
         values: exported,
+        dependencies: Vec::new(), // TODO: populate when needed
     };
     let bytes = crate::kir1::encode_ksif_module(&ksif);
     let ksif_dir = repo.join("target").join("ksif");

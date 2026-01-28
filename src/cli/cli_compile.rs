@@ -99,6 +99,7 @@ fn emit_ksif(
     let ksif = crate::kir1::KsifModule {
         module_name,
         values,
+        dependencies: Vec::new(), // TODO: populate when needed
     };
     let bytes = crate::kir1::encode_ksif_module(&ksif);
 

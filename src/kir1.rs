@@ -25,6 +25,9 @@ pub struct KsifModule {
     pub module_name: String,
     /// Exported value schemes: name -> Scheme
     pub values: Vec<(String, Scheme)>,
+    /// Dependency manifest: (module_name, sha256_hex_hash_of_ksif_bytes)
+    /// Used to detect when dependencies have changed and trigger rebuilds.
+    pub dependencies: Vec<(String, String)>,
 }
 
 pub fn encode_ksif_module(module: &KsifModule) -> Vec<u8> {
@@ -33,6 +36,9 @@ pub fn encode_ksif_module(module: &KsifModule) -> Vec<u8> {
     for (name, scheme) in &module.values {
         interner.intern(name);
         collect_strings_scheme(scheme, &mut interner);
+    }
+    for (dep_name, _hash) in &module.dependencies {
+        interner.intern(dep_name);
     }
 
     let strings_payload = encode_strings_section(&interner);
@@ -422,6 +428,11 @@ fn encode_interface_section(module: &KsifModule, interner: &StringInterner) -> V
     // - repeated value entries:
     //   - name: StringId
     //   - scheme: Scheme
+    // - dep_count: varu32
+    // - repeated dependency entries:
+    //   - module_name: StringId
+    //   - hash_len: varu32
+    //   - hash_bytes: [u8; hash_len]
     let mut out = Vec::new();
     let module_name_id = interner
         .index
@@ -438,6 +449,20 @@ fn encode_interface_section(module: &KsifModule, interner: &StringInterner) -> V
             .expect("export name must be interned");
         write_varu32(&mut out, name_id);
         encode_scheme(&mut out, scheme, interner);
+    }
+    // Encode dependencies
+    write_varu32(&mut out, module.dependencies.len() as u32);
+    for (dep_name, hash_hex) in &module.dependencies {
+        let dep_name_id = interner
+            .index
+            .get(dep_name)
+            .copied()
+            .expect("dep name must be interned");
+        write_varu32(&mut out, dep_name_id);
+        // Store hash as hex string (simpler, more debuggable)
+        let hash_bytes = hash_hex.as_bytes();
+        write_varu32(&mut out, hash_bytes.len() as u32);
+        out.extend_from_slice(hash_bytes);
     }
     out
 }
@@ -456,12 +481,34 @@ fn decode_interface_section(
         let scheme = decode_scheme(&mut input, interner)?;
         values.push((name, scheme));
     }
+    // Decode dependencies (may not exist in older .ksif files)
+    let dependencies = if !input.is_empty() {
+        let dep_count = read_varu32(&mut input)? as usize;
+        let mut deps = Vec::with_capacity(dep_count);
+        for _ in 0..dep_count {
+            let dep_name_id = read_varu32(&mut input)?;
+            let dep_name = interner.get(dep_name_id)?.to_string();
+            let hash_len = read_varu32(&mut input)? as usize;
+            if input.len() < hash_len {
+                return Err(Kir1Error::Msg("unexpected EOF reading hash".to_string()));
+            }
+            let hash_bytes = &input[..hash_len];
+            let hash_hex = String::from_utf8(hash_bytes.to_vec())
+                .map_err(|_| Kir1Error::Msg("invalid UTF-8 in hash".to_string()))?;
+            input = &input[hash_len..];
+            deps.push((dep_name, hash_hex));
+        }
+        deps
+    } else {
+        Vec::new()
+    };
     if !input.is_empty() {
         return Err(Kir1Error::Msg("trailing bytes in INTERFACE".to_string()));
     }
     Ok(KsifModule {
         module_name,
         values,
+        dependencies,
     })
 }
 
@@ -1574,6 +1621,29 @@ mod tests {
                     ty: Ty::Func(Box::new(Ty::Var(0)), Box::new(Ty::Var(0))),
                 },
             )],
+            dependencies: vec![],
+        };
+        let bytes = encode_ksif_module(&ksif);
+        let decoded = decode_ksif_module(&bytes).unwrap();
+        assert_eq!(decoded, ksif);
+    }
+
+    #[test]
+    fn roundtrip_ksif_with_dependencies() {
+        let ksif = KsifModule {
+            module_name: "B".to_string(),
+            values: vec![(
+                "foo".to_string(),
+                Scheme {
+                    vars: vec![],
+                    constraints: vec![],
+                    ty: Ty::Var(0),
+                },
+            )],
+            dependencies: vec![
+                ("Prelude".to_string(), "abc123".to_string()),
+                ("Data.List".to_string(), "def456".to_string()),
+            ],
         };
         let bytes = encode_ksif_module(&ksif);
         let decoded = decode_ksif_module(&bytes).unwrap();
