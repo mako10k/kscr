@@ -6349,13 +6349,10 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // `import Prelude`, and Prelude imports `Prelude.Functor`, creating a
     // spurious cyclic import.
     if !is_stdlib_path(&entry) {
-        eprintln!("[DEBUG] Before ensure_implicit_prelude_import");
         entry_mod = ensure_implicit_prelude_import(entry_mod);
-        eprintln!("[DEBUG] Before inject_stdlib_class_decls");
         // Inject stdlib class declarations and their imports early, before loading .ksif schemes.
         // This ensures that imports needed by class default methods are available.
         inject_stdlib_class_decls(&mut entry_mod)?;
-        eprintln!("[DEBUG] After inject_stdlib_class_decls, {} items", entry_mod.items.len());
     }
 
     // Module-unit compilation: imports must be satisfied via `.ksif`.
@@ -6368,13 +6365,6 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // Default: use `.ksif` for imports. (No opt-out; import-flattening is removed.)
     // This now includes imports injected by inject_stdlib_class_decls above.
     let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
-    eprintln!("[DEBUG] Loaded {} imported modules", imported.len());
-    for (mod_name, schemes) in &imported {
-        eprintln!("[DEBUG]   Module {}: {} schemes", mod_name, schemes.len());
-        for (name, _scheme) in schemes {
-            eprintln!("[DEBUG]     - {}", name);
-        }
-    }
     inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
     return WithDefEvidence::run(def_ctx, || {
         typecheck_with_stdlib_class_env_with_imported_with_entry_path(module, imported, Some(&entry))
@@ -7154,7 +7144,6 @@ fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
     // Stdlib modules contain instances (e.g. Prelude.Rational) that need their imported
     // class decls present during instance desugaring.
     let should_inject = true;
-    eprintln!("[INJECT_CHECK] Module: {:?}, entry_path: {:?}, should_inject: {}", module.name, entry_path, should_inject);
     if should_inject {
         inject_stdlib_class_decls(&mut module)?;
     }
