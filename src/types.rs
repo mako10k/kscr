@@ -13778,6 +13778,29 @@ mod import_type_forwarder_tests {
 #[cfg(test)]
 mod class_ambiguity_resolution_tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // These tests temporarily change the process-wide current working directory.
+    // Serialize them and make the cwd restoration panic-safe.
+    static CWD_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct CwdGuard {
+        old: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn new(dir: &std::path::Path) -> Self {
+            let old = std::env::current_dir().unwrap();
+            std::env::set_current_dir(dir).unwrap();
+            Self { old }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.old);
+        }
+    }
 
     fn write(path: &std::path::Path, body: &str) {
         if let Some(dir) = path.parent() {
@@ -13795,13 +13818,14 @@ mod class_ambiguity_resolution_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let old = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
+        let _lock = CWD_MUTEX.lock().unwrap();
+        {
+            let _cwd = CwdGuard::new(&dir);
 
-        write(
-            &dir.join("A.ks"),
-            "module A where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
-        );
+            write(
+                &dir.join("A.ks"),
+                "module A where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
+            );
         write(
             &dir.join("A/B.ks"),
             "module A.B where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
@@ -13830,9 +13854,9 @@ mod class_ambiguity_resolution_tests {
             ast::Predicate::Class { class, .. } => class,
             _ => panic!("expected class predicate"),
         };
-        assert_eq!(class.name, "A.B.C");
+            assert_eq!(class.name, "A.B.C");
+        }
 
-        std::env::set_current_dir(old).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -13845,13 +13869,14 @@ mod class_ambiguity_resolution_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let old = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&dir).unwrap();
+        let _lock = CWD_MUTEX.lock().unwrap();
+        {
+            let _cwd = CwdGuard::new(&dir);
 
-        write(
-            &dir.join("X.ks"),
-            "module X where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
-        );
+            write(
+                &dir.join("X.ks"),
+                "module X where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
+            );
         write(
             &dir.join("Y.ks"),
             "module Y where\n  export C(..)\n  class C a where\n    c :: a -> a\n",
@@ -13868,8 +13893,8 @@ mod class_ambiguity_resolution_tests {
 
         let err = canonicalize_class_names_in_module_combined(&mut m, true).unwrap_err();
         assert!(err.to_string().contains("Ambiguous class reference: 'C'"));
+        }
 
-        std::env::set_current_dir(old).unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 }
