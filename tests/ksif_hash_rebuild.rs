@@ -1,10 +1,25 @@
 //! Test .ksif hash validation and rebuild policy
 
 use std::fs;
+use std::sync::Mutex;
 use tempfile::TempDir;
+
+// Ksif rebuild policy is global mutable state; these tests must not run in parallel.
+static KSIF_POLICY_MUTEX: Mutex<()> = Mutex::new(());
+
+struct PolicyResetGuard;
+
+impl Drop for PolicyResetGuard {
+    fn drop(&mut self) {
+        kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy::default());
+    }
+}
 
 #[test]
 fn test_ksif_rebuild_on_hash_mismatch() {
+    let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
+    let _policy_guard = PolicyResetGuard;
+
     // Create temporary directory
     let temp = TempDir::new().expect("create temp dir");
     let temp_path = temp.path();
@@ -130,6 +145,9 @@ fn test_ksif_rebuild_on_hash_mismatch() {
 
 #[test]
 fn test_ksif_force_rebuild_flag() {
+    let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
+    let _policy_guard = PolicyResetGuard;
+
     let temp = TempDir::new().expect("create temp dir");
     let temp_path = temp.path();
 
@@ -190,6 +208,9 @@ fn test_ksif_force_rebuild_flag() {
 
 #[test]
 fn test_suppress_recursive_rebuild_skips_dependency_validation() {
+    let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
+    let _policy_guard = PolicyResetGuard;
+
     let temp = TempDir::new().expect("create temp dir");
     let temp_path = temp.path();
 
