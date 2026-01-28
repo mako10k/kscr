@@ -77,7 +77,7 @@ Before suggesting rollback, **attempt these fixes first**:
 #### Rollback is justified ONLY IF
 
 - **(a)** Regression is clearly from the recent change (confirmed by git bisect or manual rollback test), **AND**
-- **(b)** Minimal fix attempts have failed or are infeasible within reasonable time.
+- **(b)** At least one minimal targeted fix has been implemented and tested but failed to resolve the regression, **OR** the root cause cannot be identified after completing all 5 evidence collection steps above.
 
 #### Work-preserving fallback (default)
 
@@ -95,10 +95,10 @@ Before proposing rollback, answer YES to all:
 - [ ] Have I checked for global state changes (cwd/env/policy)?
 - [ ] Have I reproduced the failure in isolation (single test or minimal `.ks`)?
 - [ ] Have I verified flakiness by re-running 3+ times?
-- [ ] Have I attempted stabilization (serialize tests, add Drop guards, fix isolation)?
-- [ ] Have I attempted a minimal targeted fix?
+- [ ] Have I implemented and tested at least one stabilization approach (serialize tests, add Drop guards, fix isolation)?
+- [ ] Have I implemented and tested at least one minimal targeted fix?
 - [ ] Is the regression clearly caused by the recent change (not pre-existing)?
-- [ ] Has a minimal fix attempt failed or been deemed infeasible?
+- [ ] Has the minimal fix been tested and failed to resolve the regression, or did I fail to identify the root cause after completing all evidence steps?
 
 **If any answer is NO, do not propose rollback.** Instead, report progress and ask for guidance.
 
