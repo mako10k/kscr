@@ -7196,7 +7196,7 @@ fn typecheck_internal_core_with_entry_path(
         // This allows Main to use instances defined in module A when Main imports A.
         if let Some(ep) = entry_path {
             let entry_dir = ep.parent().unwrap_or_else(|| Path::new("."));
-            let (imported_instances, dict_bindings) = load_imported_instances(&module, entry_dir)?;
+            let (imported_instances, dict_bindings) = load_imported_instances(&module, entry_dir, entry_path)?;
             merge_class_env(&mut class_env, &imported_instances)?;
             // Inject dictionary bindings into the module so they're available at runtime
             module.items.extend(dict_bindings);
@@ -7574,7 +7574,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
 
 /// Load class instances from all imported user modules (non-stdlib).
 /// This is needed so that instances defined in module A are available when Main imports A.
-fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<(ClassEnv, Vec<ast::Item>)> {
+fn load_imported_instances(module: &ast::Module, entry_dir: &Path, entry_path: Option<&Path>) -> Result<(ClassEnv, Vec<ast::Item>)> {
     fn qualify_dict_refs_in_expr(expr: ast::Expr, module_prefix: &str) -> ast::Expr {
         use ast::{Expr, ExprKind};
         let span = expr.span;
@@ -7616,6 +7616,19 @@ fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<(Cl
     let mut merged_env = ClassEnv::default();
     let mut dict_bindings: Vec<ast::Item> = Vec::new();
     let stdlib_root = stdlib_cache::stdlib_root()?;
+    
+    // Track module names to detect collisions
+    let mut module_name_to_paths: std::collections::HashMap<String, Vec<std::path::PathBuf>> = std::collections::HashMap::new();
+    
+    // Register the current module being typechecked
+    if let (Some(module_name), Some(ep)) = (&module.name, entry_path) {
+        if let Ok(canonical_path) = std::fs::canonicalize(ep) {
+            module_name_to_paths
+                .entry(module_name.clone())
+                .or_default()
+                .push(canonical_path);
+        }
+    }
 
     for it in &module.items {
         let ast::Item::Import(id) = it else {
@@ -7646,6 +7659,27 @@ fn load_imported_instances(module: &ast::Module, entry_dir: &Path) -> Result<(Cl
                 if let ast::Item::ClassDecl(c) = it {
                     c.def_module = Some(name.clone());
                 }
+            }
+        }
+
+        // Track module names to detect collisions
+        if let Some(module_name) = &imported_ast.name {
+            let paths_for_module = module_name_to_paths
+                .entry(module_name.clone())
+                .or_default();
+            
+            // Only add if not already present (same module imported multiple times)
+            if !paths_for_module.contains(&module_path) {
+                paths_for_module.push(module_path.clone());
+            }
+            
+            // Check for collision after adding this path
+            if paths_for_module.len() > 1 {
+                let mut msg = format!("module '{}' is defined in multiple files:", module_name);
+                for p in paths_for_module {
+                    msg.push_str(&format!("\n  - {}", p.display()));
+                }
+                return Err(Error::msg(msg));
             }
         }
 
