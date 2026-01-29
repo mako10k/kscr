@@ -6382,7 +6382,7 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // Default: use `.ksif` for imports. (No opt-out; import-flattening is removed.)
     // This now includes imports injected by inject_stdlib_class_decls above.
     let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
-    inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
+    inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported, entry_dir)?;
     WithDefEvidence::run(def_ctx, || {
         typecheck_with_stdlib_class_env_with_imported_with_entry_path(
             module,
@@ -6489,6 +6489,7 @@ fn inject_imported_ksif_forwarders(
     module: &mut ast::Module,
     entry_mod: &ast::Module,
     imported: &HashMap<String, HashMap<String, Scheme>>,
+    entry_dir: &Path,
 ) -> Result<()> {
     // Only inject *unqualified* forwarders (e.g. `x = A.x`).
     // Qualified names (`A.x` / `OM.x`) are resolved via imported `.ksif` schemes merged into
@@ -6527,10 +6528,10 @@ fn inject_imported_ksif_forwarders(
         let filtered_names = match &id.import_spec {
             None => all_names, // No filter, import everything
             Some(ast::ImportSpec::Only(specs)) => {
-                expand_import_spec_to_names_simple(specs)
+                expand_import_spec_with_ctors(specs, &id.module, entry_dir)
             }
             Some(ast::ImportSpec::Hiding(specs)) => {
-                let hidden = expand_import_spec_to_names_simple(specs);
+                let hidden = expand_import_spec_with_ctors(specs, &id.module, entry_dir);
                 all_names.into_iter().filter(|n| !hidden.contains(n)).collect()
             }
         };
@@ -6851,7 +6852,7 @@ fn ensure_ksif_for_module(
         export_specs: module_ast.export_specs.clone(),
         items: module_ast.items.clone(),
     };
-    inject_imported_ksif_forwarders(&mut module_to_typecheck, &module_ast, &imported)?;
+    inject_imported_ksif_forwarders(&mut module_to_typecheck, &module_ast, &imported, module_dir)?;
 
     let tm = typecheck_with_stdlib_class_env_with_imported_with_entry_path(
         module_to_typecheck,
@@ -10083,6 +10084,33 @@ fn expand_import_spec_to_names_simple(
     names
 }
 
+/// Expand an ImportSpec into a set of names with constructor resolution.
+/// This loads the imported module source to expand Type(..) specs.
+/// Falls back to expand_import_spec_to_names_simple if source is unavailable.
+fn expand_import_spec_with_ctors(
+    specs: &[ast::ExportSpec],
+    module_name: &str,
+    entry_dir: &Path,
+) -> HashSet<String> {
+    // Try to load the imported module source
+    if let Ok(module_path) = resolve_module_path(entry_dir, module_name) {
+        if let Ok(src) = std::fs::read_to_string(&module_path) {
+            if let Ok(mut imported_mod) = parser::parse_module(&src) {
+                let _ = desugar_module_qualified_names(&mut imported_mod);
+                // Now we have module items, use the full expansion
+                let mut names = HashSet::new();
+                for spec in specs {
+                    names.extend(expand_export_spec_to_names(spec, &imported_mod.items));
+                }
+                return names;
+            }
+        }
+    }
+    
+    // Fallback: use simple expansion without constructor resolution
+    expand_import_spec_to_names_simple(specs)
+}
+
 /// Expand an ImportSpec item (ExportSpec) into a set of names.
 /// For `Name(n)`, returns {n}.
 /// For `Type{name, ctors: All}`, returns {name} + all constructors of that type from module (best-effort).
@@ -12958,15 +12986,20 @@ fn infer_module_with_class_env_with_entry_path(
             let filtered_names: std::collections::HashSet<String> = if is_self_import {
                 schemes.keys().cloned().collect() // Self-import: import everything
             } else {
+                let entry_dir = if let Some(ep) = entry_path {
+                    ep.parent().unwrap_or_else(|| Path::new("."))
+                } else {
+                    Path::new(".")
+                };
                 match &import_spec {
                     None => schemes.keys().cloned().collect(), // No filter, import everything
                     Some(ast::ImportSpec::Only(specs)) => {
-                        // Expand ExportSpecs to names and filter
-                        expand_import_spec_to_names_simple(specs)
+                        // Expand ExportSpecs to names with constructor resolution
+                        expand_import_spec_with_ctors(specs, module_name, entry_dir)
                     }
                     Some(ast::ImportSpec::Hiding(specs)) => {
                         // Expand ExportSpecs to names to hide
-                        let hidden = expand_import_spec_to_names_simple(specs);
+                        let hidden = expand_import_spec_with_ctors(specs, module_name, entry_dir);
                         schemes.keys().filter(|n| !hidden.contains(*n)).cloned().collect()
                     }
                 }
