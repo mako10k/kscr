@@ -240,3 +240,96 @@ module Foo (MyType(..)) where
         _ => panic!("Expected Type export spec"),
     }
 }
+
+// Issue #70: Haskell-compatible newline/layout around `where` in module header
+#[test]
+fn test_module_export_list_newline_before_where() {
+    let src = r#"
+module Foo (x, y)
+where
+    x = 1
+    y = 2
+"#;
+    let module = parser_impl::parse_module(src).unwrap();
+
+    assert_eq!(module.name, Some("Foo".to_string()));
+    assert!(module.export_specs.is_some());
+
+    let specs = module.export_specs.unwrap();
+    assert_eq!(specs.len(), 2);
+}
+
+#[test]
+fn test_module_export_list_newline_and_indent_before_where() {
+    let src = r#"
+module Foo (x, y, z)
+  where
+    x = 1
+    y = 2
+    z = 3
+"#;
+    let module = parser_impl::parse_module(src).unwrap();
+
+    assert_eq!(module.name, Some("Foo".to_string()));
+    assert!(module.export_specs.is_some());
+
+    let specs = module.export_specs.unwrap();
+    assert_eq!(specs.len(), 3);
+}
+
+#[test]
+fn test_module_export_list_multiple_newlines_before_where() {
+    let src = r#"
+module Foo (x, y)
+
+
+where
+    x = 1
+    y = 2
+"#;
+    let module = parser_impl::parse_module(src).unwrap();
+
+    assert_eq!(module.name, Some("Foo".to_string()));
+    assert!(module.export_specs.is_some());
+
+    let specs = module.export_specs.unwrap();
+    assert_eq!(specs.len(), 2);
+}
+
+#[test]
+fn test_module_without_export_list_newline_before_where() {
+    // Also test case without export list
+    let src = r#"
+module Foo
+where
+    x = 1
+    y = 2
+"#;
+    let module = parser_impl::parse_module(src).unwrap();
+
+    assert_eq!(module.name, Some("Foo".to_string()));
+    assert!(module.export_specs.is_none());
+}
+
+#[test]
+fn test_module_multiline_export_list_with_newline_before_where() {
+    // Combined: multiline export list + newline before where
+    let src = r#"
+module Foo (
+    x,
+    y,
+    z
+)
+where
+    x = 1
+    y = 2
+    z = 3
+"#;
+    let module = parser_impl::parse_module(src).unwrap();
+
+    assert_eq!(module.name, Some("Foo".to_string()));
+    assert!(module.export_specs.is_some());
+
+    let specs = module.export_specs.unwrap();
+    assert_eq!(specs.len(), 3);
+}
