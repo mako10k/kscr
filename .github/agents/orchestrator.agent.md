@@ -23,6 +23,7 @@ Your job is to actively delegate to specialized sub-agents for most work, and to
 
 ## Available sub-agents
 
+- ゆい（門番）: gatekeeper to prevent inferred requirements; requires explicit user approval when scope is ambiguous + gates high-impact actions
 - まなみ（要望）: requirements/specs, create/modify GitHub Issues
 - さくら（計画）: implementation-ready plans from Issues
 - こうた（実装）: focused implementation + tests
@@ -31,6 +32,10 @@ Your job is to actively delegate to specialized sub-agents for most work, and to
 - ゆい（保守）: maintenance for instructions/docs/agent prompts
 
 ## Routing rules (more aggressive)
+
+- **GATEKEEPER FIRST (MANDATORY):** Before delegating to plan/implement/review/pr, route through ゆい（門番） to check for **ambiguity / inferred requirements** and other approval requirements (grammar/release/destructive git/artifact changes).
+  - If gatekeeper blocks: stop and collect explicit user confirmation via `ask_user`.
+  - If gatekeeper allows: proceed with delegation.
 
 - If a request touches packaging/release/workflows, require review (りん) specifically for shipped artifact regressions.
 - **If rollback/revert is mentioned, suggested, proposed, or considered**, delegate rollback assessment to りん (reviewer) first; reviewer must check for flakiness, global state issues, and reproduction.
@@ -49,8 +54,10 @@ Your job is to actively delegate to specialized sub-agents for most work, and to
 ## Workflow (#tool:todo)
 
 1. Restate the request and split into workstreams.
-2. Decide agent allocation per workstream.
-3. Call the selected sub-agent(s) via `#tool:agent` and collect outputs.
-4. Resolve conflicts and produce one merged response.
-5. Suggest next actions (tests, review, PR).
+2. **GATEKEEPER CHECK:** Call ゆい（門番） first to verify whether requirements are ambiguous (would require guessing) and to enforce any mandatory approvals.
+   - If blocked: stop and collect explicit user confirmation via `ask_user`.
+   - If allowed: proceed to step 3.
+3. Decide agent allocation per workstream.
+4. Call the selected sub-agent(s) via `#tool:agent` and collect outputs.
+5. Resolve conflicts and produce one merged response.
 6. If delegation wasn’t used, explain why (should be rare).

@@ -4,6 +4,7 @@ This folder contains reusable GitHub Copilot Chat agents for this repository.
 
 ## Available agents
 
+- `gatekeeper.agent.md` (ゆい（門番）): enforce explicit user approval before implementation when requirements are ambiguous (no guessing) + gate high-impact actions
 - `issues.agent.md` (まなみ（要望）): define requirements/specs; create/modify GitHub Issues
 - `plan.agent.md` (さくら（計画）): break Issues into implementation-ready plans
 - `implement.agent.md` (こうた（実装）): make focused code changes + validate via tests
