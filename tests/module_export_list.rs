@@ -149,3 +149,94 @@ module Foo () where
     let specs = module.export_specs.unwrap();
     assert_eq!(specs.len(), 0);
 }
+
+// Issue #67: Allow trailing comma in constructor list
+#[test]
+fn test_module_export_type_with_trailing_comma_in_ctor_list() {
+    let src = r#"
+module Foo (MyType(A, B,)) where
+    data MyType = A | B | C
+"#;
+    let module = parser_impl::parse_module(src).unwrap();
+
+    assert_eq!(module.name, Some("Foo".to_string()));
+    assert!(module.export_specs.is_some());
+
+    let specs = module.export_specs.unwrap();
+    assert_eq!(specs.len(), 1);
+
+    match &specs[0] {
+        kscr::ast::ExportSpec::Type { name, ctors } => {
+            assert_eq!(name, "MyType");
+            match ctors {
+                kscr::ast::ExportCtors::Some(names) => {
+                    assert_eq!(names.len(), 2);
+                    assert_eq!(names[0], "A");
+                    assert_eq!(names[1], "B");
+                }
+                _ => panic!("Expected Some ctors"),
+            }
+        }
+        _ => panic!("Expected Type export spec"),
+    }
+}
+
+// Issue #68: T() should be a syntax error
+#[test]
+fn test_module_export_empty_ctor_list_error() {
+    let src = r#"
+module Foo (MyType()) where
+    data MyType = A | B
+"#;
+    let result = parser_impl::parse_module(src);
+    assert!(result.is_err(), "T() should be a syntax error");
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("empty constructor list"),
+        "Error should mention empty constructor list, got: {}",
+        err
+    );
+}
+
+// Verify that T (type-only) still works
+#[test]
+fn test_module_export_type_only() {
+    let src = r#"
+module Foo (MyType) where
+    data MyType = A | B
+"#;
+    let module = parser_impl::parse_module(src).unwrap();
+
+    assert_eq!(module.name, Some("Foo".to_string()));
+    let specs = module.export_specs.unwrap();
+    assert_eq!(specs.len(), 1);
+
+    match &specs[0] {
+        kscr::ast::ExportSpec::Name(name) => {
+            assert_eq!(name, "MyType");
+        }
+        _ => panic!("Expected Name export spec"),
+    }
+}
+
+// Verify that T(..) (all constructors) still works
+#[test]
+fn test_module_export_all_ctors_still_works() {
+    let src = r#"
+module Foo (MyType(..)) where
+    data MyType = A | B
+"#;
+    let module = parser_impl::parse_module(src).unwrap();
+
+    assert_eq!(module.name, Some("Foo".to_string()));
+    let specs = module.export_specs.unwrap();
+    assert_eq!(specs.len(), 1);
+
+    match &specs[0] {
+        kscr::ast::ExportSpec::Type { name, ctors } => {
+            assert_eq!(name, "MyType");
+            assert!(matches!(ctors, kscr::ast::ExportCtors::All));
+        }
+        _ => panic!("Expected Type export spec"),
+    }
+}
