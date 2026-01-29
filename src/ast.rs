@@ -128,6 +128,15 @@ pub struct ImportDecl {
     pub module: String,
     pub qualified: bool,
     pub as_name: Option<String>,
+    pub import_spec: Option<ImportSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportSpec {
+    /// `import Mod (x, y, T(..), T(C1,C2))`
+    Only(Vec<ExportSpec>),
+    /// `import Mod hiding (x, y, T(..))`
+    Hiding(Vec<ExportSpec>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

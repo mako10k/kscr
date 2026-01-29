@@ -2827,3 +2827,29 @@ module Main where
     assert!(crate::ir::run_main(&ir).is_ok());
     assert!(crate::ir::run_main(&optimized).is_ok());
 }
+
+#[test]
+fn runtime_lambda_newline_after_arrow() {
+    // Test that lambda expressions work with newlines after the -> arrow (Haskell-like layout)
+    let src = r#"
+f = \x ->
+  x + 1
+
+g = \x y ->
+  x * y
+
+h = \x ->
+  \y -> x + y
+
+test_f = f 5 == 6
+test_g = g 3 4 == 12
+test_h = h 10 20 == 30
+
+main = if test_f && test_g && test_h then IO () else error "lambda tests failed"
+"#;
+    let module = crate::parser::parse_module(src).unwrap();
+    let typed_module = crate::types::typecheck(module).unwrap();
+    let ir = crate::ir::lower_to_ir(&typed_module.module).unwrap();
+    let result = crate::ir::run_main(&ir);
+    assert!(result.is_ok());
+}
