@@ -18,7 +18,7 @@ fn instance_infix_method_definition() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
-    
+
     assert_eq!(lines.len(), 2, "should have 2 output lines");
     assert_eq!(lines[0], "True", "3 =~= 3 should be True");
     assert_eq!(lines[1], "False", "3 =~= 5 should be False");

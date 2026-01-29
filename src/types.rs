@@ -9406,9 +9406,7 @@ fn process_export_specs(
                     if let ast::ExportCtors::All = ctors {
                         // Try to extract the target type name from the alias RHS
                         if let Some(target_ctors) = extract_aliased_type_ctors(module, ta) {
-                            exports.extend(
-                                target_ctors.into_iter().map(|c| (c, SymbolKind::Ctor)),
-                            );
+                            exports.extend(target_ctors.into_iter().map(|c| (c, SymbolKind::Ctor)));
                         }
                     }
                     continue;
