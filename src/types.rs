@@ -19,21 +19,12 @@ mod typeclass_dict_passing_common;
 mod typeclass_dict_passing_rewrite;
 
 /// Global configuration for KSIF rebuild policy.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct KsifRebuildPolicy {
     /// Force rebuild all .ksif files regardless of hash validity.
     pub force_rebuild: bool,
     /// If true, when forcing rebuild, only rebuild the target module, not its dependencies.
     pub suppress_recursive_rebuild: bool,
-}
-
-impl Default for KsifRebuildPolicy {
-    fn default() -> Self {
-        Self {
-            force_rebuild: false,
-            suppress_recursive_rebuild: false,
-        }
-    }
 }
 
 static KSIF_REBUILD_POLICY: OnceLock<std::sync::Mutex<KsifRebuildPolicy>> = OnceLock::new();
@@ -49,11 +40,10 @@ pub fn set_ksif_rebuild_policy(policy: KsifRebuildPolicy) {
 
 /// Get the current KSIF rebuild policy.
 fn get_ksif_rebuild_policy() -> KsifRebuildPolicy {
-    KSIF_REBUILD_POLICY
+    *KSIF_REBUILD_POLICY
         .get_or_init(|| std::sync::Mutex::new(KsifRebuildPolicy::default()))
         .lock()
         .unwrap()
-        .clone()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6393,13 +6383,13 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // This now includes imports injected by inject_stdlib_class_decls above.
     let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
     inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported)?;
-    return WithDefEvidence::run(def_ctx, || {
+    WithDefEvidence::run(def_ctx, || {
         typecheck_with_stdlib_class_env_with_imported_with_entry_path(
             module,
             imported,
             Some(&entry),
         )
-    });
+    })
 }
 
 /// Load all transitive imports for runtime linking.
@@ -6539,7 +6529,7 @@ fn inject_imported_ksif_forwarders(
             // If multiple imports try to provide the same unqualified name, first import wins.
             if !id.qualified {
                 let origin = format!("import {qual}");
-                if let Some(prev) = defined.get(name) {
+                if let Some(_prev) = defined.get(name) {
                     // Local definitions win silently.
                     // For import-vs-import conflicts: first import wins, skip silently.
                     continue;
@@ -7091,6 +7081,7 @@ pub(crate) fn is_stdlib_path(path: &Path) -> bool {
     path.starts_with(stdlib_root())
 }
 
+#[allow(dead_code)]
 fn load_module_with_imports_ast_with_loader(
     loader: &mut ModuleLoader,
     entry: &Path,
@@ -7144,6 +7135,7 @@ fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
     module
 }
 
+#[allow(dead_code)]
 fn typecheck_with_stdlib_class_env_with_entry_path(
     mut module: ast::Module,
     entry_path: Option<&Path>,
@@ -7161,7 +7153,7 @@ fn typecheck_with_stdlib_class_env_with_entry_path(
 
     let t0 = std::time::Instant::now();
     // Only inject stdlib class declarations for non-stdlib modules
-    if entry_path.map_or(true, |p| !is_stdlib_path(p)) {
+    if entry_path.is_none_or(|p| !is_stdlib_path(p)) {
         inject_stdlib_class_decls(&mut module)?;
     }
     if timing {
@@ -7173,7 +7165,7 @@ fn typecheck_with_stdlib_class_env_with_entry_path(
 
     let t0 = std::time::Instant::now();
     // Only inject instance dict forwarders for non-stdlib modules
-    if entry_path.map_or(true, |p| !is_stdlib_path(p)) {
+    if entry_path.is_none_or(|p| !is_stdlib_path(p)) {
         inject_stdlib_instance_dict_forwarders(&mut module)?;
     }
     if timing {
@@ -7396,7 +7388,7 @@ fn typecheck_internal_core_with_entry_path(
 
         // Desugar typeclasses. For stdlib modules, use relaxed validation since
         // superclasses may be in other stdlib modules not yet in this module's env.
-        let is_stdlib = entry_path.map_or(false, is_stdlib_path);
+        let is_stdlib = entry_path.is_some_and(is_stdlib_path);
         let mut class_env = if is_stdlib {
             // For stdlib modules: collect classes and process instances without superclass validation
             // Validation will be done when user modules import these classes
@@ -8184,7 +8176,9 @@ struct ModuleLoader {
     cache: HashMap<PathBuf, ast::Module>,
     sources: HashMap<PathBuf, String>,
     stack: Vec<PathBuf>,
+    #[allow(dead_code)]
     emitted_qualified: HashSet<ImportQualKey>,
+    #[allow(dead_code)]
     emitted_unqualified: HashSet<ImportQualKey>,
     def_sites: DefSiteIndex,
     module_ids: ModuleIdInterner,
@@ -8536,6 +8530,7 @@ fn desugar_qualified_qual_type(qt: ast::QualType, env: &QualEnv) -> Result<ast::
     })
 }
 
+#[allow(dead_code)]
 fn resolve_class_names_to_module_ids(
     module: &mut ast::Module,
     env: &QualEnv,
@@ -8850,6 +8845,7 @@ fn desugar_module_qualified_names(module: &mut ast::Module) -> Result<()> {
 }
 
 impl ModuleLoader {
+    #[allow(dead_code)]
     fn debug_print_import(&self, enabled: bool, id: &ast::ImportDecl) {
         if !enabled {
             return;
@@ -8860,6 +8856,7 @@ impl ModuleLoader {
         );
     }
 
+    #[allow(dead_code)]
     fn resolve_import_path(&self, dir: &Path, module: &str) -> Result<std::path::PathBuf> {
         let rel = module.replace('.', "/");
         let local = dir.join(format!("{}.ks", rel));
@@ -9013,6 +9010,7 @@ impl ModuleLoader {
         Ok(m)
     }
 
+    #[allow(dead_code)]
     fn validate_import_cyclic(&self, p: &Path) -> Result<()> {
         if let Some(pos) = self.stack.iter().position(|x| x == p) {
             let mut chain: Vec<String> = self.stack[pos..]
@@ -9028,6 +9026,7 @@ impl ModuleLoader {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn validate_imported_module(
         &self,
         imported: &ast::Module,
@@ -9048,6 +9047,7 @@ impl ModuleLoader {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn debug_print_exports(
         &self,
         debug_imports: bool,
@@ -9076,6 +9076,7 @@ impl ModuleLoader {
         }
     }
 
+    #[allow(dead_code)]
     fn emit_qualified_imports(
         &mut self,
         p: &Path,
@@ -9113,6 +9114,7 @@ impl ModuleLoader {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn debug_qualified_items(&self, items: &[ast::Item], module: &str, qual: &str) {
         let mut counts: HashMap<String, usize> = HashMap::new();
         for it in items {
@@ -9136,6 +9138,7 @@ impl ModuleLoader {
         }
     }
 
+    #[allow(dead_code)]
     fn collect_imports(
         &mut self,
         module: &ast::Module,
@@ -9490,6 +9493,7 @@ fn pattern_defines_name(pat: &ast::Pattern, name: &str) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn import_qualified_items_for_decl(
     module: &ast::Module,
     qual: &str,
@@ -9523,6 +9527,7 @@ fn import_qualified_items_for_decl(
     Ok(out)
 }
 
+#[allow(dead_code)]
 fn merge_build_rename_map(from: &[String], to: &[String]) -> HashMap<String, String> {
     let mut map: HashMap<String, String> = HashMap::new();
     for (f, t) in from.iter().zip(to.iter()) {
@@ -9533,6 +9538,7 @@ fn merge_build_rename_map(from: &[String], to: &[String]) -> HashMap<String, Str
     map
 }
 
+#[allow(dead_code)]
 fn merge_subst_pat(p: &ast::Pattern, map: &HashMap<String, String>) -> ast::Pattern {
     use ast::PatternKind;
     let mut out = p.clone();
@@ -9570,6 +9576,7 @@ fn merge_subst_pat(p: &ast::Pattern, map: &HashMap<String, String>) -> ast::Patt
     out
 }
 
+#[allow(dead_code)]
 fn merge_subst_expr(e: &ast::Expr, map: &HashMap<String, String>) -> ast::Expr {
     use ast::ExprKind;
     let mut out = e.clone();
@@ -9643,6 +9650,7 @@ fn merge_subst_expr(e: &ast::Expr, map: &HashMap<String, String>) -> ast::Expr {
     out
 }
 
+#[allow(dead_code)]
 fn merge_substitute_vars_in_expr(expr: &ast::Expr, from: &[String], to: &[String]) -> ast::Expr {
     let map = merge_build_rename_map(from, to);
     if map.is_empty() {
@@ -9651,6 +9659,7 @@ fn merge_substitute_vars_in_expr(expr: &ast::Expr, from: &[String], to: &[String
     merge_subst_expr(expr, &map)
 }
 
+#[allow(dead_code)]
 fn merge_eta_collapse_to_unary(expr: ast::Expr) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
     let ExprKind::Lambda { params, body } = expr.kind else {
@@ -9680,6 +9689,7 @@ fn merge_eta_collapse_to_unary(expr: ast::Expr) -> Result<ast::Expr> {
     ))
 }
 
+#[allow(dead_code)]
 fn merge_unwrap_case_body(mut e: ast::Expr) -> Option<(ast::Expr, Vec<ast::CaseArm>)> {
     // In some transformations (e.g. eta-expansion), the body may become an application.
     // We only care about recovering the original `case` arms.
@@ -9699,6 +9709,7 @@ fn merge_unwrap_case_body(mut e: ast::Expr) -> Option<(ast::Expr, Vec<ast::CaseA
     }
 }
 
+#[allow(dead_code)]
 fn merge_binding_name(b: &ast::Binding) -> Option<&str> {
     match &b.pat.kind {
         ast::PatternKind::Var(n) => Some(n.as_str()),
@@ -9706,6 +9717,7 @@ fn merge_binding_name(b: &ast::Binding) -> Option<&str> {
     }
 }
 
+#[allow(dead_code)]
 fn merge_rewrite_tuple_scrutinee_arms_to_cons(b_scrut: &ast::Expr, b_arms: &mut [ast::CaseArm]) {
     // If RHS was a tuple-scrutinee clause, collapsing to unary means we must
     // also rewrite its patterns to match on the single arg directly.
@@ -9731,6 +9743,7 @@ fn merge_rewrite_tuple_scrutinee_arms_to_cons(b_scrut: &ast::Expr, b_arms: &mut 
     }
 }
 
+#[allow(dead_code)]
 fn merge_is_collapse_needed(expr: &ast::Expr) -> bool {
     match &expr.kind {
         ast::ExprKind::Lambda { params, .. } => params.len() > 1,
@@ -9738,6 +9751,7 @@ fn merge_is_collapse_needed(expr: &ast::Expr) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn merge_rebuild_lambda_case(
     span: ast::Span,
     params: Vec<String>,
@@ -9759,6 +9773,7 @@ fn merge_rebuild_lambda_case(
     )
 }
 
+#[allow(dead_code)]
 fn merge_try_merge_lambda_clauses(
     prev: &mut ast::Binding,
     b: &ast::Binding,
@@ -9871,6 +9886,7 @@ fn merge_try_merge_lambda_clauses(
     Ok(true)
 }
 
+#[allow(dead_code)]
 fn merge_duplicate_bindings_for_names(
     items: Vec<ast::Item>,
     names: &[&str],
@@ -10029,6 +10045,7 @@ fn import_unqualified_forwarders(
     Ok(out)
 }
 
+#[allow(dead_code)]
 fn qualify_class_instance_decls(
     module: &ast::Module,
     qual: &str,
@@ -10090,6 +10107,7 @@ fn qualify_class_instance_decls(
     Ok(out)
 }
 
+#[allow(dead_code)]
 fn qualify_items(
     module: &ast::Module,
     qual: &str,
@@ -10187,6 +10205,7 @@ fn qualify_items(
         .collect::<Result<Vec<_>>>()
 }
 
+#[allow(dead_code)]
 fn qualify_item(
     it: ast::Item,
     val_map: &HashMap<String, String>,
@@ -10229,6 +10248,7 @@ fn qualify_item(
     })
 }
 
+#[allow(dead_code)]
 fn qualify_ctor_if_imported(
     name: ast::ResolvedName,
     ctor_map: &HashMap<String, String>,
@@ -10255,6 +10275,7 @@ fn qualify_ctor_if_imported(
     }
 }
 
+#[allow(dead_code)]
 fn qualify_expr_boxed(
     expr: &ast::Expr,
     val_map: &HashMap<String, String>,
@@ -10269,6 +10290,7 @@ fn qualify_expr_boxed(
     )?))
 }
 
+#[allow(dead_code)]
 fn qualify_expr_vec(
     exprs: Vec<ast::Expr>,
     val_map: &HashMap<String, String>,
@@ -10281,6 +10303,7 @@ fn qualify_expr_vec(
         .collect()
 }
 
+#[allow(dead_code)]
 fn qualify_local_bindings(
     bindings: Vec<ast::Binding>,
     val_map: &HashMap<String, String>,
@@ -10293,6 +10316,7 @@ fn qualify_local_bindings(
         .collect()
 }
 
+#[allow(dead_code)]
 fn qualify_record_fields(
     fs: Vec<(String, ast::Expr)>,
     val_map: &HashMap<String, String>,
@@ -10304,6 +10328,7 @@ fn qualify_record_fields(
         .collect()
 }
 
+#[allow(dead_code)]
 fn qualify_expr(
     expr: ast::Expr,
     val_map: &HashMap<String, String>,
@@ -10407,6 +10432,7 @@ fn qualify_expr(
     })
 }
 
+#[allow(dead_code)]
 fn qualify_case_arm(
     arm: ast::CaseArm,
     val_map: &HashMap<String, String>,
@@ -10423,6 +10449,7 @@ fn qualify_case_arm(
     })
 }
 
+#[allow(dead_code)]
 fn qualify_do_stmt(
     stmt: ast::DoStmt,
     val_map: &HashMap<String, String>,
@@ -10438,6 +10465,7 @@ fn qualify_do_stmt(
     })
 }
 
+#[allow(dead_code)]
 fn qualify_local_binding(
     b: ast::Binding,
     val_map: &HashMap<String, String>,
@@ -10452,6 +10480,7 @@ fn qualify_local_binding(
     })
 }
 
+#[allow(dead_code)]
 fn qualify_pat_binders(p: ast::Pattern, val_map: &HashMap<String, String>) -> Result<ast::Pattern> {
     use ast::{Pattern, PatternKind};
     let span = p.span;
@@ -10525,6 +10554,7 @@ fn qualify_pat_binders(p: ast::Pattern, val_map: &HashMap<String, String>) -> Re
     })
 }
 
+#[allow(dead_code)]
 fn qualify_pat_nonbinders(
     p: ast::Pattern,
     ctor_map: &HashMap<String, String>,
@@ -10614,6 +10644,7 @@ fn qualify_pat_nonbinders(
     })
 }
 
+#[allow(dead_code)]
 fn qualify_type(ty: ast::Type, type_map: &HashMap<String, String>) -> Result<ast::Type> {
     use ast::Type;
     Ok(match ty {
@@ -10659,6 +10690,7 @@ fn qualify_type(ty: ast::Type, type_map: &HashMap<String, String>) -> Result<ast
     })
 }
 
+#[allow(dead_code)]
 fn qualify_predicate(
     p: ast::Predicate,
     type_map: &HashMap<String, String>,
@@ -10679,6 +10711,7 @@ fn qualify_predicate(
     })
 }
 
+#[allow(dead_code)]
 fn qualify_qual_type(
     qt: ast::QualType,
     type_map: &HashMap<String, String>,
@@ -10748,6 +10781,7 @@ fn name_origin_hint(it: &ast::Item, name: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn push_item_checked(
     items: &mut Vec<ast::Item>,
     defined: &mut HashMap<String, String>,
@@ -12763,7 +12797,7 @@ fn infer_module_with_class_env_with_entry_path(
         // Data.Maybe exports `type Maybe = Prelude.Maybe` with `Maybe(..)`,
         // so qualified access like `M.Just` when `import qualified Data.Maybe as M`
         // should resolve to Prelude.Just.
-        for (module_name, _schemes) in imported {
+        for module_name in imported.keys() {
             if module_name == "Data.Maybe" {
                 if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
                     eprintln!("[KSCR_DEBUG_IMPORTS] Handling Data.Maybe constructor re-exports");

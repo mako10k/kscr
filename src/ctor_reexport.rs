@@ -1,14 +1,12 @@
 use crate::ast;
 
+#[allow(dead_code)]
 pub fn resolve_qualified_ctor_via_type_alias(
     module: &ast::Module,
     qctor: &ast::ResolvedName,
 ) -> Option<ast::ResolvedName> {
     let binding = qctor.qualified_text();
-    let (_qual, ctor) = match binding.rsplit_once('.') {
-        Some(x) => x,
-        None => return None,
-    };
+    let (_qual, ctor) = binding.rsplit_once('.')?;
     // Find `type T ... = OtherQual.T ...` aliases and allow re-exporting ctors via `export T(..)`.
     // Minimal: if the module exports `T(..)` and has a type alias `T = Prelude.T`, then
     // map `qual.C` to `Prelude.C`.

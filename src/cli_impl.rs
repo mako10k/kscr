@@ -1412,7 +1412,7 @@ fn resolve_module_path_for_runtime(entry_dir: &std::path::Path, module: &str) ->
 fn inject_transitive_import_aliases(
     main_ir: &mut ir::IrModule,
     imported_module: &ast::Module,
-    imported_module_name: &str,
+    _imported_module_name: &str,
     all_imports: &HashMap<String, types::TypedModule>,
 ) {
     use ir::{IrExpr, IrItem};
@@ -1461,7 +1461,7 @@ fn inject_transitive_import_aliases(
             };
 
             // Create alias binding: alias.name -> target_qualified
-            let alias_name = format!("{}.{}", alias, name.split('.').last().unwrap_or(name));
+            let alias_name = format!("{}.{}", alias, name.rsplit('.').next_back().unwrap_or(name));
 
             if !existing.contains(&alias_name) {
                 main_ir.items.push(IrItem::Binding {
