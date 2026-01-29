@@ -4,7 +4,6 @@ use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
 
-
 fn kscr_binary() -> String {
     // Get the path to the debug build
     let mut path = std::env::current_exe().expect("get current exe");
@@ -47,7 +46,11 @@ fn test_cli_compile_skips_ksif_emission_when_hashes_match() {
 "#;
     fs::write(temp_path.join("Dummy.ks"), dummy_content).expect("write Dummy.ks");
     let result = kscr::types::typecheck_file(&temp_path.join("Dummy.ks"));
-    assert!(result.is_ok(), "generate Lib.ksif failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "generate Lib.ksif failed: {:?}",
+        result.err()
+    );
 
     let lib_ksif = temp_path.join("Lib.ksif");
     assert!(lib_ksif.exists(), "Lib.ksif should exist");
@@ -139,7 +142,11 @@ fn test_cli_compile_rebuilds_ksif_when_dependency_changes() {
 "#;
     fs::write(temp_path.join("Dummy.ks"), dummy_content).expect("write Dummy.ks");
     let result = kscr::types::typecheck_file(&temp_path.join("Dummy.ks"));
-    assert!(result.is_ok(), "generate Lib.ksif failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "generate Lib.ksif failed: {:?}",
+        result.err()
+    );
 
     // Compile Main.ks
     let kscr = kscr_binary();
@@ -180,7 +187,11 @@ fn test_cli_compile_rebuilds_ksif_when_dependency_changes() {
 
     // Rebuild Lib.ksif by re-typechecking Dummy
     let result = kscr::types::typecheck_file(&temp_path.join("Dummy.ks"));
-    assert!(result.is_ok(), "rebuild Lib.ksif failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "rebuild Lib.ksif failed: {:?}",
+        result.err()
+    );
 
     // Verify that Lib.ksif exists again
     assert!(lib_ksif.exists(), "Lib.ksif should be rebuilt");
