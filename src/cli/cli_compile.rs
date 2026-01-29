@@ -96,10 +96,13 @@ fn emit_ksif(
     let exported = crate::cli_impl::filter_inferred_by_exports(&tm.module, tm.inferred.clone());
     let values: Vec<(String, crate::types::Scheme)> = exported;
 
+    // Compute dependency hashes from imports
+    let dependencies = compute_dependencies(input_path, &tm.module)?;
+
     let ksif = crate::kir1::KsifModule {
         module_name,
         values,
-        dependencies: Vec::new(), // TODO: populate when needed
+        dependencies,
     };
     let bytes = crate::kir1::encode_ksif_module(&ksif);
 
@@ -118,6 +121,62 @@ fn emit_ksif(
     let mut f = std::fs::File::create(&out_path)?;
     f.write_all(&bytes)?;
     Ok(())
+}
+
+fn compute_dependencies(
+    input_path: &Path,
+    module: &crate::ast::Module,
+) -> Result<Vec<(String, String)>> {
+    use std::path::PathBuf;
+
+    let entry_dir = input_path.parent().unwrap_or_else(|| Path::new("."));
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let default_artifact_dir = if entry_dir.starts_with(&repo_root) {
+        repo_root.join("target").join("ksif")
+    } else {
+        entry_dir.join("target").join("ksif")
+    };
+
+    let mut dep_hashes: Vec<(String, String)> = Vec::new();
+
+    for it in &module.items {
+        let crate::ast::Item::Import(id) = it else {
+            continue;
+        };
+
+        // Hash the dependency's .ksif (interface) so dependents only rebuild when the interface changes.
+        // Candidate paths must match `validate_ksif_dependencies` / `load_imported_ksif_schemes_internal`.
+        let candidates = [
+            entry_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
+            entry_dir.join(format!("{}.ksif", id.module)),
+            entry_dir.join(format!("ksif_{}.ksif", id.module)),
+            default_artifact_dir.join(format!("{}.ksif", id.module)),
+        ];
+
+        let mut dep_ksif_path: Option<PathBuf> = None;
+        for p in &candidates {
+            if p.exists() {
+                dep_ksif_path = Some(p.clone());
+                break;
+            }
+        }
+
+        let Some(dep_path) = dep_ksif_path else {
+            let dep_module_path = crate::types::resolve_module_path(entry_dir, &id.module)?;
+            if !crate::types::is_stdlib_path(&dep_module_path) {
+                return Err(crate::error::Error::msg(format!(
+                    "missing dependency ksif for import {} (expected {}.ksif); build it first",
+                    id.module, id.module
+                )));
+            }
+            continue;
+        };
+
+        let hash = crate::types::compute_file_sha256(&dep_path)?;
+        dep_hashes.push((id.module.clone(), hash));
+    }
+
+    Ok(dep_hashes)
 }
 
 fn default_ksif_output_path(input_path: &Path) -> PathBuf {
