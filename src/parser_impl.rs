@@ -946,6 +946,8 @@ fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
 
     let module = parse_maybe_qualified_ident(ts)?;
 
+    // Parse optional "as" clause BEFORE import specification
+    // Haskell syntax: import Mod as Foo (x, y) or import Mod as Foo hiding (x)
     let as_name = match ts.peek_kind() {
         Some(TokenKind::Ident(s)) if s == "as" => {
             ts.bump();
@@ -954,10 +956,68 @@ fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
         _ => None,
     };
 
+    // Parse optional import specification: (x, y, T(..)) or hiding (x, y)
+    let import_spec = parse_import_spec(ts)?;
+
     Ok(ast::Item::Import(ast::ImportDecl {
         module,
         qualified,
         as_name,
+        import_spec,
+    }))
+}
+
+fn parse_import_spec(ts: &mut TokenStream) -> Result<Option<ast::ImportSpec>> {
+    // Check for "hiding" keyword
+    let is_hiding = matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s == "hiding");
+    if is_hiding {
+        ts.bump();
+    }
+
+    // Check for opening parenthesis
+    if !matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+        return Ok(None);
+    }
+
+    ts.bump(); // consume '('
+    skip_layout_tokens(ts); // Allow newlines and indentation inside parentheses
+
+    let mut items = Vec::new();
+
+    // Empty list: import Mod () or import Mod hiding ()
+    if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+        ts.bump();
+        return Ok(Some(if is_hiding {
+            ast::ImportSpec::Hiding(items)
+        } else {
+            ast::ImportSpec::Only(items)
+        }));
+    }
+
+    // Parse item1, item2, ... using parse_export_spec to support T(..) and T(C1,C2)
+    loop {
+        items.push(parse_export_spec(ts)?);
+        skip_layout_tokens(ts);
+
+        if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            ts.bump();
+            skip_layout_tokens(ts);
+
+            // Trailing comma: import Mod (x, y,)
+            if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    ts.expect(TokenKind::RParen)?;
+
+    Ok(Some(if is_hiding {
+        ast::ImportSpec::Hiding(items)
+    } else {
+        ast::ImportSpec::Only(items)
     }))
 }
 

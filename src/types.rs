@@ -6522,7 +6522,25 @@ fn inject_imported_ksif_forwarders(
             continue;
         }
 
-        for name in schemes.keys() {
+        // Apply import spec filter to determine which names to forward
+        let all_names: HashSet<String> = schemes.keys().cloned().collect();
+        let filtered_names = match &id.import_spec {
+            None => all_names, // No filter, import everything
+            Some(ast::ImportSpec::Only(specs)) => {
+                expand_import_spec_to_names_simple(specs)
+            }
+            Some(ast::ImportSpec::Hiding(specs)) => {
+                let hidden = expand_import_spec_to_names_simple(specs);
+                all_names.into_iter().filter(|n| !hidden.contains(n)).collect()
+            }
+        };
+
+        for name in &filtered_names {
+            // Only forward names that exist in the imported module's schemes
+            if !schemes.contains_key(name) {
+                continue;
+            }
+
             let qual_name = format!("{qual}.{name}");
 
             // For unqualified imports, inject `x = <Qual>.x`.
@@ -7132,6 +7150,7 @@ fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
         module: "Prelude".to_string(),
         qualified: false,
         as_name: None,
+        import_spec: None,
     });
     module.items.insert(0, prelude_import);
     module
@@ -7277,7 +7296,7 @@ fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()
 
     // `load_module_with_imports` qualifies stdlib imports with their module name (e.g. `Prelude`).
     // Build unqualified forwarders like `__dict_Monad_IO = Prelude.__dict_Monad_IO`.
-    let forwarders = import_unqualified_forwarders(module, "Prelude", &exports)?;
+    let forwarders = import_unqualified_forwarders(module, "Prelude", &exports, &None)?;
     if forwarders.is_empty() {
         return Ok(());
     }
@@ -9194,7 +9213,7 @@ impl ModuleLoader {
                 };
                 if self.emitted_unqualified.insert(key) {
                     let fwd =
-                        import_unqualified_forwarders(&imported, primary_qual, &export_names)?;
+                        import_unqualified_forwarders(&imported, primary_qual, &export_names, &id.import_spec)?;
                     if debug_imports && id.module == "Prelude" {
                         let mut defined_names = HashSet::new();
                         for it in &fwd {
@@ -10034,10 +10053,111 @@ fn merge_duplicate_bindings_for_names(
     Ok(out)
 }
 
+/// Expand an ImportSpec into a set of names.
+/// For filtering in infer_module, where we may not have imported module items.
+fn expand_import_spec_to_names_simple(
+    specs: &[ast::ExportSpec],
+) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for spec in specs {
+        match spec {
+            ast::ExportSpec::Name(n) => {
+                names.insert(n.clone());
+            }
+            ast::ExportSpec::Type { name, ctors } => {
+                names.insert(name.clone());
+                match ctors {
+                    ast::ExportCtors::All => {
+                        // Can't expand without module items, just include the type name
+                        // The actual constructors will be handled by the type system
+                    }
+                    ast::ExportCtors::Some(ctor_list) => {
+                        for ctor in ctor_list {
+                            names.insert(ctor.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Expand an ImportSpec item (ExportSpec) into a set of names.
+/// For `Name(n)`, returns {n}.
+/// For `Type{name, ctors: All}`, returns {name} + all constructors of that type from module (best-effort).
+/// For `Type{name, ctors: Some(list)}`, returns {name} + listed constructors.
+fn expand_export_spec_to_names(
+    spec: &ast::ExportSpec,
+    module_items: &[ast::Item],
+) -> HashSet<String> {
+    let mut names = HashSet::new();
+    match spec {
+        ast::ExportSpec::Name(n) => {
+            names.insert(n.clone());
+        }
+        ast::ExportSpec::Type { name, ctors } => {
+            names.insert(name.clone());
+            match ctors {
+                ast::ExportCtors::All => {
+                    // Find the DataDecl for this type and add all its constructors
+                    for item in module_items {
+                        if let ast::Item::DataDecl(dd) = item {
+                            if &dd.name == name {
+                                for ctor in &dd.ctors {
+                                    names.insert(ctor.name.clone());
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                ast::ExportCtors::Some(ctor_list) => {
+                    for ctor in ctor_list {
+                        names.insert(ctor.clone());
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Apply import spec filter to a set of exported names.
+/// Returns the set of names that should be imported based on the import spec.
+fn apply_import_spec_filter(
+    exports: &HashSet<String>,
+    import_spec: &Option<ast::ImportSpec>,
+    module_items: &[ast::Item],
+) -> HashSet<String> {
+    match import_spec {
+        None => exports.clone(), // No filter, import everything
+        Some(ast::ImportSpec::Only(specs)) => {
+            // Expand each ExportSpec to a set of names
+            let mut allowed = HashSet::new();
+            for spec in specs {
+                allowed.extend(expand_export_spec_to_names(spec, module_items));
+            }
+            // Import only items that are both in exports and in the allowed set
+            exports.iter().filter(|n| allowed.contains(*n)).cloned().collect()
+        }
+        Some(ast::ImportSpec::Hiding(specs)) => {
+            // Expand each ExportSpec to a set of names to hide
+            let mut hidden = HashSet::new();
+            for spec in specs {
+                hidden.extend(expand_export_spec_to_names(spec, module_items));
+            }
+            // Import everything except the hidden items
+            exports.iter().filter(|n| !hidden.contains(*n)).cloned().collect()
+        }
+    }
+}
+
 fn import_unqualified_forwarders(
     module: &ast::Module,
     qual: &str,
     exports: &HashSet<String>,
+    import_spec: &Option<ast::ImportSpec>,
 ) -> Result<Vec<ast::Item>> {
     // Bring unqualified exports as simple forwarders: `x = QUAL.x`.
     let mut out = Vec::new();
@@ -10073,7 +10193,10 @@ fn import_unqualified_forwarders(
         );
     }
 
-    for n in exports.iter() {
+    // Apply import spec filter to determine which names to import
+    let filtered_exports = apply_import_spec_filter(exports, import_spec, &module.items);
+
+    for n in filtered_exports.iter() {
         if values.contains(n) {
             out.push(ast::Item::Binding(ast::Binding {
                 doc: None,
@@ -12807,21 +12930,54 @@ fn infer_module_with_class_env_with_entry_path(
                 );
             }
 
-            // Collect aliases and check if import is qualified
+            // Collect aliases, qualified flag, and import_spec
+            // Only apply import filtering if we're importing this module from another module,
+            // not when processing the module itself
+            let current_module = module.name.as_deref();
+            let is_self_import = current_module == Some(module_name.as_str());
+            
             let mut is_qualified = false;
             let mut aliases: Vec<String> = Vec::new();
-            for it in &module.items {
-                if let ast::Item::Import(id) = it {
-                    if id.module == *module_name {
-                        is_qualified = id.qualified;
-                        if let Some(ref as_name) = id.as_name {
-                            aliases.push(as_name.clone());
+            let mut import_spec: Option<ast::ImportSpec> = None;
+            if !is_self_import {
+                // Only look for import spec if this is not a self-import
+                for it in &module.items {
+                    if let ast::Item::Import(id) = it {
+                        if id.module == *module_name {
+                            is_qualified = id.qualified;
+                            if let Some(ref as_name) = id.as_name {
+                                aliases.push(as_name.clone());
+                            }
+                            import_spec = id.import_spec.clone();
                         }
                     }
                 }
             }
 
+            // Apply import spec filter (only if not a self-import)
+            let filtered_names: std::collections::HashSet<String> = if is_self_import {
+                schemes.keys().cloned().collect() // Self-import: import everything
+            } else {
+                match &import_spec {
+                    None => schemes.keys().cloned().collect(), // No filter, import everything
+                    Some(ast::ImportSpec::Only(specs)) => {
+                        // Expand ExportSpecs to names and filter
+                        expand_import_spec_to_names_simple(specs)
+                    }
+                    Some(ast::ImportSpec::Hiding(specs)) => {
+                        // Expand ExportSpecs to names to hide
+                        let hidden = expand_import_spec_to_names_simple(specs);
+                        schemes.keys().filter(|n| !hidden.contains(*n)).cloned().collect()
+                    }
+                }
+            };
+
             for (name, scheme) in schemes {
+                // Skip if name is not in the filtered set
+                if !filtered_names.contains(name) {
+                    continue;
+                }
+
                 // For unqualified imports without aliases, expose both qualified and unqualified names
                 if !is_qualified && aliases.is_empty() {
                     // Unqualified import: `import A` - expose both A.name and name
@@ -14299,6 +14455,7 @@ mod inference_tests {
                 module: "Foo".to_string(),
                 qualified: false,
                 as_name: None,
+                import_spec: None,
             })],
         };
         assert!(typecheck(m).is_err());
