@@ -272,14 +272,14 @@ fn skip_layout_tokens(ts: &mut TokenStream) {
 fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
     ts.expect(TokenKind::KwModule)?;
     let name = parse_maybe_qualified_ident(ts)?;
-    
+
     // Parse optional export list: module Foo (x, y, T(..)) where
     let export_specs = if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
         ts.bump(); // consume '('
         skip_layout_tokens(ts); // Allow newlines and indentation
-        
+
         let mut specs = Vec::new();
-        
+
         // Empty export list: module Foo () where
         if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
             ts.bump();
@@ -289,11 +289,11 @@ fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
             loop {
                 specs.push(parse_export_spec(ts)?);
                 skip_layout_tokens(ts);
-                
+
                 if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
                     ts.bump();
                     skip_layout_tokens(ts);
-                    
+
                     // Trailing comma: module Foo (x, y,) where
                     if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
                         break;
@@ -302,14 +302,14 @@ fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
                     break;
                 }
             }
-            
+
             ts.expect(TokenKind::RParen)?;
             Some(specs)
         }
     } else {
         None
     };
-    
+
     ts.expect(TokenKind::KwWhere)?;
     ts.consume_line_end();
     ts.skip_newlines();
@@ -1008,11 +1008,13 @@ fn parse_export_spec(ts: &mut TokenStream) -> Result<ast::ExportSpec> {
 
 fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwExport)?;
-    
+
     // Emit deprecation warning only if environment variable is set
     // This avoids spamming users with warnings from stdlib code
     if std::env::var("KSCR_WARN_DEPRECATED_EXPORT").is_ok() {
-        eprintln!("warning: `export` declaration is deprecated; use `module Foo (...) where` instead");
+        eprintln!(
+            "warning: `export` declaration is deprecated; use `module Foo (...) where` instead"
+        );
     }
 
     let mut specs = Vec::new();

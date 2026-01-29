@@ -26,7 +26,11 @@ fn type_export_restriction() {
 
     assert!(out.status.success(), "exit code should be 0");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout.trim(), "OK", "exported constructor A should be accessible");
+    assert_eq!(
+        stdout.trim(),
+        "OK",
+        "exported constructor A should be accessible"
+    );
 }
 
 /// Test 3: No explicit export - everything is accessible by default
@@ -39,7 +43,11 @@ fn no_explicit_export() {
 
     assert!(out.status.success(), "exit code should be 0");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout.trim(), "42", "secret should be accessible by default");
+    assert_eq!(
+        stdout.trim(),
+        "42",
+        "secret should be accessible by default"
+    );
 }
 
 /// Test 4: Multiple modules with different export restrictions
@@ -53,7 +61,7 @@ fn multiple_modules_export_restriction() {
     assert!(out.status.success(), "exit code should be 0");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.trim().lines().collect();
-    
+
     assert_eq!(lines.len(), 3, "should have 3 output lines");
     assert_eq!(lines[0], "15", "MA.funcA should return 15");
     assert_eq!(lines[1], "10", "MB.funcB should return 10");
@@ -95,4 +103,3 @@ fn type_export_restriction_negative() {
         stderr
     );
 }
-

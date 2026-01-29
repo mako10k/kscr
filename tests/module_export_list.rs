@@ -11,18 +11,18 @@ module Foo (x, y) where
     z = 3
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
-    
+
     let specs = module.export_specs.unwrap();
     assert_eq!(specs.len(), 2);
-    
+
     match &specs[0] {
         kscr::ast::ExportSpec::Name(name) => assert_eq!(name, "x"),
         _ => panic!("Expected Name export spec"),
     }
-    
+
     match &specs[1] {
         kscr::ast::ExportSpec::Name(name) => assert_eq!(name, "y"),
         _ => panic!("Expected Name export spec"),
@@ -42,10 +42,10 @@ module Foo (
     z = 3
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
-    
+
     let specs = module.export_specs.unwrap();
     assert_eq!(specs.len(), 3);
 }
@@ -57,13 +57,13 @@ module Foo (MyType(..)) where
     data MyType = A | B | C
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
-    
+
     let specs = module.export_specs.unwrap();
     assert_eq!(specs.len(), 1);
-    
+
     match &specs[0] {
         kscr::ast::ExportSpec::Type { name, ctors } => {
             assert_eq!(name, "MyType");
@@ -80,13 +80,13 @@ module Foo (MyType(A, B)) where
     data MyType = A | B | C
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
-    
+
     let specs = module.export_specs.unwrap();
     assert_eq!(specs.len(), 1);
-    
+
     match &specs[0] {
         kscr::ast::ExportSpec::Type { name, ctors } => {
             assert_eq!(name, "MyType");
@@ -111,7 +111,7 @@ module Foo where
     y = 2
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_none());
 }
@@ -127,10 +127,10 @@ module Foo (
     y = 2
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
-    
+
     let specs = module.export_specs.unwrap();
     assert_eq!(specs.len(), 2);
 }
@@ -142,10 +142,10 @@ module Foo () where
     x = 1
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
-    
+
     let specs = module.export_specs.unwrap();
     assert_eq!(specs.len(), 0);
 }

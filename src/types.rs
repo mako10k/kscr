@@ -6830,7 +6830,7 @@ fn ensure_ksif_for_module(
     // Inject forwarders for imported names
     let mut module_to_typecheck = ast::Module {
         name: module_ast.name.clone(),
-        export_specs: None,
+        export_specs: module_ast.export_specs.clone(),
         items: module_ast.items.clone(),
     };
     inject_imported_ksif_forwarders(&mut module_to_typecheck, &module_ast, &imported)?;
@@ -9317,7 +9317,7 @@ fn extract_aliased_type_ctors(module: &ast::Module, ta: &ast::TypeAlias) -> Opti
 
 fn module_exported_names(module: &ast::Module) -> Result<ExportTable> {
     let mut exports = ExportTable::new();
-    
+
     // Priority 1: Check module header export_specs (module Foo (x, y) where ...)
     if let Some(specs) = &module.export_specs {
         for spec in specs {
