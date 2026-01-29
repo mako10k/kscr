@@ -367,12 +367,7 @@ fn lower_expr(
             if name.contains('.') {
                 IrExpr::Var(name)
             } else {
-                IrExpr::Var(
-                    ctor_aliases
-                        .get(v.local_name())
-                        .cloned()
-                        .unwrap_or(name),
-                )
+                IrExpr::Var(ctor_aliases.get(v.local_name()).cloned().unwrap_or(name))
             }
         }
         ExprKind::Lambda { params, body } => IrExpr::Lambda {
@@ -920,58 +915,90 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         // Minimal dictionaries for `.ksif`-only execution.
         // These are methods that accept the dictionary as their first argument; we ignore it.
         "__dict_Prelude.Monad.Monad" | "__dict_Prelude.Monad.Monad_IO" => Value::Record(vec![
-            (">>".to_string(), Value::Closure {
-                params: vec!["_dict".to_string(), "first".to_string(), "second".to_string()],
-                body: Box::new(IrExpr::Apply {
-                    func: Box::new(IrExpr::Var("__ioThen".to_string())),
-                    args: vec![IrExpr::Var("first".to_string()), IrExpr::Var("second".to_string())],
-                }),
-                env: std::collections::HashMap::new(),
-            }),
-            (">>=".to_string(), Value::Closure {
-                params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
-                body: Box::new(IrExpr::Apply {
-                    func: Box::new(IrExpr::Var("__ioBind".to_string())),
-                    args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
-                }),
-                env: std::collections::HashMap::new(),
-            }),
-            ("return".to_string(), Value::Closure {
-                params: vec!["_dict".to_string(), "x".to_string()],
-                body: Box::new(IrExpr::Apply {
-                    func: Box::new(IrExpr::Var("IO".to_string())),
-                    args: vec![IrExpr::Var("x".to_string())],
-                }),
-                env: std::collections::HashMap::new(),
-            }),
+            (
+                ">>".to_string(),
+                Value::Closure {
+                    params: vec![
+                        "_dict".to_string(),
+                        "first".to_string(),
+                        "second".to_string(),
+                    ],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("__ioThen".to_string())),
+                        args: vec![
+                            IrExpr::Var("first".to_string()),
+                            IrExpr::Var("second".to_string()),
+                        ],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            ),
+            (
+                ">>=".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("__ioBind".to_string())),
+                        args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            ),
+            (
+                "return".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "x".to_string()],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("IO".to_string())),
+                        args: vec![IrExpr::Var("x".to_string())],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            ),
         ]),
 
         // Backwards-compat / alternate naming.
         "__dict_Monad_IO" => Value::Record(vec![
-            (">>".to_string(), Value::Closure {
-                params: vec!["_dict".to_string(), "first".to_string(), "second".to_string()],
-                body: Box::new(IrExpr::Apply {
-                    func: Box::new(IrExpr::Var("__ioThen".to_string())),
-                    args: vec![IrExpr::Var("first".to_string()), IrExpr::Var("second".to_string())],
-                }),
-                env: std::collections::HashMap::new(),
-            }),
-            (">>=".to_string(), Value::Closure {
-                params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
-                body: Box::new(IrExpr::Apply {
-                    func: Box::new(IrExpr::Var("__ioBind".to_string())),
-                    args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
-                }),
-                env: std::collections::HashMap::new(),
-            }),
-            ("return".to_string(), Value::Closure {
-                params: vec!["_dict".to_string(), "x".to_string()],
-                body: Box::new(IrExpr::Apply {
-                    func: Box::new(IrExpr::Var("IO".to_string())),
-                    args: vec![IrExpr::Var("x".to_string())],
-                }),
-                env: std::collections::HashMap::new(),
-            }),
+            (
+                ">>".to_string(),
+                Value::Closure {
+                    params: vec![
+                        "_dict".to_string(),
+                        "first".to_string(),
+                        "second".to_string(),
+                    ],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("__ioThen".to_string())),
+                        args: vec![
+                            IrExpr::Var("first".to_string()),
+                            IrExpr::Var("second".to_string()),
+                        ],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            ),
+            (
+                ">>=".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("__ioBind".to_string())),
+                        args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            ),
+            (
+                "return".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "x".to_string()],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("IO".to_string())),
+                        args: vec![IrExpr::Var("x".to_string())],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            ),
         ]),
 
         "__recordGet" => Value::BuiltinRecordGet,
@@ -1515,7 +1542,9 @@ fn apply_builtin_stdout_write(g: &Globals, arg: Value) -> Result<Value> {
 fn apply_builtin_put_str_ln(g: &Globals, arg: Value) -> Result<Value> {
     let arg = force_value(g, arg)?;
     let s = value_to_string(g, arg)?;
-    Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(format!("{s}\n")))))
+    Ok(Value::IoAction(Box::new(IoAction::StdoutWrite(format!(
+        "{s}\n"
+    )))))
 }
 
 fn builtin_read_file(g: &Globals, path: Value) -> Result<Value> {

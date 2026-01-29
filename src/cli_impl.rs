@@ -159,9 +159,7 @@ struct ParsedArgs {
     no_ksif_rebuild_deps: bool,
 }
 
-fn parse_common_args(
-    mut args: std::vec::IntoIter<String>,
-) -> Result<ParsedArgs> {
+fn parse_common_args(mut args: std::vec::IntoIter<String>) -> Result<ParsedArgs> {
     let mut stdlib_dir: Option<PathBuf> = None;
     let mut file: Option<String> = None;
     let mut ksif_rebuild = false;
@@ -200,7 +198,7 @@ fn parse_stdlib_dir_and_file(
     args: std::vec::IntoIter<String>,
 ) -> Result<(Option<PathBuf>, String)> {
     let parsed = parse_common_args(args)?;
-    
+
     // Set KSIF rebuild policy
     types::set_ksif_rebuild_policy(types::KsifRebuildPolicy {
         force_rebuild: parsed.ksif_rebuild,
@@ -932,14 +930,14 @@ fn merge_imported_ir(
     aliases: &[String],
 ) {
     use ir::IrItem;
-    
+
     // Collect existing names in main_ir to avoid duplicates
     let mut existing_names: HashSet<String> = HashSet::new();
     for item in &main_ir.items {
         let IrItem::Binding { name, .. } = item;
         existing_names.insert(name.clone());
     }
-    
+
     // Collect local (unqualified) binding names in the imported module
     // Only include names that should be qualified (not already qualified)
     let mut local_names: HashSet<String> = HashSet::new();
@@ -955,16 +953,16 @@ fn merge_imported_ir(
         } else {
             name.contains('.')
         };
-        
+
         if !already_module_qualified {
             local_names.insert(name.clone());
         }
     }
-    
+
     // Add qualified bindings from imported module
     for item in &imported_ir.items {
         let IrItem::Binding { name, expr } = item;
-        
+
         // Determine the qualified name for this binding
         let is_dict_or_inst = name.starts_with("__dict_") || name.starts_with("__inst_");
         let already_module_qualified = if is_dict_or_inst {
@@ -973,7 +971,7 @@ fn merge_imported_ir(
         } else {
             name.contains('.')
         };
-        
+
         let qualified_name = if already_module_qualified {
             // Already module-qualified, use as-is
             name.clone()
@@ -1013,9 +1011,13 @@ fn merge_imported_ir(
 
 /// Qualify variable references in an IR expression.
 /// If a variable name is in `local_names` and not already qualified, prefix it with `module_name`.
-fn qualify_ir_expr(expr: &ir::IrExpr, module_name: &str, local_names: &HashSet<String>) -> ir::IrExpr {
+fn qualify_ir_expr(
+    expr: &ir::IrExpr,
+    module_name: &str,
+    local_names: &HashSet<String>,
+) -> ir::IrExpr {
     use ir::IrExpr;
-    
+
     match expr {
         IrExpr::Var(name) => {
             // If the variable is a local binding in this module and not already qualified, qualify it
@@ -1031,26 +1033,49 @@ fn qualify_ir_expr(expr: &ir::IrExpr, module_name: &str, local_names: &HashSet<S
         },
         IrExpr::Apply { func, args } => IrExpr::Apply {
             func: Box::new(qualify_ir_expr(func, module_name, local_names)),
-            args: args.iter().map(|a| qualify_ir_expr(a, module_name, local_names)).collect(),
+            args: args
+                .iter()
+                .map(|a| qualify_ir_expr(a, module_name, local_names))
+                .collect(),
         },
-        IrExpr::If { cond, then_branch, else_branch } => IrExpr::If {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => IrExpr::If {
             cond: Box::new(qualify_ir_expr(cond, module_name, local_names)),
             then_branch: Box::new(qualify_ir_expr(then_branch, module_name, local_names)),
             else_branch: Box::new(qualify_ir_expr(else_branch, module_name, local_names)),
         },
         IrExpr::Let { bindings, body } => IrExpr::Let {
-            bindings: bindings.iter().map(|(n, e)| (n.clone(), qualify_ir_expr(e, module_name, local_names))).collect(),
+            bindings: bindings
+                .iter()
+                .map(|(n, e)| (n.clone(), qualify_ir_expr(e, module_name, local_names)))
+                .collect(),
             body: Box::new(qualify_ir_expr(body, module_name, local_names)),
         },
-        IrExpr::Case { expr: scrutinee, arms } => IrExpr::Case {
+        IrExpr::Case {
+            expr: scrutinee,
+            arms,
+        } => IrExpr::Case {
             expr: Box::new(qualify_ir_expr(scrutinee, module_name, local_names)),
-            arms: arms.iter().map(|arm| ir::IrCaseArm {
-                pat: arm.pat.clone(),
-                guard: arm.guard.as_ref().map(|g| qualify_ir_expr(g, module_name, local_names)),
-                body: qualify_ir_expr(&arm.body, module_name, local_names),
-            }).collect(),
+            arms: arms
+                .iter()
+                .map(|arm| ir::IrCaseArm {
+                    pat: arm.pat.clone(),
+                    guard: arm
+                        .guard
+                        .as_ref()
+                        .map(|g| qualify_ir_expr(g, module_name, local_names)),
+                    body: qualify_ir_expr(&arm.body, module_name, local_names),
+                })
+                .collect(),
         },
-        IrExpr::IoBind { action, param, body } => IrExpr::IoBind {
+        IrExpr::IoBind {
+            action,
+            param,
+            body,
+        } => IrExpr::IoBind {
             action: Box::new(qualify_ir_expr(action, module_name, local_names)),
             param: param.clone(),
             body: Box::new(qualify_ir_expr(body, module_name, local_names)),
@@ -1064,21 +1089,37 @@ fn qualify_ir_expr(expr: &ir::IrExpr, module_name: &str, local_names: &HashSet<S
             tail: Box::new(qualify_ir_expr(tail, module_name, local_names)),
         },
         IrExpr::List(exprs) => IrExpr::List(
-            exprs.iter().map(|e| qualify_ir_expr(e, module_name, local_names)).collect()
+            exprs
+                .iter()
+                .map(|e| qualify_ir_expr(e, module_name, local_names))
+                .collect(),
         ),
         IrExpr::Tuple(exprs) => IrExpr::Tuple(
-            exprs.iter().map(|e| qualify_ir_expr(e, module_name, local_names)).collect()
+            exprs
+                .iter()
+                .map(|e| qualify_ir_expr(e, module_name, local_names))
+                .collect(),
         ),
         IrExpr::Record(fields) => IrExpr::Record(
-            fields.iter().map(|(k, v)| (k.clone(), qualify_ir_expr(v, module_name, local_names))).collect()
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), qualify_ir_expr(v, module_name, local_names)))
+                .collect(),
         ),
-        IrExpr::CheckedCast { expr: inner, target } => IrExpr::CheckedCast {
+        IrExpr::CheckedCast {
+            expr: inner,
+            target,
+        } => IrExpr::CheckedCast {
             expr: Box::new(qualify_ir_expr(inner, module_name, local_names)),
             target: *target,
         },
         // Literal expressions don't contain variables
-        IrExpr::Unit | IrExpr::Integer(_) | IrExpr::Float64(_) | 
-        IrExpr::Bool(_) | IrExpr::String(_) | IrExpr::Char(_) => expr.clone(),
+        IrExpr::Unit
+        | IrExpr::Integer(_)
+        | IrExpr::Float64(_)
+        | IrExpr::Bool(_)
+        | IrExpr::String(_)
+        | IrExpr::Char(_) => expr.clone(),
     }
 }
 
@@ -1092,22 +1133,22 @@ fn inject_constructor_forwarders(
     imports: &HashMap<String, ast::Module>,
     entry_module: &ast::Module,
 ) {
-    use ir::{IrItem, IrExpr};
-    
+    use ir::{IrExpr, IrItem};
+
     // Collect existing bindings to avoid duplicates
     let mut existing: HashSet<String> = HashSet::new();
     for item in &irm.items {
         let IrItem::Binding { name, .. } = item;
         existing.insert(name.clone());
     }
-    
+
     // Hardcoded: Data.Maybe re-exports Prelude.Maybe with constructors
     if imports.contains_key("Data.Maybe") {
         let ctors = vec![
             ("Data.Maybe.Just", "Prelude.Just"),
             ("Data.Maybe.Nothing", "Prelude.Nothing"),
         ];
-        
+
         for (target, source) in ctors {
             if !existing.contains(target) {
                 irm.items.push(IrItem::Binding {
@@ -1118,14 +1159,14 @@ fn inject_constructor_forwarders(
             }
         }
     }
-    
+
     // Hardcoded: Data.List re-exports Prelude.Maybe with constructors
     if imports.contains_key("Data.List") {
         let ctors = vec![
             ("Data.List.Just", "Prelude.Just"),
             ("Data.List.Nothing", "Prelude.Nothing"),
         ];
-        
+
         for (target, source) in ctors {
             if !existing.contains(target) {
                 irm.items.push(IrItem::Binding {
@@ -1136,14 +1177,14 @@ fn inject_constructor_forwarders(
             }
         }
     }
-    
+
     // Hardcoded: Data.Either re-exports Prelude.Either with constructors
     if imports.contains_key("Data.Either") {
         let ctors = vec![
             ("Data.Either.Left", "Prelude.Left"),
             ("Data.Either.Right", "Prelude.Right"),
         ];
-        
+
         for (target, source) in ctors {
             if !existing.contains(target) {
                 irm.items.push(IrItem::Binding {
@@ -1154,7 +1195,7 @@ fn inject_constructor_forwarders(
             }
         }
     }
-    
+
     // Create alias forwarders for qualified imports (e.g., M.Just -> Data.Maybe.Just)
     for item in &entry_module.items {
         let ast::Item::Import(id) = item else {
@@ -1258,10 +1299,10 @@ fn inject_constructor_forwarders(
 pub fn typecheck_and_link_ir(entry: &Path) -> Result<ir::IrModule> {
     // Typecheck the entry module
     let tm = types::typecheck_file(entry)?;
-    
+
     // Lower entry module to IR
     let mut irm = ir::lower_to_ir(&tm.module)?;
-    
+
     // Load and merge transitive imports for runtime linking.
     // We need to TYPECHECK imported modules (not just load AST) because:
     // - Instance dict bindings are generated during typecheck desugaring
@@ -1271,27 +1312,30 @@ pub fn typecheck_and_link_ir(entry: &Path) -> Result<ir::IrModule> {
             // Lower each typechecked imported module to IR and merge with qualified names
             for (module_name, typechecked_module) in &imports {
                 let imported_ir = ir::lower_to_ir(&typechecked_module.module)?;
-                
+
                 // Collect aliases from the entry module for this import
                 let entry_aliases: Vec<String> = tm
                     .module
                     .items
                     .iter()
                     .filter_map(|it| match it {
-                        ast::Item::Import(id) if id.module == *module_name => {
-                            id.as_name.clone()
-                        }
+                        ast::Item::Import(id) if id.module == *module_name => id.as_name.clone(),
                         _ => None,
                     })
                     .collect();
-                
+
                 merge_imported_ir(&mut irm, &imported_ir, module_name, &entry_aliases);
-                
+
                 // ALSO handle transitive import aliases: if module B imports A as OM,
                 // we need to provide OM.x bindings when we merge B.
-                inject_transitive_import_aliases(&mut irm, &typechecked_module.module, module_name, &imports);
+                inject_transitive_import_aliases(
+                    &mut irm,
+                    &typechecked_module.module,
+                    module_name,
+                    &imports,
+                );
             }
-            
+
             // Inject constructor forwarders for re-exported types
             // Convert TypedModule map to ast::Module map for compatibility
             let ast_imports: std::collections::HashMap<String, ast::Module> = imports
@@ -1305,20 +1349,22 @@ pub fn typecheck_and_link_ir(entry: &Path) -> Result<ir::IrModule> {
             eprintln!("[WARN] IR may be incomplete; runtime errors may occur");
         }
     }
-    
+
     Ok(irm)
 }
 
 /// Load and typecheck all transitive imports.
 /// Returns a map of module_name -> TypedModule.
 /// This is more expensive than loading raw AST but necessary for dict bindings.
-fn load_and_typecheck_transitive_imports(entry: &Path) -> Result<HashMap<String, types::TypedModule>> {
+fn load_and_typecheck_transitive_imports(
+    entry: &Path,
+) -> Result<HashMap<String, types::TypedModule>> {
     let entry = std::fs::canonicalize(entry)?;
     let entry_dir = entry.parent().unwrap_or_else(|| std::path::Path::new("."));
-    
+
     // First, get the list of all transitive imports
     let raw_imports = types::load_transitive_imports_for_runtime(&entry)?;
-    
+
     // Now typecheck each imported module
     let mut result: HashMap<String, types::TypedModule> = HashMap::new();
     for (module_name, _module_ast) in raw_imports {
@@ -1327,7 +1373,7 @@ fn load_and_typecheck_transitive_imports(entry: &Path) -> Result<HashMap<String,
             Ok(p) => p,
             Err(_) => continue, // Skip modules we can't resolve
         };
-        
+
         match types::typecheck_file(&module_path) {
             Ok(tm) => {
                 result.insert(module_name, tm);
@@ -1337,7 +1383,7 @@ fn load_and_typecheck_transitive_imports(entry: &Path) -> Result<HashMap<String,
             }
         }
     }
-    
+
     Ok(result)
 }
 
@@ -1369,42 +1415,42 @@ fn inject_transitive_import_aliases(
     imported_module_name: &str,
     all_imports: &HashMap<String, types::TypedModule>,
 ) {
-    use ir::{IrItem, IrExpr};
-    
+    use ir::{IrExpr, IrItem};
+
     // Collect existing bindings to avoid duplicates
     let mut existing: HashSet<String> = HashSet::new();
     for item in &main_ir.items {
         let IrItem::Binding { name, .. } = item;
         existing.insert(name.clone());
     }
-    
+
     // For each import in the imported module
     for it in &imported_module.items {
         let ast::Item::Import(id) = it else {
             continue;
         };
-        
+
         // Skip if no alias
         let Some(alias) = &id.as_name else {
             continue;
         };
-        
+
         // Check if this import is available in all_imports
         if !all_imports.contains_key(&id.module) {
             continue;
         }
-        
+
         // Get the imported module's IR to find what bindings to alias
         let imported_mod = &all_imports[&id.module];
         let imported_ir = match ir::lower_to_ir(&imported_mod.module) {
             Ok(ir) => ir,
             Err(_) => continue,
         };
-        
+
         // For each binding in the imported module, create an alias binding
         for item in &imported_ir.items {
             let IrItem::Binding { name, .. } = item;
-            
+
             // Determine the target name (qualified with the imported module name)
             let target_qualified = if name.contains('.') {
                 // Already qualified
@@ -1413,10 +1459,10 @@ fn inject_transitive_import_aliases(
                 // Need to qualify
                 format!("{}.{}", id.module, name)
             };
-            
+
             // Create alias binding: alias.name -> target_qualified
             let alias_name = format!("{}.{}", alias, name.split('.').last().unwrap_or(name));
-            
+
             if !existing.contains(&alias_name) {
                 main_ir.items.push(IrItem::Binding {
                     name: alias_name.clone(),

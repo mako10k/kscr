@@ -35,9 +35,9 @@ pub fn resolve_qualified_ctor_via_type_alias(
         if let Some(target_qual) = alias_to_qual.get("Maybe") {
             // Preserve module id (identity), but adjust printed qualifier to target module.
             return Some(match qctor {
-                ast::ResolvedName::Unresolved(_) => ast::ResolvedName::unresolved(format!(
-                    "{target_qual}.{ctor}"
-                )),
+                ast::ResolvedName::Unresolved(_) => {
+                    ast::ResolvedName::unresolved(format!("{target_qual}.{ctor}"))
+                }
                 ast::ResolvedName::Resolved { module, .. } => ast::ResolvedName::Resolved {
                     module: *module,
                     module_name: target_qual.clone(),

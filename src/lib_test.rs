@@ -1824,30 +1824,37 @@ main = do
 
 #[test]
 fn ir_run_main_user_defined_typeclass_imports_instance() {
-    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/typeclass_import_main.ks"))
-        .unwrap();
+    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new(
+        "tests/typeclass_import_main.ks",
+    ))
+    .unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]
 fn ir_run_main_stdlib_classes_smoke() {
-    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/stdlib_classes_smoke.ks"))
-        .unwrap();
+    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new(
+        "tests/stdlib_classes_smoke.ks",
+    ))
+    .unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]
 fn ir_run_main_rational_smoke() {
-    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/rational_smoke.ks")).unwrap();
+    let ir =
+        crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/rational_smoke.ks"))
+            .unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 }
 
 #[test]
 fn ir_run_main_p0_import_data_case_do_smoke() {
-    let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/P0/Main.ks")).unwrap();
+    let ir =
+        crate::cli_impl::typecheck_and_link_ir(std::path::Path::new("tests/P0/Main.ks")).unwrap();
     let v = crate::ir::run_main(&ir).unwrap();
     assert!(matches!(v, crate::ir::Value::Unit));
 }
