@@ -214,6 +214,11 @@ fn attach_best_effort_diagnostics(res: Result<()>, _cmd_file_arg: Option<String>
 }
 
 fn exported_specs(module: &ast::Module) -> Option<Vec<ast::ExportSpec>> {
+    // Priority: module header export_specs > legacy export items
+    if let Some(specs) = &module.export_specs {
+        return Some(specs.clone());
+    }
+
     let mut out = Vec::new();
     for it in &module.items {
         if let ast::Item::Export(ed) = it {

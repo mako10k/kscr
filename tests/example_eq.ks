@@ -1,6 +1,4 @@
-module EqExample where
-  export main
-  
+module EqExample (main) where
   data Color = Red | Green | Blue deriving (Eq, Show)
   
   main = do

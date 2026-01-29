@@ -160,6 +160,10 @@ pub struct ModuleShape {
 
     /// Dependencies (for package resolution)
     pub dependencies: Vec<DependencySpec>,
+
+    /// Export specifications (module header exports)
+    /// Optional for backward compatibility with existing .ksif files
+    pub export_specs: Option<Vec<crate::ast::ExportSpec>>,
 }
 
 /// Exported value declaration
@@ -257,6 +261,7 @@ impl ModuleShape {
             classes: HashMap::new(),
             instances: Vec::new(),
             dependencies: Vec::new(),
+            export_specs: None,
         }
     }
 
@@ -266,6 +271,9 @@ impl ModuleShape {
     /// without the implementation details.
     pub fn from_ast_module(module: &crate::ast::Module, canonical_path: String) -> Self {
         let mut shape = Self::new(canonical_path);
+
+        // Preserve export specifications from module header
+        shape.export_specs = module.export_specs.clone();
 
         for item in &module.items {
             match item {

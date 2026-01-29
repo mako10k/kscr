@@ -6830,6 +6830,7 @@ fn ensure_ksif_for_module(
     // Inject forwarders for imported names
     let mut module_to_typecheck = ast::Module {
         name: module_ast.name.clone(),
+        export_specs: module_ast.export_specs.clone(),
         items: module_ast.items.clone(),
     };
     inject_imported_ksif_forwarders(&mut module_to_typecheck, &module_ast, &imported)?;
@@ -7112,6 +7113,7 @@ fn load_module_with_imports_ast_with_loader(
 
     Ok(ast::Module {
         name: entry_mod.name.clone(),
+        export_specs: None,
         items,
     })
 }
@@ -7616,6 +7618,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         // We need Import items for canonicalization to work correctly.
         let mut tmp_module = ast::Module {
             name: parsed.name.clone(),
+            export_specs: None,
             items: parsed
                 .items
                 .into_iter()
@@ -7670,6 +7673,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         // We need ClassDecl items for canonicalization to resolve locally-defined classes.
         let mut tmp_module = ast::Module {
             name: parsed.name.clone(),
+            export_specs: None,
             items: parsed
                 .items
                 .into_iter()
@@ -7766,6 +7770,7 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
     // Collect all class decls into a temporary merged module.
     let mut merged = ast::Module {
         name: Some("<stdlib-classes>".to_string()),
+        export_specs: None,
         items: Vec::new(),
     };
     let mut seen: HashSet<String> = HashSet::new();
@@ -7927,6 +7932,7 @@ fn load_imported_instances(
         // Create a temporary module with only class and instance declarations
         let mut tmp_module = ast::Module {
             name: imported_ast.name.clone(),
+            export_specs: None,
             items: imported_ast
                 .items
                 .into_iter()
@@ -9311,6 +9317,82 @@ fn extract_aliased_type_ctors(module: &ast::Module, ta: &ast::TypeAlias) -> Opti
 
 fn module_exported_names(module: &ast::Module) -> Result<ExportTable> {
     let mut exports = ExportTable::new();
+
+    // Priority 1: Check module header export_specs (module Foo (x, y) where ...)
+    if let Some(specs) = &module.export_specs {
+        for spec in specs {
+            match spec {
+                ast::ExportSpec::Name(n) => {
+                    // For now, classify unqualified names as values.
+                    // Later stages can refine this by looking up the actual item.
+                    let kind = classify_exported_name(module, n);
+                    exports.insert(n.clone(), kind);
+                }
+                ast::ExportSpec::Type { name, ctors } => {
+                    // Classify the type name (could be Type or Class)
+                    let kind = classify_type_export(module, name);
+                    exports.insert(name.clone(), kind);
+
+                    // Try to find a data declaration with this name
+                    let dd = module.items.iter().find_map(|it| match it {
+                        ast::Item::DataDecl(d) if d.name == *name => Some(d),
+                        _ => None,
+                    });
+
+                    if let Some(dd) = dd {
+                        // Direct data declaration - export its constructors
+                        match ctors {
+                            ast::ExportCtors::All => {
+                                exports.extend(
+                                    dd.ctors.iter().map(|c| (c.name.clone(), SymbolKind::Ctor)),
+                                );
+                            }
+                            ast::ExportCtors::Some(cs) => {
+                                let known: HashSet<&str> =
+                                    dd.ctors.iter().map(|c| c.name.as_str()).collect();
+                                for c in cs {
+                                    if !known.contains(c.as_str()) {
+                                        return Err(Error::msg(format!(
+                                            "export list references unknown constructor: {name}({c})"
+                                        )));
+                                    }
+                                    exports.insert(c.clone(), SymbolKind::Ctor);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Check if it's a type alias that re-exports constructors
+                    let ta = module.items.iter().find_map(|it| match it {
+                        ast::Item::TypeAlias(t) if t.name == *name => Some(t),
+                        _ => None,
+                    });
+
+                    if let Some(ta) = ta {
+                        // Type alias - try to resolve the constructors from the aliased type
+                        // This handles cases like: type Maybe a = Prelude.Maybe a
+                        // where we want to re-export Just and Nothing
+                        if let ast::ExportCtors::All = ctors {
+                            // Try to extract the target type name from the alias RHS
+                            if let Some(target_ctors) = extract_aliased_type_ctors(module, ta) {
+                                exports.extend(
+                                    target_ctors.into_iter().map(|c| (c, SymbolKind::Ctor)),
+                                );
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Type exports can refer to classes too (e.g. `Monad(..)`), which are not
+                    // `DataDecl`s or TypeAliases. For MVP export checking, allow these through.
+                }
+            }
+        }
+        return Ok(exports);
+    }
+
+    // Priority 2: Check legacy export declarations (deprecated but supported for backward compatibility)
     let mut has_export_decl = false;
 
     for it in &module.items {
@@ -14212,6 +14294,7 @@ mod inference_tests {
     fn typecheck_rejects_imports() {
         let m = ast::Module {
             name: None,
+            export_specs: None,
             items: vec![ast::Item::Import(ast::ImportDecl {
                 module: "Foo".to_string(),
                 qualified: false,
@@ -15489,6 +15572,7 @@ mod export_table_tests {
     fn module_exported_names_no_export_decl() {
         let module = ast::Module {
             name: Some("Test".to_string()),
+            export_specs: None,
             items: vec![
                 ast::Item::Binding(ast::Binding {
                     doc: None,
@@ -15517,6 +15601,7 @@ mod export_table_tests {
     fn module_exported_names_with_data_decl() {
         let module = ast::Module {
             name: Some("Test".to_string()),
+            export_specs: None,
             items: vec![ast::Item::DataDecl(ast::DataDecl {
                 doc: None,
                 name: "Maybe".to_string(),
@@ -15552,6 +15637,7 @@ mod export_table_tests {
     fn module_exported_names_with_explicit_exports() {
         let module = ast::Module {
             name: Some("Test".to_string()),
+            export_specs: None,
             items: vec![
                 ast::Item::Binding(ast::Binding {
                     doc: None,
@@ -15577,5 +15663,43 @@ mod export_table_tests {
         assert_eq!(names.len(), 1);
         assert!(names.contains("foo"));
         assert!(!names.contains("bar"));
+    }
+
+    #[test]
+    fn module_exported_names_with_module_header_export_specs() {
+        let module = ast::Module {
+            name: Some("M".to_string()),
+            export_specs: Some(vec![
+                ast::ExportSpec::Name("foo".to_string()),
+                ast::ExportSpec::Name("bar".to_string()),
+            ]),
+            items: vec![
+                ast::Item::Binding(ast::Binding {
+                    doc: None,
+                    pat: ast::Pattern::dummy(ast::PatternKind::Var("foo".to_string())),
+                    expr: ast::Expr::dummy(ast::ExprKind::Integer("1".to_string())),
+                    span: ast::dummy_span(),
+                }),
+                ast::Item::Binding(ast::Binding {
+                    doc: None,
+                    pat: ast::Pattern::dummy(ast::PatternKind::Var("bar".to_string())),
+                    expr: ast::Expr::dummy(ast::ExprKind::Integer("2".to_string())),
+                    span: ast::dummy_span(),
+                }),
+                ast::Item::Binding(ast::Binding {
+                    doc: None,
+                    pat: ast::Pattern::dummy(ast::PatternKind::Var("baz".to_string())),
+                    expr: ast::Expr::dummy(ast::ExprKind::Integer("3".to_string())),
+                    span: ast::dummy_span(),
+                }),
+            ],
+        };
+
+        let table = module_exported_names(&module).unwrap();
+        let names = table.as_name_set();
+        assert_eq!(names.len(), 2, "Should export only foo and bar");
+        assert!(names.contains("foo"));
+        assert!(names.contains("bar"));
+        assert!(!names.contains("baz"), "baz should NOT be exported");
     }
 }
