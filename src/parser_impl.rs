@@ -1034,6 +1034,11 @@ fn parse_export_spec(ts: &mut TokenStream) -> Result<ast::ExportSpec> {
 
     ts.bump();
 
+    // Issue #68: Reject T() (empty constructor list) following Haskell semantics
+    if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+        return Err(ts.err_here("empty constructor list T() is not allowed; use T for type-only export or T(..) for all constructors"));
+    }
+
     let spec = if matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
         ts.expect(TokenKind::Dot)?;
         ts.expect(TokenKind::Dot)?;
@@ -1054,6 +1059,10 @@ fn parse_export_spec(ts: &mut TokenStream) -> Result<ast::ExportSpec> {
         ctors.push(parse_ctor_name(ts)?);
         while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
             ts.bump();
+            // Issue #67: Allow trailing comma in constructor list
+            if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+                break;
+            }
             ctors.push(parse_ctor_name(ts)?);
         }
         ts.expect(TokenKind::RParen)?;
