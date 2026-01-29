@@ -106,3 +106,113 @@ fn parser_case_arrow_allow_newline_and_indent() {
     // Second arm should work as before (no newline)
     assert!(matches!(&arms[1].body.kind, ExprKind::Integer(_)));
 }
+
+#[test]
+fn parser_lambda_arrow_allow_newline() {
+    let src = "f = \\x ->\n  x + 1\n";
+    let module = kscr::parser::parse_module(src).unwrap();
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let ExprKind::Lambda { params, body } = &b.expr.kind else {
+        panic!("expected lambda, got {:?}", b.expr.kind);
+    };
+
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0], "x");
+
+    // Body should be an application (x + 1 is desugared to Apply)
+    assert!(matches!(&body.kind, ExprKind::Apply { .. }));
+}
+
+#[test]
+fn parser_lambda_arrow_allow_newline_with_indent_block() {
+    let src = "f = \\x ->\n  let y = x + 1 in\n  y * 2\n";
+    let module = kscr::parser::parse_module(src).unwrap();
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let ExprKind::Lambda { params, body } = &b.expr.kind else {
+        panic!("expected lambda");
+    };
+
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0], "x");
+
+    // Body should be a let expression
+    assert!(matches!(&body.kind, ExprKind::Let { .. }));
+}
+
+#[test]
+fn parser_lambda_multiple_params_newline() {
+    let src = "f = \\x y z ->\n  x + y + z\n";
+    let module = kscr::parser::parse_module(src).unwrap();
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let ExprKind::Lambda { params, body } = &b.expr.kind else {
+        panic!("expected lambda");
+    };
+
+    assert_eq!(params.len(), 3);
+    assert_eq!(params[0], "x");
+    assert_eq!(params[1], "y");
+    assert_eq!(params[2], "z");
+
+    // Body should be an application
+    assert!(matches!(&body.kind, ExprKind::Apply { .. }));
+}
+
+#[test]
+fn parser_lambda_nested_newlines() {
+    let src = "f = \\x ->\n  \\y ->\n    x + y\n";
+    let module = kscr::parser::parse_module(src).unwrap();
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let ExprKind::Lambda { params, body } = &b.expr.kind else {
+        panic!("expected lambda");
+    };
+
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0], "x");
+
+    // Body should be another lambda
+    let ExprKind::Lambda { params: inner_params, body: inner_body } = &body.kind else {
+        panic!("expected nested lambda");
+    };
+
+    assert_eq!(inner_params.len(), 1);
+    assert_eq!(inner_params[0], "y");
+
+    // Inner body should be an application
+    assert!(matches!(&inner_body.kind, ExprKind::Apply { .. }));
+}
+
+#[test]
+fn parser_lambda_inline_still_works() {
+    // Ensure that inline lambdas (without newlines) still work
+    let src = "f = \\x -> x + 1\n";
+    let module = kscr::parser::parse_module(src).unwrap();
+
+    let Item::Binding(b) = &module.items[0] else {
+        panic!("expected binding");
+    };
+
+    let ExprKind::Lambda { params, body } = &b.expr.kind else {
+        panic!("expected lambda");
+    };
+
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0], "x");
+
+    assert!(matches!(&body.kind, ExprKind::Apply { .. }));
+}

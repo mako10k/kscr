@@ -1848,7 +1848,8 @@ fn parse_lambda(ts: &mut TokenStream, stop: Stop) -> Result<ast::Expr> {
         return Err(ts.err_here("expected lambda parameter"));
     }
     ts.expect(TokenKind::Arrow)?;
-    let body = Box::new(parse_expr(ts, stop)?);
+    // Allow newline and optional indentation after arrow (Haskell-like layout)
+    let body = Box::new(parse_expr_after_newline(ts, stop)?);
     Ok(expr_from(ts, start, ast::ExprKind::Lambda { params, body }))
 }
 
