@@ -92,6 +92,47 @@ fn emit_ksif(
 
     let module_name = tm.module.name.clone().unwrap_or_else(|| "Main".to_string());
 
+    // Compute output path first
+    let out_path = match ksif_out_dir {
+        Some(dir) => {
+            std::fs::create_dir_all(dir)?;
+            let file_stem = input_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| crate::error::Error::msg("invalid input filename"))?;
+            dir.join(format!("{file_stem}.ksif"))
+        }
+        None => default_ksif_output_path(input_path),
+    };
+
+    // Check if incremental rebuild can skip emission
+    let policy = crate::types::get_ksif_rebuild_policy();
+    if out_path.exists() && !policy.force_rebuild {
+        // Compute default_artifact_dir consistent with compute_dependencies
+        let entry_dir = input_path.parent().unwrap_or_else(|| Path::new("."));
+        let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let default_artifact_dir = if entry_dir.starts_with(&repo_root) {
+            repo_root.join("target").join("ksif")
+        } else {
+            entry_dir.join("target").join("ksif")
+        };
+
+        // Validate dependency hashes
+        match crate::types::validate_ksif_dependencies(&out_path, entry_dir, &default_artifact_dir)
+        {
+            Ok(true) => {
+                // All hashes match, skip rebuild
+                return Ok(());
+            }
+            Ok(false) => {
+                // Hash mismatch, proceed with rebuild
+            }
+            Err(_) => {
+                // Validation error (e.g., malformed KSIF), proceed with rebuild
+            }
+        }
+    }
+
     // Reuse CLI export filtering logic (keeps export surface consistent).
     let exported = crate::cli_impl::filter_inferred_by_exports(&tm.module, tm.inferred.clone());
     let values: Vec<(String, crate::types::Scheme)> = exported;
@@ -105,18 +146,6 @@ fn emit_ksif(
         dependencies,
     };
     let bytes = crate::kir1::encode_ksif_module(&ksif);
-
-    let out_path = match ksif_out_dir {
-        Some(dir) => {
-            std::fs::create_dir_all(dir)?;
-            let file_stem = input_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .ok_or_else(|| crate::error::Error::msg("invalid input filename"))?;
-            dir.join(format!("{file_stem}.ksif"))
-        }
-        None => default_ksif_output_path(input_path),
-    };
 
     let mut f = std::fs::File::create(&out_path)?;
     f.write_all(&bytes)?;
