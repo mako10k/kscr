@@ -10,12 +10,12 @@ module Main where
     main = x
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "Foo");
     assert!(!import.qualified);
     assert_eq!(import.as_name, None);
@@ -30,12 +30,12 @@ module Main where
     main = x
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "Foo");
     match &import.import_spec {
         Some(ast::ImportSpec::Only(items)) => {
@@ -56,12 +56,12 @@ module Main where
     main = x
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     match &import.import_spec {
         Some(ast::ImportSpec::Only(items)) => {
             assert_eq!(items.len(), 3);
@@ -81,12 +81,12 @@ module Main where
     main = z
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "Foo");
     match &import.import_spec {
         Some(ast::ImportSpec::Hiding(items)) => {
@@ -106,12 +106,12 @@ module Main where
     main = F.x
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "Foo");
     assert!(import.qualified);
     assert_eq!(import.as_name, Some("F".to_string()));
@@ -137,12 +137,12 @@ module Main where
     main = x
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     match &import.import_spec {
         Some(ast::ImportSpec::Only(items)) => {
             assert_eq!(items.len(), 3);
@@ -162,12 +162,12 @@ module Main where
     main = x
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     match &import.import_spec {
         Some(ast::ImportSpec::Only(items)) => {
             assert_eq!(items.len(), 0);
@@ -184,12 +184,12 @@ module Main where
     main = z
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     match &import.import_spec {
         Some(ast::ImportSpec::Hiding(items)) => {
             assert_eq!(items.len(), 2);
@@ -209,12 +209,12 @@ module Main where
     main = x
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "Foo");
     assert!(!import.qualified);
     assert_eq!(import.as_name, Some("F".to_string()));
@@ -237,12 +237,12 @@ module Main where
     main = F.y
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "Foo");
     assert!(import.qualified);
     assert_eq!(import.as_name, Some("F".to_string()));
@@ -264,12 +264,12 @@ module Main where
     main = Just 42
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "Prelude");
     match &import.import_spec {
         Some(ast::ImportSpec::Only(items)) => {
@@ -295,12 +295,12 @@ module Main where
     main = Left 42
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "Prelude");
     match &import.import_spec {
         Some(ast::ImportSpec::Only(items)) => {
@@ -333,12 +333,12 @@ module Main where
     main = foo
 "#;
     let module = parser_impl::parse_module(src).unwrap();
-    
+
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
         _ => panic!("Expected import"),
     };
-    
+
     assert_eq!(import.module, "MyMod");
     match &import.import_spec {
         Some(ast::ImportSpec::Only(items)) => {
@@ -356,4 +356,3 @@ module Main where
         _ => panic!("Expected Only import spec"),
     }
 }
-

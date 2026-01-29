@@ -186,7 +186,11 @@ fn parser_lambda_nested_newlines() {
     assert_eq!(params[0], "x");
 
     // Body should be another lambda
-    let ExprKind::Lambda { params: inner_params, body: inner_body } = &body.kind else {
+    let ExprKind::Lambda {
+        params: inner_params,
+        body: inner_body,
+    } = &body.kind
+    else {
         panic!("expected nested lambda");
     };
 

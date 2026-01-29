@@ -10,7 +10,12 @@ fn test_import_code(src: &str, test_name: &str) -> Result<(), kscr::error::Error
     // Write to a file in the tests directory so it can find TestDataTypes.ks
     // Use a counter to ensure unique filenames
     let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let test_file = format!("tests/test_import_{}_{}_{}.ks", test_name, std::process::id(), counter);
+    let test_file = format!(
+        "tests/test_import_{}_{}_{}.ks",
+        test_name,
+        std::process::id(),
+        counter
+    );
     fs::write(&test_file, src)?;
     let result = types::typecheck_file(std::path::Path::new(&test_file));
     let _ = fs::remove_file(&test_file);
@@ -148,4 +153,3 @@ module Main where
     let result = test_import_code(src, "test");
     assert!(result.is_ok(), "Should compile: {:?}", result.err());
 }
-

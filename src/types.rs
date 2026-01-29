@@ -6532,7 +6532,10 @@ fn inject_imported_ksif_forwarders(
             }
             Some(ast::ImportSpec::Hiding(specs)) => {
                 let hidden = expand_import_spec_with_ctors(specs, &id.module, entry_dir);
-                all_names.into_iter().filter(|n| !hidden.contains(n)).collect()
+                all_names
+                    .into_iter()
+                    .filter(|n| !hidden.contains(n))
+                    .collect()
             }
         };
 
@@ -9213,8 +9216,12 @@ impl ModuleLoader {
                     qual: primary_qual.to_string(),
                 };
                 if self.emitted_unqualified.insert(key) {
-                    let fwd =
-                        import_unqualified_forwarders(&imported, primary_qual, &export_names, &id.import_spec)?;
+                    let fwd = import_unqualified_forwarders(
+                        &imported,
+                        primary_qual,
+                        &export_names,
+                        &id.import_spec,
+                    )?;
                     if debug_imports && id.module == "Prelude" {
                         let mut defined_names = HashSet::new();
                         for it in &fwd {
@@ -10056,9 +10063,7 @@ fn merge_duplicate_bindings_for_names(
 
 /// Expand an ImportSpec into a set of names.
 /// For filtering in infer_module, where we may not have imported module items.
-fn expand_import_spec_to_names_simple(
-    specs: &[ast::ExportSpec],
-) -> HashSet<String> {
+fn expand_import_spec_to_names_simple(specs: &[ast::ExportSpec]) -> HashSet<String> {
     let mut names = HashSet::new();
     for spec in specs {
         match spec {
@@ -10106,7 +10111,7 @@ fn expand_import_spec_with_ctors(
             }
         }
     }
-    
+
     // Fallback: use simple expansion without constructor resolution
     expand_import_spec_to_names_simple(specs)
 }
@@ -10167,7 +10172,11 @@ fn apply_import_spec_filter(
                 allowed.extend(expand_export_spec_to_names(spec, module_items));
             }
             // Import only items that are both in exports and in the allowed set
-            exports.iter().filter(|n| allowed.contains(*n)).cloned().collect()
+            exports
+                .iter()
+                .filter(|n| allowed.contains(*n))
+                .cloned()
+                .collect()
         }
         Some(ast::ImportSpec::Hiding(specs)) => {
             // Expand each ExportSpec to a set of names to hide
@@ -10176,7 +10185,11 @@ fn apply_import_spec_filter(
                 hidden.extend(expand_export_spec_to_names(spec, module_items));
             }
             // Import everything except the hidden items
-            exports.iter().filter(|n| !hidden.contains(*n)).cloned().collect()
+            exports
+                .iter()
+                .filter(|n| !hidden.contains(*n))
+                .cloned()
+                .collect()
         }
     }
 }
@@ -12963,7 +12976,7 @@ fn infer_module_with_class_env_with_entry_path(
             // not when processing the module itself
             let current_module = module.name.as_deref();
             let is_self_import = current_module == Some(module_name.as_str());
-            
+
             let mut is_qualified = false;
             let mut aliases: Vec<String> = Vec::new();
             let mut import_spec: Option<ast::ImportSpec> = None;
@@ -13000,7 +13013,11 @@ fn infer_module_with_class_env_with_entry_path(
                     Some(ast::ImportSpec::Hiding(specs)) => {
                         // Expand ExportSpecs to names to hide
                         let hidden = expand_import_spec_with_ctors(specs, module_name, entry_dir);
-                        schemes.keys().filter(|n| !hidden.contains(*n)).cloned().collect()
+                        schemes
+                            .keys()
+                            .filter(|n| !hidden.contains(*n))
+                            .cloned()
+                            .collect()
                     }
                 }
             };

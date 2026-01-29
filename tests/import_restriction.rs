@@ -16,7 +16,7 @@ use std::process::Command;
 //         .args(["run", "tests/import_list_basic.ks"])
 //         .output()
 //         .expect("run kscr");
-// 
+//
 //     assert!(out.status.success(), "exit code should be 0");
 //     let stdout = String::from_utf8_lossy(&out.stdout);
 //     assert_eq!(stdout.trim(), "3", "should use imported add function");
@@ -30,7 +30,7 @@ use std::process::Command;
 //         .args(["run", "tests/import_hiding_basic.ks"])
 //         .output()
 //         .expect("run kscr");
-// 
+//
 //     assert!(out.status.success(), "exit code should be 0");
 //     let stdout = String::from_utf8_lossy(&out.stdout);
 //     assert_eq!(stdout.trim(), "5", "should use non-hidden function");
@@ -57,7 +57,7 @@ fn import_qualified_with_list() {
 //         .args(["run", "tests/import_operators.ks"])
 //         .output()
 //         .expect("run kscr");
-// 
+//
 //     assert!(out.status.success(), "exit code should be 0");
 //     let stdout = String::from_utf8_lossy(&out.stdout);
 //     assert_eq!(stdout.trim(), "9", "should use imported function");
@@ -106,7 +106,7 @@ fn import_hiding_negative() {
 //         .args(["run", "tests/import_empty_list.ks"])
 //         .output()
 //         .expect("run kscr");
-// 
+//
 //     assert!(out.status.success(), "exit code should be 0");
 //     let stdout = String::from_utf8_lossy(&out.stdout);
 //     assert_eq!(stdout.trim(), "42", "should use local definition");
