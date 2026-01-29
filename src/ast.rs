@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub name: Option<String>,
+    pub export_specs: Option<Vec<ExportSpec>>,
     pub items: Vec<Item>,
 }
 
@@ -129,13 +130,13 @@ pub struct ImportDecl {
     pub as_name: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportSpec {
     Name(String),
     Type { name: String, ctors: ExportCtors },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExportCtors {
     All,
     Some(Vec<String>),

@@ -21,7 +21,11 @@ pub fn parse_module(src: &str) -> Result<ast::Module> {
         node_parse_module_decl(&mut ts)
     } else {
         let items = node_parse_items_until(&mut ts, StopAt::Eof)?;
-        Ok(ast::Module { name: None, items })
+        Ok(ast::Module {
+            name: None,
+            export_specs: None,
+            items,
+        })
     }
 }
 
@@ -256,9 +260,56 @@ fn node_parse_items_until(ts: &mut TokenStream, stop: StopAt) -> Result<Vec<ast:
     parse_items_until(ts, stop)
 }
 
+fn skip_layout_tokens(ts: &mut TokenStream) {
+    while matches!(
+        ts.peek_kind(),
+        Some(TokenKind::Newline) | Some(TokenKind::Indent) | Some(TokenKind::Dedent)
+    ) {
+        ts.bump();
+    }
+}
+
 fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
     ts.expect(TokenKind::KwModule)?;
     let name = parse_maybe_qualified_ident(ts)?;
+    
+    // Parse optional export list: module Foo (x, y, T(..)) where
+    let export_specs = if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+        ts.bump(); // consume '('
+        skip_layout_tokens(ts); // Allow newlines and indentation
+        
+        let mut specs = Vec::new();
+        
+        // Empty export list: module Foo () where
+        if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+            ts.bump();
+            Some(specs)
+        } else {
+            // Parse spec1, spec2, ...
+            loop {
+                specs.push(parse_export_spec(ts)?);
+                skip_layout_tokens(ts);
+                
+                if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+                    ts.bump();
+                    skip_layout_tokens(ts);
+                    
+                    // Trailing comma: module Foo (x, y,) where
+                    if matches!(ts.peek_kind(), Some(TokenKind::RParen)) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            
+            ts.expect(TokenKind::RParen)?;
+            Some(specs)
+        }
+    } else {
+        None
+    };
+    
     ts.expect(TokenKind::KwWhere)?;
     ts.consume_line_end();
     ts.skip_newlines();
@@ -270,6 +321,7 @@ fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
 
     Ok(ast::Module {
         name: Some(name),
+        export_specs,
         items,
     })
 }
@@ -909,52 +961,58 @@ fn parse_import_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     }))
 }
 
+fn parse_export_spec(ts: &mut TokenStream) -> Result<ast::ExportSpec> {
+    let name = match ts.peek_kind() {
+        Some(TokenKind::Ident(_)) => ts.expect_ident()?,
+        Some(TokenKind::LParen) => parse_paren_operator_name(ts)?,
+        _ => return Err(ts.err_here("expected export name")),
+    };
+
+    if !matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
+        return Ok(ast::ExportSpec::Name(name));
+    }
+
+    ts.bump();
+
+    let spec = if matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
+        ts.expect(TokenKind::Dot)?;
+        ts.expect(TokenKind::Dot)?;
+        ts.expect(TokenKind::RParen)?;
+        ast::ExportSpec::Type {
+            name,
+            ctors: ast::ExportCtors::All,
+        }
+    } else if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
+        ts.bump();
+        ts.expect(TokenKind::RParen)?;
+        ast::ExportSpec::Type {
+            name,
+            ctors: ast::ExportCtors::All,
+        }
+    } else {
+        let mut ctors = Vec::new();
+        ctors.push(parse_ctor_name(ts)?);
+        while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            ts.bump();
+            ctors.push(parse_ctor_name(ts)?);
+        }
+        ts.expect(TokenKind::RParen)?;
+        ast::ExportSpec::Type {
+            name,
+            ctors: ast::ExportCtors::Some(ctors),
+        }
+    };
+
+    Ok(spec)
+}
+
 fn parse_export_decl(ts: &mut TokenStream) -> Result<ast::Item> {
     ts.expect(TokenKind::KwExport)?;
-
-    fn parse_export_spec(ts: &mut TokenStream) -> Result<ast::ExportSpec> {
-        let name = match ts.peek_kind() {
-            Some(TokenKind::Ident(_)) => ts.expect_ident()?,
-            Some(TokenKind::LParen) => parse_paren_operator_name(ts)?,
-            _ => return Err(ts.err_here("expected export name")),
-        };
-
-        if !matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
-            return Ok(ast::ExportSpec::Name(name));
-        }
-
-        ts.bump();
-
-        let spec = if matches!(ts.peek_kind(), Some(TokenKind::Dot)) {
-            ts.expect(TokenKind::Dot)?;
-            ts.expect(TokenKind::Dot)?;
-            ts.expect(TokenKind::RParen)?;
-            ast::ExportSpec::Type {
-                name,
-                ctors: ast::ExportCtors::All,
-            }
-        } else if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if op == "..") {
-            ts.bump();
-            ts.expect(TokenKind::RParen)?;
-            ast::ExportSpec::Type {
-                name,
-                ctors: ast::ExportCtors::All,
-            }
-        } else {
-            let mut ctors = Vec::new();
-            ctors.push(parse_ctor_name(ts)?);
-            while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
-                ts.bump();
-                ctors.push(parse_ctor_name(ts)?);
-            }
-            ts.expect(TokenKind::RParen)?;
-            ast::ExportSpec::Type {
-                name,
-                ctors: ast::ExportCtors::Some(ctors),
-            }
-        };
-
-        Ok(spec)
+    
+    // Emit deprecation warning only if environment variable is set
+    // This avoids spamming users with warnings from stdlib code
+    if std::env::var("KSCR_WARN_DEPRECATED_EXPORT").is_ok() {
+        eprintln!("warning: `export` declaration is deprecated; use `module Foo (...) where` instead");
     }
 
     let mut specs = Vec::new();

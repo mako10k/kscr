@@ -14,9 +14,9 @@ pub mod ksif;
 pub mod lexer;
 pub mod parser;
 
-// Build `src/parser_impl.rs` as a private module while we split the parser.
+// Build `src/parser_impl.rs` as a public module for testing.
 #[path = "parser_impl.rs"]
-mod parser_impl;
+pub mod parser_impl;
 #[cfg(not(feature = "unsafe_bigint"))]
 mod safe_bigint;
 pub mod types;

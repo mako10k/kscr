@@ -1,6 +1,4 @@
-module ShowExample where
-  export main
-  
+module ShowExample (main) where
   data Person = Person String Integer deriving Show
   
   main = do

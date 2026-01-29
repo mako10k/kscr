@@ -1,4 +1,3 @@
-module ksif_A where
+module ksif_A (myId) where
   import Prelude
-  export myId
   myId = \x -> x

@@ -660,7 +660,7 @@ fn parser_module_import_export() {
     let src = std::fs::read_to_string("tests/module_import_export.ks").unwrap();
     let m = crate::parser::parse_module(&src).unwrap();
     assert_eq!(m.name.as_deref(), Some("Main"));
-    assert_eq!(m.items.len(), 5);
+    assert_eq!(m.items.len(), 4);
 
     use crate::ast::{ExportSpec, Item};
 
@@ -680,16 +680,14 @@ fn parser_module_import_export() {
         _ => panic!("expected import"),
     }
 
-    match &m.items[2] {
-        Item::Export(e) => assert_eq!(
-            e.specs,
-            vec![
-                ExportSpec::Name("x".to_string()),
-                ExportSpec::Name("y".to_string())
-            ]
-        ),
-        _ => panic!("expected export"),
-    }
+    // Check module-level export specs (new style)
+    assert_eq!(
+        m.export_specs,
+        Some(vec![
+            ExportSpec::Name("x".to_string()),
+            ExportSpec::Name("y".to_string())
+        ])
+    );
 }
 
 #[test]
