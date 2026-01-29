@@ -39,7 +39,7 @@ pub fn set_ksif_rebuild_policy(policy: KsifRebuildPolicy) {
 }
 
 /// Get the current KSIF rebuild policy.
-fn get_ksif_rebuild_policy() -> KsifRebuildPolicy {
+pub(crate) fn get_ksif_rebuild_policy() -> KsifRebuildPolicy {
     *KSIF_REBUILD_POLICY
         .get_or_init(|| std::sync::Mutex::new(KsifRebuildPolicy::default()))
         .lock()
@@ -6574,7 +6574,7 @@ pub(crate) fn compute_file_sha256(path: &Path) -> Result<String> {
 
 /// Validate that all dependencies in a KSIF have matching hashes.
 /// Returns Ok(true) if all hashes match, Ok(false) if any mismatch, Err on I/O or decode errors.
-fn validate_ksif_dependencies(
+pub(crate) fn validate_ksif_dependencies(
     ksif_path: &Path,
     module_dir: &Path,
     default_artifact_dir: &Path,
