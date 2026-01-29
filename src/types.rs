@@ -9342,80 +9342,92 @@ fn extract_aliased_type_ctors(module: &ast::Module, ta: &ast::TypeAlias) -> Opti
     None
 }
 
+/// Process a list of export specs and populate an export table.
+/// This helper extracts the common logic used by both module header export specs
+/// and legacy export declarations.
+fn process_export_specs(
+    specs: &[ast::ExportSpec],
+    module: &ast::Module,
+    exports: &mut ExportTable,
+) -> Result<()> {
+    for spec in specs {
+        match spec {
+            ast::ExportSpec::Name(n) => {
+                // For now, classify unqualified names as values.
+                // Later stages can refine this by looking up the actual item.
+                let kind = classify_exported_name(module, n);
+                exports.insert(n.clone(), kind);
+            }
+            ast::ExportSpec::Type { name, ctors } => {
+                // Classify the type name (could be Type or Class)
+                let kind = classify_type_export(module, name);
+                exports.insert(name.clone(), kind);
+
+                // Try to find a data declaration with this name
+                let dd = module.items.iter().find_map(|it| match it {
+                    ast::Item::DataDecl(d) if d.name == *name => Some(d),
+                    _ => None,
+                });
+
+                if let Some(dd) = dd {
+                    // Direct data declaration - export its constructors
+                    match ctors {
+                        ast::ExportCtors::All => {
+                            exports.extend(
+                                dd.ctors.iter().map(|c| (c.name.clone(), SymbolKind::Ctor)),
+                            );
+                        }
+                        ast::ExportCtors::Some(cs) => {
+                            let known: HashSet<&str> =
+                                dd.ctors.iter().map(|c| c.name.as_str()).collect();
+                            for c in cs {
+                                if !known.contains(c.as_str()) {
+                                    return Err(Error::msg(format!(
+                                        "export list references unknown constructor: {name}({c})"
+                                    )));
+                                }
+                                exports.insert(c.clone(), SymbolKind::Ctor);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Check if it's a type alias that re-exports constructors
+                let ta = module.items.iter().find_map(|it| match it {
+                    ast::Item::TypeAlias(t) if t.name == *name => Some(t),
+                    _ => None,
+                });
+
+                if let Some(ta) = ta {
+                    // Type alias - try to resolve the constructors from the aliased type
+                    // This handles cases like: type Maybe a = Prelude.Maybe a
+                    // where we want to re-export Just and Nothing
+                    if let ast::ExportCtors::All = ctors {
+                        // Try to extract the target type name from the alias RHS
+                        if let Some(target_ctors) = extract_aliased_type_ctors(module, ta) {
+                            exports.extend(
+                                target_ctors.into_iter().map(|c| (c, SymbolKind::Ctor)),
+                            );
+                        }
+                    }
+                    continue;
+                }
+
+                // Type exports can refer to classes too (e.g. `Monad(..)`), which are not
+                // `DataDecl`s or TypeAliases. For MVP export checking, allow these through.
+            }
+        }
+    }
+    Ok(())
+}
+
 fn module_exported_names(module: &ast::Module) -> Result<ExportTable> {
     let mut exports = ExportTable::new();
 
     // Priority 1: Check module header export_specs (module Foo (x, y) where ...)
     if let Some(specs) = &module.export_specs {
-        for spec in specs {
-            match spec {
-                ast::ExportSpec::Name(n) => {
-                    // For now, classify unqualified names as values.
-                    // Later stages can refine this by looking up the actual item.
-                    let kind = classify_exported_name(module, n);
-                    exports.insert(n.clone(), kind);
-                }
-                ast::ExportSpec::Type { name, ctors } => {
-                    // Classify the type name (could be Type or Class)
-                    let kind = classify_type_export(module, name);
-                    exports.insert(name.clone(), kind);
-
-                    // Try to find a data declaration with this name
-                    let dd = module.items.iter().find_map(|it| match it {
-                        ast::Item::DataDecl(d) if d.name == *name => Some(d),
-                        _ => None,
-                    });
-
-                    if let Some(dd) = dd {
-                        // Direct data declaration - export its constructors
-                        match ctors {
-                            ast::ExportCtors::All => {
-                                exports.extend(
-                                    dd.ctors.iter().map(|c| (c.name.clone(), SymbolKind::Ctor)),
-                                );
-                            }
-                            ast::ExportCtors::Some(cs) => {
-                                let known: HashSet<&str> =
-                                    dd.ctors.iter().map(|c| c.name.as_str()).collect();
-                                for c in cs {
-                                    if !known.contains(c.as_str()) {
-                                        return Err(Error::msg(format!(
-                                            "export list references unknown constructor: {name}({c})"
-                                        )));
-                                    }
-                                    exports.insert(c.clone(), SymbolKind::Ctor);
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    // Check if it's a type alias that re-exports constructors
-                    let ta = module.items.iter().find_map(|it| match it {
-                        ast::Item::TypeAlias(t) if t.name == *name => Some(t),
-                        _ => None,
-                    });
-
-                    if let Some(ta) = ta {
-                        // Type alias - try to resolve the constructors from the aliased type
-                        // This handles cases like: type Maybe a = Prelude.Maybe a
-                        // where we want to re-export Just and Nothing
-                        if let ast::ExportCtors::All = ctors {
-                            // Try to extract the target type name from the alias RHS
-                            if let Some(target_ctors) = extract_aliased_type_ctors(module, ta) {
-                                exports.extend(
-                                    target_ctors.into_iter().map(|c| (c, SymbolKind::Ctor)),
-                                );
-                            }
-                        }
-                        continue;
-                    }
-
-                    // Type exports can refer to classes too (e.g. `Monad(..)`), which are not
-                    // `DataDecl`s or TypeAliases. For MVP export checking, allow these through.
-                }
-            }
-        }
+        process_export_specs(specs, module, &mut exports)?;
         return Ok(exports);
     }
 
@@ -9427,75 +9439,7 @@ fn module_exported_names(module: &ast::Module) -> Result<ExportTable> {
             continue;
         };
         has_export_decl = true;
-        for spec in &ed.specs {
-            match spec {
-                ast::ExportSpec::Name(n) => {
-                    // For now, classify unqualified names as values.
-                    // Later stages can refine this by looking up the actual item.
-                    let kind = classify_exported_name(module, n);
-                    exports.insert(n.clone(), kind);
-                }
-                ast::ExportSpec::Type { name, ctors } => {
-                    // Classify the type name (could be Type or Class)
-                    let kind = classify_type_export(module, name);
-                    exports.insert(name.clone(), kind);
-
-                    // Try to find a data declaration with this name
-                    let dd = module.items.iter().find_map(|it| match it {
-                        ast::Item::DataDecl(d) if d.name == *name => Some(d),
-                        _ => None,
-                    });
-
-                    if let Some(dd) = dd {
-                        // Direct data declaration - export its constructors
-                        match ctors {
-                            ast::ExportCtors::All => {
-                                exports.extend(
-                                    dd.ctors.iter().map(|c| (c.name.clone(), SymbolKind::Ctor)),
-                                );
-                            }
-                            ast::ExportCtors::Some(cs) => {
-                                let known: HashSet<&str> =
-                                    dd.ctors.iter().map(|c| c.name.as_str()).collect();
-                                for c in cs {
-                                    if !known.contains(c.as_str()) {
-                                        return Err(Error::msg(format!(
-                                            "export list references unknown constructor: {name}({c})"
-                                        )));
-                                    }
-                                    exports.insert(c.clone(), SymbolKind::Ctor);
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    // Check if it's a type alias that re-exports constructors
-                    let ta = module.items.iter().find_map(|it| match it {
-                        ast::Item::TypeAlias(t) if t.name == *name => Some(t),
-                        _ => None,
-                    });
-
-                    if let Some(ta) = ta {
-                        // Type alias - try to resolve the constructors from the aliased type
-                        // This handles cases like: type Maybe a = Prelude.Maybe a
-                        // where we want to re-export Just and Nothing
-                        if let ast::ExportCtors::All = ctors {
-                            // Try to extract the target type name from the alias RHS
-                            if let Some(target_ctors) = extract_aliased_type_ctors(module, ta) {
-                                exports.extend(
-                                    target_ctors.into_iter().map(|c| (c, SymbolKind::Ctor)),
-                                );
-                            }
-                        }
-                        continue;
-                    }
-
-                    // Type exports can refer to classes too (e.g. `Monad(..)`), which are not
-                    // `DataDecl`s or TypeAliases. For MVP export checking, allow these through.
-                }
-            }
-        }
+        process_export_specs(&ed.specs, module, &mut exports)?;
     }
 
     if !has_export_decl {
