@@ -310,6 +310,8 @@ fn parse_module_decl(ts: &mut TokenStream) -> Result<ast::Module> {
         None
     };
 
+    // Issue #70: Accept Haskell-compatible newlines/layout around `where`
+    skip_layout_tokens(ts);
     ts.expect(TokenKind::KwWhere)?;
     ts.consume_line_end();
     ts.skip_newlines();
