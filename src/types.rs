@@ -7634,7 +7634,12 @@ fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
 
 fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()> {
     // Collect all qualified stdlib dict bindings present in the module.
-    let mut exports: HashSet<String> = HashSet::new();
+    let mut exports_map: HashMap<String, String> = HashMap::new();
+    
+    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+        eprintln!("[DICT] inject_stdlib_instance_dict_forwarders: checking {} import items", import_items(module).len());
+    }
+    
     for it in import_items(module) {
         let ast::Item::Binding(b) = it else {
             continue;
@@ -7642,25 +7647,136 @@ fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()
         let ast::PatternKind::Var(n) = b.pat.kind else {
             continue;
         };
+        
+        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+            if n.contains("__dict_") {
+                eprintln!("[DICT]   Found binding: {}", n);
+            }
+        }
+        
         // Note: stdlib-provided dictionaries appear as qualified value bindings like
-        // `Prelude.__dict_Monad_IO`. Later passes refer to the *unqualified* name
-        // `__dict_Monad_IO`, so we need a forwarder.
-        if let Some((qual, rest)) = n.split_once('.') {
-            if qual == "Prelude" && rest.starts_with("__dict_") {
-                exports.insert(rest.to_string());
+        // `Prelude.__dict_Monad_IO` or `Prelude.Num.__dict_Num_Integer`.
+        // Later passes refer to the *unqualified* name like `__dict_Monad_IO` or `__dict_Num_Integer`,
+        // so we need forwarders.
+        if n.starts_with("Prelude.") {
+            // Extract the unqualified dict name (last component that starts with __dict_)
+            if let Some(unqualified) = n.split('.').last() {
+                if unqualified.starts_with("__dict_") {
+                    exports_map.insert(unqualified.to_string(), n.clone());
+                }
             }
         }
     }
 
-    if exports.is_empty() {
+    if exports_map.is_empty() {
         return Ok(());
     }
 
-    // `load_module_with_imports` qualifies stdlib imports with their module name (e.g. `Prelude`).
-    // Build unqualified forwarders like `__dict_Monad_IO = Prelude.__dict_Monad_IO`.
-    let forwarders = import_unqualified_forwarders(module, "Prelude", &exports, &None)?;
+    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+        eprintln!("[DICT] Creating {} dict forwarders:", exports_map.len());
+        for (unqualified, qualified) in &exports_map {
+            eprintln!("[DICT]   {} = {}", unqualified, qualified);
+        }
+    }
+
+    // Build unqualified forwarders like `__dict_Num_Integer = Prelude.Num.__dict_Num_Integer`.
+    let mut forwarders: Vec<ast::Item> = Vec::new();
+    for (unqualified, qualified) in exports_map {
+        let span = ast::Span { start: 0, end: 0 };
+        let forwarded = ast::Binding {
+            doc: None,
+            pat: ast::Pattern::new(span, ast::PatternKind::Var(unqualified)),
+            expr: ast::Expr::new(span, ast::ExprKind::Var(qualified)),
+            span,
+        };
+        forwarders.push(ast::Item::Binding(forwarded));
+    }
+
     if forwarders.is_empty() {
         return Ok(());
+    }
+
+    let mut merged = Vec::new();
+    merged.extend(forwarders);
+    merged.append(&mut module.items);
+    module.items = merged;
+    Ok(())
+}
+
+fn inject_stdlib_instance_dict_forwarders_post_typecheck(module: &mut ast::Module) -> Result<()> {
+    // Similar to inject_stdlib_instance_dict_forwarders, but runs after typecheck/desugaring
+    // when instance dictionaries have been created.
+    // Collects all qualified dict bindings (e.g., `Prelude.Num.__dict_Num_Integer`)
+    // and creates unqualified forwarders (e.g., `__dict_Num_Integer = Prelude.Num.__dict_Num_Integer`).
+    
+    let mut exports_map: HashMap<String, String> = HashMap::new();
+    
+    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+        eprintln!("[DICT] inject_stdlib_instance_dict_forwarders_post_typecheck: checking {} items", module.items.len());
+        let mut dict_count = 0;
+        for it in &module.items {
+            if let ast::Item::Binding(b) = it {
+                if let ast::PatternKind::Var(n) = &b.pat.kind {
+                    if n.contains("__dict_") {
+                        dict_count += 1;
+                        if dict_count < 30 {
+                            eprintln!("[DICT]   Item: {}", n);
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("[DICT]   Total dict-like bindings: {}", dict_count);
+    }
+    
+    for it in &module.items {
+        let ast::Item::Binding(b) = it else {
+            continue;
+        };
+        let ast::PatternKind::Var(n) = &b.pat.kind else {
+            continue;
+        };
+        
+        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+            if n.contains("__dict_") {
+                eprintln!("[DICT]   Found binding: {}", n);
+            }
+        }
+        
+        // Look for qualified dict bindings from Prelude
+        if n.starts_with("Prelude.") || n.starts_with("Prelude.Num.") || n.starts_with("Prelude.Ring.") {
+            if let Some(unqualified) = n.split('.').last() {
+                if unqualified.starts_with("__dict_") {
+                    exports_map.insert(unqualified.to_string(), n.clone());
+                }
+            }
+        }
+    }
+
+    if exports_map.is_empty() {
+        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+            eprintln!("[DICT] No forwarders needed (post-typecheck)");
+        }
+        return Ok(());
+    }
+
+    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+        eprintln!("[DICT] Creating {} dict forwarders (post-typecheck):", exports_map.len());
+        for (unqualified, qualified) in &exports_map {
+            eprintln!("[DICT]   {} = {}", unqualified, qualified);
+        }
+    }
+
+    let mut forwarders: Vec<ast::Item> = Vec::new();
+    for (unqualified, qualified) in exports_map {
+        let span = ast::Span { start: 0, end: 0 };
+        let forwarded = ast::Binding {
+            doc: None,
+            pat: ast::Pattern::new(span, ast::PatternKind::Var(unqualified)),
+            expr: ast::Expr::new(span, ast::ExprKind::Var(qualified)),
+            span,
+        };
+        forwarders.push(ast::Item::Binding(forwarded));
     }
 
     let mut merged = Vec::new();
@@ -7879,6 +7995,11 @@ fn typecheck_internal_core_with_entry_path(
         // Inject method value bindings early so dict-passing can thread dictionaries into them.
         // (e.g. `enumFromTo` becomes a function expecting `__dict_Enum`.)
         inject_class_method_value_bindings(&mut module, &class_env, &inferred);
+
+        // Inject unqualified forwarders for stdlib instance dictionaries so dict-passing can reference them.
+        // Instance dictionaries like `Prelude.Num.__dict_Num_Integer` need unqualified forwarders
+        // like `__dict_Num_Integer = Prelude.Num.__dict_Num_Integer`.
+        inject_stdlib_instance_dict_forwarders_post_typecheck(&mut module)?;
 
         typeclass_dict_passing_common::rewrite_class_dict_passing_in_module(
             &mut module,

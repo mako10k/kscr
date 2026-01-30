@@ -74,25 +74,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
         .collect::<Result<Vec<_>>>()?;
 
     // 2) Rewrite call sites to supply dictionaries.
-    // Populate ground_dicts with all available instance dictionaries from ClassEnv.
-    // This allows method references like `+` in nested contexts to resolve their dictionaries.
-    // Strip module qualification to get unqualified dict names that match actual bindings in the module.
-    let ground_dicts: HashSet<String> = class_env
-        .instances
-        .values()
-        .filter_map(|dict_name| {
-            // Extract unqualified name (last component after the last dot)
-            dict_name.split('.').last().map(|s| s.to_string())
-        })
-        .collect();
-    
-    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-        eprintln!("[DICT] ground_dicts populated with {} entries:", ground_dicts.len());
-        for dict in &ground_dicts {
-            eprintln!("[DICT]   - {}", dict);
-        }
-    }
-    
+    let empty_scope: HashSet<String> = HashSet::new();
     let empty_shadowed: HashSet<String> = HashSet::new();
     let empty_local: HashMap<String, Vec<String>> = HashMap::new();
     module.items = module
@@ -107,7 +89,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
                         inferred,
                         &needs_dicts,
                         &empty_local,
-                        &ground_dicts,
+                        &empty_scope,
                         &empty_shadowed,
                         b.expr,
                     )?;

@@ -30,11 +30,33 @@ fn resolve_dict_arg_from_scope(
     use ast::{Expr, ExprKind};
 
     let param = common::dict_param_name(class);
+    
+    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+        eprintln!("[DICT] resolve_dict_arg_from_scope: looking for class '{}' (param: '{}')", class, param);
+        eprintln!("[DICT]   dicts_in_scope has {} entries", dicts_in_scope.len());
+        if dicts_in_scope.len() < 20 {
+            for dict in dicts_in_scope {
+                eprintln!("[DICT]     - {}", dict);
+            }
+        }
+    }
+    
     if dicts_in_scope.contains(&param) {
+        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+            eprintln!("[DICT]   -> Found direct param: {}", param);
+        }
         return Some(Expr::new(span, ExprKind::Var(param)));
     }
 
-    common::derive_dict_from_scope(span, class_env, dicts_in_scope, class)
+    let result = common::derive_dict_from_scope(span, class_env, dicts_in_scope, class);
+    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+        if result.is_some() {
+            eprintln!("[DICT]   -> Derived from scope");
+        } else {
+            eprintln!("[DICT]   -> NOT FOUND");
+        }
+    }
+    result
 }
 
 fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::Expr> {
