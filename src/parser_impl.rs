@@ -1741,12 +1741,18 @@ fn try_parse_funclause_infix_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
     }
 
     let op = parse_operator_name(ts)?;
-    if is_ctor_symbol(&op) {
-        // `x:xs = ...` is a pattern binding, not an infix fun clause.
+    // Disambiguate `x:xs = ...` (pattern binding) from infix function clauses.
+    // Only reject constructor operators when lhs is a simple variable or wildcard.
+    // Constructor patterns like `D a :*: D b = ...` are allowed.
+    let lhs_is_simple_pattern = matches!(
+        lhs_pat.kind,
+        ast::PatternKind::Var(_) | ast::PatternKind::Wildcard
+    );
+    if lhs_is_simple_pattern && is_ctor_symbol(&op) {
         (ts.i, ts.last_span_end) = save;
         return Ok(None);
     }
-    if is_upper_by_last_segment(&op) {
+    if lhs_is_simple_pattern && is_upper_by_last_segment(&op) {
         (ts.i, ts.last_span_end) = save;
         return Ok(None);
     }
@@ -1776,6 +1782,12 @@ fn try_parse_funclause_prefix_ident(
     };
     if is_ctor_symbol(&name) {
         return Err(ts.err_here("operators starting with ':' are constructors"));
+    }
+    // Reject uppercase identifiers (constructors) as function names.
+    // This allows `D a ! D b = ...` to be parsed as infix operator clause.
+    if is_upper_by_last_segment(&name) {
+        (ts.i, ts.last_span_end) = save;
+        return Ok(None);
     }
 
     // If a colon follows immediately, this is a pattern binding (`x:xs = ...`).
