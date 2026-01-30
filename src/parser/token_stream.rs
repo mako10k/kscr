@@ -27,6 +27,11 @@ pub(crate) struct Fixity {
 
 pub(crate) fn default_fixity(op: &str) -> Fixity {
     match op {
+        "." => Fixity {
+            // Haskell-like: function composition is high precedence, right associative.
+            prec: 90,
+            assoc: Assoc::Right,
+        },
         "*" | "/" => Fixity {
             prec: 70,
             assoc: Assoc::Left,
@@ -56,6 +61,11 @@ pub(crate) fn default_fixity(op: &str) -> Fixity {
             // Haskell-like: sequencing is very low precedence.
             prec: 10,
             assoc: Assoc::Left,
+        },
+        "$" => Fixity {
+            // Haskell-like: application is very low precedence, right associative.
+            prec: 0,
+            assoc: Assoc::Right,
         },
         _ => Fixity {
             // Default used for backtick infix, and for any other operator-like names.

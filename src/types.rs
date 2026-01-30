@@ -8566,9 +8566,15 @@ fn module_qual_env(module: &ast::Module) -> QualEnv {
 }
 
 fn desugar_qualified_ref(name: &str, env: &QualEnv) -> Result<String> {
-    let Some((qual, _member)) = name.rsplit_once('.') else {
+    let Some((qual, member)) = name.rsplit_once('.') else {
         return Ok(name.to_string());
     };
+
+    // Special case: if either qualifier or member is empty, this isn't actually a qualified name.
+    // This handles operators like "." itself, which would split into ("", "").
+    if qual.is_empty() || member.is_empty() {
+        return Ok(name.to_string());
+    }
 
     if !env.allowed.contains(qual) {
         let mut allowed: Vec<_> = env.allowed.iter().cloned().collect();
@@ -8710,7 +8716,9 @@ fn desugar_qualified_pattern(p: ast::Pattern, env: &QualEnv) -> Result<ast::Patt
     let span = p.span;
     let kind = match p.kind {
         PatternKind::Var(n) => {
-            if n.contains('.') {
+            // Allow single-character operator names like "." that technically contain '.'
+            // but aren't qualified names (qualified names have the form "Module.name")
+            if n.contains('.') && n.rsplit_once('.').is_some_and(|(q, m)| !q.is_empty() && !m.is_empty()) {
                 return Err(Error::msg(format!(
                     "qualified name is not allowed in binder: {n}"
                 )));
@@ -8718,7 +8726,7 @@ fn desugar_qualified_pattern(p: ast::Pattern, env: &QualEnv) -> Result<ast::Patt
             PatternKind::Var(n)
         }
         PatternKind::As(n, p) => {
-            if n.contains('.') {
+            if n.contains('.') && n.rsplit_once('.').is_some_and(|(q, m)| !q.is_empty() && !m.is_empty()) {
                 return Err(Error::msg(format!(
                     "qualified name is not allowed in binder: {n}"
                 )));
@@ -8742,7 +8750,7 @@ fn desugar_qualified_pattern(p: ast::Pattern, env: &QualEnv) -> Result<ast::Patt
         ),
         PatternKind::RecordLoose(fs, rest) => {
             if let Some(rest_name) = rest.as_ref() {
-                if rest_name.contains('.') {
+                if rest_name.contains('.') && rest_name.rsplit_once('.').is_some_and(|(q, m)| !q.is_empty() && !m.is_empty()) {
                     return Err(Error::msg(format!(
                         "qualified name is not allowed in binder: {rest_name}"
                     )));
