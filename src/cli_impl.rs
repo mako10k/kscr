@@ -1457,14 +1457,30 @@ fn load_and_typecheck_transitive_imports(
     // First, get the list of all transitive imports
     let raw_imports = types::load_transitive_imports_for_runtime(&entry)?;
 
+    if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
+        eprintln!("[DEBUG_IMPORTS] Found {} raw imports", raw_imports.len());
+        for m in raw_imports.keys() {
+            eprintln!("[DEBUG_IMPORTS]   - {}", m);
+        }
+    }
+
     // Now typecheck each imported module
     let mut result: HashMap<String, types::TypedModule> = HashMap::new();
     for (module_name, _module_ast) in raw_imports {
         // Resolve module path using the same logic as load_transitive_imports_for_runtime
         let module_path = match resolve_module_path_for_runtime(entry_dir, &module_name) {
             Ok(p) => p,
-            Err(_) => continue, // Skip modules we can't resolve
+            Err(e) => {
+                if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
+                    eprintln!("[DEBUG_IMPORTS] Failed to resolve path for {}: {}", module_name, e);
+                }
+                continue; // Skip modules we can't resolve
+            }
         };
+
+        if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
+            eprintln!("[DEBUG_IMPORTS] Typechecking: {}", module_name);
+        }
 
         match types::typecheck_file(&module_path) {
             Ok(tm) => {
@@ -1474,6 +1490,10 @@ fn load_and_typecheck_transitive_imports(
                 eprintln!("[WARN] Failed to typecheck import {}: {}", module_name, e);
             }
         }
+    }
+
+    if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
+        eprintln!("[DEBUG_IMPORTS] Successfully typechecked {} modules", result.len());
     }
 
     Ok(result)

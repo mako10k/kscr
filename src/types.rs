@@ -3559,12 +3559,53 @@ fn instance_head_key_ty(ty: &Ty) -> Result<String> {
 }
 
 fn mangle_ident(s: &str) -> String {
+    // Map common operators to readable names to avoid collisions
+    let special_names: &[(&str, &str)] = &[
+        ("+", "plus"),
+        ("-", "minus"),
+        ("*", "times"),
+        ("/", "div"),
+        ("==", "eq"),
+        ("/=", "ne"),
+        ("<", "lt"),
+        ("<=", "le"),
+        (">", "gt"),
+        (">=", "ge"),
+        ("&&", "and"),
+        ("||", "or"),
+        ("++", "append"),
+        (">>", "then"),
+        (">>=", "bind"),
+        ("<$>", "fmap"),
+        ("<*>", "ap"),
+        ("<*", "apLeft"),
+        ("*>", "apRight"),
+        (".", "compose"),
+        ("$", "apply"),
+        ("<>", "mappend"),
+        ("<->", "diff"),
+        ("=<<", "bindFlipped"),
+        ("+^", "addOp"),
+        ("-^", "subOp"),
+        ("*^", "mulOp"),
+        ("/^", "divOp"),
+        ("&", "ampersand"),
+    ];
+
+    for (op, name) in special_names {
+        if s == *op {
+            return name.to_string();
+        }
+    }
+
+    // Fallback: replace non-alphanumeric with underscore + hex code
     let mut out = String::new();
     for ch in s.chars() {
         if ch.is_ascii_alphanumeric() {
             out.push(ch);
         } else {
-            out.push('_');
+            // Use hex encoding to ensure uniqueness
+            out.push_str(&format!("_{:x}", ch as u32));
         }
     }
     out
@@ -7448,18 +7489,28 @@ fn load_module_with_imports_ast_with_loader(
 }
 
 fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
-    // Repo semantics: Prelude is auto-imported only when there are no explicit imports.
+    // Check if Prelude is already imported (qualified or unqualified)
+    let has_prelude_import = module
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Import(id) if id.module == "Prelude"));
+    
+    if has_prelude_import {
+        return module;
+    }
+
+    // Check if there are any explicit imports
     let has_any_import = module
         .items
         .iter()
         .any(|it| matches!(it, ast::Item::Import(_)));
-    if has_any_import {
-        return module;
-    }
 
+    // If there are no explicit imports, add unqualified Prelude import.
+    // If there are explicit imports, add qualified Prelude import (for dictionaries).
+    // This ensures dictionaries are available without polluting the namespace.
     let prelude_import = ast::Item::Import(ast::ImportDecl {
         module: "Prelude".to_string(),
-        qualified: false,
+        qualified: has_any_import,  // qualified if there are other imports
         as_name: None,
         import_spec: None,
     });
