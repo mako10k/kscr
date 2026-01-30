@@ -122,7 +122,14 @@ pub(super) fn rewrite_class_dict_passing_in_module(
 }
 
 pub(super) fn dict_param_name(class: &str) -> String {
-    format!("__dict_{class}")
+    // Use unqualified class name for dict parameters to avoid dots in parameter names.
+    // For example, class "Prelude.Num.Num" becomes "__dict_Num" not "__dict_Prelude.Num.Num".
+    let unqualified = class.split('.').last().unwrap_or(class);
+    let result = format!("__dict_{unqualified}");
+    if std::env::var("KSCR_DEBUG_DICT_PARAM").is_ok() {
+        eprintln!("[DICT_PARAM] class='{}' -> param='{}'", class, result);
+    }
+    result
 }
 
 pub(super) fn super_field_name(class: &str) -> String {
@@ -463,7 +470,14 @@ pub(super) fn pick_instance_dict_expr_from_scope(
             {
                 let key = (class_id, head);
                 if let Some(d) = class_env.instances.get(&key).cloned() {
-                    return Ok(Some(Expr::new(span, ExprKind::Var(d))));
+                    // For stdlib dicts (Prelude.*), use unqualified names at AST level.
+                    // For user-defined dicts, keep qualification to avoid conflicts.
+                    let dict_ref = if d.starts_with("Prelude.") {
+                        d.split('.').last().unwrap_or(&d).to_string()
+                    } else {
+                        d
+                    };
+                    return Ok(Some(Expr::new(span, ExprKind::Var(dict_ref))));
                 }
             }
         }
@@ -531,7 +545,13 @@ pub(super) fn pick_instance_dict_expr_from_scope(
     }
 
     let pi = candidates[0];
-    let mut expr = Expr::new(span, ExprKind::Var(pi.dict_name.clone()));
+    // For stdlib dicts, use unqualified names (same as above)
+    let dict_ref = if pi.dict_name.starts_with("Prelude.") {
+        pi.dict_name.split('.').last().unwrap_or(&pi.dict_name).to_string()
+    } else {
+        pi.dict_name.clone()
+    };
+    let mut expr = Expr::new(span, ExprKind::Var(dict_ref));
     for i in 0..pi.ctx_len {
         let pname = format!("__ctx_dict_{i}");
         if !dicts_in_scope.contains(&pname) {
