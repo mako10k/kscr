@@ -59,5 +59,12 @@ Your job is to actively delegate to specialized sub-agents for most work, and to
    - If allowed: proceed to step 3.
 3. Decide agent allocation per workstream.
 4. Call the selected sub-agent(s) via `#tool:agent` and collect outputs.
+   - **When delegating to こうた（実装）:** Include a "Safety Contract" section in the delegation that reminds the implement agent:
+     * WorkDirectory handoff (MANDATORY): include the current `pwd` and repo root path (`git rev-parse --show-toplevel`) as plain text in the delegation prompt so the implement agent can `cd` correctly.
+     * PROHIBITED git commands require explicit user approval: `git reset`, `git restore`, `git clean`, `git checkout -f`, `git rebase`, `git commit --amend`, `git revert`, `git merge`, `git cherry-pick`, `git push --force`
+     * Work preservation is MANDATORY before large changes (3+ files or >100 lines): create WIP branch or WIP commit
+     * Anti-ad-hoc gate: do not add hard-coded special cases / test-only hacks
+     * Rollback requires the full rollback decision gate (evidence + stabilization) and explicit approval
+   - After こうた returns, verify they reported the preservation method (branch name or commit SHA) when the preservation rule applies.
 5. Resolve conflicts and produce one merged response.
 6. If delegation wasn’t used, explain why (should be rare).

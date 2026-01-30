@@ -889,6 +889,10 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         "__divInt" => Value::BuiltinDivInt,
         "__modInt" => Value::BuiltinModInt,
 
+        // Integer arithmetic builtins (used by Num Integer instance).
+        "__builtin_Integer_add" => Value::BuiltinAdd,
+        "__builtin_Integer_mul" => Value::BuiltinMul,
+
         "==" => Value::BuiltinEq,
         "<" => Value::BuiltinLtInt,
         "<=" => Value::BuiltinLeInt,

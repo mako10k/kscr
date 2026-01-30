@@ -1,5 +1,5 @@
 module Prelude where
-  export String, print, readLine, getLine, putStr, putStrLn, getArgs, readFile, writeFile, exitWith, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Rational(..), numerator, denominator, toPair, Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, (.), ($), flip, (&), on, until, concatMap, map, filter, concat, append, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export String, print, readLine, getLine, putStr, putStrLn, getArgs, readFile, writeFile, exitWith, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Rational(..), numerator, denominator, toPair, Num(..), (+), (*), Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, (.), ($), flip, (&), on, until, concatMap, map, filter, concat, append, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   import Prelude.Functor
   import Prelude.Applicative
@@ -11,6 +11,7 @@ module Prelude where
   import Prelude.Field
   import Prelude.Integral
   import Prelude.Rational
+  import Prelude.Num
 
   -- Haskell-like alias: String ~ [Char]
   type String = [Char]

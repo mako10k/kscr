@@ -2514,6 +2514,29 @@ fn add_integer_primitives(env: &mut TypeEnv) {
         );
     }
 
+    // Integer arithmetic builtins (used by Num Integer instance).
+    // __builtin_Integer_add :: Integer -> Integer -> Integer
+    // __builtin_Integer_mul :: Integer -> Integer -> Integer
+    for name in ["__builtin_Integer_add", "__builtin_Integer_mul"] {
+        env.insert(
+            name.to_string(),
+            EnvEntry {
+                scheme: Scheme {
+                    vars: vec![],
+                    constraints: vec![],
+                    ty: Ty::Func(
+                        Box::new(Ty::Con("Integer".to_string())),
+                        Box::new(Ty::Func(
+                            Box::new(Ty::Con("Integer".to_string())),
+                            Box::new(Ty::Con("Integer".to_string())),
+                        )),
+                    ),
+                },
+                def_site: None,
+            },
+        );
+    }
+
     // - :: Integer -> Integer -> Integer
     env.insert(
         "-".to_string(),

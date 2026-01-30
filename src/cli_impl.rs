@@ -493,13 +493,51 @@ impl ReplState {
         module.items.extend(main_mod.items);
 
         let mut irm = ir::lower_to_ir(&module)?;
-        if let Ok(imports) = types::load_transitive_imports_for_runtime(&self.repl_path) {
-            for (module_name, module_ast) in &imports {
-                if let Ok(imported_ir) = ir::lower_to_ir(module_ast) {
-                    merge_imported_ir(&mut irm, &imported_ir, module_name, &[]);
+
+        // Load and typecheck transitive imports (same as typecheck_and_link_ir)
+        // We need typechecked modules because instance dict bindings are generated during typecheck
+        match load_and_typecheck_transitive_imports(&self.repl_path) {
+            Ok(imports) => {
+                // Lower each typechecked imported module to IR and merge with qualified names
+                for (module_name, typechecked_module) in &imports {
+                    let imported_ir = ir::lower_to_ir(&typechecked_module.module)?;
+
+                    // Collect aliases from the REPL module for this import
+                    let repl_aliases: Vec<String> = module
+                        .items
+                        .iter()
+                        .filter_map(|it| match it {
+                            ast::Item::Import(id) if id.module == *module_name => id.as_name.clone(),
+                            _ => None,
+                        })
+                        .collect();
+
+                    merge_imported_ir(&mut irm, &imported_ir, module_name, &repl_aliases);
+
+                    // ALSO handle transitive import aliases: if module B imports A as OM,
+                    // we need to provide OM.x bindings when we merge B.
+                    inject_transitive_import_aliases(
+                        &mut irm,
+                        &typechecked_module.module,
+                        module_name,
+                        &imports,
+                    );
                 }
+
+                // Convert TypedModule map to ast::Module map for inject_constructor_forwarders
+                let ast_imports: HashMap<String, ast::Module> = imports
+                    .into_iter()
+                    .map(|(name, tm)| (name, tm.module))
+                    .collect();
+                inject_constructor_forwarders(&mut irm, &ast_imports, &module);
+
+                // Inject unqualified forwarders for stdlib instance dictionaries
+                inject_stdlib_dict_forwarders(&mut irm);
             }
-            inject_constructor_forwarders(&mut irm, &imports, &module);
+            Err(e) => {
+                eprintln!("[WARN] Failed to load transitive imports: {}", e);
+                eprintln!("[WARN] IR may be incomplete; runtime errors may occur");
+            }
         }
 
         let _ = ir::run_main(&irm)?;
@@ -1292,6 +1330,52 @@ fn inject_constructor_forwarders(
     }
 }
 
+/// Inject unqualified forwarders for stdlib instance dictionaries.
+/// When stdlib modules like Prelude define `__dict_Num_Integer`, it becomes
+/// `Prelude.__dict_Num_Integer` in runtime IR. But typechecker-generated code
+/// may reference it as `__dict_Num_Integer`. Add forwarders so both work.
+fn inject_stdlib_dict_forwarders(irm: &mut ir::IrModule) {
+    use ir::{IrExpr, IrItem};
+
+    // Collect existing bindings
+    let mut existing: HashSet<String> = HashSet::new();
+    for item in &irm.items {
+        let IrItem::Binding { name, .. } = item;
+        existing.insert(name.clone());
+    }
+
+    // Find all Prelude.__dict_ and Prelude.__inst_ bindings and create unqualified forwarders
+    let mut forwarders: Vec<(String, String)> = Vec::new();
+    for item in &irm.items {
+        let IrItem::Binding { name, .. } = item;
+        
+        // Check if this is a qualified stdlib dict/inst binding
+        if let Some(rest) = name.strip_prefix("Prelude.") {
+            if rest.starts_with("__dict_") || rest.starts_with("__inst_") {
+                // Create unqualified forwarder: __dict_Foo_Bar = Prelude.__dict_Foo_Bar
+                if !existing.contains(rest) {
+                    forwarders.push((rest.to_string(), name.clone()));
+                }
+            }
+        }
+    }
+
+    // Add the forwarders
+    if std::env::var("KSCR_DEBUG_DICT_FORWARDERS").is_ok() {
+        eprintln!("[DICT_FORWARDERS] Creating {} forwarders", forwarders.len());
+        for (target, source) in &forwarders {
+            eprintln!("[DICT_FORWARDERS]   {} -> {}", target, source);
+        }
+    }
+    for (target, source) in forwarders {
+        irm.items.push(IrItem::Binding {
+            name: target.clone(),
+            expr: IrExpr::Var(source),
+        });
+        existing.insert(target);
+    }
+}
+
 /// Typecheck a file and produce IR with all transitive imports linked.
 /// This is the standard path for running programs that matches CLI behavior.
 ///
@@ -1348,6 +1432,9 @@ pub fn typecheck_and_link_ir(entry: &Path) -> Result<ir::IrModule> {
                 .map(|(name, tm)| (name, tm.module))
                 .collect();
             inject_constructor_forwarders(&mut irm, &ast_imports, &tm.module);
+            
+            // Inject unqualified forwarders for stdlib instance dictionaries
+            inject_stdlib_dict_forwarders(&mut irm);
         }
         Err(e) => {
             eprintln!("[WARN] Failed to load transitive imports: {}", e);
