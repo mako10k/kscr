@@ -3562,7 +3562,10 @@ fn desugar_typeclasses_with_strict(module: &mut ast::Module, strict: bool) -> Re
         ..Default::default()
     };
 
-    // First canonicalize class references inside the module.
+    // Expand deriving clauses BEFORE canonicalization so derived instance class ids get canonicalized
+    expand_deriving_clauses(module)?;
+
+    // Then canonicalize class references inside the module.
     // Use both import-based and def_module-based canonicalization to handle both
     // user-defined classes and imported/injected stdlib classes.
     canonicalize_class_names_in_module_combined(module, strict)?;
@@ -3572,9 +3575,6 @@ fn desugar_typeclasses_with_strict(module: &mut ast::Module, strict: bool) -> Re
     reject_ambiguous_method_names(&mut env)?;
     validate_superclass_preds(&env)?;
     detect_superclass_cycles(&env)?;
-
-    // Expand deriving clauses into synthetic instance declarations
-    expand_deriving_clauses(module)?;
 
     let instance_decls = collect_instance_decls(module);
     preregister_instance_dicts(&mut env, &instance_decls, module.name.as_deref())?;
@@ -3607,7 +3607,7 @@ fn collect_class_env_only(
         ..Default::default()
     };
 
-    // Expand deriving clauses before canonicalization so they get canonicalized too
+    // Expand deriving clauses BEFORE canonicalization so they get canonicalized too
     expand_deriving_clauses(module)?;
 
     // Canonicalize class references
@@ -3631,7 +3631,7 @@ fn process_instances_with_env(
     class_default_methods: &HashMap<(ast::ClassId, String), ast::Expr>,
     strict: bool,
 ) -> Result<ClassEnv> {
-    // Expand deriving clauses before canonicalization
+    // Expand deriving clauses BEFORE canonicalization
     expand_deriving_clauses(module)?;
 
     // Canonicalize class references in instance declarations
@@ -4073,9 +4073,17 @@ fn detect_superclass_cycles(env: &ClassEnv) -> Result<()> {
     Ok(())
 }
 
-/// Expand `deriving (Eq, Show)` clauses into explicit instance declarations.
+/// Expand `deriving` clauses into explicit instance declarations.
 /// This ensures that derived instances are available via the normal instance mechanism,
 /// which is needed for cross-module imports (KSIF doesn't carry deriving info).
+///
+/// Supported classes:
+/// - Eq, Show: special-cased in the constraint solver (no code generation needed)
+/// - Semigroup, Monoid: generate actual method implementations
+///
+/// Restrictions for Semigroup/Monoid:
+/// - Only single-constructor data types
+/// - At most one type parameter (due to instance context limitations)
 fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
     let mut synthetic_instances = Vec::new();
 
@@ -4091,41 +4099,262 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
                 continue;
             }
 
-            // Create the instance type (apply type params if any)
-            let inst_ty = if d.params.is_empty() {
-                ast::Type::Var(d.name.clone())
+            // Generate instance for Semigroup or Monoid
+            if class_name == "Semigroup" || class_name == "Monoid" {
+                // Restriction: only single-constructor types
+                if d.ctors.len() != 1 {
+                    return Err(Error::msg(format!(
+                        "deriving {}: only single-constructor data types are supported (type {} has {} constructors)",
+                        class_name, d.name, d.ctors.len()
+                    )));
+                }
+
+                // Restriction: at most one type parameter
+                if d.params.len() > 1 {
+                    return Err(Error::msg(format!(
+                        "deriving {}: at most one type parameter is supported (type {} has {} parameters)",
+                        class_name, d.name, d.params.len()
+                    )));
+                }
+
+                let inst = generate_semigroup_monoid_instance(d, class_name)?;
+                synthetic_instances.push(ast::Item::InstanceDecl(inst));
             } else {
-                let head = Box::new(ast::Type::Var(d.name.clone()));
-                let args = d.params.iter().map(|p| ast::Type::Var(p.clone())).collect();
-                ast::Type::App { head, args }
-            };
+                // Unknown deriving class - create empty instance as fallback
+                let inst_ty = if d.params.is_empty() {
+                    ast::Type::Var(d.name.clone())
+                } else {
+                    let head = Box::new(ast::Type::Var(d.name.clone()));
+                    let args = d.params.iter().map(|p| ast::Type::Var(p.clone())).collect();
+                    ast::Type::App { head, args }
+                };
 
-            // Create predicates for type parameters
-            let preds: Vec<ast::Predicate> = d
-                .params
-                .iter()
-                .map(|p| ast::Predicate::Class {
+                let preds: Vec<ast::Predicate> = d
+                    .params
+                    .iter()
+                    .map(|p| ast::Predicate::Class {
+                        class: ast::ClassId::dummy(class_name.clone()),
+                        ty: ast::Type::Var(p.clone()),
+                    })
+                    .collect();
+
+                let inst = ast::InstanceDecl {
+                    preds,
                     class: ast::ClassId::dummy(class_name.clone()),
-                    ty: ast::Type::Var(p.clone()),
-                })
-                .collect();
+                    ty: inst_ty,
+                    methods: vec![],
+                };
 
-            // Create empty instance (deriving instances don't need method implementations;
-            // they're handled by entails in the constraint solver)
-            let inst = ast::InstanceDecl {
-                preds,
-                class: ast::ClassId::dummy(class_name.clone()),
-                ty: inst_ty,
-                methods: vec![], // Empty - the actual implementation is handled by the constraint solver
-            };
-
-            synthetic_instances.push(ast::Item::InstanceDecl(inst));
+                synthetic_instances.push(ast::Item::InstanceDecl(inst));
+            }
         }
     }
 
     // Add synthetic instances to the module
     module.items.extend(synthetic_instances);
     Ok(())
+}
+
+/// Generate Semigroup or Monoid instance for a single-constructor data type.
+/// 
+/// For Semigroup: implements (<>) by applying (<>) to each field
+/// For Monoid: implements mempty by applying mempty to each field
+fn generate_semigroup_monoid_instance(
+    d: &ast::DataDecl,
+    class_name: &str,
+) -> Result<ast::InstanceDecl> {
+    let ctor = &d.ctors[0]; // Already validated to have exactly one constructor
+    let num_fields = ctor.args.len();
+
+    // Create the instance type (apply type params if any)
+    let inst_ty = if d.params.is_empty() {
+        ast::Type::Var(d.name.clone())
+    } else {
+        let head = Box::new(ast::Type::Var(d.name.clone()));
+        let args = d.params.iter().map(|p| ast::Type::Var(p.clone())).collect();
+        ast::Type::App { head, args }
+    };
+
+    // Create predicates for type parameters
+    let preds: Vec<ast::Predicate> = d
+        .params
+        .iter()
+        .map(|p| ast::Predicate::Class {
+            class: ast::ClassId::dummy(class_name.to_string()),
+            ty: ast::Type::Var(p.clone()),
+        })
+        .collect();
+
+    let mut methods = Vec::new();
+
+    if class_name == "Semigroup" {
+        // Generate (<>) implementation
+        // \x y -> case (x, y) of (Ctor a1 ... an, Ctor b1 ... bn) -> Ctor (a1 <> b1) ... (an <> bn)
+        
+        let a_vars: Vec<String> = (0..num_fields).map(|i| format!("__a{}", i)).collect();
+        let b_vars: Vec<String> = (0..num_fields).map(|i| format!("__b{}", i)).collect();
+
+        let pat1 = ast::Pattern::dummy(ast::PatternKind::Constructor {
+            name: ast::ResolvedName::unresolved(ctor.name.clone()),
+            args: a_vars
+                .iter()
+                .map(|v| ast::Pattern::dummy(ast::PatternKind::Var(v.clone())))
+                .collect(),
+        });
+
+        let pat2 = ast::Pattern::dummy(ast::PatternKind::Constructor {
+            name: ast::ResolvedName::unresolved(ctor.name.clone()),
+            args: b_vars
+                .iter()
+                .map(|v| ast::Pattern::dummy(ast::PatternKind::Var(v.clone())))
+                .collect(),
+        });
+
+        let tuple_pat = ast::Pattern::dummy(ast::PatternKind::Tuple(vec![pat1, pat2]));
+
+        // Build the result: Ctor (a1 <> b1) (a2 <> b2) ...
+        let combined_fields: Vec<ast::Expr> = a_vars
+            .iter()
+            .zip(b_vars.iter())
+            .map(|(a, b)| {
+                // ((<>) a) b
+                ast::Expr::dummy(ast::ExprKind::Apply {
+                    func: Box::new(ast::Expr::dummy(ast::ExprKind::Apply {
+                        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("<>".to_string()))),
+                        args: vec![ast::Expr::dummy(ast::ExprKind::Var(a.clone()))],
+                    })),
+                    args: vec![ast::Expr::dummy(ast::ExprKind::Var(b.clone()))],
+                })
+            })
+            .collect();
+
+        let rhs = ast::Expr::dummy(ast::ExprKind::Apply {
+            func: Box::new(ast::Expr::dummy(ast::ExprKind::Ctor(
+                ast::ResolvedName::unresolved(ctor.name.clone()),
+            ))),
+            args: combined_fields,
+        });
+
+        // \x y -> case (x, y) of ...
+        let case_expr = ast::Expr::dummy(ast::ExprKind::Case {
+            expr: Box::new(ast::Expr::dummy(ast::ExprKind::Tuple(vec![
+                ast::Expr::dummy(ast::ExprKind::Var("__x".to_string())),
+                ast::Expr::dummy(ast::ExprKind::Var("__y".to_string())),
+            ]))),
+            arms: vec![ast::CaseArm {
+                pat: tuple_pat,
+                guard: None,
+                body: rhs,
+            }],
+        });
+
+        let body = ast::Expr::dummy(ast::ExprKind::Lambda {
+            params: vec!["__x".to_string(), "__y".to_string()],
+            body: Box::new(case_expr),
+        });
+
+        methods.push(ast::Binding {
+            doc: None,
+            pat: ast::Pattern::dummy(ast::PatternKind::Var("<>".to_string())),
+            expr: body,
+            span: ast::dummy_span(),
+        });
+    } else if class_name == "Monoid" {
+        // Generate mempty implementation
+        // Pattern: mempty = Ctor mempty mempty ... mempty
+        
+        let mempty_fields: Vec<ast::Expr> = (0..num_fields)
+            .map(|_| ast::Expr::dummy(ast::ExprKind::Var("mempty".to_string())))
+            .collect();
+
+        let body = ast::Expr::dummy(ast::ExprKind::Apply {
+            func: Box::new(ast::Expr::dummy(ast::ExprKind::Ctor(
+                ast::ResolvedName::unresolved(ctor.name.clone()),
+            ))),
+            args: mempty_fields,
+        });
+
+        methods.push(ast::Binding {
+            doc: None,
+            pat: ast::Pattern::dummy(ast::PatternKind::Var("mempty".to_string())),
+            expr: body,
+            span: ast::dummy_span(),
+        });
+
+        // Also generate (<>) for Monoid (required by superclass)
+        let a_vars: Vec<String> = (0..num_fields).map(|i| format!("__a{}", i)).collect();
+        let b_vars: Vec<String> = (0..num_fields).map(|i| format!("__b{}", i)).collect();
+
+        let pat1 = ast::Pattern::dummy(ast::PatternKind::Constructor {
+            name: ast::ResolvedName::unresolved(ctor.name.clone()),
+            args: a_vars
+                .iter()
+                .map(|v| ast::Pattern::dummy(ast::PatternKind::Var(v.clone())))
+                .collect(),
+        });
+
+        let pat2 = ast::Pattern::dummy(ast::PatternKind::Constructor {
+            name: ast::ResolvedName::unresolved(ctor.name.clone()),
+            args: b_vars
+                .iter()
+                .map(|v| ast::Pattern::dummy(ast::PatternKind::Var(v.clone())))
+                .collect(),
+        });
+
+        let tuple_pat = ast::Pattern::dummy(ast::PatternKind::Tuple(vec![pat1, pat2]));
+
+        let combined_fields: Vec<ast::Expr> = a_vars
+            .iter()
+            .zip(b_vars.iter())
+            .map(|(a, b)| {
+                ast::Expr::dummy(ast::ExprKind::Apply {
+                    func: Box::new(ast::Expr::dummy(ast::ExprKind::Apply {
+                        func: Box::new(ast::Expr::dummy(ast::ExprKind::Var("<>".to_string()))),
+                        args: vec![ast::Expr::dummy(ast::ExprKind::Var(a.clone()))],
+                    })),
+                    args: vec![ast::Expr::dummy(ast::ExprKind::Var(b.clone()))],
+                })
+            })
+            .collect();
+
+        let rhs = ast::Expr::dummy(ast::ExprKind::Apply {
+            func: Box::new(ast::Expr::dummy(ast::ExprKind::Ctor(
+                ast::ResolvedName::unresolved(ctor.name.clone()),
+            ))),
+            args: combined_fields,
+        });
+
+        let case_expr = ast::Expr::dummy(ast::ExprKind::Case {
+            expr: Box::new(ast::Expr::dummy(ast::ExprKind::Tuple(vec![
+                ast::Expr::dummy(ast::ExprKind::Var("__x".to_string())),
+                ast::Expr::dummy(ast::ExprKind::Var("__y".to_string())),
+            ]))),
+            arms: vec![ast::CaseArm {
+                pat: tuple_pat,
+                guard: None,
+                body: rhs,
+            }],
+        });
+
+        let append_body = ast::Expr::dummy(ast::ExprKind::Lambda {
+            params: vec!["__x".to_string(), "__y".to_string()],
+            body: Box::new(case_expr),
+        });
+
+        methods.push(ast::Binding {
+            doc: None,
+            pat: ast::Pattern::dummy(ast::PatternKind::Var("<>".to_string())),
+            expr: append_body,
+            span: ast::dummy_span(),
+        });
+    }
+
+    Ok(ast::InstanceDecl {
+        preds,
+        class: ast::ClassId::dummy(class_name.to_string()),
+        ty: inst_ty,
+        methods,
+    })
 }
 
 fn collect_instance_decls(module: &ast::Module) -> Vec<ast::InstanceDecl> {
@@ -4839,6 +5068,51 @@ fn lower_super_predicate_for_constraints(p: &ast::Predicate, ty: &Ty) -> Constra
     }
 }
 
+/// Check if a polymorphic instance head pattern matches a ground type.
+/// Returns Some(()) if it matches (unifies), None otherwise.
+fn unify_instance_head(pattern: &Ty, concrete: &Ty) -> Option<()> {
+    use std::collections::HashMap;
+    
+    fn unify_helper(pat: &Ty, con: &Ty, subst: &mut HashMap<u32, Ty>) -> bool {
+        match (pat, con) {
+            (Ty::Var(v), _) => {
+                // Pattern variable can match any concrete type
+                if let Some(bound) = subst.get(v).cloned() {
+                    // Already bound, check consistency
+                    unify_helper(&bound, con, subst)
+                } else {
+                    // Bind the variable
+                    subst.insert(*v, con.clone());
+                    true
+                }
+            }
+            (Ty::Con(p_name), Ty::Con(c_name)) => p_name == c_name,
+            (Ty::App { head: p_head, args: p_args }, Ty::App { head: c_head, args: c_args }) => {
+                if p_args.len() != c_args.len() {
+                    return false;
+                }
+                if !unify_helper(p_head, c_head, subst) {
+                    return false;
+                }
+                for (p_arg, c_arg) in p_args.iter().zip(c_args.iter()) {
+                    if !unify_helper(p_arg, c_arg, subst) {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+    
+    let mut subst = HashMap::new();
+    if unify_helper(pattern, concrete, &mut subst) {
+        Some(())
+    } else {
+        None
+    }
+}
+
 fn simplify_process_constraint(
     data_env: &DataEnv,
     class_env: &ClassEnv,
@@ -4867,8 +5141,18 @@ fn simplify_process_constraint(
             if !ftv_ty(&ty).is_empty() {
                 out.push(Constraint::Class { class, ty });
             } else {
-                let key = (class.clone(), instance_head_key_ty(&ty)?);
-                if !class_env.instances.contains_key(&key) {
+                let key_ty = instance_head_key_ty(&ty)?;
+                let key = (class.clone(), key_ty.clone());
+                
+                // First check concrete instances
+                let has_concrete = class_env.instances.contains_key(&key);
+                
+                // Also check polymorphic instances
+                let has_poly = class_env.poly_instances.iter().any(|pi| {
+                    pi.class == class && unify_instance_head(&pi.head_pat, &ty).is_some()
+                });
+                
+                if !has_concrete && !has_poly {
                     return Err(Error::msg(format!(
                         "cannot satisfy constraint: {} {ty}",
                         class.name
