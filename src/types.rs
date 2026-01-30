@@ -12048,6 +12048,7 @@ fn derive_dict_expr_from_candidates(
 }
 
 fn rewrite_class_method_var(
+    module_snapshot: &ast::Module,
     class_env: &ClassEnv,
     dicts_in_scope: &HashSet<String>,
     known_dicts_in_scope: &HashMap<String, String>,
@@ -12055,6 +12056,19 @@ fn rewrite_class_method_var(
     mname: String,
 ) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
+
+    // Check if this name is defined as a user function/value in the module.
+    // If so, don't rewrite it as a typeclass method.
+    for item in &module_snapshot.items {
+        if let ast::Item::Binding(b) = item {
+            if let ast::PatternKind::Var(name) = &b.pat.kind {
+                if name == &mname {
+                    // This is a user-defined binding, not a typeclass method reference.
+                    return Ok(Expr::new(span, ExprKind::Var(mname)));
+                }
+            }
+        }
+    }
 
     if let Some(classes) = class_env.method_classes.get(&mname) {
         if std::env::var("KSCR_DEBUG_METHOD_VALUES").ok().as_deref() == Some("1")
@@ -12528,7 +12542,19 @@ fn rewrite_class_method_apply(
     use ast::{Expr, ExprKind};
 
     if let ExprKind::Var(mname) = &func.kind {
-        if let Some(classes) = ctx.class_env.method_classes.get(mname) {
+        // Check if this name is defined as a user function/value in the module.
+        // If so, don't rewrite it as a typeclass method.
+        let is_user_defined = ctx.module_snapshot.items.iter().any(|item| {
+            if let ast::Item::Binding(b) = item {
+                if let ast::PatternKind::Var(name) = &b.pat.kind {
+                    return name == mname;
+                }
+            }
+            false
+        });
+
+        if !is_user_defined {
+            if let Some(classes) = ctx.class_env.method_classes.get(mname) {
             let Some(class) = classes.first() else {
                 return Err(Error::msg("internal: empty method class list"));
             };
@@ -12573,6 +12599,7 @@ fn rewrite_class_method_apply(
                     body: Box::new(body),
                 },
             ));
+            }
         }
     }
 
@@ -12716,6 +12743,7 @@ fn rewrite_expr_inner(
     let apply_ctx = rewrite_ctx.ctx();
     Ok(match expr.kind {
         ExprKind::Var(mname) => rewrite_class_method_var(
+            apply_ctx.module_snapshot,
             apply_ctx.class_env,
             apply_ctx.dicts_in_scope,
             apply_ctx.known_dicts_in_scope,

@@ -40,7 +40,9 @@ fn resolve_dict_arg_from_scope(
 fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
 
+    let module_snapshot = cx.module_snapshot;
     let class_env = cx.class_env;
+    let inferred = cx.inferred;
     let needs_dicts_global = cx.needs_dicts_global;
     let needs_dicts_local = cx.needs_dicts_local;
     let dicts_in_scope = cx.dicts_in_scope;
@@ -59,16 +61,43 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
     };
 
     let mut dict_args: Vec<ast::Expr> = Vec::new();
+    let mut all_resolved = true;
+    
     for class in classes {
-        let Some(d) = resolve_dict_arg_from_scope(span, class_env, dicts_in_scope, class) else {
+        let mut picked: Option<ast::Expr> = None;
+
+        // First try to resolve from scope (existing logic)
+        if let Some(d) = resolve_dict_arg_from_scope(span, class_env, dicts_in_scope, class) {
+            picked = Some(d);
+        }
+
+        // If not in scope, try to pick a concrete instance based on the variable's type
+        if picked.is_none() {
+            let var_expr = Expr::new(span, ExprKind::Var(name.clone()));
+            if let Ok(var_ty) = infer_in_module_with_class_env(module_snapshot, class_env, inferred, var_expr) {
+                // Try to pick instance based on the inferred type
+                if let Some(d) = common::pick_instance_dict_expr_from_scope(
+                    span,
+                    class_env,
+                    dicts_in_scope,
+                    class,
+                    &var_ty,
+                )? {
+                    picked = Some(d);
+                }
+            }
+        }
+
+        if picked.is_none() {
+            all_resolved = false;
             break;
-        };
-        dict_args.push(d);
+        }
+        dict_args.push(picked.unwrap());
     }
 
-    if dict_args.is_empty() {
-        Ok(Expr::new(span, ExprKind::Var(name)))
-    } else {
+    // Only apply dicts if ALL of them were resolved
+    // If some couldn't be resolved, leave the variable bare so Apply rewriting can handle it
+    if all_resolved && !dict_args.is_empty() {
         Ok(Expr::new(
             span,
             ExprKind::Apply {
@@ -76,6 +105,8 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
                 args: dict_args,
             },
         ))
+    } else {
+        Ok(Expr::new(span, ExprKind::Var(name)))
     }
 }
 
@@ -484,9 +515,48 @@ fn with_extended_binding_scope<R>(
     let local_needs =
         compute_local_needs(class_env, needs_dicts_global, needs_dicts_local, &bindings);
 
+    // For needs_dicts_local, keep ALL local_needs so rewrite_var knows about them
     let mut local2: HashMap<String, Vec<String>> = needs_dicts_local.clone();
     for (k, v) in &local_needs {
         local2.insert(k.clone(), v.clone());
+    }
+
+    // For determining which bindings get dict params:
+    // - If the binding is a lambda (or will become one after dict params), add dict params
+    // - If the binding is a simple expression (no lambdas), only add dict params if dicts are in scope
+    let span = bindings.first().map(|b| b.span).unwrap_or_else(|| ast::Span { start: 0, end: 0 });
+    let mut dict_params_to_add: HashMap<String, Vec<String>> = HashMap::new();
+    for (name, classes) in &local_needs {
+        // Find the binding
+        let binding = bindings.iter().find(|b| {
+            if let ast::PatternKind::Var(n) = &b.pat.kind {
+                n == name
+            } else {
+                false
+            }
+        });
+
+        if let Some(binding) = binding {
+            let is_lambda = matches!(binding.expr.kind, ast::ExprKind::Lambda { .. });
+
+            if is_lambda {
+                // Lambda bindings should always get dict params (they're polymorphic)
+                dict_params_to_add.insert(name.clone(), classes.clone());
+            } else {
+                // Non-lambda bindings: only add dict params if available in outer scope
+                let available_classes: Vec<String> = classes
+                    .iter()
+                    .filter(|class| resolve_dict_arg_from_scope(span, class_env, &scope, class).is_some())
+                    .cloned()
+                    .collect();
+                if !available_classes.is_empty() {
+                    dict_params_to_add.insert(name.clone(), available_classes);
+                }
+            }
+        } else {
+            // Can't find binding, be conservative and add dict params
+            dict_params_to_add.insert(name.clone(), classes.clone());
+        }
     }
 
     let inner_cx = RewriteCx {
@@ -496,7 +566,7 @@ fn with_extended_binding_scope<R>(
         ..cx
     };
 
-    f(inner_cx, &local_needs, bindings)
+    f(inner_cx, &dict_params_to_add, bindings)
 }
 
 fn rewrite_scoped_bindings(
@@ -506,6 +576,9 @@ fn rewrite_scoped_bindings(
 ) -> Result<Vec<ast::Binding>> {
     use ast::PatternKind;
 
+    let class_env = inner_cx.class_env;
+    let dicts_in_scope = inner_cx.dicts_in_scope;
+
     bindings
         .into_iter()
         .map(|b| {
@@ -513,7 +586,25 @@ fn rewrite_scoped_bindings(
             let span = expr.span;
             if let PatternKind::Var(name) = &b.pat.kind {
                 if let Some(classes) = local_needs.get(name) {
-                    expr = common::add_dict_params_to_expr(expr.span, expr, classes);
+                    // Determine if we should add dict params
+                    let is_lambda_or_qualified = matches!(expr.kind, ast::ExprKind::Lambda { .. })
+                        || matches!(&expr.kind, ast::ExprKind::Var(v) if v.contains('.'));
+                    
+                    if is_lambda_or_qualified {
+                        // Lambdas and qualified references always get dict params
+                        expr = common::add_dict_params_to_expr(expr.span, expr, classes);
+                    } else {
+                        // Non-lambda bindings: only add dict params if all required dicts are in scope
+                        let all_dicts_available = classes.iter().all(|class| {
+                            resolve_dict_arg_from_scope(span, class_env, dicts_in_scope, class).is_some()
+                        });
+
+                        if all_dicts_available {
+                            // All dicts are available, wrap in lambda with dict params
+                            expr = common::add_dict_params_to_expr(expr.span, expr, classes);
+                        }
+                        // Otherwise, dicts will be resolved concretely in the body during rewrite_expr_cx
+                    }
                 }
             }
             Ok(ast::Binding {
