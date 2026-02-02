@@ -12575,29 +12575,7 @@ fn resolve_method_dict_expr(
         return Ok(Some((d, None)));
     }
 
-    // Fallback: if normal selection failed, try to use the enclosing binding's inferred type.
-    // This helps when local pattern vars (e.g., `a`, `b` in a match arm) have been inferred
-    // to ground types, but weren't available during argument-based selection.
-    if let Some(binding_name) = find_enclosing_binding(ctx.module_snapshot, ctx.span) {
-        if let Some(scheme) = ctx.inferred.get(&binding_name) {
-            // Check if the scheme type is ground (no free type variables)
-            if ftv_ty(&scheme.ty).is_empty() {
-                if let Ok(head) = instance_head_key_ty_for_class(ctx.class_env, class_id, &scheme.ty)
-                {
-                    if let Some(d) = ctx.class_env.instances.get(&(class_id.clone(), head)) {
-                        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-                            eprintln!("[DICT] Fallback: resolved {:?} from enclosing binding {}", class_id, binding_name);
-                        }
-                        let chosen_name_for_known = Some(d.clone());
-                        return Ok(Some((
-                            Expr::new(ctx.span, ExprKind::Var(d.clone())),
-                            chosen_name_for_known,
-                        )));
-                    }
-                }
-            }
-        }
-    }
+    // Removed enclosing-binding fallback: prefer deferring to runtime resolution.
 
     // If we saw only concrete (ground) argument types and still couldn't find an instance,
     // this is a real “missing instance” error.
@@ -12722,34 +12700,24 @@ fn rewrite_class_method_apply(
                 return Ok(build_method_call(ctx, mname, dict_expr, new_args));
             }
 
-            // Polymorphic/ambiguous method application: keep it as a dictionary-taking function.
-            let dict_var = format!("__dict_{}", class.name);
-            let mut scope = ctx.dicts_in_scope.clone();
-            scope.insert(dict_var.clone());
-
+            // Polymorphic/ambiguous method application: defer to runtime by emitting
+            // a call to a runtime dict resolver that picks a default dict by class name.
             let new_args: Vec<_> = args
                 .into_iter()
-                .map(|a| {
-                    rewrite_expr(
-                        ctx.module_snapshot,
-                        ctx.class_env,
-                        ctx.inferred,
-                        &scope,
-                        ctx.known_dicts_in_scope,
-                        a,
-                    )
-                })
+                .map(|a| ctx.rewrite_expr(a))
                 .collect::<Result<Vec<_>>>()?;
 
-            let dict_expr = Expr::new(ctx.span, ExprKind::Var(dict_var.clone()));
-            let body = build_method_call(ctx, mname, dict_expr, new_args);
-            return Ok(Expr::new(
+            let dict_expr = Expr::new(
                 ctx.span,
-                ExprKind::Lambda {
-                    params: vec![dict_var],
-                    body: Box::new(body),
+                ExprKind::Apply {
+                    func: Box::new(Expr::new(
+                        ctx.span,
+                        ExprKind::Var("__getDefaultDict".to_string()),
+                    )),
+                    args: vec![Expr::new(ctx.span, ExprKind::String(class.name.clone()))],
                 },
-            ));
+            );
+            return Ok(build_method_call(ctx, mname, dict_expr, new_args));
             }
         }
     }
