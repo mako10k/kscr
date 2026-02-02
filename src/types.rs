@@ -12289,8 +12289,8 @@ fn rewrite_class_method_lambda(
     ))
 }
 
-/// Find the name of the binding that encloses the given span.
-/// Returns the binding name if found.
+/// Returns the name of the top-level binding that encloses `span`, if any.
+/// Does NOT search nested `let`/`where`/lambda scopes.
 fn find_enclosing_binding(module: &ast::Module, span: ast::Span) -> Option<String> {
     use ast::{Item, PatternKind};
 
@@ -12359,6 +12359,12 @@ fn extract_return_monad_type(func_ty: &Ty, poly_ty: &Ty) -> Option<Ty> {
     extract_monad_constructor(poly_ty, ret_ty)
 }
 
+/// Dictionary resolution order:
+/// 1. Known dicts in scope (early exit if found)
+/// 2. Argument-based selection (determined_by_args)
+/// 3. Derive from candidates
+/// 4. Enclosing binding fallback (for pattern vars)
+/// 5. Error or defer
 fn resolve_method_dict_expr(
     ctx: &ApplyRewriteCtx<'_>,
     class_id: &ast::ClassId,
@@ -12567,6 +12573,30 @@ fn resolve_method_dict_expr(
         ctx.known_dicts_in_scope,
     ) {
         return Ok(Some((d, None)));
+    }
+
+    // Fallback: if normal selection failed, try to use the enclosing binding's inferred type.
+    // This helps when local pattern vars (e.g., `a`, `b` in a match arm) have been inferred
+    // to ground types, but weren't available during argument-based selection.
+    if let Some(binding_name) = find_enclosing_binding(ctx.module_snapshot, ctx.span) {
+        if let Some(scheme) = ctx.inferred.get(&binding_name) {
+            // Check if the scheme type is ground (no free type variables)
+            if ftv_ty(&scheme.ty).is_empty() {
+                if let Ok(head) = instance_head_key_ty_for_class(ctx.class_env, class_id, &scheme.ty)
+                {
+                    if let Some(d) = ctx.class_env.instances.get(&(class_id.clone(), head)) {
+                        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+                            eprintln!("[DICT] Fallback: resolved {:?} from enclosing binding {}", class_id, binding_name);
+                        }
+                        let chosen_name_for_known = Some(d.clone());
+                        return Ok(Some((
+                            Expr::new(ctx.span, ExprKind::Var(d.clone())),
+                            chosen_name_for_known,
+                        )));
+                    }
+                }
+            }
+        }
     }
 
     // If we saw only concrete (ground) argument types and still couldn't find an instance,
