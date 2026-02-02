@@ -348,6 +348,9 @@ fn required_classes_in_var(
 ) {
     if let Some(classes) = needs_dicts.get(name) {
         insert_all(out, classes);
+        // If the name is a user-defined function/value with known requirements,
+        // don't also treat it as a typeclass method.
+        return;
     }
     if let Some(classes) = class_env.method_classes.get(name) {
         for c in classes {
