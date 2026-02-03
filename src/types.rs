@@ -12205,7 +12205,10 @@ fn rewrite_class_method_var(
             return Err(Error::msg("internal: empty method class list"));
         };
 
-        let dict_var = format!("__dict_{}", class.name);
+        let dict_var = format!(
+            "__dict_{}",
+            class.name.rsplit('.').next().unwrap_or(&class.name)
+        );
 
         let dict_expr: Option<ast::Expr> = if dicts_in_scope.contains(&dict_var) {
             Some(Expr::new(span, ExprKind::Var(dict_var.clone())))
@@ -12702,7 +12705,10 @@ fn rewrite_class_method_apply(
 
             // Polymorphic/ambiguous method application: keep it as a dictionary-taking function.
             // The runtime will auto-apply default dicts for specific classes (Num/Eq/Show) when needed.
-            let dict_var = format!("__dict_{}", class.name);
+            let dict_var = format!(
+                "__dict_{}",
+                class.name.rsplit('.').next().unwrap_or(&class.name)
+            );
             let mut scope = ctx.dicts_in_scope.clone();
             scope.insert(dict_var.clone());
 

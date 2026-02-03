@@ -879,6 +879,50 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
     }
 }
 
+/// Auto-apply a dictionary when a Closure expects one.
+/// This handles dict-lambdas that escape into contexts where concrete values are expected,
+/// such as arithmetic operations (e.g., `b + 1` where `b` is a dict-lambda).
+///
+/// The function checks if the value is a Closure with exactly one parameter starting with
+/// "__dict_" and attempts to find a matching dictionary from globals, or uses a default
+/// dictionary for classes like Num, Eq, Show.
+fn auto_apply_dict(g: &Globals, v: Value) -> Result<Value> {
+    if let Value::Closure {
+        params,
+        body: _,
+        env: _,
+    } = &v
+    {
+        if params.len() == 1 && params[0].starts_with("__dict_") {
+            // Try to find dict in globals first
+            if let Ok(dict) = eval_var(g, &std::collections::HashMap::new(), &params[0]) {
+                // Apply the dict but don't recursively force to avoid infinite loops
+                return apply_one(g, v, dict);
+            }
+            
+            // If no dict found in globals, try to inject a default dict for specific classes
+            // Extract class name from param (e.g., "__dict_Num_Integer" -> "Num")
+            let class_name = params[0].strip_prefix("__dict_").unwrap_or("");
+            // Handle both short names (e.g., "Num_Integer") and qualified names
+            let class_base = class_name.split('_').next().unwrap_or(class_name);
+            let class_unqualified = class_base.rsplit('.').next().unwrap_or(class_base);
+            
+            if let Ok(default_dict) = try_get_default_dict(class_unqualified) {
+                // Apply the dict but don't recursively force to avoid infinite loops
+                return apply_one(g, v, default_dict);
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// Force a value and auto-apply dict-lambdas for builtin operations.
+/// This is used in contexts where we expect concrete values (e.g., arithmetic).
+fn force_and_auto_apply(g: &Globals, v: Value) -> Result<Value> {
+    let forced = force_value(g, v)?;
+    auto_apply_dict(g, forced)
+}
+
 fn force_value(g: &Globals, mut v: Value) -> Result<Value> {
     loop {
         match v {
@@ -1293,6 +1337,8 @@ fn eval_case(
     arms: &[IrCaseArm],
 ) -> Result<Value> {
     let scrut = eval_expr(g, env, expr)?;
+    // Auto-apply dict-lambdas on the scrutinee before pattern matching
+    let scrut = auto_apply_dict(g, scrut)?;
     for arm in arms {
         if let Some(binds) = match_pat(g, env, &arm.pat, &scrut)? {
             let mut env_arm = env.clone();
@@ -1814,8 +1860,8 @@ fn div_mod_floor(a: Integer, b: Integer) -> (Integer, Integer) {
 }
 
 fn quot_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("__quotInt expects Integer"));
     };
@@ -1830,8 +1876,8 @@ fn quot_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn rem_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("__remInt expects Integer"));
     };
@@ -1846,8 +1892,8 @@ fn rem_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn div_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("__divInt expects Integer"));
     };
@@ -1862,8 +1908,8 @@ fn div_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn mod_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("__modInt expects Integer"));
     };
@@ -2161,8 +2207,8 @@ fn ffi_add_f32(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("+ expects Integer"));
     };
@@ -2176,8 +2222,8 @@ fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("- expects Integer"));
     };
@@ -2191,8 +2237,8 @@ fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("* expects Integer"));
     };
@@ -2206,8 +2252,8 @@ fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("/ expects Integer"));
     };
@@ -2225,8 +2271,8 @@ fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn eq_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("== expects Integer"));
     };
@@ -2237,8 +2283,8 @@ fn eq_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn lt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("< expects Integer"));
     };
@@ -2249,8 +2295,8 @@ fn lt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("<= expects Integer"));
     };
@@ -2261,8 +2307,8 @@ fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn gt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("> expects Integer"));
     };
@@ -2273,8 +2319,8 @@ fn gt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn ge_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg(">= expects Integer"));
     };
@@ -2285,8 +2331,8 @@ fn ge_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn ne_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("/= expects Integer"));
     };
@@ -2503,8 +2549,8 @@ fn show_with_dict(g: &Globals, dict: Value, a: Value) -> Result<Value> {
 }
 
 fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
 
     Ok(match (a, b) {
         (Value::Unit, Value::Unit) => true,
@@ -2707,7 +2753,7 @@ fn match_pat_cons(
     tl: &IrPattern,
     v: &Value,
 ) -> Result<Option<std::collections::HashMap<String, Value>>> {
-    let v = force_value(g, v.clone())?;
+    let v = force_and_auto_apply(g, v.clone())?;
     let Value::ListCons(h, t) = v else {
         return Ok(None);
     };
@@ -2839,7 +2885,7 @@ fn match_pat(
         return Ok(Some(binds));
     }
 
-    let val = force_value(g, val.clone())?;
+    let val = force_and_auto_apply(g, val.clone())?;
     match (pat, &val) {
         (P::Literal(l), v) => {
             if match_pat_literal(l, v)? {
