@@ -649,7 +649,6 @@ pub enum Value {
     BuiltinWriteFile,
     BuiltinWriteFile1(Box<Value>),
     BuiltinExitWith,
-    BuiltinGetDefaultDict,
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
@@ -751,6 +750,9 @@ fn value_type_name(v: &Value) -> &'static str {
 ///
 /// While this relies on naming conventions, it matches the desugaring behavior
 /// of the typechecker/compiler, which generates these parameter names.
+///
+/// Additionally, for certain classes (Num, Eq, Show), if no concrete dict is
+/// available in globals, we inject a default dictionary at runtime.
 fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
     if let Value::Closure {
         params,
@@ -762,15 +764,119 @@ fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
             // Most dictionary-passing rewrites use the concrete dictionary name directly
             // (e.g. `__dict_Monad_IO`).
             let candidates = [params[0].clone(), format!("{}_IO", params[0])];
-            for name in candidates {
-                if let Ok(dict) = eval_var(g, &std::collections::HashMap::new(), &name) {
+            
+            // Try to find dict in globals first
+            for name in &candidates {
+                if let Ok(dict) = eval_var(g, &std::collections::HashMap::new(), name) {
                     let v = apply_one(g, v, dict)?;
                     return force_value(g, v);
                 }
             }
+            
+            // If no dict found in globals, try to inject a default dict for specific classes
+            // Extract class name from param (e.g., "__dict_Prelude.Show.Show" -> "Prelude.Show.Show")
+            let class_name = params[0].strip_prefix("__dict_").unwrap_or("");
+            if let Ok(default_dict) = try_get_default_dict(class_name) {
+                let v = apply_one(g, v, default_dict)?;
+                return force_value(g, v);
+            }
         }
     }
     Ok(v)
+}
+
+/// Try to get a default dictionary for a class.
+/// Only supports Num, Eq, and Show - other classes return None.
+fn try_get_default_dict(class_name: &str) -> Result<Value> {
+    let unqualified = class_name.rsplit('.').next().unwrap_or(class_name);
+    
+    match unqualified {
+        "Show" => {
+            // Default Show instance uses show_value_str
+            Ok(Value::Record(vec![(
+                "show".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "x".to_string()],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("show".to_string())),
+                        args: vec![IrExpr::Var("x".to_string())],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            )]))
+        }
+        "Num" => {
+            // Default Num instance uses Integer operations
+            Ok(Value::Record(vec![
+                (
+                    "+".to_string(),
+                    Value::Closure {
+                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                        body: Box::new(IrExpr::Apply {
+                            func: Box::new(IrExpr::Var("+".to_string())),
+                            args: vec![
+                                IrExpr::Var("a".to_string()),
+                                IrExpr::Var("b".to_string()),
+                            ],
+                        }),
+                        env: std::collections::HashMap::new(),
+                    },
+                ),
+                (
+                    "-".to_string(),
+                    Value::Closure {
+                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                        body: Box::new(IrExpr::Apply {
+                            func: Box::new(IrExpr::Var("-".to_string())),
+                            args: vec![
+                                IrExpr::Var("a".to_string()),
+                                IrExpr::Var("b".to_string()),
+                            ],
+                        }),
+                        env: std::collections::HashMap::new(),
+                    },
+                ),
+                (
+                    "*".to_string(),
+                    Value::Closure {
+                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                        body: Box::new(IrExpr::Apply {
+                            func: Box::new(IrExpr::Var("*".to_string())),
+                            args: vec![
+                                IrExpr::Var("a".to_string()),
+                                IrExpr::Var("b".to_string()),
+                            ],
+                        }),
+                        env: std::collections::HashMap::new(),
+                    },
+                ),
+            ]))
+        }
+        "Eq" => {
+            // Default Eq instance uses structural equality
+            Ok(Value::Record(vec![(
+                "eq".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("==".to_string())),
+                        args: vec![
+                            IrExpr::Var("a".to_string()),
+                            IrExpr::Var("b".to_string()),
+                        ],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            )]))
+        }
+        _ => {
+            // For classes without default dicts, return error
+            Err(Error::msg(format!(
+                "no default dictionary available for class: {}",
+                class_name
+            )))
+        }
+    }
 }
 
 fn force_value(g: &Globals, mut v: Value) -> Result<Value> {
@@ -913,8 +1019,6 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         "__show" | "__toString" => Value::BuiltinShowDictApply,
 
         "__builtinShowDict" => Value::Record(vec![("show".to_string(), Value::BuiltinShow)]),
-
-        "__getDefaultDict" => Value::BuiltinGetDefaultDict,
 
         "__eq" => Value::BuiltinEqDictApply,
         "__builtinEqDict" => Value::Record(vec![("eq".to_string(), Value::BuiltinEq)]),
@@ -1142,7 +1246,9 @@ fn eval_let(
         };
     }
 
-    eval_expr(g, &env2, body)
+    let result = eval_expr(g, &env2, body)?;
+    // Auto-apply dict lambdas when returning from let expressions
+    auto_apply_io_dict(g, result)
 }
 
 fn eval_cons(
@@ -1199,7 +1305,9 @@ fn eval_case(
                     continue;
                 }
             }
-            return eval_expr(g, &env_arm, &arm.body);
+            let result = eval_expr(g, &env_arm, &arm.body)?;
+            // Auto-apply dict lambdas when returning from case branches
+            return auto_apply_io_dict(g, result);
         }
     }
     Err(Error::msg("non-exhaustive case"))
@@ -1523,8 +1631,6 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinWriteFile1(path) => builtin_write_file(g, *path, arg),
         Value::BuiltinExitWith => builtin_exit_with(g, arg),
 
-        Value::BuiltinGetDefaultDict => get_default_dict(g, arg),
-
         Value::Closure { params, body, env } => apply_closure(g, params, body, env, arg),
 
         Value::Integer(_)
@@ -1580,109 +1686,6 @@ fn builtin_exit_with(g: &Globals, code: Value) -> Result<Value> {
     };
     let code_i64 = int_to_i64(&i)?;
     Ok(Value::IoAction(Box::new(IoAction::ExitWith(code_i64))))
-}
-
-fn get_default_dict(g: &Globals, class_name: Value) -> Result<Value> {
-    let class_name = force_value(g, class_name)?;
-    let Value::String(class_name) = class_name else {
-        return Err(Error::msg("__getDefaultDict expects String"));
-    };
-
-    // Map class names to default dictionaries.
-    // For Show, we use the runtime show_value_str function.
-    // For Num, we use Integer operations.
-    let unqualified = class_name.rsplit('.').next().unwrap_or(&class_name);
-
-    match unqualified {
-        "Show" => {
-            // Default Show instance uses show_value_str
-            // Method signature: show :: dict -> a -> String
-            Ok(Value::Record(vec![(
-                "show".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "x".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("show".to_string())),
-                        args: vec![IrExpr::Var("x".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            )]))
-        }
-        "Num" => {
-            // Default Num instance uses Integer operations
-            // Each method signature: op :: dict -> a -> a -> a
-            Ok(Value::Record(vec![
-                (
-                    "+".to_string(),
-                    Value::Closure {
-                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
-                        body: Box::new(IrExpr::Apply {
-                            func: Box::new(IrExpr::Var("+".to_string())),
-                            args: vec![
-                                IrExpr::Var("a".to_string()),
-                                IrExpr::Var("b".to_string()),
-                            ],
-                        }),
-                        env: std::collections::HashMap::new(),
-                    },
-                ),
-                (
-                    "-".to_string(),
-                    Value::Closure {
-                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
-                        body: Box::new(IrExpr::Apply {
-                            func: Box::new(IrExpr::Var("-".to_string())),
-                            args: vec![
-                                IrExpr::Var("a".to_string()),
-                                IrExpr::Var("b".to_string()),
-                            ],
-                        }),
-                        env: std::collections::HashMap::new(),
-                    },
-                ),
-                (
-                    "*".to_string(),
-                    Value::Closure {
-                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
-                        body: Box::new(IrExpr::Apply {
-                            func: Box::new(IrExpr::Var("*".to_string())),
-                            args: vec![
-                                IrExpr::Var("a".to_string()),
-                                IrExpr::Var("b".to_string()),
-                            ],
-                        }),
-                        env: std::collections::HashMap::new(),
-                    },
-                ),
-            ]))
-        }
-        "Eq" => {
-            // Default Eq instance uses structural equality
-            // Method signature: eq :: dict -> a -> a -> Bool
-            Ok(Value::Record(vec![(
-                "eq".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("==".to_string())),
-                        args: vec![
-                            IrExpr::Var("a".to_string()),
-                            IrExpr::Var("b".to_string()),
-                        ],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            )]))
-        }
-        _ => {
-            // For unknown classes, return an empty record (will fail at method call time)
-            Err(Error::msg(format!(
-                "no default dictionary for class: {}",
-                class_name
-            )))
-        }
-    }
 }
 
 fn builtin_error(g: &Globals, arg: Value) -> Result<Value> {

@@ -12700,24 +12700,35 @@ fn rewrite_class_method_apply(
                 return Ok(build_method_call(ctx, mname, dict_expr, new_args));
             }
 
-            // Polymorphic/ambiguous method application: defer to runtime by emitting
-            // a call to a runtime dict resolver that picks a default dict by class name.
+            // Polymorphic/ambiguous method application: keep it as a dictionary-taking function.
+            // The runtime will auto-apply default dicts for specific classes (Num/Eq/Show) when needed.
+            let dict_var = format!("__dict_{}", class.name);
+            let mut scope = ctx.dicts_in_scope.clone();
+            scope.insert(dict_var.clone());
+
             let new_args: Vec<_> = args
                 .into_iter()
-                .map(|a| ctx.rewrite_expr(a))
+                .map(|a| {
+                    rewrite_expr(
+                        ctx.module_snapshot,
+                        ctx.class_env,
+                        ctx.inferred,
+                        &scope,
+                        ctx.known_dicts_in_scope,
+                        a,
+                    )
+                })
                 .collect::<Result<Vec<_>>>()?;
 
-            let dict_expr = Expr::new(
+            let dict_expr = Expr::new(ctx.span, ExprKind::Var(dict_var.clone()));
+            let body = build_method_call(ctx, mname, dict_expr, new_args);
+            return Ok(Expr::new(
                 ctx.span,
-                ExprKind::Apply {
-                    func: Box::new(Expr::new(
-                        ctx.span,
-                        ExprKind::Var("__getDefaultDict".to_string()),
-                    )),
-                    args: vec![Expr::new(ctx.span, ExprKind::String(class.name.clone()))],
+                ExprKind::Lambda {
+                    params: vec![dict_var],
+                    body: Box::new(body),
                 },
-            );
-            return Ok(build_method_call(ctx, mname, dict_expr, new_args));
+            ));
             }
         }
     }
