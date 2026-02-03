@@ -85,14 +85,17 @@ pub(super) fn rewrite_class_dict_passing_in_module(
             dict_name.split('.').last().map(|s| s.to_string())
         })
         .collect();
-    
+
     if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-        eprintln!("[DICT] ground_dicts populated with {} entries:", ground_dicts.len());
+        eprintln!(
+            "[DICT] ground_dicts populated with {} entries:",
+            ground_dicts.len()
+        );
         for dict in &ground_dicts {
             eprintln!("[DICT]   - {}", dict);
         }
     }
-    
+
     let empty_shadowed: HashSet<String> = HashSet::new();
     let empty_local: HashMap<String, Vec<String>> = HashMap::new();
     module.items = module
@@ -550,7 +553,11 @@ pub(super) fn pick_instance_dict_expr_from_scope(
     let pi = candidates[0];
     // For stdlib dicts, use unqualified names (same as above)
     let dict_ref = if pi.dict_name.starts_with("Prelude.") {
-        pi.dict_name.split('.').last().unwrap_or(&pi.dict_name).to_string()
+        pi.dict_name
+            .split('.')
+            .last()
+            .unwrap_or(&pi.dict_name)
+            .to_string()
     } else {
         pi.dict_name.clone()
     };

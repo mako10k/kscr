@@ -2596,16 +2596,17 @@ fn add_integer_primitives(env: &mut TypeEnv) {
 }
 
 fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
-    // == :: Eq a => a -> a -> Bool
+    // __primEq :: forall a. a -> a -> Bool
+    // Structural equality primitive (used by derived Eq instances).
     let Ty::Var(v) = cx.fresh() else {
         unreachable!()
     };
     env.insert(
-        "==".to_string(),
+        "__primEq".to_string(),
         EnvEntry {
             scheme: Scheme {
                 vars: vec![v],
-                constraints: vec![Constraint::Eq(Ty::Var(v))],
+                constraints: vec![],
                 ty: Ty::Func(
                     Box::new(Ty::Var(v)),
                     Box::new(Ty::Func(
@@ -2639,27 +2640,7 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
         );
     }
 
-    // /= :: Eq a => a -> a -> Bool
-    let Ty::Var(v) = cx.fresh() else {
-        unreachable!()
-    };
-    env.insert(
-        "/=".to_string(),
-        EnvEntry {
-            scheme: Scheme {
-                vars: vec![v],
-                constraints: vec![Constraint::Eq(Ty::Var(v))],
-                ty: Ty::Func(
-                    Box::new(Ty::Var(v)),
-                    Box::new(Ty::Func(
-                        Box::new(Ty::Var(v)),
-                        Box::new(Ty::Con("Bool".to_string())),
-                    )),
-                ),
-            },
-            def_site: None,
-        },
-    );
+    // Note: `==` and `/=` are provided by stdlib Prelude (overridable via Eq).
 
     // && :: Bool -> Bool -> Bool
     for name in ["&&", "||"] {
@@ -2701,6 +2682,23 @@ fn add_bool_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
 
 fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
     let char_list = Ty::List(Box::new(Ty::Con("Char".to_string())));
+
+    // __primShow :: forall a. a -> [Char]
+    // Structural show primitive (used by derived Show instances).
+    let Ty::Var(v) = cx.fresh() else {
+        unreachable!()
+    };
+    env.insert(
+        "__primShow".to_string(),
+        EnvEntry {
+            scheme: Scheme {
+                vars: vec![v],
+                constraints: vec![],
+                ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
+            },
+            def_site: None,
+        },
+    );
 
     // intToString :: Integer -> [Char]
     env.insert(
@@ -2754,37 +2752,7 @@ fn add_string_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
         },
     );
 
-    // show :: Show a => a -> [Char]
-    let Ty::Var(v) = cx.fresh() else {
-        unreachable!()
-    };
-    env.insert(
-        "show".to_string(),
-        EnvEntry {
-            scheme: Scheme {
-                vars: vec![v],
-                constraints: vec![Constraint::Show(Ty::Var(v))],
-                ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
-            },
-            def_site: None,
-        },
-    );
-
-    // toString :: Show a => a -> [Char]
-    let Ty::Var(v) = cx.fresh() else {
-        unreachable!()
-    };
-    env.insert(
-        "toString".to_string(),
-        EnvEntry {
-            scheme: Scheme {
-                vars: vec![v],
-                constraints: vec![Constraint::Show(Ty::Var(v))],
-                ty: Ty::Func(Box::new(Ty::Var(v)), Box::new(char_list.clone())),
-            },
-            def_site: None,
-        },
-    );
+    // Note: `show` / `toString` are provided by stdlib Prelude (overridable via Show).
 }
 
 fn add_io_primitives(cx: &mut InferCtx, env: &mut TypeEnv) {
@@ -4142,7 +4110,7 @@ fn detect_superclass_cycles(env: &ClassEnv) -> Result<()> {
 /// which is needed for cross-module imports (KSIF doesn't carry deriving info).
 ///
 /// Supported classes:
-/// - Eq, Show: special-cased in the constraint solver (no code generation needed)
+/// - Eq, Show: generate instance declarations backed by runtime primitives
 /// - Semigroup, Monoid: generate actual method implementations
 ///
 /// Restrictions for Semigroup/Monoid:
@@ -4151,6 +4119,27 @@ fn detect_superclass_cycles(env: &ClassEnv) -> Result<()> {
 fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
     let mut synthetic_instances = Vec::new();
 
+    // If the user already wrote an explicit instance, do not also generate a derived one.
+    // This supports the common pattern: `data T deriving (Show)` plus `instance Show T where ...`.
+    let mut explicit_instance_keys: HashSet<(String, String)> = HashSet::new();
+    for item in &module.items {
+        let ast::Item::InstanceDecl(inst) = item else {
+            continue;
+        };
+
+        let class_unqualified = inst
+            .class
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or(inst.class.name.as_str())
+            .to_string();
+
+        if let Ok(ty_key) = instance_head_key_ast(&inst.ty) {
+            explicit_instance_keys.insert((class_unqualified, ty_key));
+        }
+    }
+
     for item in &module.items {
         let ast::Item::DataDecl(d) = item else {
             continue;
@@ -4158,8 +4147,52 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
 
         // For each deriving clause, create a synthetic instance declaration
         for class_name in &d.deriving {
-            // Skip Eq and Show - they're special-cased in the constraint solver, not real classes
+            let inst_ty = if d.params.is_empty() {
+                ast::Type::Var(d.name.clone())
+            } else {
+                let head = Box::new(ast::Type::Var(d.name.clone()));
+                let args = d.params.iter().map(|p| ast::Type::Var(p.clone())).collect();
+                ast::Type::App { head, args }
+            };
+
+            if let Ok(ty_key) = instance_head_key_ast(&inst_ty) {
+                if explicit_instance_keys.contains(&(class_name.clone(), ty_key)) {
+                    continue;
+                }
+            }
+
+            // Eq / Show: derive via runtime primitives (structural)
             if class_name == "Show" || class_name == "Eq" {
+                // Note: structural deriving does not consult dictionaries.
+                // Also, the current MVP instance context cannot carry multiple predicates of
+                // the same class (e.g. `Eq a, Eq b`), so keep the context empty.
+                let preds: Vec<ast::Predicate> = Vec::new();
+
+                let (method_name, prim_name) = if class_name == "Show" {
+                    ("show".to_string(), "__primShow".to_string())
+                } else {
+                    ("eq".to_string(), "__primEq".to_string())
+                };
+
+                let inst = ast::InstanceDecl {
+                    preds,
+                    class: ast::ClassId::dummy(class_name.clone()),
+                    ty: inst_ty,
+                    methods: vec![ast::Binding {
+                        doc: None,
+                        pat: ast::Pattern {
+                            kind: ast::PatternKind::Var(method_name),
+                            span: ast::dummy_span(),
+                        },
+                        expr: ast::Expr {
+                            kind: ast::ExprKind::Var(prim_name),
+                            span: ast::dummy_span(),
+                        },
+                        span: ast::dummy_span(),
+                    }],
+                };
+
+                synthetic_instances.push(ast::Item::InstanceDecl(inst));
                 continue;
             }
 
@@ -4185,14 +4218,6 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
                 synthetic_instances.push(ast::Item::InstanceDecl(inst));
             } else {
                 // Unknown deriving class - create empty instance as fallback
-                let inst_ty = if d.params.is_empty() {
-                    ast::Type::Var(d.name.clone())
-                } else {
-                    let head = Box::new(ast::Type::Var(d.name.clone()));
-                    let args = d.params.iter().map(|p| ast::Type::Var(p.clone())).collect();
-                    ast::Type::App { head, args }
-                };
-
                 let preds: Vec<ast::Predicate> = d
                     .params
                     .iter()
@@ -4220,7 +4245,7 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
 }
 
 /// Generate Semigroup or Monoid instance for a single-constructor data type.
-/// 
+///
 /// For Semigroup: implements (<>) by applying (<>) to each field
 /// For Monoid: implements mempty by applying mempty to each field
 fn generate_semigroup_monoid_instance(
@@ -4254,7 +4279,7 @@ fn generate_semigroup_monoid_instance(
     if class_name == "Semigroup" {
         // Generate (<>) implementation
         // \x y -> case (x, y) of (Ctor a1 ... an, Ctor b1 ... bn) -> Ctor (a1 <> b1) ... (an <> bn)
-        
+
         let a_vars: Vec<String> = (0..num_fields).map(|i| format!("__a{}", i)).collect();
         let b_vars: Vec<String> = (0..num_fields).map(|i| format!("__b{}", i)).collect();
 
@@ -4326,7 +4351,7 @@ fn generate_semigroup_monoid_instance(
     } else if class_name == "Monoid" {
         // Generate mempty implementation
         // Pattern: mempty = Ctor mempty mempty ... mempty
-        
+
         let mempty_fields: Vec<ast::Expr> = (0..num_fields)
             .map(|_| ast::Expr::dummy(ast::ExprKind::Var("mempty".to_string())))
             .collect();
@@ -5136,7 +5161,7 @@ fn lower_super_predicate_for_constraints(p: &ast::Predicate, ty: &Ty) -> Constra
 /// Returns Some(()) if it matches (unifies), None otherwise.
 fn unify_instance_head(pattern: &Ty, concrete: &Ty) -> Option<()> {
     use std::collections::HashMap;
-    
+
     fn unify_helper(pat: &Ty, con: &Ty, subst: &mut HashMap<u32, Ty>) -> bool {
         match (pat, con) {
             (Ty::Var(v), _) => {
@@ -5151,7 +5176,16 @@ fn unify_instance_head(pattern: &Ty, concrete: &Ty) -> Option<()> {
                 }
             }
             (Ty::Con(p_name), Ty::Con(c_name)) => p_name == c_name,
-            (Ty::App { head: p_head, args: p_args }, Ty::App { head: c_head, args: c_args }) => {
+            (
+                Ty::App {
+                    head: p_head,
+                    args: p_args,
+                },
+                Ty::App {
+                    head: c_head,
+                    args: c_args,
+                },
+            ) => {
                 if p_args.len() != c_args.len() {
                     return false;
                 }
@@ -5168,7 +5202,7 @@ fn unify_instance_head(pattern: &Ty, concrete: &Ty) -> Option<()> {
             _ => false,
         }
     }
-    
+
     let mut subst = HashMap::new();
     if unify_helper(pattern, concrete, &mut subst) {
         Some(())
@@ -5207,15 +5241,15 @@ fn simplify_process_constraint(
             } else {
                 let key_ty = instance_head_key_ty(&ty)?;
                 let key = (class.clone(), key_ty.clone());
-                
+
                 // First check concrete instances
                 let has_concrete = class_env.instances.contains_key(&key);
-                
+
                 // Also check polymorphic instances
                 let has_poly = class_env.poly_instances.iter().any(|pi| {
                     pi.class == class && unify_instance_head(&pi.head_pat, &ty).is_some()
                 });
-                
+
                 if !has_concrete && !has_poly {
                     return Err(Error::msg(format!(
                         "cannot satisfy constraint: {} {ty}",
@@ -5664,6 +5698,83 @@ fn simplify_constraints(
 
     out = simplify_context_reduce_user_classes(class_env, out);
     Ok(sort_dedup_constraints_stable(out))
+}
+
+fn rewrite_entry_main_apply_dicts(
+    module: &mut ast::Module,
+    class_env: &ClassEnv,
+    main_cs: &[Constraint],
+) -> Result<()> {
+    use ast::{Expr, ExprKind, Item, Pattern, PatternKind};
+
+    if main_cs.is_empty() {
+        return Ok(());
+    }
+
+    let mut dict_args: Vec<Expr> = Vec::new();
+    for c in main_cs {
+        let Constraint::Class { class, ty } = c else {
+            return Err(Error::msg("main must have type IO _"));
+        };
+        let ty_key = instance_head_key_ty_for_class(class_env, class, ty)?;
+        let key = (class.clone(), ty_key);
+        let Some(dict_name) = class_env.instances.get(&key) else {
+            return Err(Error::msg("main must have type IO _"));
+        };
+        dict_args.push(Expr::dummy(ExprKind::Var(dict_name.clone())));
+    }
+
+    // Rename the original `main` binding and insert a wrapper that applies the
+    // required dictionaries, so the runnable entrypoint has type `IO _`.
+    let mut impl_name = "__main_impl".to_string();
+    if module
+        .items
+        .iter()
+        .any(|it| matches!(it, Item::Binding(b) if matches!(&b.pat.kind, PatternKind::Var(n) if n == &impl_name)))
+    {
+        let mut i = 0usize;
+        loop {
+            let candidate = format!("__main_impl{i}");
+            if !module.items.iter().any(|it| {
+                matches!(it, Item::Binding(b) if matches!(&b.pat.kind, PatternKind::Var(n) if n == &candidate))
+            }) {
+                impl_name = candidate;
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    let mut found = false;
+    for it in &mut module.items {
+        let Item::Binding(b) = it else {
+            continue;
+        };
+        let PatternKind::Var(name) = &mut b.pat.kind else {
+            continue;
+        };
+        if name == "main" {
+            *name = impl_name.clone();
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Ok(());
+    }
+
+    let wrapper_expr = Expr::dummy(ExprKind::Apply {
+        func: Box::new(Expr::dummy(ExprKind::Var(impl_name))),
+        args: dict_args,
+    });
+    module.items.push(Item::Binding(ast::Binding {
+        doc: None,
+        pat: Pattern::dummy(PatternKind::Var("main".to_string())),
+        expr: wrapper_expr,
+        span: ast::dummy_span(),
+    }));
+
+    Ok(())
 }
 
 fn build_letrec_binding_metadata(
@@ -7392,7 +7503,29 @@ fn load_imported_ksif_schemes_internal(
         // Safety: if a cached KSIF's dependency hashes don't match, fail early.
         // However, skip this validation when suppress_recursive_rebuild is true.
         if !policy.suppress_recursive_rebuild {
-            match validate_ksif_dependencies(&ksif_path, entry_dir, &default_artifact_dir) {
+            // Validate dependency hashes using the imported module's context.
+            // Using `entry_dir` here can accidentally pick up unrelated project-local KSIFs
+            // (e.g. /tmp/target/ksif/Prelude.*.ksif) and report false staleness.
+            let (validate_module_dir, validate_default_artifact_dir) =
+                match resolve_module_path(entry_dir, &id.module) {
+                    Ok(module_path) => {
+                        let module_dir = module_path.parent().unwrap_or(entry_dir).to_path_buf();
+                        let stdlib_root = stdlib_cache::stdlib_root()?;
+                        let default_artifact_dir = if module_path.starts_with(&stdlib_root) {
+                            stdlib_artifact_dir.clone()
+                        } else {
+                            default_artifact_dir.clone()
+                        };
+                        (module_dir, default_artifact_dir)
+                    }
+                    Err(_) => (entry_dir.to_path_buf(), default_artifact_dir.clone()),
+                };
+
+            match validate_ksif_dependencies(
+                &ksif_path,
+                &validate_module_dir,
+                &validate_default_artifact_dir,
+            ) {
                 Ok(true) => {}
                 Ok(false) => {
                     return Err(Error::msg(format!(
@@ -7494,7 +7627,7 @@ fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
         .items
         .iter()
         .any(|it| matches!(it, ast::Item::Import(id) if id.module == "Prelude"));
-    
+
     if has_prelude_import {
         return module;
     }
@@ -7510,7 +7643,7 @@ fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
     // This ensures dictionaries are available without polluting the namespace.
     let prelude_import = ast::Item::Import(ast::ImportDecl {
         module: "Prelude".to_string(),
-        qualified: has_any_import,  // qualified if there are other imports
+        qualified: has_any_import, // qualified if there are other imports
         as_name: None,
         import_spec: None,
     });
@@ -7635,11 +7768,14 @@ fn typecheck_with_stdlib_class_env_with_imported_with_entry_path(
 fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()> {
     // Collect all qualified stdlib dict bindings present in the module.
     let mut exports_map: HashMap<String, String> = HashMap::new();
-    
+
     if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-        eprintln!("[DICT] inject_stdlib_instance_dict_forwarders: checking {} import items", import_items(module).len());
+        eprintln!(
+            "[DICT] inject_stdlib_instance_dict_forwarders: checking {} import items",
+            import_items(module).len()
+        );
     }
-    
+
     for it in import_items(module) {
         let ast::Item::Binding(b) = it else {
             continue;
@@ -7647,13 +7783,13 @@ fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()
         let ast::PatternKind::Var(n) = b.pat.kind else {
             continue;
         };
-        
+
         if std::env::var("KSCR_DEBUG_DICT").is_ok() {
             if n.contains("__dict_") {
                 eprintln!("[DICT]   Found binding: {}", n);
             }
         }
-        
+
         // Note: stdlib-provided dictionaries appear as qualified value bindings like
         // `Prelude.__dict_Monad_IO` or `Prelude.Num.__dict_Num_Integer`.
         // Later passes refer to the *unqualified* name like `__dict_Monad_IO` or `__dict_Num_Integer`,
@@ -7708,11 +7844,14 @@ fn inject_stdlib_instance_dict_forwarders_post_typecheck(module: &mut ast::Modul
     // when instance dictionaries have been created.
     // Collects all qualified dict bindings (e.g., `Prelude.Num.__dict_Num_Integer`)
     // and creates unqualified forwarders (e.g., `__dict_Num_Integer = Prelude.Num.__dict_Num_Integer`).
-    
+
     let mut exports_map: HashMap<String, String> = HashMap::new();
-    
+
     if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-        eprintln!("[DICT] inject_stdlib_instance_dict_forwarders_post_typecheck: checking {} items", module.items.len());
+        eprintln!(
+            "[DICT] inject_stdlib_instance_dict_forwarders_post_typecheck: checking {} items",
+            module.items.len()
+        );
         let mut dict_count = 0;
         for it in &module.items {
             if let ast::Item::Binding(b) = it {
@@ -7728,7 +7867,7 @@ fn inject_stdlib_instance_dict_forwarders_post_typecheck(module: &mut ast::Modul
         }
         eprintln!("[DICT]   Total dict-like bindings: {}", dict_count);
     }
-    
+
     for it in &module.items {
         let ast::Item::Binding(b) = it else {
             continue;
@@ -7736,15 +7875,18 @@ fn inject_stdlib_instance_dict_forwarders_post_typecheck(module: &mut ast::Modul
         let ast::PatternKind::Var(n) = &b.pat.kind else {
             continue;
         };
-        
+
         if std::env::var("KSCR_DEBUG_DICT").is_ok() {
             if n.contains("__dict_") {
                 eprintln!("[DICT]   Found binding: {}", n);
             }
         }
-        
+
         // Look for qualified dict bindings from Prelude
-        if n.starts_with("Prelude.") || n.starts_with("Prelude.Num.") || n.starts_with("Prelude.Ring.") {
+        if n.starts_with("Prelude.")
+            || n.starts_with("Prelude.Num.")
+            || n.starts_with("Prelude.Ring.")
+        {
             if let Some(unqualified) = n.split('.').last() {
                 if unqualified.starts_with("__dict_") {
                     exports_map.insert(unqualified.to_string(), n.clone());
@@ -7761,7 +7903,10 @@ fn inject_stdlib_instance_dict_forwarders_post_typecheck(module: &mut ast::Modul
     }
 
     if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-        eprintln!("[DICT] Creating {} dict forwarders (post-typecheck):", exports_map.len());
+        eprintln!(
+            "[DICT] Creating {} dict forwarders (post-typecheck):",
+            exports_map.len()
+        );
         for (unqualified, qualified) in &exports_map {
             eprintln!("[DICT]   {} = {}", unqualified, qualified);
         }
@@ -7970,6 +8115,7 @@ fn typecheck_internal_core_with_entry_path(
             )?
         };
 
+        let mut main_entry_class_constraints: Vec<Constraint> = Vec::new();
         if let Some(main) = inferred.get("main") {
             // Haskell-like: accept any `IO a` as an entry point.
             // If `main` is polymorphic (e.g. `forall m. Monad m => m Unit`), we accept it iff it
@@ -7985,11 +8131,23 @@ fn typecheck_internal_core_with_entry_path(
             };
             let subst = unify(ty, io_a).map_err(|_| Error::msg("main must have type IO _"))?;
 
+            let cs_raw = apply_constraints(&subst, cs);
+
             let data_env = collect_data_env(&module);
-            let cs = simplify_constraints(&data_env, &class_env, apply_constraints(&subst, cs))?;
-            if !cs.is_empty() {
+            let cs_simplified = simplify_constraints(&data_env, &class_env, cs_raw.clone())?;
+            // Allow class constraints on `main` (e.g. `Show Box => IO Unit`) and discharge them
+            // by inserting dictionary applications after dict-passing rewrite.
+            // Any non-class constraints still reject entrypoints.
+            if cs_simplified
+                .iter()
+                .any(|c| !matches!(c, Constraint::Class { .. }))
+            {
                 return Err(Error::msg("main must have type IO _"));
             }
+            main_entry_class_constraints = cs_raw
+                .into_iter()
+                .filter(|c| matches!(c, Constraint::Class { .. }))
+                .collect();
         }
 
         // Inject method value bindings early so dict-passing can thread dictionaries into them.
@@ -8006,6 +8164,8 @@ fn typecheck_internal_core_with_entry_path(
             &class_env,
             &inferred,
         )?;
+
+        rewrite_entry_main_apply_dicts(&mut module, &class_env, &main_entry_class_constraints)?;
 
         // Rewrite method calls/vars while dictionary bindings still exist.
         // This must happen before `rewrite_show_calls_in_module`, which replaces
@@ -8913,7 +9073,10 @@ fn desugar_qualified_pattern(p: ast::Pattern, env: &QualEnv) -> Result<ast::Patt
         PatternKind::Var(n) => {
             // Allow single-character operator names like "." that technically contain '.'
             // but aren't qualified names (qualified names have the form "Module.name")
-            if n.contains('.') && n.rsplit_once('.').is_some_and(|(q, m)| !q.is_empty() && !m.is_empty()) {
+            if n.contains('.')
+                && n.rsplit_once('.')
+                    .is_some_and(|(q, m)| !q.is_empty() && !m.is_empty())
+            {
                 return Err(Error::msg(format!(
                     "qualified name is not allowed in binder: {n}"
                 )));
@@ -8921,7 +9084,10 @@ fn desugar_qualified_pattern(p: ast::Pattern, env: &QualEnv) -> Result<ast::Patt
             PatternKind::Var(n)
         }
         PatternKind::As(n, p) => {
-            if n.contains('.') && n.rsplit_once('.').is_some_and(|(q, m)| !q.is_empty() && !m.is_empty()) {
+            if n.contains('.')
+                && n.rsplit_once('.')
+                    .is_some_and(|(q, m)| !q.is_empty() && !m.is_empty())
+            {
                 return Err(Error::msg(format!(
                     "qualified name is not allowed in binder: {n}"
                 )));
@@ -8945,7 +9111,11 @@ fn desugar_qualified_pattern(p: ast::Pattern, env: &QualEnv) -> Result<ast::Patt
         ),
         PatternKind::RecordLoose(fs, rest) => {
             if let Some(rest_name) = rest.as_ref() {
-                if rest_name.contains('.') && rest_name.rsplit_once('.').is_some_and(|(q, m)| !q.is_empty() && !m.is_empty()) {
+                if rest_name.contains('.')
+                    && rest_name
+                        .rsplit_once('.')
+                        .is_some_and(|(q, m)| !q.is_empty() && !m.is_empty())
+                {
                     return Err(Error::msg(format!(
                         "qualified name is not allowed in binder: {rest_name}"
                     )));
@@ -12687,54 +12857,54 @@ fn rewrite_class_method_apply(
 
         if !is_user_defined {
             if let Some(classes) = ctx.class_env.method_classes.get(mname) {
-            let Some(class) = classes.first() else {
-                return Err(Error::msg("internal: empty method class list"));
-            };
+                let Some(class) = classes.first() else {
+                    return Err(Error::msg("internal: empty method class list"));
+                };
 
-            if let Some((dict_expr, chosen_name_for_known)) =
-                resolve_method_dict_expr(ctx, class, mname, &args)?
-            {
-                let mut known = ctx.known_dicts_in_scope.clone();
-                if let Some(chosen) = chosen_name_for_known.clone() {
-                    known.insert(class.name.clone(), chosen);
+                if let Some((dict_expr, chosen_name_for_known)) =
+                    resolve_method_dict_expr(ctx, class, mname, &args)?
+                {
+                    let mut known = ctx.known_dicts_in_scope.clone();
+                    if let Some(chosen) = chosen_name_for_known.clone() {
+                        known.insert(class.name.clone(), chosen);
+                    }
+
+                    let new_args = rewrite_args_with_known(ctx, &known, args)?;
+                    return Ok(build_method_call(ctx, mname, dict_expr, new_args));
                 }
 
-                let new_args = rewrite_args_with_known(ctx, &known, args)?;
-                return Ok(build_method_call(ctx, mname, dict_expr, new_args));
-            }
+                // Polymorphic/ambiguous method application: keep it as a dictionary-taking function.
+                // The runtime will auto-apply default dicts for specific classes (Num/Eq/Show) when needed.
+                let dict_var = format!(
+                    "__dict_{}",
+                    class.name.rsplit('.').next().unwrap_or(&class.name)
+                );
+                let mut scope = ctx.dicts_in_scope.clone();
+                scope.insert(dict_var.clone());
 
-            // Polymorphic/ambiguous method application: keep it as a dictionary-taking function.
-            // The runtime will auto-apply default dicts for specific classes (Num/Eq/Show) when needed.
-            let dict_var = format!(
-                "__dict_{}",
-                class.name.rsplit('.').next().unwrap_or(&class.name)
-            );
-            let mut scope = ctx.dicts_in_scope.clone();
-            scope.insert(dict_var.clone());
+                let new_args: Vec<_> = args
+                    .into_iter()
+                    .map(|a| {
+                        rewrite_expr(
+                            ctx.module_snapshot,
+                            ctx.class_env,
+                            ctx.inferred,
+                            &scope,
+                            ctx.known_dicts_in_scope,
+                            a,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()?;
 
-            let new_args: Vec<_> = args
-                .into_iter()
-                .map(|a| {
-                    rewrite_expr(
-                        ctx.module_snapshot,
-                        ctx.class_env,
-                        ctx.inferred,
-                        &scope,
-                        ctx.known_dicts_in_scope,
-                        a,
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            let dict_expr = Expr::new(ctx.span, ExprKind::Var(dict_var.clone()));
-            let body = build_method_call(ctx, mname, dict_expr, new_args);
-            return Ok(Expr::new(
-                ctx.span,
-                ExprKind::Lambda {
-                    params: vec![dict_var],
-                    body: Box::new(body),
-                },
-            ));
+                let dict_expr = Expr::new(ctx.span, ExprKind::Var(dict_var.clone()));
+                let body = build_method_call(ctx, mname, dict_expr, new_args);
+                return Ok(Expr::new(
+                    ctx.span,
+                    ExprKind::Lambda {
+                        params: vec![dict_var],
+                        body: Box::new(body),
+                    },
+                ));
             }
         }
     }

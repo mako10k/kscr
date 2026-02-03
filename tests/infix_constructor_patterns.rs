@@ -17,8 +17,5 @@ fn infix_constructor_patterns() {
     );
 
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(
-        stdout.trim(),
-        "All constructor pattern infix tests passed"
-    );
+    assert_eq!(stdout.trim(), "All constructor pattern infix tests passed");
 }

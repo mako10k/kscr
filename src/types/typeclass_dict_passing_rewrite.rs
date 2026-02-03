@@ -30,17 +30,23 @@ fn resolve_dict_arg_from_scope(
     use ast::{Expr, ExprKind};
 
     let param = common::dict_param_name(class);
-    
+
     if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-        eprintln!("[DICT] resolve_dict_arg_from_scope: looking for class '{}' (param: '{}')", class, param);
-        eprintln!("[DICT]   dicts_in_scope has {} entries", dicts_in_scope.len());
+        eprintln!(
+            "[DICT] resolve_dict_arg_from_scope: looking for class '{}' (param: '{}')",
+            class, param
+        );
+        eprintln!(
+            "[DICT]   dicts_in_scope has {} entries",
+            dicts_in_scope.len()
+        );
         if dicts_in_scope.len() < 20 {
             for dict in dicts_in_scope {
                 eprintln!("[DICT]     - {}", dict);
             }
         }
     }
-    
+
     if dicts_in_scope.contains(&param) {
         if std::env::var("KSCR_DEBUG_DICT").is_ok() {
             eprintln!("[DICT]   -> Found direct param: {}", param);
@@ -84,7 +90,7 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
 
     let mut dict_args: Vec<ast::Expr> = Vec::new();
     let mut all_resolved = true;
-    
+
     for class in classes {
         let mut picked: Option<ast::Expr> = None;
 
@@ -96,7 +102,9 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
         // If not in scope, try to pick a concrete instance based on the variable's type
         if picked.is_none() {
             let var_expr = Expr::new(span, ExprKind::Var(name.clone()));
-            if let Ok(var_ty) = infer_in_module_with_class_env(module_snapshot, class_env, inferred, var_expr) {
+            if let Ok(var_ty) =
+                infer_in_module_with_class_env(module_snapshot, class_env, inferred, var_expr)
+            {
                 // Try to pick instance based on the inferred type
                 if let Some(d) = common::pick_instance_dict_expr_from_scope(
                     span,

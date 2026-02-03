@@ -507,7 +507,9 @@ impl ReplState {
                         .items
                         .iter()
                         .filter_map(|it| match it {
-                            ast::Item::Import(id) if id.module == *module_name => id.as_name.clone(),
+                            ast::Item::Import(id) if id.module == *module_name => {
+                                id.as_name.clone()
+                            }
                             _ => None,
                         })
                         .collect();
@@ -1348,7 +1350,7 @@ fn inject_stdlib_dict_forwarders(irm: &mut ir::IrModule) {
     let mut forwarders: Vec<(String, String)> = Vec::new();
     for item in &irm.items {
         let IrItem::Binding { name, .. } = item;
-        
+
         // Check if this is a qualified stdlib dict/inst binding
         if let Some(rest) = name.strip_prefix("Prelude.") {
             if rest.starts_with("__dict_") || rest.starts_with("__inst_") {
@@ -1432,7 +1434,7 @@ pub fn typecheck_and_link_ir(entry: &Path) -> Result<ir::IrModule> {
                 .map(|(name, tm)| (name, tm.module))
                 .collect();
             inject_constructor_forwarders(&mut irm, &ast_imports, &tm.module);
-            
+
             // Inject unqualified forwarders for stdlib instance dictionaries
             inject_stdlib_dict_forwarders(&mut irm);
         }
@@ -1472,7 +1474,10 @@ fn load_and_typecheck_transitive_imports(
             Ok(p) => p,
             Err(e) => {
                 if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
-                    eprintln!("[DEBUG_IMPORTS] Failed to resolve path for {}: {}", module_name, e);
+                    eprintln!(
+                        "[DEBUG_IMPORTS] Failed to resolve path for {}: {}",
+                        module_name, e
+                    );
                 }
                 continue; // Skip modules we can't resolve
             }
@@ -1493,7 +1498,10 @@ fn load_and_typecheck_transitive_imports(
     }
 
     if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
-        eprintln!("[DEBUG_IMPORTS] Successfully typechecked {} modules", result.len());
+        eprintln!(
+            "[DEBUG_IMPORTS] Successfully typechecked {} modules",
+            result.len()
+        );
     }
 
     Ok(result)

@@ -599,29 +599,29 @@ fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Ite
         found_newline_before_deriving = true;
         ts.bump();
     }
-    
+
     // If deriving starts after a newline, it must be indented
     if found_newline_before_deriving && matches!(ts.peek_kind(), Some(TokenKind::Indent)) {
         ts.bump(); // consume Indent
     }
-    
+
     if matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s == "deriving") {
         ts.bump();
         // Allow newlines/layout tokens after "deriving" keyword
         while matches!(ts.peek_kind(), Some(TokenKind::Newline | TokenKind::Indent)) {
             ts.bump();
         }
-        
+
         if matches!(ts.peek_kind(), Some(TokenKind::LParen)) {
             ts.bump();
             // Allow newlines/layout tokens inside parentheses
             while matches!(ts.peek_kind(), Some(TokenKind::Newline | TokenKind::Indent)) {
                 ts.bump();
             }
-            
+
             if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
                 deriving.push(ts.expect_ident()?);
-                
+
                 while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
                     ts.bump();
                     // Allow newlines/layout tokens after comma
@@ -631,7 +631,7 @@ fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Ite
                     deriving.push(ts.expect_ident()?);
                 }
             }
-            
+
             // Allow newlines/layout tokens before closing paren
             while matches!(ts.peek_kind(), Some(TokenKind::Newline | TokenKind::Indent)) {
                 ts.bump();
@@ -640,7 +640,7 @@ fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Ite
         } else {
             deriving.push(ts.expect_ident()?);
         }
-        
+
         // Consume Dedent if we consumed Indent earlier
         if found_newline_before_deriving && matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
             ts.bump();

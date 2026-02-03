@@ -764,7 +764,7 @@ fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
             // Most dictionary-passing rewrites use the concrete dictionary name directly
             // (e.g. `__dict_Monad_IO`).
             let candidates = [params[0].clone(), format!("{}_IO", params[0])];
-            
+
             // Try to find dict in globals first
             for name in &candidates {
                 if let Ok(dict) = eval_var(g, &std::collections::HashMap::new(), name) {
@@ -772,7 +772,7 @@ fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
                     return force_value(g, v);
                 }
             }
-            
+
             // If no dict found in globals, try to inject a default dict for specific classes
             // Extract class name from param (e.g., "__dict_Prelude.Show.Show" -> "Prelude.Show.Show")
             let class_name = params[0].strip_prefix("__dict_").unwrap_or("");
@@ -789,7 +789,7 @@ fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
 /// Only supports Num, Eq, and Show - other classes return None.
 fn try_get_default_dict(class_name: &str) -> Result<Value> {
     let unqualified = class_name.rsplit('.').next().unwrap_or(class_name);
-    
+
     match unqualified {
         "Show" => {
             // Default Show instance uses show_value_str
@@ -814,10 +814,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                         params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
                         body: Box::new(IrExpr::Apply {
                             func: Box::new(IrExpr::Var("+".to_string())),
-                            args: vec![
-                                IrExpr::Var("a".to_string()),
-                                IrExpr::Var("b".to_string()),
-                            ],
+                            args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
                         }),
                         env: std::collections::HashMap::new(),
                     },
@@ -828,10 +825,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                         params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
                         body: Box::new(IrExpr::Apply {
                             func: Box::new(IrExpr::Var("-".to_string())),
-                            args: vec![
-                                IrExpr::Var("a".to_string()),
-                                IrExpr::Var("b".to_string()),
-                            ],
+                            args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
                         }),
                         env: std::collections::HashMap::new(),
                     },
@@ -842,10 +836,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                         params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
                         body: Box::new(IrExpr::Apply {
                             func: Box::new(IrExpr::Var("*".to_string())),
-                            args: vec![
-                                IrExpr::Var("a".to_string()),
-                                IrExpr::Var("b".to_string()),
-                            ],
+                            args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
                         }),
                         env: std::collections::HashMap::new(),
                     },
@@ -860,10 +851,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                     params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
                     body: Box::new(IrExpr::Apply {
                         func: Box::new(IrExpr::Var("==".to_string())),
-                        args: vec![
-                            IrExpr::Var("a".to_string()),
-                            IrExpr::Var("b".to_string()),
-                        ],
+                        args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
                     }),
                     env: std::collections::HashMap::new(),
                 },
@@ -899,14 +887,14 @@ fn auto_apply_dict(g: &Globals, v: Value) -> Result<Value> {
                 // Apply the dict but don't recursively force to avoid infinite loops
                 return apply_one(g, v, dict);
             }
-            
+
             // If no dict found in globals, try to inject a default dict for specific classes
             // Extract class name from param (e.g., "__dict_Num_Integer" -> "Num")
             let class_name = params[0].strip_prefix("__dict_").unwrap_or("");
             // Handle both short names (e.g., "Num_Integer") and qualified names
             let class_base = class_name.split('_').next().unwrap_or(class_name);
             let class_unqualified = class_base.rsplit('.').next().unwrap_or(class_base);
-            
+
             if let Ok(default_dict) = try_get_default_dict(class_unqualified) {
                 // Apply the dict but don't recursively force to avoid infinite loops
                 return apply_one(g, v, default_dict);
@@ -1044,12 +1032,12 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         "__builtin_Integer_add" => Value::BuiltinAdd,
         "__builtin_Integer_mul" => Value::BuiltinMul,
 
-        "==" => Value::BuiltinEq,
+        "==" => return only_if_undefined(g, name, Value::BuiltinEq),
         "<" => Value::BuiltinLtInt,
         "<=" => Value::BuiltinLeInt,
         ">" => Value::BuiltinGtInt,
         ">=" => Value::BuiltinGeInt,
-        "/=" => Value::BuiltinNe,
+        "/=" => return only_if_undefined(g, name, Value::BuiltinNe),
 
         "&&" => Value::BuiltinAnd,
         "||" => Value::BuiltinOr,
@@ -1059,7 +1047,11 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         "boolToString" => Value::BuiltinBoolToString,
         "++" => Value::BuiltinListAppend,
 
-        "show" | "toString" => Value::BuiltinShow,
+        // Stable primitives used by derived instances (avoid conflict with overloaded names).
+        "__primShow" => Value::BuiltinShow,
+        "__primEq" => Value::BuiltinEq,
+
+        "show" | "toString" => return only_if_undefined(g, name, Value::BuiltinShow),
         "__show" | "__toString" => Value::BuiltinShowDictApply,
 
         "__builtinShowDict" => Value::Record(vec![("show".to_string(), Value::BuiltinShow)]),
