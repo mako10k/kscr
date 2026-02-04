@@ -625,9 +625,11 @@ pub enum Value {
     BuiltinShow,
     BuiltinShowDictApply,
     BuiltinShowDictApply1(Box<Value>),
+    BuiltinShowDictApply2(Box<Value>, Box<Value>),
     BuiltinEqDictApply,
     BuiltinEqDictApply1(Box<Value>),
     BuiltinEqDictApply2(Box<Value>, Box<Value>),
+    BuiltinEqDictApply3(Box<Value>, Box<Value>, Box<Value>),
     BuiltinRecordGet,
     BuiltinRecordGet1(Box<Value>),
     BuiltinError,
@@ -1636,10 +1638,12 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinListAppend => Ok(Value::BuiltinListAppend1(Box::new(arg))),
         Value::BuiltinListAppend1(a) => list_append(g, *a, arg),
         Value::BuiltinShowDictApply => Ok(Value::BuiltinShowDictApply1(Box::new(arg))),
-        Value::BuiltinShowDictApply1(d) => show_with_dict(g, *d, arg),
+        Value::BuiltinShowDictApply1(builtin_dict) => Ok(Value::BuiltinShowDictApply2(builtin_dict, Box::new(arg))),
+        Value::BuiltinShowDictApply2(builtin_dict, inst_dict) => show_with_dict(g, *builtin_dict, *inst_dict, arg),
         Value::BuiltinEqDictApply => Ok(Value::BuiltinEqDictApply1(Box::new(arg))),
-        Value::BuiltinEqDictApply1(d) => Ok(Value::BuiltinEqDictApply2(d, Box::new(arg))),
-        Value::BuiltinEqDictApply2(d, a) => eq_with_dict(g, *d, *a, arg),
+        Value::BuiltinEqDictApply1(builtin_dict) => Ok(Value::BuiltinEqDictApply2(builtin_dict, Box::new(arg))),
+        Value::BuiltinEqDictApply2(builtin_dict, inst_dict) => Ok(Value::BuiltinEqDictApply3(builtin_dict, inst_dict, Box::new(arg))),
+        Value::BuiltinEqDictApply3(builtin_dict, inst_dict, a) => eq_with_dict(g, *builtin_dict, *inst_dict, *a, arg),
         Value::BuiltinRecordGet => Ok(Value::BuiltinRecordGet1(Box::new(arg))),
         Value::BuiltinRecordGet1(d) => record_get(g, *d, arg),
         Value::BuiltinShow => show_to_string(g, arg),
@@ -2525,7 +2529,7 @@ fn show_to_string(g: &Globals, a: Value) -> Result<Value> {
     Ok(string_to_char_list(&show_value_str(g, a)?))
 }
 
-fn show_with_dict(g: &Globals, dict: Value, a: Value) -> Result<Value> {
+fn show_with_dict(g: &Globals, builtin_dict: Value, dict: Value, a: Value) -> Result<Value> {
     let dict = force_value(g, dict)?;
     let Value::Record(fields) = dict else {
         return Err(Error::msg(
@@ -2537,7 +2541,8 @@ fn show_with_dict(g: &Globals, dict: Value, a: Value) -> Result<Value> {
         return Err(Error::msg("Show dictionary missing field: show"));
     };
     let show_fn = force_value(g, show_fn)?;
-    apply_one(g, show_fn, a)
+    let f = apply_one(g, show_fn, builtin_dict)?;
+    apply_one(g, f, a)
 }
 
 fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
@@ -2640,7 +2645,13 @@ fn ne_value(g: &Globals, a: Value, b: Value) -> Result<Value> {
     Ok(Value::Bool(!eq_values(g, a, b)?))
 }
 
-fn eq_with_dict(g: &Globals, dict: Value, a: Value, b: Value) -> Result<Value> {
+fn eq_with_dict(
+    g: &Globals,
+    builtin_dict: Value,
+    dict: Value,
+    a: Value,
+    b: Value,
+) -> Result<Value> {
     let dict = force_value(g, dict)?;
     let Value::Record(fields) = dict else {
         return Err(Error::msg("__eq expects an Eq dictionary record"));
@@ -2650,7 +2661,8 @@ fn eq_with_dict(g: &Globals, dict: Value, a: Value, b: Value) -> Result<Value> {
         return Err(Error::msg("Eq dictionary missing field: eq"));
     };
     let eq_fn = force_value(g, eq_fn)?;
-    let f = apply_one(g, eq_fn, a)?;
+    let f = apply_one(g, eq_fn, builtin_dict)?;
+    let f = apply_one(g, f, a)?;
     apply_one(g, f, b)
 }
 
