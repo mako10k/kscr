@@ -4,7 +4,6 @@ use std::process::Command;
 fn eq_instance_can_override_builtin_behavior() {
     let out = Command::new(env!("CARGO_BIN_EXE_kscr"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env("KSCR_STDLIB_DIR", "stdlib")
         .args(["run", "--ksif-rebuild", "tests/repro_eq_override_instance.ks"])
         .output()
         .expect("run kscr");

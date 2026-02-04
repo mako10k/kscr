@@ -4,7 +4,6 @@ use std::process::Command;
 fn show_override_print_custom() {
     let out = Command::new(env!("CARGO_BIN_EXE_kscr"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env("KSCR_STDLIB_DIR", "stdlib")
         .args(["run", "--ksif-rebuild", "tests/runtime_show_override_custom.ks"])
         .output()
         .expect("run kscr");

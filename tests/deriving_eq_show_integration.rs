@@ -4,7 +4,6 @@ use std::process::Command;
 fn deriving_eq_show_works_for_user_defined_type() {
     let out = Command::new(env!("CARGO_BIN_EXE_kscr"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .env("KSCR_STDLIB_DIR", "stdlib")
         .args(["run", "--ksif-rebuild", "tests/repro_deriving_eq_show.ks"])
         .output()
         .expect("run kscr");
