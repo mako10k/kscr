@@ -28,7 +28,7 @@ module Prelude where
   class Eq a where
     eq :: a -> a -> Bool
 
-  (==) = eq
+  (==) a b = eq a b
 
   -- Default Eq instances for primitive types.
   -- These are normal instances (not special-cased primitives), but their implementations
@@ -51,7 +51,39 @@ module Prelude where
     show :: a -> [Char]
 
   -- Haskell-like alias: `toString` via Show.
-  toString = show
+  toString x = show x
+
+  -- Default Show instances for primitive types.
+  -- These are normal instances (not special-cased primitives), but their implementations
+  -- delegate to stable primitives.
+  instance Show Integer where
+    show = intToString
+
+  instance Show Bool where
+    show = boolToString
+
+  instance Show Char where
+    show = __primShow
+
+  instance Show Unit where
+    show = __primShow
+
+  instance Show Float64 where
+    show = __primShow
+
+  instance Show String where
+    show = \s -> s
+
+  -- Composite Show instances (polymorphic heads).
+  -- Delegate to the structural runtime builtin for MVP.
+  instance Show [a] where
+    show = __primShow
+
+  instance Show (a, b) where
+    show = __primShow
+
+  instance Show {a: a, b: b} where
+    show = __primShow
 
   instance Enum Integer where
     enumFrom a = a : enumFrom (a + 1)

@@ -123,15 +123,12 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
             Ok(())
         }
         "run" => {
-            eprintln!("[CLI] Run command started");
             let (stdlib_dir, path) = parse_stdlib_dir_and_file(args)?;
             if let Some(dir) = stdlib_dir {
                 types::set_stdlib_dir_override(dir);
             }
             let path_ref = Path::new(&path);
-            eprintln!("[CLI] Typechecking and linking: {}", path_ref.display());
             let irm = typecheck_and_link_ir(path_ref)?;
-            eprintln!("[CLI] Running main...");
             let _ = ir::run_main(&irm)?;
             Ok(())
         }
@@ -467,8 +464,8 @@ impl ReplState {
 
         // Phase 1: typecheck `it` without forcing a printing strategy.
         let _src0 = self.write_src(Some(expr), None)?;
-        let tm = types::typecheck_file(&self.repl_path)?;
-        let Some(it) = tm.inferred.get("it") else {
+        let tm0 = types::typecheck_file(&self.repl_path)?;
+        let Some(it) = tm0.inferred.get("it") else {
             return Err(crate::error::Error::msg("internal: missing it"));
         };
 
@@ -485,14 +482,47 @@ impl ReplState {
             None => "main = putStrLn (toString it)".to_string(),
         };
 
-        // Phase 3: run using the typechecked module from Phase 1.
+        // Phase 3: rewrite src with `main` included and typecheck again.
+        // This ensures desugaring/dict-passing is applied to the appended `main`.
+        let _src1 = self.write_src(Some(expr), Some(&main_src))?;
+        if std::env::var("KSCR_DEBUG_REPL_IR").ok().as_deref() == Some("1") {
+            eprintln!("[KSCR_DEBUG_REPL_IR] main_src: {main_src}");
+            eprintln!("[KSCR_DEBUG_REPL_IR] src:\n{_src1}");
+        }
+
+        let tm_run = types::typecheck_file(&self.repl_path)?;
+
         // NOTE: `typecheck_file()` no longer flattens imports, so runtime must link/bundle
         // transitive imports here (same as `kscr run`).
-        let mut module = tm.module.clone();
-        let main_mod = parser::parse_module(&format!("{main_src}\n"))?;
-        module.items.extend(main_mod.items);
+        let module = tm_run.module.clone();
 
         let mut irm = ir::lower_to_ir(&module)?;
+
+        if std::env::var("KSCR_DEBUG_REPL_IR").ok().as_deref() == Some("1") {
+            use crate::ir::IrItem;
+            match irm
+                .items
+                .iter()
+                .find(|it| matches!(it, IrItem::Binding { name, .. } if name == "main"))
+            {
+                Some(IrItem::Binding { name, expr }) => {
+                    eprintln!("[KSCR_DEBUG_REPL_IR] IR main binding: {name} = {expr:?}");
+                    // Helpful extra probes
+                    for probe in [
+                        "toString",
+                        "show",
+                        "__dict_Show_poly0",
+                        "Prelude.toString",
+                        "Prelude.show",
+                    ] {
+                        if let Some(crate::ir::IrItem::Binding { name, expr }) = irm.items.iter().find(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == probe)) {
+                            eprintln!("[KSCR_DEBUG_REPL_IR] IR probe binding: {name} = {expr:?}");
+                        }
+                    }
+                }
+                _ => eprintln!("[KSCR_DEBUG_REPL_IR] IR main binding not found"),
+            }
+        }
 
         // Load and typecheck transitive imports (same as typecheck_and_link_ir)
         // We need typechecked modules because instance dict bindings are generated during typecheck
@@ -539,6 +569,21 @@ impl ReplState {
             Err(e) => {
                 eprintln!("[WARN] Failed to load transitive imports: {}", e);
                 eprintln!("[WARN] IR may be incomplete; runtime errors may occur");
+            }
+        }
+
+        if std::env::var("KSCR_DEBUG_REPL_IR").ok().as_deref() == Some("1") {
+            use crate::ir::IrItem;
+            eprintln!("[KSCR_DEBUG_REPL_IR] FINAL dict/show bindings:");
+            for item in &irm.items {
+                let IrItem::Binding { name, expr } = item;
+                if name.contains("__dict_Show")
+                    || name.contains("__inst_Show")
+                    || name == "Prelude.toString"
+                    || name == "Prelude.show"
+                {
+                    eprintln!("[KSCR_DEBUG_REPL_IR]   {name} = {expr:?}");
+                }
             }
         }
 

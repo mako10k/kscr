@@ -24,6 +24,11 @@ pub(super) fn rewrite_class_dict_passing_in_module(
             .iter()
             .filter_map(|c| match c {
                 Constraint::Class { class, .. } => Some(class.name.clone()),
+                // Built-in constraints still require dictionary passing.
+                Constraint::Show(_) => Some("Show".to_string()),
+                Constraint::Eq(_) => Some("Eq".to_string()),
+                Constraint::ShowRow(_) => Some("ShowRow".to_string()),
+                Constraint::EqRow(_) => Some("EqRow".to_string()),
                 _ => None,
             })
             .collect();
@@ -82,7 +87,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
         .values()
         .filter_map(|dict_name| {
             // Extract unqualified name (last component after the last dot)
-            dict_name.split('.').last().map(|s| s.to_string())
+            dict_name.split('.').next_back().map(|s| s.to_string())
         })
         .collect();
 
@@ -98,6 +103,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
 
     let empty_shadowed: HashSet<String> = HashSet::new();
     let empty_local: HashMap<String, Vec<String>> = HashMap::new();
+    let empty_local_tys: HashMap<String, Ty> = HashMap::new();
     module.items = module
         .items
         .drain(..)
@@ -110,6 +116,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
                         inferred,
                         &needs_dicts,
                         &empty_local,
+                        &empty_local_tys,
                         &ground_dicts,
                         &empty_shadowed,
                         b.expr,
@@ -127,7 +134,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
 pub(super) fn dict_param_name(class: &str) -> String {
     // Use unqualified class name for dict parameters to avoid dots in parameter names.
     // For example, class "Prelude.Num.Num" becomes "__dict_Num" not "__dict_Prelude.Num.Num".
-    let unqualified = class.split('.').last().unwrap_or(class);
+    let unqualified = class.split('.').next_back().unwrap_or(class);
     let result = format!("__dict_{unqualified}");
     if std::env::var("KSCR_DEBUG_DICT_PARAM").is_ok() {
         eprintln!("[DICT_PARAM] class='{}' -> param='{}'", class, result);
@@ -464,34 +471,49 @@ pub(super) fn pick_instance_dict_expr_from_scope(
 ) -> Result<Option<ast::Expr>> {
     use ast::{Expr, ExprKind};
 
-    if ftv_ty(ty).is_empty() {
-        if let Ok(head) = instance_head_key_ty(ty) {
-            // Stage 2: instances are keyed by ClassId, but dict passing currently selects by
-            // unqualified class name (compatible with existing stdlib dict names).
-            if let Some(class_id) = class_env
-                .class_params
-                .keys()
-                .find(|id| id.name == class)
-                .cloned()
-            {
-                let key = (class_id, head);
-                if let Some(d) = class_env.instances.get(&key).cloned() {
-                    // For stdlib dicts (Prelude.*), use unqualified names at AST level.
-                    // For user-defined dicts, keep qualification to avoid conflicts.
-                    let dict_ref = if d.starts_with("Prelude.") {
-                        d.split('.').last().unwrap_or(&d).to_string()
-                    } else {
-                        d
-                    };
-                    return Ok(Some(Expr::new(span, ExprKind::Var(dict_ref))));
-                }
+    if !ftv_ty(ty).is_empty() {
+        // Not ground: we cannot soundly choose a global instance dictionary here.
+        return Ok(None);
+    }
+
+    let ty_norm = super::normalize_ty_for_instance_key(ty);
+
+    if let Ok(head) = instance_head_key_ty(&ty_norm) {
+        // Stage 2: instances are keyed by ClassId, but dict passing currently selects by
+        // unqualified class name (compatible with existing stdlib dict names).
+        if let Some(class_id) = class_env
+            .class_params
+            .keys()
+            .find(|id| {
+                id.name.rsplit('.').next().unwrap_or(id.name.as_str())
+                    == class.rsplit('.').next().unwrap_or(class)
+            })
+            .cloned()
+        {
+            let key = (class_id, head);
+            if let Some(d) = class_env.instances.get(&key).cloned() {
+                // For stdlib dicts (Prelude.*), use unqualified names at AST level.
+                // For user-defined dicts, keep qualification to avoid conflicts.
+                let dict_ref = if d.starts_with("Prelude.") {
+                    d.split('.').next_back().unwrap_or(d.as_str()).to_string()
+                } else {
+                    d
+                };
+                return Ok(Some(Expr::new(span, ExprKind::Var(dict_ref))));
             }
         }
     }
 
     let mut candidates: Vec<&PolyInstance> = Vec::new();
     for pi in &class_env.poly_instances {
-        if pi.class.name != class {
+        if pi
+            .class
+            .name
+            .rsplit('.')
+            .next()
+            .unwrap_or(pi.class.name.as_str())
+            != class.rsplit('.').next().unwrap_or(class)
+        {
             continue;
         }
 
@@ -535,7 +557,8 @@ pub(super) fn pick_instance_dict_expr_from_scope(
         }
 
         let pat = rename_vars(&pi.head_pat, &mut map, &mut next);
-        if unify(pat, ty.clone()).is_ok() {
+        let ok = unify(pat.clone(), ty_norm.clone()).is_ok();
+        if ok {
             candidates.push(pi);
         }
     }
@@ -555,8 +578,8 @@ pub(super) fn pick_instance_dict_expr_from_scope(
     let dict_ref = if pi.dict_name.starts_with("Prelude.") {
         pi.dict_name
             .split('.')
-            .last()
-            .unwrap_or(&pi.dict_name)
+            .next_back()
+            .unwrap_or(pi.dict_name.as_str())
             .to_string()
     } else {
         pi.dict_name.clone()
@@ -619,10 +642,24 @@ pub(super) fn call_info_for_call(
 
     let mut class_tys: HashMap<String, Ty> = HashMap::new();
     for c in cs {
-        let Constraint::Class { class, ty } = c else {
-            continue;
-        };
-        class_tys.insert(class.name, apply(&subst, ty));
+        match c {
+            Constraint::Class { class, ty } => {
+                class_tys.insert(class.name, apply(&subst, ty));
+            }
+            Constraint::Show(ty) => {
+                class_tys.insert("Show".to_string(), apply(&subst, ty));
+            }
+            Constraint::Eq(ty) => {
+                class_tys.insert("Eq".to_string(), apply(&subst, ty));
+            }
+            Constraint::ShowRow(ty) => {
+                class_tys.insert("ShowRow".to_string(), apply(&subst, ty));
+            }
+            Constraint::EqRow(ty) => {
+                class_tys.insert("EqRow".to_string(), apply(&subst, ty));
+            }
+            _ => {}
+        }
     }
 
     Some(CallInfo {

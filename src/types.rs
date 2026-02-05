@@ -2084,7 +2084,12 @@ pub fn infer_in_module(module: &ast::Module, expr: ast::Expr) -> Result<Ty> {
 }
 
 pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
-    infer_module_with_class_env(module, &ClassEnv::default(), &ClassEnvIndex::default())
+    // Unit-test-friendly default: include stdlib class env so class methods like `show`
+    // can be used as values (Haskell-like) without explicit Prelude wiring.
+    let stdlib_class_env = load_stdlib_class_env()?;
+    let mut cx = InferCtx::default();
+    let class_index = build_class_method_scheme_index(&mut cx, &stdlib_class_env)?;
+    infer_module_with_class_env(module, &stdlib_class_env, &class_index)
 }
 
 fn collect_deps_in_pattern(
@@ -3359,10 +3364,20 @@ fn lower_class_method_scheme(
     let class_param_ty = holes.entry(param).or_insert_with(|| cx.fresh()).clone();
 
     let mut cs: Vec<Constraint> = Vec::new();
-    cs.push(Constraint::Class {
-        class: class.clone(),
-        ty: class_param_ty,
-    });
+
+    // Built-in classes use specialized constraints.
+    // This keeps inference/solver behavior consistent and avoids forcing all code paths
+    // to handle fully-general class constraints.
+    match class.name.rsplit('.').next().unwrap_or(class.name.as_str()) {
+        "Show" => cs.push(Constraint::Show(class_param_ty)),
+        "Eq" => cs.push(Constraint::Eq(class_param_ty)),
+        "ShowRow" => cs.push(Constraint::ShowRow(class_param_ty)),
+        "EqRow" => cs.push(Constraint::EqRow(class_param_ty)),
+        _ => cs.push(Constraint::Class {
+            class: class.clone(),
+            ty: class_param_ty,
+        }),
+    }
 
     for p in &qt.preds {
         match p {
@@ -3518,12 +3533,55 @@ fn instance_head_key_ty(ty: &Ty) -> Result<String> {
             }
             out
         }
+        Ty::List(t) => {
+            let mut out = "List".to_string();
+            out.push('_');
+            out.push_str(&instance_head_key_ty(t)?);
+            out
+        }
+        Ty::Tuple(ts) => {
+            let mut out = format!("Tuple{}", ts.len());
+            for t in ts {
+                out.push('_');
+                out.push_str(&instance_head_key_ty(t)?);
+            }
+            out
+        }
+        Ty::Record(fields) => {
+            // Key records by their sorted label set only (types are ignored for the key).
+            // This is conservative and primarily avoids internal MVP errors.
+            let mut labels: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+            labels.sort();
+            labels.dedup();
+            format!("Record{}", labels.join("_"))
+        }
+        Ty::RecordOpen(fields, _rest) => {
+            let mut labels: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+            labels.sort();
+            labels.dedup();
+            format!("RecordOpen{}", labels.join("_"))
+        }
+        Ty::Func(a, b) => {
+            // Avoid internal errors: functions can appear as ground types in constraints.
+            // If there is no matching instance, callers will report “cannot satisfy constraint”.
+            format!("Func_{}_{}", instance_head_key_ty(a)?, instance_head_key_ty(b)?)
+        }
         _ => {
             return Err(Error::msg(
                 "MVP: class constraints support only constructor/app instance heads",
             ))
         }
     })
+}
+
+fn normalize_ty_for_instance_key(ty: &Ty) -> Ty {
+    // Built-in surface alias: String = [Char].
+    match ty {
+        Ty::List(t) if matches!(t.as_ref(), Ty::Con(n) if n == "Char") => {
+            Ty::Con("String".to_string())
+        }
+        _ => ty.clone(),
+    }
 }
 
 fn mangle_ident(s: &str) -> String {
@@ -3585,10 +3643,12 @@ fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
 
 /// Process classes and instances with optional strict canonicalization.
 fn desugar_typeclasses_with_strict(module: &mut ast::Module, strict: bool) -> Result<ClassEnv> {
-    eprintln!(
-        "[DESUGAR] Starting desugar_typeclasses for module: {:?}",
-        module.name
-    );
+    if std::env::var("KSCR_DEBUG_DESUGAR").is_ok() {
+        eprintln!(
+            "[DESUGAR] Starting desugar_typeclasses for module: {:?}",
+            module.name
+        );
+    }
     let mut env = ClassEnv {
         aliases: collect_type_aliases(module),
         ..Default::default()
@@ -3666,8 +3726,20 @@ fn process_instances_with_env(
     // Expand deriving clauses BEFORE canonicalization
     expand_deriving_clauses(module)?;
 
-    // Canonicalize class references in instance declarations
-    canonicalize_class_names_in_module_combined(module, strict)?;
+    // Canonicalize class references in instance declarations.
+    // While building the stdlib ClassEnv, some stdlib modules intentionally avoid importing
+    // Prelude to prevent cycles, but still reference Prelude classes (e.g. via deriving).
+    // Use merged_env as an additional origin source to resolve those references.
+    let mut extra_origin: HashMap<String, Vec<String>> = HashMap::new();
+    for class_id in merged_env.class_params.keys() {
+        if let Some((m, short)) = class_id.name.rsplit_once('.') {
+            let v = extra_origin.entry(short.to_string()).or_default();
+            if !v.iter().any(|x| x == m) {
+                v.push(m.to_string());
+            }
+        }
+    }
+    canonicalize_class_names_in_module_combined_with_extra_origin(module, strict, &extra_origin)?;
 
     // Collect instances and generate dictionary items
     let instance_decls = collect_instance_decls(module);
@@ -3675,6 +3747,8 @@ fn process_instances_with_env(
     // Create a working env that combines merged classes with local instances
     let mut working_env = merged_env.clone();
     working_env.aliases = collect_type_aliases(module);
+
+    let merged_poly_len = working_env.poly_instances.len();
 
     preregister_instance_dicts(&mut working_env, &instance_decls, module.name.as_deref())?;
 
@@ -3697,7 +3771,7 @@ fn process_instances_with_env(
     let mut local_env = ClassEnv {
         aliases: collect_type_aliases(module),
         instances: working_env.instances.clone(),
-        poly_instances: working_env.poly_instances.clone(),
+        poly_instances: working_env.poly_instances[merged_poly_len..].to_vec(),
         ..Default::default()
     };
 
@@ -3705,12 +3779,6 @@ fn process_instances_with_env(
     local_env
         .instances
         .retain(|k, _| !merged_env.instances.contains_key(k));
-    local_env.poly_instances.retain(|pi| {
-        !merged_env
-            .poly_instances
-            .iter()
-            .any(|mpi| mpi.dict_name == pi.dict_name)
-    });
 
     Ok(local_env)
 }
@@ -3745,9 +3813,10 @@ fn module_imported_exports(
     Ok(Some((imported, exports)))
 }
 
-fn canonicalize_class_names_in_module_combined(
+fn canonicalize_class_names_in_module_combined_with_extra_origin(
     module: &mut ast::Module,
     strict: bool,
+    extra_origin: &HashMap<String, Vec<String>>,
 ) -> Result<()> {
     fn push_origin(map: &mut HashMap<String, Vec<String>>, name: &str, module: String) {
         let v = map.entry(name.to_string()).or_default();
@@ -3790,8 +3859,24 @@ fn canonicalize_class_names_in_module_combined(
         }
     }
 
+    // Third, merge extra origins (e.g. merged stdlib ClassEnv) for cases where
+    // a module references a stdlib class without importing its defining module.
+    for (name, modules) in extra_origin {
+        for m in modules {
+            push_origin(&mut class_origin, name, m.clone());
+        }
+    }
+
     canonicalize_class_refs_in_module(module, &class_origin, strict)?;
     Ok(())
+}
+
+fn canonicalize_class_names_in_module_combined(
+    module: &mut ast::Module,
+    strict: bool,
+) -> Result<()> {
+    let extra_origin: HashMap<String, Vec<String>> = HashMap::new();
+    canonicalize_class_names_in_module_combined_with_extra_origin(module, strict, &extra_origin)
 }
 
 fn canonicalize_class_names_in_merged_stdlib(module: &mut ast::Module) {
@@ -3947,10 +4032,12 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
         } else {
             c.name.clone()
         };
-        eprintln!(
-            "[COLLECT] Collecting class: {} (from name: {}, def_module: {:?})",
-            class_name, c.name, c.def_module
-        );
+        if std::env::var("KSCR_DEBUG_COLLECT_CLASS").is_ok() {
+            eprintln!(
+                "[COLLECT] Collecting class: {} (from name: {}, def_module: {:?})",
+                class_name, c.name, c.def_module
+            );
+        }
         let class_id = ast::ClassId::dummy(class_name);
 
         if env.class_params.contains_key(&class_id) {
@@ -4466,6 +4553,55 @@ fn preregister_instance_dicts(
     // We also collect polymorphic instance metadata for later selection.
     // Dictionary names are unqualified here; they will be qualified during IR merging.
     let mut poly_to_register: Vec<PolyInstance> = Vec::new();
+
+    fn poly_instance_head_key_ast(ty: &ast::Type) -> String {
+        use ast::Type;
+
+        fn is_lowercase_ident(s: &str) -> bool {
+            s.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        }
+
+        match ty {
+            Type::Unit => "Unit".to_string(),
+            Type::Integer => "Integer".to_string(),
+            Type::Bool => "Bool".to_string(),
+            Type::Float64 => "Float64".to_string(),
+            Type::Char => "Char".to_string(),
+            Type::String => "String".to_string(),
+            Type::Hole(_) => "Hole".to_string(),
+            Type::Var(name) => {
+                if is_lowercase_ident(name) {
+                    "poly".to_string()
+                } else {
+                    name.clone()
+                }
+            }
+            Type::App { head, args } => {
+                let mut out = poly_instance_head_key_ast(head);
+                for a in args {
+                    out.push('_');
+                    out.push_str(&poly_instance_head_key_ast(a));
+                }
+                out
+            }
+            Type::List(t) => format!("List_{}", poly_instance_head_key_ast(t)),
+            Type::Tuple(ts) => {
+                let mut out = "Tuple".to_string();
+                for t in ts {
+                    out.push('_');
+                    out.push_str(&poly_instance_head_key_ast(t));
+                }
+                out
+            }
+            Type::Record(_) => "Record".to_string(),
+            Type::RecordOpen(_, _) => "RecordOpen".to_string(),
+            Type::Func(a, b) => format!(
+                "Func_{}_{}",
+                poly_instance_head_key_ast(a),
+                poly_instance_head_key_ast(b)
+            ),
+        }
+    }
     for inst in instance_decls {
         // Use unqualified class name for dictionary names to avoid dots
         // E.g., "Prelude.Ring.Ring" -> "Ring"
@@ -4489,10 +4625,11 @@ fn preregister_instance_dicts(
             }
             Err(_) => {
                 // Polymorphic (non-ground) instance: pre-register a stable dictionary name.
+                let poly_key = poly_instance_head_key_ast(&inst.ty);
                 let dict_name = format!(
-                    "__dict_{}_poly{}",
+                    "__dict_{}_poly_{}",
                     unqualified_class,
-                    poly_to_register.len()
+                    mangle_ident(&poly_key)
                 );
 
                 // Lower the instance head type into an internal type pattern.
@@ -4806,7 +4943,8 @@ fn resolve_instance_dict_name(
             }) else {
                 return Err(Error::msg("internal: missing poly instance"));
             };
-            Ok((None, "poly".to_string(), pi.dict_name.clone()))
+            let ty_mangled = mangle_ident(&pi.dict_name);
+            Ok((None, ty_mangled, pi.dict_name.clone()))
         }
     }
 }
@@ -5176,6 +5314,88 @@ fn unify_instance_head(pattern: &Ty, concrete: &Ty) -> Option<()> {
                 }
             }
             (Ty::Con(p_name), Ty::Con(c_name)) => p_name == c_name,
+            (Ty::List(p), Ty::List(c)) => unify_helper(p, c, subst),
+            (Ty::Tuple(p_ts), Ty::Tuple(c_ts)) => {
+                if p_ts.len() != c_ts.len() {
+                    return false;
+                }
+                for (p_t, c_t) in p_ts.iter().zip(c_ts.iter()) {
+                    if !unify_helper(p_t, c_t, subst) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (Ty::Func(p_a, p_b), Ty::Func(c_a, c_b)) => {
+                unify_helper(p_a, c_a, subst) && unify_helper(p_b, c_b, subst)
+            }
+            (Ty::Record(p_fields), Ty::Record(c_fields)) => {
+                if p_fields.len() != c_fields.len() {
+                    return false;
+                }
+
+                let mut p_sorted = p_fields.clone();
+                let mut c_sorted = c_fields.clone();
+                p_sorted.sort_by(|(a, _), (b, _)| a.cmp(b));
+                c_sorted.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+                for ((p_k, p_t), (c_k, c_t)) in p_sorted.iter().zip(c_sorted.iter()) {
+                    if p_k != c_k {
+                        return false;
+                    }
+                    if !unify_helper(p_t, c_t, subst) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (Ty::RecordOpen(p_req, p_rest), Ty::Record(c_fields)) => {
+                // pat: { req..., ...rest }  con: { fields... }
+                // Require all required fields to exist, and unify rest with the residual fields.
+                let mut c_map: std::collections::BTreeMap<&str, &Ty> =
+                    std::collections::BTreeMap::new();
+                for (k, t) in c_fields {
+                    c_map.insert(k.as_str(), t);
+                }
+
+                for (p_k, p_t) in p_req {
+                    let Some(c_t) = c_map.get(p_k.as_str()) else {
+                        return false;
+                    };
+                    if !unify_helper(p_t, c_t, subst) {
+                        return false;
+                    }
+                }
+
+                let mut residual: Vec<(String, Ty)> = Vec::new();
+                for (k, t) in c_fields {
+                    if !p_req.iter().any(|(pk, _)| pk == k) {
+                        residual.push((k.clone(), t.clone()));
+                    }
+                }
+                residual.sort_by(|(a, _), (b, _)| a.cmp(b));
+                unify_helper(p_rest, &Ty::Record(residual), subst)
+            }
+            (Ty::RecordOpen(p_req, p_rest), Ty::RecordOpen(c_req, c_rest)) => {
+                // Conservative structural match: required field set must align (up to order),
+                // and residual row types must unify.
+                if p_req.len() != c_req.len() {
+                    return false;
+                }
+                let mut p_sorted = p_req.clone();
+                let mut c_sorted = c_req.clone();
+                p_sorted.sort_by(|(a, _), (b, _)| a.cmp(b));
+                c_sorted.sort_by(|(a, _), (b, _)| a.cmp(b));
+                for ((p_k, p_t), (c_k, c_t)) in p_sorted.iter().zip(c_sorted.iter()) {
+                    if p_k != c_k {
+                        return false;
+                    }
+                    if !unify_helper(p_t, c_t, subst) {
+                        return false;
+                    }
+                }
+                unify_helper(p_rest, c_rest, subst)
+            }
             (
                 Ty::App {
                     head: p_head,
@@ -5239,7 +5459,8 @@ fn simplify_process_constraint(
             if !ftv_ty(&ty).is_empty() {
                 out.push(Constraint::Class { class, ty });
             } else {
-                let key_ty = instance_head_key_ty(&ty)?;
+                let ty_norm = normalize_ty_for_instance_key(&ty);
+                let key_ty = instance_head_key_ty(&ty_norm)?;
                 let key = (class.clone(), key_ty.clone());
 
                 // First check concrete instances
@@ -5247,7 +5468,7 @@ fn simplify_process_constraint(
 
                 // Also check polymorphic instances
                 let has_poly = class_env.poly_instances.iter().any(|pi| {
-                    pi.class == class && unify_instance_head(&pi.head_pat, &ty).is_some()
+                    pi.class == class && unify_instance_head(&pi.head_pat, &ty_norm).is_some()
                 });
 
                 if !has_concrete && !has_poly {
@@ -6855,10 +7076,12 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
 /// Returns a map of module_name -> ast::Module for all imported modules.
 /// Uses existing ModuleLoader cache to be cycle-safe.
 pub fn load_transitive_imports_for_runtime(entry: &Path) -> Result<HashMap<String, ast::Module>> {
-    eprintln!(
-        "[RUNTIME] load_transitive_imports_for_runtime called for: {}",
-        entry.display()
-    );
+    if std::env::var("KSCR_DEBUG_RUNTIME_IMPORTS").is_ok() {
+        eprintln!(
+            "[RUNTIME] load_transitive_imports_for_runtime called for: {}",
+            entry.display()
+        );
+    }
     let entry = std::fs::canonicalize(entry)?;
     let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
 
@@ -7179,6 +7402,18 @@ fn ensure_ksif_for_module(
     // If we return early here, we must still mark the module as done; otherwise a later
     // import of the same module will look like a cycle.
     let needs_rebuild = if ksif_path.exists() {
+        // If the source file is newer than the cached KSIF, rebuild.
+        // This keeps local stdlib/project edits visible without requiring --ksif-rebuild.
+        let src_is_newer = (|| {
+            let src_m = std::fs::metadata(&module_path).ok()?.modified().ok()?;
+            let ksif_m = std::fs::metadata(&ksif_path).ok()?.modified().ok()?;
+            Some(src_m > ksif_m)
+        })()
+        .unwrap_or(false);
+
+        if src_is_newer {
+            true
+        } else
         if policy.force_rebuild {
             // Force rebuild requested
             true
@@ -7632,18 +7867,12 @@ fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
         return module;
     }
 
-    // Check if there are any explicit imports
-    let has_any_import = module
-        .items
-        .iter()
-        .any(|it| matches!(it, ast::Item::Import(_)));
-
-    // If there are no explicit imports, add unqualified Prelude import.
-    // If there are explicit imports, add qualified Prelude import (for dictionaries).
-    // This ensures dictionaries are available without polluting the namespace.
+    // Always import Prelude unqualified.
+    // Many programs and tests rely on Prelude value bindings (e.g. (==), (/=), toString)
+    // being available without explicit imports.
     let prelude_import = ast::Item::Import(ast::ImportDecl {
         module: "Prelude".to_string(),
-        qualified: has_any_import, // qualified if there are other imports
+        qualified: false,
         as_name: None,
         import_spec: None,
     });
@@ -7784,10 +8013,8 @@ fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()
             continue;
         };
 
-        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-            if n.contains("__dict_") {
-                eprintln!("[DICT]   Found binding: {}", n);
-            }
+        if std::env::var("KSCR_DEBUG_DICT").is_ok() && n.contains("__dict_") {
+            eprintln!("[DICT]   Found binding: {}", n);
         }
 
         // Note: stdlib-provided dictionaries appear as qualified value bindings like
@@ -7796,7 +8023,7 @@ fn inject_stdlib_instance_dict_forwarders(module: &mut ast::Module) -> Result<()
         // so we need forwarders.
         if n.starts_with("Prelude.") {
             // Extract the unqualified dict name (last component that starts with __dict_)
-            if let Some(unqualified) = n.split('.').last() {
+            if let Some(unqualified) = n.split('.').next_back() {
                 if unqualified.starts_with("__dict_") {
                     exports_map.insert(unqualified.to_string(), n.clone());
                 }
@@ -7876,10 +8103,8 @@ fn inject_stdlib_instance_dict_forwarders_post_typecheck(module: &mut ast::Modul
             continue;
         };
 
-        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-            if n.contains("__dict_") {
-                eprintln!("[DICT]   Found binding: {}", n);
-            }
+        if std::env::var("KSCR_DEBUG_DICT").is_ok() && n.contains("__dict_") {
+            eprintln!("[DICT]   Found binding: {}", n);
         }
 
         // Look for qualified dict bindings from Prelude
@@ -7887,7 +8112,7 @@ fn inject_stdlib_instance_dict_forwarders_post_typecheck(module: &mut ast::Modul
             || n.starts_with("Prelude.Num.")
             || n.starts_with("Prelude.Ring.")
         {
-            if let Some(unqualified) = n.split('.').last() {
+            if let Some(unqualified) = n.split('.').next_back() {
                 if unqualified.starts_with("__dict_") {
                     exports_map.insert(unqualified.to_string(), n.clone());
                 }
@@ -7961,10 +8186,33 @@ fn inject_stdlib_class_decls(module: &mut ast::Module) -> Result<()> {
     Ok(())
 }
 
-pub fn typecheck(module: ast::Module) -> Result<TypedModule> {
-    typecheck_internal(module, None)
+pub fn typecheck(mut module: ast::Module) -> Result<TypedModule> {
+    // AST-only typechecking is widely used by unit tests. It still needs stdlib class
+    // information (for method/value fallback like `show`).
+    // NOTE: AST-only `typecheck` does not resolve imports. Keep it import-free and require
+    // `typecheck_file` when imports are present.
+    let stdlib_class_env = load_stdlib_class_env()?;
+    // For unit tests and REPL-like AST-only callers, behave like a tiny file-based compilation
+    // rooted at the project directory:
+    // - bring Prelude values into scope
+    // - load exported schemes from cached `.ksif`
+    // - inject imported instance dictionaries so method calls can be dict-passed
+    module = ensure_implicit_prelude_import(module);
+
+    let entry_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let imported = load_imported_ksif_schemes(&module, &entry_dir)?;
+
+    // Synthetic entry path so we can resolve stdlib modules and inject imported instances.
+    let dummy_entry_path = entry_dir.join("__ast_typecheck__.ks");
+    typecheck_internal_core_with_entry_path(
+        module,
+        Some(&stdlib_class_env),
+        Some(imported),
+        Some(&dummy_entry_path),
+    )
 }
 
+#[allow(dead_code)]
 fn typecheck_internal(
     module: ast::Module,
     stdlib_class_env: Option<&ClassEnv>,
@@ -8168,13 +8416,7 @@ fn typecheck_internal_core_with_entry_path(
         rewrite_entry_main_apply_dicts(&mut module, &class_env, &main_entry_class_constraints)?;
 
         // Rewrite method calls/vars while dictionary bindings still exist.
-        // This must happen before `rewrite_show_calls_in_module`, which replaces
-        // `show`/`==` etc. with builtins like `__show`/`__eq` and drops the need for
-        // class-method resolution at runtime.
         rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred)?;
-
-        // MVP: start routing `show`/`toString` calls through an explicit Show dictionary.
-        rewrite_show_calls_in_module(&mut module);
 
         // Drop class / instance decls after desugaring.
         module
@@ -8189,6 +8431,7 @@ fn typecheck_internal_core_with_entry_path(
     })
 }
 
+#[allow(dead_code)]
 #[allow(clippy::too_many_lines)]
 fn typecheck_internal_core(
     module: ast::Module,
@@ -8331,7 +8574,8 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
             e.with_context(format!("while loading stdlib module {}", path.display()))
         })?;
 
-        // Create a temporary module containing InstanceDecl, ClassDecl, and Import items.
+        // Create a temporary module containing InstanceDecl, ClassDecl, Import, and DataDecl items.
+        // DataDecl is needed so `deriving (...)` can expand into synthetic InstanceDecls.
         // We need ClassDecl items for canonicalization to resolve locally-defined classes.
         let mut tmp_module = ast::Module {
             name: parsed.name.clone(),
@@ -8342,18 +8586,21 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
                 .filter(|it| {
                     matches!(
                         it,
-                        ast::Item::InstanceDecl(_) | ast::Item::ClassDecl(_) | ast::Item::Import(_)
+                        ast::Item::InstanceDecl(_)
+                            | ast::Item::ClassDecl(_)
+                            | ast::Item::Import(_)
+                            | ast::Item::DataDecl(_)
                     )
                 })
                 .collect(),
         };
 
-        // Skip modules with no instance declarations.
-        if !tmp_module
-            .items
-            .iter()
-            .any(|it| matches!(it, ast::Item::InstanceDecl(_)))
-        {
+        // Skip modules with neither explicit instances nor deriving clauses.
+        if !tmp_module.items.iter().any(|it| match it {
+            ast::Item::InstanceDecl(_) => true,
+            ast::Item::DataDecl(dd) => !dd.deriving.is_empty(),
+            _ => false,
+        }) {
             continue;
         }
 
@@ -8658,9 +8905,16 @@ fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
         dst.instances.entry(k.clone()).or_insert_with(|| v.clone());
     }
 
-    if !src.poly_instances.is_empty() {
-        // For now, keep poly instances local; merging them safely requires unification-aware
-        // selection across module boundaries.
+    // Merge polymorphic instances too.
+    // These are required for common stdlib constraints (e.g. `Show (Maybe a)`).
+    for pi in &src.poly_instances {
+        if !dst
+            .poly_instances
+            .iter()
+            .any(|dpi| dpi.dict_name == pi.dict_name)
+        {
+            dst.poly_instances.push(pi.clone());
+        }
     }
 
     Ok(())
@@ -11702,395 +11956,6 @@ fn pat_defined_names(p: &ast::Pattern, out: &mut HashSet<String>) {
     }
 }
 
-fn rewrite_show_calls_in_binding(b: ast::Binding) -> ast::Binding {
-    ast::Binding {
-        doc: b.doc,
-        pat: b.pat,
-        expr: rewrite_show_calls_in_expr(b.expr),
-        span: b.span,
-    }
-}
-
-fn rewrite_show_apply_builtin_show(
-    span: ast::Span,
-    args: &mut Vec<ast::Expr>,
-) -> Option<ast::Expr> {
-    use ast::ExprKind;
-    if args.len() != 1 {
-        return None;
-    }
-
-    let a0 = args.remove(0);
-    Some(ast::Expr::new(
-        span,
-        ExprKind::Apply {
-            func: Box::new(ast::Expr::new(span, ExprKind::Var("__show".to_string()))),
-            args: vec![
-                ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
-                a0,
-            ],
-        },
-    ))
-}
-
-fn rewrite_show_apply_builtin_to_string(
-    span: ast::Span,
-    args: &mut Vec<ast::Expr>,
-) -> Option<ast::Expr> {
-    use ast::ExprKind;
-    if args.len() != 1 {
-        return None;
-    }
-
-    let a0 = args.remove(0);
-    Some(ast::Expr::new(
-        span,
-        ExprKind::Apply {
-            func: Box::new(ast::Expr::new(
-                span,
-                ExprKind::Var("__toString".to_string()),
-            )),
-            args: vec![
-                ast::Expr::new(span, ExprKind::Var("__builtinShowDict".to_string())),
-                a0,
-            ],
-        },
-    ))
-}
-
-fn rewrite_show_apply_builtin_eq(span: ast::Span, args: &mut Vec<ast::Expr>) -> Option<ast::Expr> {
-    use ast::ExprKind;
-    match args.len() {
-        1 => {
-            let a0 = args.remove(0);
-            Some(ast::Expr::new(
-                span,
-                ExprKind::Apply {
-                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__eq".to_string()))),
-                    args: vec![
-                        ast::Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
-                        a0,
-                    ],
-                },
-            ))
-        }
-        2 => {
-            let a = args.remove(0);
-            let b = args.remove(0);
-            Some(ast::Expr::new(
-                span,
-                ExprKind::Apply {
-                    func: Box::new(ast::Expr::new(span, ExprKind::Var("__eq".to_string()))),
-                    args: vec![
-                        ast::Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
-                        a,
-                        b,
-                    ],
-                },
-            ))
-        }
-        _ => None,
-    }
-}
-
-fn rewrite_show_apply_builtin_neq(span: ast::Span, args: &mut Vec<ast::Expr>) -> Option<ast::Expr> {
-    use ast::ExprKind;
-    match args.len() {
-        1 => {
-            // Section: `(/= a)` becomes `\b -> not (__eq __builtinEqDict a b)`.
-            let a = args.remove(0);
-            let bname = "__kscr_neq_rhs".to_string();
-            Some(ast::Expr::new(
-                span,
-                ExprKind::Lambda {
-                    params: vec![bname.clone()],
-                    body: Box::new(ast::Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(ast::Expr::new(span, ExprKind::Var("not".to_string()))),
-                            args: vec![ast::Expr::new(
-                                span,
-                                ExprKind::Apply {
-                                    func: Box::new(ast::Expr::new(
-                                        span,
-                                        ExprKind::Var("__eq".to_string()),
-                                    )),
-                                    args: vec![
-                                        ast::Expr::new(
-                                            span,
-                                            ExprKind::Var("__builtinEqDict".to_string()),
-                                        ),
-                                        a,
-                                        ast::Expr::new(span, ExprKind::Var(bname)),
-                                    ],
-                                },
-                            )],
-                        },
-                    )),
-                },
-            ))
-        }
-        2 => {
-            let a = args.remove(0);
-            let b = args.remove(0);
-            Some(ast::Expr::new(
-                span,
-                ExprKind::Apply {
-                    func: Box::new(ast::Expr::new(span, ExprKind::Var("not".to_string()))),
-                    args: vec![ast::Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(ast::Expr::new(span, ExprKind::Var("__eq".to_string()))),
-                            args: vec![
-                                ast::Expr::new(span, ExprKind::Var("__builtinEqDict".to_string())),
-                                a,
-                                b,
-                            ],
-                        },
-                    )],
-                },
-            ))
-        }
-        _ => None,
-    }
-}
-
-fn rewrite_show_apply_special(
-    span: ast::Span,
-    func: &ast::Expr,
-    mut args: Vec<ast::Expr>,
-) -> Option<ast::Expr> {
-    use ast::ExprKind;
-    let ExprKind::Var(n) = &func.kind else {
-        return None;
-    };
-
-    match n.as_str() {
-        "show" => rewrite_show_apply_builtin_show(span, &mut args),
-        "toString" => rewrite_show_apply_builtin_to_string(span, &mut args),
-        "==" => rewrite_show_apply_builtin_eq(span, &mut args),
-        "/=" => rewrite_show_apply_builtin_neq(span, &mut args),
-        _ => None,
-    }
-}
-
-fn rewrite_show_calls_in_apply(
-    span: ast::Span,
-    func: ast::Expr,
-    args: Vec<ast::Expr>,
-) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-
-    let func = rewrite_show_calls_in_expr(func);
-    let args: Vec<_> = args.into_iter().map(rewrite_show_calls_in_expr).collect();
-
-    if let Some(rewritten) = rewrite_show_apply_special(span, &func, args.clone()) {
-        return rewritten;
-    }
-
-    Expr::new(
-        span,
-        ExprKind::Apply {
-            func: Box::new(func),
-            args,
-        },
-    )
-}
-
-fn rewrite_show_calls_in_lambda(
-    span: ast::Span,
-    params: Vec<String>,
-    body: ast::Expr,
-) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Lambda {
-            params,
-            body: Box::new(rewrite_show_calls_in_expr(body)),
-        },
-    )
-}
-
-fn rewrite_show_calls_in_if(
-    span: ast::Span,
-    cond: ast::Expr,
-    then_branch: ast::Expr,
-    else_branch: ast::Expr,
-) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::If {
-            cond: Box::new(rewrite_show_calls_in_expr(cond)),
-            then_branch: Box::new(rewrite_show_calls_in_expr(then_branch)),
-            else_branch: Box::new(rewrite_show_calls_in_expr(else_branch)),
-        },
-    )
-}
-
-fn rewrite_show_calls_in_let(
-    span: ast::Span,
-    bindings: Vec<ast::Binding>,
-    body: ast::Expr,
-) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Let {
-            bindings: bindings
-                .into_iter()
-                .map(rewrite_show_calls_in_binding)
-                .collect(),
-            body: Box::new(rewrite_show_calls_in_expr(body)),
-        },
-    )
-}
-
-fn rewrite_show_calls_in_where(
-    span: ast::Span,
-    expr: ast::Expr,
-    bindings: Vec<ast::Binding>,
-) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Where {
-            expr: Box::new(rewrite_show_calls_in_expr(expr)),
-            bindings: bindings
-                .into_iter()
-                .map(rewrite_show_calls_in_binding)
-                .collect(),
-        },
-    )
-}
-
-fn rewrite_show_calls_in_annot(span: ast::Span, expr: ast::Expr, ty: ast::QualType) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Annot {
-            expr: Box::new(rewrite_show_calls_in_expr(expr)),
-            ty,
-        },
-    )
-}
-
-fn rewrite_show_calls_in_do(span: ast::Span, stmts: Vec<ast::DoStmt>) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Do(
-            stmts
-                .into_iter()
-                .map(|s| match s {
-                    ast::DoStmt::Bind { pat, expr } => ast::DoStmt::Bind {
-                        pat,
-                        expr: rewrite_show_calls_in_expr(expr),
-                    },
-                    ast::DoStmt::Expr(e) => ast::DoStmt::Expr(rewrite_show_calls_in_expr(e)),
-                })
-                .collect(),
-        ),
-    )
-}
-
-fn rewrite_show_calls_in_case(
-    span: ast::Span,
-    expr: ast::Expr,
-    arms: Vec<ast::CaseArm>,
-) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Case {
-            expr: Box::new(rewrite_show_calls_in_expr(expr)),
-            arms: arms
-                .into_iter()
-                .map(|a| ast::CaseArm {
-                    pat: a.pat,
-                    guard: a.guard.map(rewrite_show_calls_in_expr),
-                    body: rewrite_show_calls_in_expr(a.body),
-                })
-                .collect(),
-        },
-    )
-}
-
-fn rewrite_show_calls_in_cons(span: ast::Span, head: ast::Expr, tail: ast::Expr) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Cons {
-            head: Box::new(rewrite_show_calls_in_expr(head)),
-            tail: Box::new(rewrite_show_calls_in_expr(tail)),
-        },
-    )
-}
-
-fn rewrite_show_calls_in_list(span: ast::Span, es: Vec<ast::Expr>) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::List(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
-    )
-}
-
-fn rewrite_show_calls_in_tuple(span: ast::Span, es: Vec<ast::Expr>) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Tuple(es.into_iter().map(rewrite_show_calls_in_expr).collect()),
-    )
-}
-
-fn rewrite_show_calls_in_record(span: ast::Span, fs: Vec<(String, ast::Expr)>) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    Expr::new(
-        span,
-        ExprKind::Record(
-            fs.into_iter()
-                .map(|(l, e)| (l, rewrite_show_calls_in_expr(e)))
-                .collect(),
-        ),
-    )
-}
-
-fn rewrite_show_calls_in_expr(expr: ast::Expr) -> ast::Expr {
-    use ast::{Expr, ExprKind};
-    let span = expr.span;
-    match expr.kind {
-        ExprKind::Lambda { params, body } => rewrite_show_calls_in_lambda(span, params, *body),
-        ExprKind::Apply { func, args } => rewrite_show_calls_in_apply(span, *func, args),
-        ExprKind::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => rewrite_show_calls_in_if(span, *cond, *then_branch, *else_branch),
-        ExprKind::Let { bindings, body } => rewrite_show_calls_in_let(span, bindings, *body),
-        ExprKind::Where { expr, bindings } => rewrite_show_calls_in_where(span, *expr, bindings),
-        ExprKind::Annot { expr, ty } => rewrite_show_calls_in_annot(span, *expr, ty),
-        ExprKind::Do(stmts) => rewrite_show_calls_in_do(span, stmts),
-        ExprKind::Case { expr, arms } => rewrite_show_calls_in_case(span, *expr, arms),
-        ExprKind::Cons { head, tail } => rewrite_show_calls_in_cons(span, *head, *tail),
-        ExprKind::List(es) => rewrite_show_calls_in_list(span, es),
-        ExprKind::Tuple(es) => rewrite_show_calls_in_tuple(span, es),
-        ExprKind::Record(fs) => rewrite_show_calls_in_record(span, fs),
-        other => Expr::new(span, other),
-    }
-}
-
-fn rewrite_show_calls_in_module(module: &mut ast::Module) {
-    module.items = module
-        .items
-        .drain(..)
-        .map(|it| match it {
-            ast::Item::Binding(b) => ast::Item::Binding(rewrite_show_calls_in_binding(b)),
-            other => other,
-        })
-        .collect();
-}
-
 fn infer_in_module_with_class_env(
     module: &ast::Module,
     class_env: &ClassEnv,
@@ -12182,10 +12047,11 @@ fn instance_head_key_ty_for_class(
     class_id: &ast::ClassId,
     ty: &Ty,
 ) -> Result<String> {
+    let ty = normalize_ty_for_instance_key(ty);
     // MVP: higher-kinded classes select instances by the type constructor head.
     // e.g. `Functor` instance is declared for `Maybe`, but call sites see `Maybe a`.
     if class_is_higher_kinded(class_env, class_id) {
-        return Ok(match ty {
+        return Ok(match &ty {
             Ty::Con(name) => name.clone(),
             Ty::App { head, .. } => match head.as_ref() {
                 Ty::Con(name) => name.clone(),
@@ -12202,7 +12068,7 @@ fn instance_head_key_ty_for_class(
             }
         });
     }
-    instance_head_key_ty(ty)
+    instance_head_key_ty(&ty)
 }
 
 struct ApplyRewriteCtx<'a> {
@@ -12722,6 +12588,45 @@ fn resolve_method_dict_expr(
             if let Some(d) = ctx.class_env.instances.get(&key) {
                 dict_name = Some(d.clone());
                 break;
+            }
+
+            // Also try polymorphic instances when the argument type is ground.
+            // We can only pick instances with no context dict args here.
+            if ftv_ty(&a_ty).is_empty() {
+                let a_ty_norm = normalize_ty_for_instance_key(&a_ty);
+                let mut poly_candidates: Vec<&PolyInstance> = ctx
+                    .class_env
+                    .poly_instances
+                    .iter()
+                    .filter(|pi| pi.class == *class_id && pi.ctx_len == 0)
+                    .filter(|pi| unify_instance_head(&pi.head_pat, &a_ty_norm).is_some())
+                    .collect();
+
+                if poly_candidates.len() == 1 {
+                    let pi = poly_candidates.remove(0);
+                    let dict_ref = if pi.dict_name.starts_with("Prelude.") {
+                        pi.dict_name
+                            .split('.')
+                            .next_back()
+                            .unwrap_or(pi.dict_name.as_str())
+                            .to_string()
+                    } else {
+                        pi.dict_name.clone()
+                    };
+                    return Ok(Some((
+                        Expr::new(ctx.span, ExprKind::Var(dict_ref)),
+                        None,
+                    )));
+                }
+                if poly_candidates.len() > 1 {
+                    return Err(Error::msg_with_span(
+                        format!(
+                            "overlapping instances for `{}`: cannot choose for type {a_ty}",
+                            class
+                        ),
+                        ctx.span,
+                    ));
+                }
             }
 
             if first_missing_instance.is_none() {

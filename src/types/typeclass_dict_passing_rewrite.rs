@@ -13,6 +13,7 @@ struct RewriteCx<'a> {
     inferred: &'a HashMap<String, Scheme>,
     needs_dicts_global: &'a HashMap<String, Vec<String>>,
     needs_dicts_local: &'a HashMap<String, Vec<String>>,
+    local_tys: &'a HashMap<String, Ty>,
     dicts_in_scope: &'a HashSet<String>,
     shadowed_in_scope: &'a HashSet<String>,
 }
@@ -65,12 +66,69 @@ fn resolve_dict_arg_from_scope(
     result
 }
 
+fn infer_in_module_with_class_env_and_ground_locals(
+    module: &ast::Module,
+    class_env: &ClassEnv,
+    inferred: &HashMap<String, Scheme>,
+    local_tys: &HashMap<String, Ty>,
+    expr: ast::Expr,
+) -> Result<Ty> {
+    let mut cx = InferCtx::default();
+    let data_env = collect_data_env(module);
+    let mut env = collect_ctor_env_with_class_env(&mut cx, module, class_env, None)?;
+
+    for (name, scheme) in inferred {
+        if !env.contains_key(name) {
+            env.insert(
+                name.clone(),
+                EnvEntry {
+                    scheme: scheme.clone(),
+                    def_site: None,
+                },
+            );
+        }
+    }
+
+    // Only inject *ground* local types to avoid `Ty::Var` id collisions across InferCtx instances.
+    for (name, ty) in local_tys {
+        if ftv_ty(ty).is_empty() && !env.contains_key(name) {
+            env.insert(
+                name.clone(),
+                EnvEntry {
+                    scheme: Scheme::mono(ty.clone()),
+                    def_site: None,
+                },
+            );
+        }
+    }
+
+    let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &Subst::new(), &env, expr)?;
+    let _ = simplify_constraints(&data_env, class_env, apply_constraints(&s, cs))?;
+    Ok(apply(&s, t))
+}
+
+fn infer_in_rewrite(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<Ty> {
+    if let ast::ExprKind::Var(name) = &expr.kind {
+        if let Some(t) = cx.local_tys.get(name) {
+            return Ok(t.clone());
+        }
+    }
+
+    infer_in_module_with_class_env_and_ground_locals(
+        cx.module_snapshot,
+        cx.class_env,
+        cx.inferred,
+        cx.local_tys,
+        expr,
+    )
+}
+
 fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
 
-    let module_snapshot = cx.module_snapshot;
+    let _module_snapshot = cx.module_snapshot;
     let class_env = cx.class_env;
-    let inferred = cx.inferred;
+    let _inferred = cx.inferred;
     let needs_dicts_global = cx.needs_dicts_global;
     let needs_dicts_local = cx.needs_dicts_local;
     let dicts_in_scope = cx.dicts_in_scope;
@@ -103,7 +161,7 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
         if picked.is_none() {
             let var_expr = Expr::new(span, ExprKind::Var(name.clone()));
             if let Ok(var_ty) =
-                infer_in_module_with_class_env(module_snapshot, class_env, inferred, var_expr)
+                infer_in_rewrite(cx, var_expr)
             {
                 // Try to pick instance based on the inferred type
                 if let Some(d) = common::pick_instance_dict_expr_from_scope(
@@ -153,13 +211,21 @@ fn rewrite_lambda(
 
     let mut scope = dicts_in_scope.clone();
     let mut shadowed = shadowed_in_scope.clone();
+    let mut local_tys = cx.local_tys.clone();
+
     for p in &params {
         shadowed.insert(p.clone());
+
+        // Shadow outer names.
+        local_tys.remove(p);
+
         if p.starts_with("__dict_") {
             scope.insert(p.clone());
         }
     }
+
     let inner_cx = RewriteCx {
+        local_tys: &local_tys,
         dicts_in_scope: &scope,
         shadowed_in_scope: &shadowed,
         ..cx
@@ -174,6 +240,72 @@ fn rewrite_lambda(
     ))
 }
 
+fn rewrite_lambda_with_expected(
+    cx: RewriteCx<'_>,
+    span: ast::Span,
+    params: Vec<String>,
+    body: ast::Expr,
+    expected_ty: Option<&Ty>,
+) -> Result<ast::Expr> {
+    use ast::{Expr, ExprKind};
+
+    let dicts_in_scope = cx.dicts_in_scope;
+    let shadowed_in_scope = cx.shadowed_in_scope;
+
+    // Extract expected parameter types from the call-site expected type.
+    // This is crucial for cases like: `catch action (\e -> print e)` where
+    // the lambda alone only yields `Show a => a -> IO Unit`, but the call-site
+    // tells us `e : String`.
+    let mut expected_param_tys: Vec<Ty> = Vec::new();
+    let mut t = expected_ty.cloned();
+    for _ in 0..params.len() {
+        let Some(tt) = t else {
+            break;
+        };
+        match tt {
+            Ty::Func(dom, cod) => {
+                expected_param_tys.push(*dom);
+                t = Some(*cod);
+            }
+            _ => break,
+        }
+    }
+
+    let mut scope = dicts_in_scope.clone();
+    let mut shadowed = shadowed_in_scope.clone();
+    let mut local_tys = cx.local_tys.clone();
+
+    for (i, p) in params.iter().enumerate() {
+        shadowed.insert(p.clone());
+
+        // Always shadow outer names; then re-insert if we learned a ground param type.
+        local_tys.remove(p);
+        if let Some(t) = expected_param_tys.get(i) {
+            if ftv_ty(t).is_empty() {
+                local_tys.insert(p.clone(), t.clone());
+            }
+        }
+
+        if p.starts_with("__dict_") {
+            scope.insert(p.clone());
+        }
+    }
+
+    let inner_cx = RewriteCx {
+        local_tys: &local_tys,
+        dicts_in_scope: &scope,
+        shadowed_in_scope: &shadowed,
+        ..cx
+    };
+
+    Ok(Expr::new(
+        span,
+        ExprKind::Lambda {
+            params,
+            body: Box::new(rewrite_expr_cx(inner_cx, body)?),
+        },
+    ))
+}
 fn rewrite_apply_arg_vars(
     cx: RewriteCx<'_>,
     span: ast::Span,
@@ -283,11 +415,12 @@ fn rewrite_apply_func_var(
     span: ast::Span,
     call_info: Option<&super::typeclass_dict_passing_common::CallInfo>,
     func_name: &str,
+    args_snapshot_for_infer: &[ast::Expr],
     args: &mut Vec<ast::Expr>,
 ) -> Result<()> {
-    let module_snapshot = cx.module_snapshot;
+    let _module_snapshot = cx.module_snapshot;
     let class_env = cx.class_env;
-    let inferred = cx.inferred;
+    let _inferred = cx.inferred;
     let needs_dicts_global = cx.needs_dicts_global;
     let needs_dicts_local = cx.needs_dicts_local;
     let dicts_in_scope = cx.dicts_in_scope;
@@ -312,7 +445,7 @@ fn rewrite_apply_func_var(
             continue;
         }
 
-        if args.is_empty() {
+        if args_snapshot_for_infer.is_empty() {
             continue;
         }
 
@@ -334,12 +467,26 @@ fn rewrite_apply_func_var(
 
         if picked.is_none() {
             let mut first_non_ground: Option<Ty> = None;
-            for a in args.iter() {
-                let Ok(a_ty) =
-                    infer_in_module_with_class_env(module_snapshot, class_env, inferred, a.clone())
-                else {
-                    continue;
+            for a in args_snapshot_for_infer.iter() {
+                let a_ty = match infer_in_rewrite(cx, a.clone()) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+                            eprintln!("[DICT]   arg type inference failed: {e}");
+                            eprintln!("[DICT]     arg: {a:?}");
+                            if cx.local_tys.len() <= 20 {
+                                for (k, v) in cx.local_tys {
+                                    eprintln!("[DICT]     local_tys: {k}: {v}");
+                                }
+                            }
+                        }
+                        continue;
+                    }
                 };
+
+                if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+                    eprintln!("[DICT]   arg inferred type: {a_ty}");
+                }
 
                 if !ftv_ty(&a_ty).is_empty() {
                     if first_non_ground.is_none() {
@@ -400,26 +547,24 @@ fn rewrite_apply(
 
     use super::typeclass_dict_passing_common::CallInfo;
 
-    let func = rewrite_expr_cx(cx, func)?;
-    let mut args: Vec<_> = args
-        .into_iter()
-        .map(|a| rewrite_expr_cx(cx, a))
-        .collect::<Result<Vec<_>>>()?;
-
-    let call_info: Option<CallInfo> = if let ExprKind::Var(callee) = &func.kind {
+    // IMPORTANT: compute call-site type info from the *pre-rewrite* AST.
+    // Rewriting can inject dict vars that are not present in `inferred`, which would
+    // break `infer_in_module_with_class_env` and prevent instance selection.
+    let args_snapshot = args.clone();
+    let call_info_pre: Option<CallInfo> = if let ExprKind::Var(callee) = &func.kind {
         if shadowed_in_scope.contains(callee) {
             None
         } else {
-            common::call_info_for_call(module_snapshot, class_env, inferred, callee, &args)
+            common::call_info_for_call(module_snapshot, class_env, inferred, callee, &args_snapshot)
         }
     } else {
         None
     };
 
     let mut callsite_ground_tys: Vec<Ty> = Vec::new();
-    for a in &args {
+    for a in &args_snapshot {
         if let Ok(t) =
-            infer_in_module_with_class_env(module_snapshot, class_env, inferred, a.clone())
+            infer_in_rewrite(cx, a.clone())
         {
             if ftv_ty(&t).is_empty() {
                 callsite_ground_tys.push(t);
@@ -427,16 +572,42 @@ fn rewrite_apply(
         }
     }
 
+    let func = rewrite_expr_cx(cx, func)?;
+
+    let mut rewritten_args: Vec<ast::Expr> = Vec::with_capacity(args.len());
+    for (i, a) in args.into_iter().enumerate() {
+        let expected_arg_ty = call_info_pre
+            .as_ref()
+            .and_then(|ci| ci.expected_arg_tys.get(i));
+
+        let rewritten = match a.kind {
+            ExprKind::Lambda { params, body } => {
+                rewrite_lambda_with_expected(cx, a.span, params, *body, expected_arg_ty)?
+            }
+            _ => rewrite_expr_cx(cx, a)?,
+        };
+        rewritten_args.push(rewritten);
+    }
+
+    let mut args = rewritten_args;
+
     rewrite_apply_arg_vars(
         cx,
         span,
-        call_info.as_ref(),
+        call_info_pre.as_ref(),
         &callsite_ground_tys,
         &mut args,
     )?;
 
     if let ExprKind::Var(name) = &func.kind {
-        rewrite_apply_func_var(cx, span, call_info.as_ref(), name, &mut args)?;
+        rewrite_apply_func_var(
+            cx,
+            span,
+            call_info_pre.as_ref(),
+            name,
+            &args_snapshot,
+            &mut args,
+        )?;
     }
 
     Ok(Expr::new(
@@ -465,6 +636,109 @@ fn rewrite_if(
             else_branch: Box::new(rewrite_expr_cx(cx, else_branch)?),
         },
     ))
+}
+
+
+
+fn bind_pat_ground_tys(
+    module: &ast::Module,
+    class_env: &ClassEnv,
+    pat: &ast::Pattern,
+    ty: &Ty,
+    out: &mut HashMap<String, Ty>,
+) {
+    use ast::PatternKind;
+
+    if !ftv_ty(ty).is_empty() {
+        return;
+    }
+
+    match (&pat.kind, ty) {
+        (PatternKind::Var(name), _) => {
+            out.insert(name.clone(), ty.clone());
+        }
+        (PatternKind::As(name, p), _) => {
+            out.insert(name.clone(), ty.clone());
+            bind_pat_ground_tys(module, class_env, p, ty, out);
+        }
+        (PatternKind::Tuple(ps), Ty::Tuple(ts)) if ps.len() == ts.len() => {
+            for (p, t) in ps.iter().zip(ts.iter()) {
+                bind_pat_ground_tys(module, class_env, p, t, out);
+            }
+        }
+        (PatternKind::List(ps), Ty::List(elem)) => {
+            for p in ps {
+                bind_pat_ground_tys(module, class_env, p, elem, out);
+            }
+        }
+        (PatternKind::Cons(hd, tl), Ty::List(elem)) => {
+            bind_pat_ground_tys(module, class_env, hd, elem, out);
+            bind_pat_ground_tys(module, class_env, tl, ty, out);
+        }
+        (PatternKind::Record(fields), Ty::Record(ts)) => {
+            let map = ts.iter().cloned().collect::<std::collections::HashMap<_, _>>();
+            for (label, p) in fields {
+                if let Some(t) = map.get(label) {
+                    bind_pat_ground_tys(module, class_env, p, t, out);
+                }
+            }
+        }
+        (PatternKind::Record(fields), Ty::RecordOpen(ts, _rest)) => {
+            let map = ts.iter().cloned().collect::<std::collections::HashMap<_, _>>();
+            for (label, p) in fields {
+                if let Some(t) = map.get(label) {
+                    bind_pat_ground_tys(module, class_env, p, t, out);
+                }
+            }
+        }
+        (PatternKind::RecordLoose(fields, _rest_name), Ty::Record(ts)) => {
+            let map = ts.iter().cloned().collect::<std::collections::HashMap<_, _>>();
+            for (label, p) in fields {
+                if let Some(t) = map.get(label) {
+                    bind_pat_ground_tys(module, class_env, p, t, out);
+                }
+            }
+        }
+        (PatternKind::RecordLoose(fields, _rest_name), Ty::RecordOpen(ts, _rest)) => {
+            let map = ts.iter().cloned().collect::<std::collections::HashMap<_, _>>();
+            for (label, p) in fields {
+                if let Some(t) = map.get(label) {
+                    bind_pat_ground_tys(module, class_env, p, t, out);
+                }
+            }
+        }
+        (PatternKind::Constructor { name, args }, _) => {
+            let mut infer_cx = InferCtx::default();
+            let Ok(env) = collect_ctor_env_with_class_env(&mut infer_cx, module, class_env, None) else {
+                return;
+            };
+
+            let qualified = name.qualified_text();
+            let unqualified = name.local_name();
+            let entry = env.get(&qualified).or_else(|| env.get(unqualified));
+            let Some(entry) = entry else {
+                return;
+            };
+
+            let ctor_ty = instantiate(&mut infer_cx, &entry.scheme);
+            let mut arg_tys: Vec<Ty> = Vec::new();
+            let mut result_ty = ctor_ty;
+            while let Ty::Func(a, b) = result_ty {
+                arg_tys.push(*a);
+                result_ty = *b;
+            }
+
+            let Ok(subst) = unify(result_ty, ty.clone()) else {
+                return;
+            };
+
+            for (p, t) in args.iter().zip(arg_tys.into_iter()) {
+                let t = apply(&subst, t);
+                bind_pat_ground_tys(module, class_env, p, &t, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn compute_local_needs(
@@ -560,33 +834,6 @@ fn with_extended_binding_scope<R>(
     f(inner_cx, &local_needs, bindings)
 }
 
-fn rewrite_scoped_bindings(
-    inner_cx: RewriteCx<'_>,
-    local_needs: &HashMap<String, Vec<String>>,
-    bindings: Vec<ast::Binding>,
-) -> Result<Vec<ast::Binding>> {
-    use ast::PatternKind;
-
-    bindings
-        .into_iter()
-        .map(|b| {
-            let mut expr = b.expr;
-            let span = expr.span;
-            if let PatternKind::Var(name) = &b.pat.kind {
-                if let Some(classes) = local_needs.get(name) {
-                    expr = common::add_dict_params_to_expr(expr.span, expr, classes);
-                }
-            }
-            Ok(ast::Binding {
-                doc: None,
-                pat: b.pat,
-                expr: rewrite_expr_cx(inner_cx, expr)?,
-                span,
-            })
-        })
-        .collect()
-}
-
 fn rewrite_let(
     cx: RewriteCx<'_>,
     span: ast::Span,
@@ -594,13 +841,73 @@ fn rewrite_let(
     body: ast::Expr,
 ) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
+    use ast::PatternKind;
 
     with_extended_binding_scope(cx, bindings, |inner_cx, local_needs, bindings| {
+        // Shadow all binders from the outer local type env first (let binds shadow outer names).
+        let mut local_tys2 = inner_cx.local_tys.clone();
+        for b in &bindings {
+            let mut names = HashSet::new();
+            pat_defined_names(&b.pat, &mut names);
+            for n in names {
+                local_tys2.remove(&n);
+            }
+        }
+
+        let mut out_bindings: Vec<ast::Binding> = Vec::with_capacity(bindings.len());
+
+        // Sequential: earlier binders are in scope for later binders (for our ground-type tracking).
+        for b in bindings {
+            let ast::Binding { doc: _, pat, expr, span: _ } = b;
+            let span = expr.span;
+            let expr_for_infer = expr.clone();
+
+            let (rewritten_expr, inferred_t) = {
+                let cx_bind = RewriteCx {
+                    local_tys: &local_tys2,
+                    ..inner_cx
+                };
+
+                let mut expr2 = expr;
+                if let PatternKind::Var(name) = &pat.kind {
+                    if let Some(classes) = local_needs.get(name) {
+                        expr2 = common::add_dict_params_to_expr(expr2.span, expr2, classes);
+                    }
+                }
+
+                let rewritten_expr = rewrite_expr_cx(cx_bind, expr2)?;
+                let inferred_t = infer_in_rewrite(cx_bind, expr_for_infer);
+                (rewritten_expr, inferred_t)
+            };
+
+            if let Ok(t) = inferred_t {
+                bind_pat_ground_tys(
+                    inner_cx.module_snapshot,
+                    inner_cx.class_env,
+                    &pat,
+                    &t,
+                    &mut local_tys2,
+                );
+            }
+
+            out_bindings.push(ast::Binding {
+                doc: None,
+                pat,
+                expr: rewritten_expr,
+                span,
+            });
+        }
+
+        let cx_body = RewriteCx {
+            local_tys: &local_tys2,
+            ..inner_cx
+        };
+
         Ok(Expr::new(
             span,
             ExprKind::Let {
-                bindings: rewrite_scoped_bindings(inner_cx, local_needs, bindings)?,
-                body: Box::new(rewrite_expr_cx(inner_cx, body)?),
+                bindings: out_bindings,
+                body: Box::new(rewrite_expr_cx(cx_body, body)?),
             },
         ))
     })
@@ -613,13 +920,73 @@ fn rewrite_where(
     bindings: Vec<ast::Binding>,
 ) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
+    use ast::PatternKind;
 
     with_extended_binding_scope(cx, bindings, |inner_cx, local_needs, bindings| {
+        // Shadow all binders from the outer local type env first (where binds shadow outer names).
+        let mut local_tys2 = inner_cx.local_tys.clone();
+        for b in &bindings {
+            let mut names = HashSet::new();
+            pat_defined_names(&b.pat, &mut names);
+            for n in names {
+                local_tys2.remove(&n);
+            }
+        }
+
+        let mut out_bindings: Vec<ast::Binding> = Vec::with_capacity(bindings.len());
+
+        // Sequential for our ground-type tracking: earlier binders may help later binder inference.
+        for b in bindings {
+            let ast::Binding { doc: _, pat, expr, span: _ } = b;
+            let span = expr.span;
+            let expr_for_infer = expr.clone();
+
+            let (rewritten_expr, inferred_t) = {
+                let cx_bind = RewriteCx {
+                    local_tys: &local_tys2,
+                    ..inner_cx
+                };
+
+                let mut expr2 = expr;
+                if let PatternKind::Var(name) = &pat.kind {
+                    if let Some(classes) = local_needs.get(name) {
+                        expr2 = common::add_dict_params_to_expr(expr2.span, expr2, classes);
+                    }
+                }
+
+                let rewritten_expr = rewrite_expr_cx(cx_bind, expr2)?;
+                let inferred_t = infer_in_rewrite(cx_bind, expr_for_infer);
+                (rewritten_expr, inferred_t)
+            };
+
+            if let Ok(t) = inferred_t {
+                bind_pat_ground_tys(
+                    inner_cx.module_snapshot,
+                    inner_cx.class_env,
+                    &pat,
+                    &t,
+                    &mut local_tys2,
+                );
+            }
+
+            out_bindings.push(ast::Binding {
+                doc: None,
+                pat,
+                expr: rewritten_expr,
+                span,
+            });
+        }
+
+        let cx_expr = RewriteCx {
+            local_tys: &local_tys2,
+            ..inner_cx
+        };
+
         Ok(Expr::new(
             span,
             ExprKind::Where {
-                expr: Box::new(rewrite_expr_cx(inner_cx, expr)?),
-                bindings: rewrite_scoped_bindings(inner_cx, local_needs, bindings)?,
+                expr: Box::new(rewrite_expr_cx(cx_expr, expr)?),
+                bindings: out_bindings,
             },
         ))
     })
@@ -633,20 +1000,51 @@ fn rewrite_do(cx: RewriteCx<'_>, span: ast::Span, stmts: Vec<ast::DoStmt>) -> Re
 
     let mut scope = dicts_in_scope.clone();
     let mut shadowed = shadowed_in_scope.clone();
+    let mut local_tys2 = cx.local_tys.clone();
+
     let mut out: Vec<ast::DoStmt> = Vec::with_capacity(stmts.len());
 
     for s in stmts {
         match s {
             ast::DoStmt::Bind { pat, expr } => {
-                let inner_cx = RewriteCx {
-                    dicts_in_scope: &scope,
-                    shadowed_in_scope: &shadowed,
-                    ..cx
-                };
-                let expr = rewrite_expr_cx(inner_cx, expr)?;
+                let expr_for_infer = expr.clone();
 
+                let (expr, inferred_inner) = {
+                    let inner_cx = RewriteCx {
+                        local_tys: &local_tys2,
+                        dicts_in_scope: &scope,
+                        shadowed_in_scope: &shadowed,
+                        ..cx
+                    };
+
+                    let inferred_t = infer_in_rewrite(inner_cx, expr_for_infer);
+                    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+                        match &inferred_t {
+                            Ok(t) => eprintln!("[DICT] do-bind inferred expr type: {t}"),
+                            Err(e) => eprintln!("[DICT] do-bind inference failed: {e}"),
+                        }
+                    }
+
+                    let inferred_inner: Option<Ty> = match &inferred_t {
+                        Ok(Ty::App { args, .. }) => args.last().cloned(),
+                        _ => None,
+                    };
+
+                    let expr = rewrite_expr_cx(inner_cx, expr)?;
+                    (expr, inferred_inner)
+                };
+
+                // Shadow + (best-effort) record the bound value type (the last arg of `m a`).
                 let mut names = HashSet::new();
                 pat_defined_names(&pat, &mut names);
+                for n in &names {
+                    local_tys2.remove(n);
+                }
+
+                if let Some(inner) = &inferred_inner {
+                    bind_pat_ground_tys(cx.module_snapshot, cx.class_env, &pat, inner, &mut local_tys2);
+                }
+
                 for n in names {
                     shadowed.insert(n.clone());
                     if n.starts_with("__dict_") {
@@ -658,6 +1056,7 @@ fn rewrite_do(cx: RewriteCx<'_>, span: ast::Span, stmts: Vec<ast::DoStmt>) -> Re
             }
             ast::DoStmt::Expr(e) => {
                 let inner_cx = RewriteCx {
+                    local_tys: &local_tys2,
                     dicts_in_scope: &scope,
                     shadowed_in_scope: &shadowed,
                     ..cx
@@ -669,7 +1068,6 @@ fn rewrite_do(cx: RewriteCx<'_>, span: ast::Span, stmts: Vec<ast::DoStmt>) -> Re
 
     Ok(Expr::new(span, ExprKind::Do(out)))
 }
-
 fn rewrite_case(
     cx: RewriteCx<'_>,
     span: ast::Span,
@@ -681,6 +1079,9 @@ fn rewrite_case(
     let dicts_in_scope = cx.dicts_in_scope;
     let shadowed_in_scope = cx.shadowed_in_scope;
 
+    // Best-effort ground scrutinee type, used to seed local var types for simple patterns.
+    let scrut_ty = infer_in_rewrite(cx, expr.clone()).ok();
+
     let expr = Box::new(rewrite_expr_cx(cx, expr)?);
 
     let arms = arms
@@ -688,13 +1089,20 @@ fn rewrite_case(
         .map(|a| {
             let mut scope = dicts_in_scope.clone();
             let mut shadowed = shadowed_in_scope.clone();
+            let mut local_tys2 = cx.local_tys.clone();
+
             let mut names = HashSet::new();
             pat_defined_names(&a.pat, &mut names);
-            for n in names {
+            for n in &names {
                 shadowed.insert(n.clone());
+                local_tys2.remove(n);
                 if n.starts_with("__dict_") {
-                    scope.insert(n);
+                    scope.insert(n.clone());
                 }
+            }
+
+            if let Some(t) = &scrut_ty {
+                bind_pat_ground_tys(cx.module_snapshot, cx.class_env, &a.pat, t, &mut local_tys2);
             }
 
             Ok(ast::CaseArm {
@@ -703,6 +1111,7 @@ fn rewrite_case(
                     .guard
                     .map(|g| {
                         let inner_cx = RewriteCx {
+                            local_tys: &local_tys2,
                             dicts_in_scope: &scope,
                             shadowed_in_scope: &shadowed,
                             ..cx
@@ -712,6 +1121,7 @@ fn rewrite_case(
                     .transpose()?,
                 body: {
                     let inner_cx = RewriteCx {
+                        local_tys: &local_tys2,
                         dicts_in_scope: &scope,
                         shadowed_in_scope: &shadowed,
                         ..cx
@@ -732,6 +1142,7 @@ pub(super) fn rewrite_expr(
     inferred: &HashMap<String, Scheme>,
     needs_dicts_global: &HashMap<String, Vec<String>>,
     needs_dicts_local: &HashMap<String, Vec<String>>,
+    local_tys: &HashMap<String, Ty>,
     dicts_in_scope: &HashSet<String>,
     shadowed_in_scope: &HashSet<String>,
     expr: ast::Expr,
@@ -742,6 +1153,7 @@ pub(super) fn rewrite_expr(
         inferred,
         needs_dicts_global,
         needs_dicts_local,
+        local_tys,
         dicts_in_scope,
         shadowed_in_scope,
     };

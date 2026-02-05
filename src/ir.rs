@@ -962,6 +962,26 @@ fn force_thunk(g: &Globals, t: &std::rc::Rc<std::cell::RefCell<ThunkState>>) -> 
     Ok(v)
 }
 
+fn eval_qualified_dict_var_fallback(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    name: &str,
+) -> Option<Value> {
+    // AST-only typecheck paths can reference qualified dict vars like
+    // `Prelude.__dict_Monad_IO` even when the runtime globals only contain
+    // the unqualified name (e.g. `__dict_Monad_IO`).
+    if !name.contains('.') {
+        return None;
+    }
+
+    let last = name.rsplit('.').next()?;
+    if !(last.starts_with("__dict_") || last.starts_with("__inst_")) {
+        return None;
+    }
+
+    eval_var(g, env, last).ok()
+}
+
 fn eval_var(
     g: &Globals,
     env: &std::collections::HashMap<String, Value>,
@@ -976,6 +996,9 @@ fn eval_var(
     }
 
     if !g.defs.contains_key(name) {
+        if let Some(v) = eval_qualified_dict_var_fallback(g, env, name) {
+            return Ok(v);
+        }
         return Err(Error::msg(format!("unbound variable: {name}")));
     }
 
@@ -1007,6 +1030,26 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
             None
         } else {
             Some(v)
+        }
+    }
+
+    // `.ksif`-only / AST-only compilation paths can produce qualified dict/inst references
+    // like `Prelude.__dict_Monad_IO` or `Prelude.Num.__dict_Num_Integer`.
+    // When the qualified name is not defined in globals, fall back to the unqualified
+    // `__dict_...` / `__inst_...` name so existing builtin minimal dictionaries and
+    // default dict injection can apply.
+    if !g.defs.contains_key(name) {
+        if let Some(pos) = name.rfind(".__dict_") {
+            let unqualified = &name[pos + 1..];
+            if let Some(v) = eval_builtin_var(g, unqualified) {
+                return Some(v);
+            }
+        }
+        if let Some(pos) = name.rfind(".__inst_") {
+            let unqualified = &name[pos + 1..];
+            if let Some(v) = eval_builtin_var(g, unqualified) {
+                return Some(v);
+            }
         }
     }
 
@@ -1063,7 +1106,8 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
 
         // Minimal dictionaries for `.ksif`-only execution.
         // These are methods that accept the dictionary as their first argument; we ignore it.
-        "__dict_Prelude.Monad.Monad" | "__dict_Prelude.Monad.Monad_IO" => Value::Record(vec![
+        "__dict_Prelude.Monad.Monad" | "__dict_Prelude.Monad.Monad_IO" => {
+            return only_if_undefined(g, name, Value::Record(vec![
             (
                 ">>".to_string(),
                 Value::Closure {
@@ -1104,10 +1148,12 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
                     env: std::collections::HashMap::new(),
                 },
             ),
-        ]),
+        ]));
+        },
 
         // Backwards-compat / alternate naming.
-        "__dict_Monad_IO" => Value::Record(vec![
+        "__dict_Monad_IO" => {
+            return only_if_undefined(g, name, Value::Record(vec![
             (
                 ">>".to_string(),
                 Value::Closure {
@@ -1148,7 +1194,8 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
                     env: std::collections::HashMap::new(),
                 },
             ),
-        ]),
+        ]));
+        },
 
         "__recordGet" => Value::BuiltinRecordGet,
         "error" => Value::BuiltinError,
@@ -1176,6 +1223,24 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         }
         "print" => {
             return only_if_undefined(g, name, Value::BuiltinStdoutWrite);
+        }
+
+        n if n.starts_with("__dict_") => {
+            // If stdlib instance dictionaries are missing (e.g. AST-only typecheck prelude),
+            // fall back to a minimal default dictionary for supported classes.
+            if g.defs.contains_key(n) {
+                return None;
+            }
+
+            let class_name = n.strip_prefix("__dict_").unwrap_or("");
+            let class_base = class_name.split('_').next().unwrap_or(class_name);
+            let class_unqualified = class_base.rsplit('.').next().unwrap_or(class_base);
+
+            if let Ok(default_dict) = try_get_default_dict(class_unqualified) {
+                return Some(default_dict);
+            }
+
+            return None;
         }
 
         _ => return None,
@@ -1638,12 +1703,24 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinListAppend => Ok(Value::BuiltinListAppend1(Box::new(arg))),
         Value::BuiltinListAppend1(a) => list_append(g, *a, arg),
         Value::BuiltinShowDictApply => Ok(Value::BuiltinShowDictApply1(Box::new(arg))),
-        Value::BuiltinShowDictApply1(builtin_dict) => Ok(Value::BuiltinShowDictApply2(builtin_dict, Box::new(arg))),
-        Value::BuiltinShowDictApply2(builtin_dict, inst_dict) => show_with_dict(g, *builtin_dict, *inst_dict, arg),
+        Value::BuiltinShowDictApply1(builtin_dict) => {
+            Ok(Value::BuiltinShowDictApply2(builtin_dict, Box::new(arg)))
+        }
+        Value::BuiltinShowDictApply2(builtin_dict, inst_dict) => {
+            show_with_dict(g, *builtin_dict, *inst_dict, arg)
+        }
         Value::BuiltinEqDictApply => Ok(Value::BuiltinEqDictApply1(Box::new(arg))),
-        Value::BuiltinEqDictApply1(builtin_dict) => Ok(Value::BuiltinEqDictApply2(builtin_dict, Box::new(arg))),
-        Value::BuiltinEqDictApply2(builtin_dict, inst_dict) => Ok(Value::BuiltinEqDictApply3(builtin_dict, inst_dict, Box::new(arg))),
-        Value::BuiltinEqDictApply3(builtin_dict, inst_dict, a) => eq_with_dict(g, *builtin_dict, *inst_dict, *a, arg),
+        Value::BuiltinEqDictApply1(builtin_dict) => {
+            Ok(Value::BuiltinEqDictApply2(builtin_dict, Box::new(arg)))
+        }
+        Value::BuiltinEqDictApply2(builtin_dict, inst_dict) => Ok(Value::BuiltinEqDictApply3(
+            builtin_dict,
+            inst_dict,
+            Box::new(arg),
+        )),
+        Value::BuiltinEqDictApply3(builtin_dict, inst_dict, a) => {
+            eq_with_dict(g, *builtin_dict, *inst_dict, *a, arg)
+        }
         Value::BuiltinRecordGet => Ok(Value::BuiltinRecordGet1(Box::new(arg))),
         Value::BuiltinRecordGet1(d) => record_get(g, *d, arg),
         Value::BuiltinShow => show_to_string(g, arg),
@@ -1969,7 +2046,12 @@ fn value_to_string(g: &Globals, v: Value) -> Result<String> {
             }
             Ok(out)
         }
-        _ => Err(Error::msg("expected String/[Char]")),
+        other => {
+            if std::env::var("KSCR_DEBUG_VALUE_TO_STRING").ok().as_deref() == Some("1") {
+                eprintln!("[KSCR_DEBUG_VALUE_TO_STRING] got non-string value: {other:?}");
+            }
+            Err(Error::msg("expected String/[Char]"))
+        }
     }
 }
 
