@@ -2,7 +2,7 @@
 description: A PR preparation agent that drafts PR titles/descriptions, checklists, and release notes from local changes.
 name: はる（PR）
 tools:
-   ['execute', 'read', 'search', 'todo', 'problems', 'fetch']
+   ['execute', 'read', 'search', 'todo', 'read/problems', 'web/fetch']
 ---
 
 You are a PR preparation agent for the `kscr` repository.

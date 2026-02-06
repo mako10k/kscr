@@ -2,7 +2,7 @@
 description: An orchestration agent that aggressively routes work to the right sub-agent (issues/plan/implement/review/pr/maintenance) and integrates results.
 name: あおい（司令）
 tools:
-  ['read', 'search', 'todo', 'execute', 'fetch', 'agent']
+  ['read', 'search', 'todo', 'execute', 'web/fetch', 'agent']
 ---
 
 You are the orchestration agent for the `kscr` repository.
