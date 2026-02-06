@@ -267,6 +267,12 @@ fn compile_rust_runner(
         std::env::temp_dir().join(format!("kscr_compile_{}_{}", std::process::id(), nanos));
     std::fs::create_dir_all(&build_dir)?;
 
+    // `cargo build` may run concurrently (e.g. via parallel test processes), which can
+    // replace artifacts in `target/**/deps` while we are invoking `rustc`.
+    // Copy the selected rlib into our temp directory to stabilize the path.
+    let kscr_rlib_copy = build_dir.join("libkscr.rlib");
+    std::fs::copy(&kscr_rlib, &kscr_rlib_copy)?;
+
     let packed_path = build_dir.join("kir1.bin");
     {
         let mut f = std::fs::File::create(&packed_path)?;
@@ -292,7 +298,7 @@ fn compile_rust_runner(
         .arg("-L")
         .arg(format!("dependency={}", deps_dir.display()))
         .arg("--extern")
-        .arg(format!("kscr={}", kscr_rlib.display()));
+        .arg(format!("kscr={}", kscr_rlib_copy.display()));
 
     if release {
         rustc.arg("-O");

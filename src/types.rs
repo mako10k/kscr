@@ -352,10 +352,24 @@ fn assign_ty_var_names(ty: &Ty, vars: &mut HashMap<u32, String>) {
     go(ty, vars, &mut next);
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct InferCtx {
     next_var: u32,
     class_env: ClassEnvIndex,
+    /// Full class env for solving class constraints inside local `let`/`where`.
+    ///
+    /// This is cloned into an `Arc` at module inference entrypoints.
+    full_class_env: std::sync::Arc<ClassEnv>,
+}
+
+impl Default for InferCtx {
+    fn default() -> Self {
+        Self {
+            next_var: 0,
+            class_env: ClassEnvIndex::default(),
+            full_class_env: std::sync::Arc::new(ClassEnv::default()),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -3129,7 +3143,12 @@ fn add_ffi_primitives(env: &mut TypeEnv) {
     );
 }
 
-fn add_prelude_data_ctors(cx: &mut InferCtx, env: &mut TypeEnv, also_unqualified: bool) {
+fn add_prelude_data_ctors(
+    cx: &mut InferCtx,
+    env: &mut TypeEnv,
+    also_unqualified_maybe: bool,
+    also_unqualified_either: bool,
+) {
     // Hardcoded Prelude constructors for module-unit compilation with .ksif.
     // Always provide qualified ctor names (e.g. `Prelude.Just`).
     // Only provide unqualified ctor names (e.g. `Just`) when Prelude is imported unqualified.
@@ -3163,7 +3182,7 @@ fn add_prelude_data_ctors(cx: &mut InferCtx, env: &mut TypeEnv, also_unqualified
 
     env.insert("Prelude.Nothing".to_string(), nothing_entry.clone());
     env.insert("Prelude.Just".to_string(), just_entry.clone());
-    if also_unqualified {
+    if also_unqualified_maybe {
         env.insert("Nothing".to_string(), nothing_entry);
         env.insert("Just".to_string(), just_entry);
     }
@@ -3199,7 +3218,7 @@ fn add_prelude_data_ctors(cx: &mut InferCtx, env: &mut TypeEnv, also_unqualified
 
     env.insert("Prelude.Left".to_string(), left_entry.clone());
     env.insert("Prelude.Right".to_string(), right_entry.clone());
-    if also_unqualified {
+    if also_unqualified_either {
         env.insert("Left".to_string(), left_entry);
         env.insert("Right".to_string(), right_entry);
     }
@@ -3220,22 +3239,72 @@ fn collect_ctor_env_with_class_env(
     add_io_primitives(cx, &mut env);
     add_misc_builtins(cx, &mut env);
     add_ffi_primitives(&mut env);
-    let has_unqualified_prelude = module.items.iter().any(|it| {
-        matches!(
-            it,
-            ast::Item::Import(ast::ImportDecl {
-                module,
-                qualified: false,
-                ..
-            }) if module == "Prelude"
-        )
+    let prelude_import: Option<&ast::ImportDecl> = module.items.iter().find_map(|it| {
+        let ast::Item::Import(id) = it else {
+            return None;
+        };
+        if id.module == "Prelude" && !id.qualified {
+            Some(id)
+        } else {
+            None
+        }
     });
 
-    // If Prelude is imported unqualified, bring its ctors in unqualified too.
-    // Some paths (notably REPL-generated temp modules) may lose the explicit import during
-    // module-loading/qualification; fall back to treating anonymous modules as having Prelude.
-    let also_unqualified = has_unqualified_prelude || module.name.is_none();
-    add_prelude_data_ctors(cx, &mut env, also_unqualified);
+    // Always provide qualified Prelude ctor names (Prelude.Just, Prelude.Nothing).
+    // Provide unqualified ctor names (Just, Nothing, Left, Right) only if the Prelude import
+    // actually brings them into scope (i.e. not hidden by an import spec).
+    fn import_spec_allows_ctor(
+        import_spec: &Option<ast::ImportSpec>,
+        type_name: &str,
+        ctor_name: &str,
+    ) -> bool {
+        match import_spec {
+            None => true,
+            Some(ast::ImportSpec::Only(specs)) => specs.iter().any(|s| match s {
+                ast::ExportSpec::Name(n) => n == ctor_name,
+                ast::ExportSpec::Type { name, ctors } if name == type_name => match ctors {
+                    ast::ExportCtors::All => true,
+                    ast::ExportCtors::Some(cs) => cs.iter().any(|c| c == ctor_name),
+                },
+                _ => false,
+            }),
+            Some(ast::ImportSpec::Hiding(specs)) => {
+                let hidden = specs.iter().any(|s| match s {
+                    ast::ExportSpec::Name(n) => n == ctor_name,
+                    ast::ExportSpec::Type { name, ctors } if name == type_name => match ctors {
+                        ast::ExportCtors::All => true,
+                        ast::ExportCtors::Some(cs) => cs.iter().any(|c| c == ctor_name),
+                    },
+                    _ => false,
+                });
+                !hidden
+            }
+        }
+    }
+
+    let (also_unqualified_maybe, also_unqualified_either) = match prelude_import {
+        Some(id) => (
+            import_spec_allows_ctor(&id.import_spec, "Maybe", "Nothing")
+                && import_spec_allows_ctor(&id.import_spec, "Maybe", "Just"),
+            import_spec_allows_ctor(&id.import_spec, "Either", "Left")
+                && import_spec_allows_ctor(&id.import_spec, "Either", "Right"),
+        ),
+        None => (false, false),
+    };
+
+    // REPL-style anonymous modules default to unqualified Prelude ctors.
+    let (also_unqualified_maybe, also_unqualified_either) = if module.name.is_none() {
+        (true, true)
+    } else {
+        (also_unqualified_maybe, also_unqualified_either)
+    };
+
+    add_prelude_data_ctors(
+        cx,
+        &mut env,
+        also_unqualified_maybe,
+        also_unqualified_either,
+    );
 
     add_data_ctors_into_env(cx, module, module_path, &mut env);
     add_class_methods_into_env(cx, class_env, &mut env)?;
@@ -3337,11 +3406,14 @@ fn build_class_method_scheme_index(
     class_env: &ClassEnv,
 ) -> Result<ClassEnvIndex> {
     let mut idx = ClassEnvIndex::default();
+
     for ((class, method), qt) in &class_env.methods {
         if idx.methods_by_name.contains_key(method) {
-            // Ambiguous method name across multiple classes is currently unsupported.
-            return Err(Error::msg(format!("ambiguous class method name: {method}")));
+            return Err(Error::msg(format!(
+                "ambiguous method name: {method} (defined in multiple classes)"
+            )));
         }
+
         let scheme = lower_class_method_scheme(cx, class_env, class, qt)?;
         idx.methods_by_name.insert(method.clone(), scheme);
     }
@@ -3486,6 +3558,8 @@ struct PolyInstance {
     dict_name: String,
 }
 
+// NOTE: local let/where constraint solving uses InferCtx.full_class_env.
+
 fn instance_head_key_ast(ty: &ast::Type) -> Result<String> {
     use ast::Type;
 
@@ -3564,7 +3638,11 @@ fn instance_head_key_ty(ty: &Ty) -> Result<String> {
         Ty::Func(a, b) => {
             // Avoid internal errors: functions can appear as ground types in constraints.
             // If there is no matching instance, callers will report “cannot satisfy constraint”.
-            format!("Func_{}_{}", instance_head_key_ty(a)?, instance_head_key_ty(b)?)
+            format!(
+                "Func_{}_{}",
+                instance_head_key_ty(a)?,
+                instance_head_key_ty(b)?
+            )
         }
         _ => {
             return Err(Error::msg(
@@ -4261,9 +4339,15 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
                     ("eq".to_string(), "__primEq".to_string())
                 };
 
+                let class_id_name = if class_name == "Show" {
+                    "Prelude.Show".to_string()
+                } else {
+                    "Prelude.Eq".to_string()
+                };
+
                 let inst = ast::InstanceDecl {
                     preds,
-                    class: ast::ClassId::dummy(class_name.clone()),
+                    class: ast::ClassId::dummy(class_id_name),
                     ty: inst_ty,
                     methods: vec![ast::Binding {
                         doc: None,
@@ -4314,9 +4398,15 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
                     })
                     .collect();
 
+                let class_id_name = if class_name == "Show" {
+                    "Prelude.Show".to_string()
+                } else {
+                    "Prelude.Eq".to_string()
+                };
+
                 let inst = ast::InstanceDecl {
                     preds,
-                    class: ast::ClassId::dummy(class_name.clone()),
+                    class: ast::ClassId::dummy(class_id_name),
                     ty: inst_ty,
                     methods: vec![],
                 };
@@ -5450,9 +5540,10 @@ fn simplify_process_constraint(
         };
         if let Some(m) = method_hint {
             if let Some(classes) = class_env.method_classes.get(m) {
-                if let Some(cid) = classes.iter().find(|cid| {
-                    cid.name == name || cid.name.ends_with(&format!(".{name}"))
-                }) {
+                if let Some(cid) = classes
+                    .iter()
+                    .find(|cid| cid.name == name || cid.name.ends_with(&format!(".{name}")))
+                {
                     return Some(cid.clone());
                 }
                 if let Some(cid) = classes.first() {
@@ -5543,6 +5634,43 @@ fn simplify_process_constraint(
                 });
 
                 if !has_concrete && !has_poly {
+                    if std::env::var("KSCR_DEBUG_EQ_INTEGER").ok().as_deref() == Some("1")
+                        && (class.name == "Prelude.Eq" || class.name.ends_with(".Eq"))
+                    {
+                        eprintln!(
+                            "[KSCR_DEBUG_EQ_INTEGER] simplify failure: class={} module={:?} ty={:?} key_ty={}",
+                            class.name,
+                            class.module,
+                            ty_norm,
+                            key_ty
+                        );
+                        eprintln!(
+                            "[KSCR_DEBUG_EQ_INTEGER] class_env.instances.len()={} class_env.class_params.len()={}",
+                            class_env.instances.len(),
+                            class_env.class_params.len()
+                        );
+                        let same_name: Vec<_> = class_env
+                            .instances
+                            .keys()
+                            .filter(|(c, _)| c.name == class.name)
+                            .map(|(c, t)| format!("{} module={:?} head={}", c.name, c.module, t))
+                            .collect();
+                        eprintln!(
+                            "[KSCR_DEBUG_EQ_INTEGER] instances with same class name: {:?}",
+                            same_name
+                        );
+                        let eqish: Vec<_> = class_env
+                            .instances
+                            .keys()
+                            .filter(|(c, _)| c.name.contains("Eq"))
+                            .take(30)
+                            .map(|(c, t)| format!("{} module={:?} head={}", c.name, c.module, t))
+                            .collect();
+                        eprintln!(
+                            "[KSCR_DEBUG_EQ_INTEGER] sample instances containing 'Eq': {:?}",
+                            eqish
+                        );
+                    }
                     return Err(Error::msg(format!(
                         "cannot satisfy constraint: {} {ty}",
                         class.name
@@ -6293,7 +6421,7 @@ fn infer_local_letrec_bindings(
             for (name, t) in binds {
                 let cs = simplify_constraints(
                     data_env,
-                    &ClassEnv::default(),
+                    &cx.full_class_env,
                     apply_constraints(&s, cs.clone()),
                 )?;
                 let scheme = generalize_qual_with_env_ftv(&env_gen_ftv, cs, apply(&s, t));
@@ -7375,11 +7503,13 @@ pub(crate) fn validate_ksif_dependencies(
             .join("ksif");
 
         let candidates = [
+            // Prefer stable cache locations over source-adjacent artifacts.
+            default_artifact_dir.join(format!("{}.ksif", dep_name)),
+            stdlib_artifact_dir.join(format!("{}.ksif", dep_name)),
+            // Backwards-compat (older layouts)
             module_dir.join(format!("{}.ksif", dep_name.replace('.', "/"))),
             module_dir.join(format!("{}.ksif", dep_name)),
             module_dir.join(format!("ksif_{}.ksif", dep_name)),
-            default_artifact_dir.join(format!("{}.ksif", dep_name)),
-            stdlib_artifact_dir.join(format!("{}.ksif", dep_name)),
         ];
 
         let mut dep_ksif_path: Option<PathBuf> = None;
@@ -7460,11 +7590,7 @@ fn ensure_ksif_for_module(
     } else {
         project_artifact_dir
     };
-    let ksif_path = if module_path.starts_with(&stdlib_root) {
-        default_artifact_dir.join(format!("{}.ksif", module_name))
-    } else {
-        module_path.with_extension("ksif")
-    };
+    let ksif_path = default_artifact_dir.join(format!("{}.ksif", module_name));
 
     let policy = get_ksif_rebuild_policy();
 
@@ -7532,6 +7658,12 @@ fn ensure_ksif_for_module(
         }
     }
 
+    // Match file-based typechecking: auto-import Prelude for non-stdlib modules.
+    // This keeps common operators (e.g. (==)) available when compiling dependencies into `.ksif`.
+    if !is_stdlib_path(&module_path) {
+        module_ast = ensure_implicit_prelude_import(module_ast);
+    }
+
     // Recursively ensure KSIF for imports (unless suppressed)
     if !policy.suppress_recursive_rebuild {
         for it in &module_ast.items {
@@ -7550,10 +7682,11 @@ fn ensure_ksif_for_module(
             };
 
             let candidates = [
+                default_artifact_dir.join(format!("{}.ksif", id.module)),
+                // Backwards-compat
                 module_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
                 module_dir.join(format!("{}.ksif", id.module)),
                 module_dir.join(format!("ksif_{}.ksif", id.module)),
-                default_artifact_dir.join(format!("{}.ksif", id.module)),
             ];
 
             let dep_ksif_exists = candidates.iter().any(|p| p.exists());
@@ -7580,10 +7713,11 @@ fn ensure_ksif_for_module(
         };
         // Find the .ksif file for this dependency (same logic as load_imported_ksif_schemes_internal)
         let candidates = [
+            default_artifact_dir.join(format!("{}.ksif", id.module)),
+            // Backwards-compat
             module_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
             module_dir.join(format!("{}.ksif", id.module)),
             module_dir.join(format!("ksif_{}.ksif", id.module)),
-            default_artifact_dir.join(format!("{}.ksif", id.module)),
         ];
 
         let mut dep_ksif_path: Option<PathBuf> = None;
@@ -7742,11 +7876,44 @@ fn ensure_ksif_for_module(
     };
     let bytes = crate::kir1::encode_ksif_module(&ksif);
 
-    // Write KSIF artifact
+    fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "ksif.tmp".to_string());
+
+        let pid = std::process::id();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+
+        let tmp = parent.join(format!(".{file_name}.tmp.{pid}.{nanos}"));
+        std::fs::write(&tmp, bytes)?;
+
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Windows can't rename over an existing file; treat "already written"
+                // as success and clean up the temp file.
+                if path.exists() {
+                    let _ = std::fs::remove_file(&tmp);
+                    Ok(())
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    // Write KSIF artifact (stable location + atomic write to avoid partial reads).
     if let Some(parent) = ksif_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&ksif_path, bytes)?;
+    write_atomic(&ksif_path, &bytes)?;
 
     visiting.remove(module_name);
     done.insert(module_name.to_string());
@@ -7772,80 +7939,116 @@ fn load_imported_ksif_schemes_internal(
         .join("ksif");
 
     let mut imported: HashMap<String, HashMap<String, Scheme>> = HashMap::new();
-    for it in &module.items {
+    'import_loop: for it in &module.items {
         let ast::Item::Import(id) = it else {
             continue;
         };
-        let candidates = [
-            // Prefer local `.ksif` next to the module source (avoids collisions with the shared cache).
-            // Dot-separated module names map to directories.
-            entry_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
-            // Plain `<Module>.ksif`
-            entry_dir.join(format!("{}.ksif", id.module)),
-            // Common convention in this repo's tests: `ksif_<Module>.ksif`
-            entry_dir.join(format!("ksif_{}.ksif", id.module)),
-            // Fallback project cache: `target/ksif/<Module>.ksif`
-            default_artifact_dir.join(format!("{}.ksif", id.module)),
-            // Fallback stdlib cache: `<stdlib_root>/../target/ksif/<Module>.ksif`
-            stdlib_artifact_dir.join(format!("{}.ksif", id.module)),
-        ];
 
-        let mut bytes: Option<Vec<u8>> = None;
-        let mut chosen: Option<PathBuf> = None;
-        for p in &candidates {
-            if let Ok(b) = std::fs::read(p) {
-                bytes = Some(b);
-                chosen = Some(p.clone());
-                break;
-            }
-        }
-        let Some(bytes) = bytes else {
-            // For stdlib modules, missing KSIF is tolerated (rely on stdlib cache/injection)
-            continue;
+        let resolved_module_path = resolve_module_path(entry_dir, &id.module).ok();
+        let is_stdlib_import = resolved_module_path
+            .as_ref()
+            .is_some_and(|p| p.starts_with(&stdlib_root));
+
+        let candidates = if is_stdlib_import {
+            [
+                // For stdlib modules, prefer the stdlib cache first.
+                stdlib_artifact_dir.join(format!("{}.ksif", id.module)),
+                default_artifact_dir.join(format!("{}.ksif", id.module)),
+                // Backwards-compat (older layouts)
+                entry_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
+                entry_dir.join(format!("{}.ksif", id.module)),
+                entry_dir.join(format!("ksif_{}.ksif", id.module)),
+            ]
+        } else {
+            [
+                // Prefer stable cache locations first to avoid source-adjacent KSIF races.
+                default_artifact_dir.join(format!("{}.ksif", id.module)),
+                stdlib_artifact_dir.join(format!("{}.ksif", id.module)),
+                // Backwards-compat (older layouts)
+                entry_dir.join(format!("{}.ksif", id.module.replace('.', "/"))),
+                entry_dir.join(format!("{}.ksif", id.module)),
+                entry_dir.join(format!("ksif_{}.ksif", id.module)),
+            ]
         };
-        let ksif_path = chosen.unwrap();
 
-        // Safety: if a cached KSIF's dependency hashes don't match, fail early.
-        // However, skip this validation when suppress_recursive_rebuild is true.
-        if !policy.suppress_recursive_rebuild {
-            // Validate dependency hashes using the imported module's context.
-            // Using `entry_dir` here can accidentally pick up unrelated project-local KSIFs
-            // (e.g. /tmp/target/ksif/Prelude.*.ksif) and report false staleness.
-            let (validate_module_dir, validate_default_artifact_dir) =
-                match resolve_module_path(entry_dir, &id.module) {
-                    Ok(module_path) => {
-                        let module_dir = module_path.parent().unwrap_or(entry_dir).to_path_buf();
-                        let stdlib_root = stdlib_cache::stdlib_root()?;
-                        let default_artifact_dir = if module_path.starts_with(&stdlib_root) {
-                            stdlib_artifact_dir.clone()
-                        } else {
-                            default_artifact_dir.clone()
-                        };
-                        (module_dir, default_artifact_dir)
-                    }
-                    Err(_) => (entry_dir.to_path_buf(), default_artifact_dir.clone()),
-                };
-
-            match validate_ksif_dependencies(
-                &ksif_path,
-                &validate_module_dir,
-                &validate_default_artifact_dir,
-            ) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Err(Error::msg(format!(
-                        "stale ksif {} (dependencies changed); re-run with --ksif-rebuild",
-                        ksif_path.display()
-                    )));
-                }
-                Err(e) => {
-                    return Err(Error::msg(format!(
-                        "failed to validate ksif dependencies for {}: {e}",
-                        ksif_path.display()
-                    )));
+        let read_first_existing = || -> Option<(PathBuf, Vec<u8>)> {
+            for p in &candidates {
+                if let Ok(b) = std::fs::read(p) {
+                    return Some((p.clone(), b));
                 }
             }
-        }
+            None
+        };
+
+        // Stale KSIFs can happen in parallel test runs when another worker
+        // updates transitive dependencies. Best effort: rebuild once and retry.
+        let mut auto_rebuild_attempted = false;
+        let (ksif_path, bytes) = loop {
+            let Some((ksif_path, bytes)) = read_first_existing() else {
+                // For stdlib modules, missing KSIF is tolerated (rely on stdlib cache/injection)
+                continue 'import_loop;
+            };
+
+            // Safety: if a cached KSIF's dependency hashes don't match, rebuild once and retry.
+            // However, skip this validation when suppress_recursive_rebuild is true.
+            if !policy.suppress_recursive_rebuild {
+                // Validate dependency hashes using the imported module's context.
+                // Using `entry_dir` here can accidentally pick up unrelated project-local KSIFs
+                // (e.g. /tmp/target/ksif/Prelude.*.ksif) and report false staleness.
+                let (validate_module_dir, validate_default_artifact_dir) =
+                    match resolved_module_path
+                        .clone()
+                        .or_else(|| resolve_module_path(entry_dir, &id.module).ok())
+                    {
+                        Some(module_path) => {
+                            let module_dir =
+                                module_path.parent().unwrap_or(entry_dir).to_path_buf();
+                            let stdlib_root = stdlib_cache::stdlib_root()?;
+                            let default_artifact_dir = if module_path.starts_with(&stdlib_root) {
+                                stdlib_artifact_dir.clone()
+                            } else {
+                                default_artifact_dir.clone()
+                            };
+                            (module_dir, default_artifact_dir)
+                        }
+                        None => (entry_dir.to_path_buf(), default_artifact_dir.clone()),
+                    };
+
+                match validate_ksif_dependencies(
+                    &ksif_path,
+                    &validate_module_dir,
+                    &validate_default_artifact_dir,
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if !auto_rebuild_attempted {
+                            auto_rebuild_attempted = true;
+                            let mut visiting = HashSet::new();
+                            let mut done = HashSet::new();
+                            ensure_ksif_for_module(
+                                &id.module,
+                                entry_dir,
+                                &mut visiting,
+                                &mut done,
+                            )?;
+                            continue;
+                        }
+                        return Err(Error::msg(format!(
+                            "stale ksif {} (dependencies changed); auto-rebuild attempted; re-run with --ksif-rebuild",
+                            ksif_path.display()
+                        )));
+                    }
+                    Err(e) => {
+                        return Err(Error::msg(format!(
+                            "failed to validate ksif dependencies for {}: {e}",
+                            ksif_path.display()
+                        )));
+                    }
+                }
+            }
+
+            break (ksif_path, bytes);
+        };
 
         let ksif = crate::kir1::decode_ksif_module(&bytes).map_err(|e| {
             Error::msg(format!(
@@ -7927,24 +8130,48 @@ fn load_module_with_imports_ast_with_loader(
 }
 
 fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
+    // Prelude itself should not implicitly import Prelude.
+    if module.name.as_deref() == Some("Prelude") {
+        return module;
+    }
+
     // Check if Prelude is already imported (qualified or unqualified)
     let has_prelude_import = module
         .items
         .iter()
         .any(|it| matches!(it, ast::Item::Import(id) if id.module == "Prelude"));
-
     if has_prelude_import {
         return module;
     }
 
-    // Always import Prelude unqualified.
-    // Many programs and tests rely on Prelude value bindings (e.g. (==), (/=), toString)
-    // being available without explicit imports.
+    // If the module already has imports, keep Prelude operators/values available but avoid
+    // leaking Prelude data constructors that can interfere with ctor export restrictions.
+    // (Users can explicitly `import Prelude` to opt into Prelude ctors unqualified.)
+    let has_any_import = module
+        .items
+        .iter()
+        .any(|it| matches!(it, ast::Item::Import(_)));
+
+    let import_spec = if has_any_import {
+        Some(ast::ImportSpec::Hiding(vec![
+            ast::ExportSpec::Type {
+                name: "Maybe".to_string(),
+                ctors: ast::ExportCtors::All,
+            },
+            ast::ExportSpec::Type {
+                name: "Either".to_string(),
+                ctors: ast::ExportCtors::All,
+            },
+        ]))
+    } else {
+        None
+    };
+
     let prelude_import = ast::Item::Import(ast::ImportDecl {
         module: "Prelude".to_string(),
         qualified: false,
         as_name: None,
-        import_spec: None,
+        import_spec,
     });
     module.items.insert(0, prelude_import);
     module
@@ -8290,6 +8517,137 @@ fn typecheck_internal(
     typecheck_internal_core(module, stdlib_class_env, None)
 }
 
+fn build_inferred_for_rewrite(
+    module: &ast::Module,
+    inferred: &HashMap<String, Scheme>,
+    class_env: &ClassEnv,
+    imported: Option<&HashMap<String, HashMap<String, Scheme>>>,
+    entry_path: Option<&Path>,
+) -> HashMap<String, Scheme> {
+    let mut out = inferred.clone();
+    let Some(imported) = imported else {
+        return out;
+    };
+
+    let entry_dir = entry_path
+        .and_then(|p| p.parent())
+        .unwrap_or_else(|| Path::new("."));
+
+    for it in &module.items {
+        let ast::Item::Import(id) = it else {
+            continue;
+        };
+        let Some(schemes) = imported.get(&id.module) else {
+            continue;
+        };
+
+        // Apply import spec filter consistently with inference.
+        let all_names: std::collections::HashSet<String> = schemes.keys().cloned().collect();
+        let filtered_names: std::collections::HashSet<String> = match &id.import_spec {
+            None => all_names,
+            Some(ast::ImportSpec::Only(specs)) => {
+                expand_import_spec_with_ctors(specs, &id.module, entry_dir)
+            }
+            Some(ast::ImportSpec::Hiding(specs)) => {
+                let hidden = expand_import_spec_with_ctors(specs, &id.module, entry_dir);
+                all_names
+                    .into_iter()
+                    .filter(|n| !hidden.contains(n))
+                    .collect()
+            }
+        };
+
+        for name in filtered_names {
+            let Some(scheme) = schemes.get(&name) else {
+                continue;
+            };
+
+            if let Some(as_name) = &id.as_name {
+                // Aliased import: expose only alias-qualified names.
+                out.entry(format!("{}.{}", as_name, name))
+                    .or_insert_with(|| scheme.clone());
+                continue;
+            }
+
+            if id.qualified {
+                // Qualified import without alias: expose only Module.name.
+                out.entry(format!("{}.{}", id.module, name))
+                    .or_insert_with(|| scheme.clone());
+            } else {
+                // Unqualified import: allow both Module.name and name.
+                out.entry(format!("{}.{}", id.module, name))
+                    .or_insert_with(|| scheme.clone());
+                out.entry(name).or_insert_with(|| scheme.clone());
+            }
+        }
+    }
+
+    // Mirror inference-time constructor re-exports that may not be present in `.ksif`.
+    // This is needed for rewrite-time inference on qualified ctor uses like `M.Just`.
+    if imported.contains_key("Data.Maybe") {
+        if let Some(just) = out
+            .get("Just")
+            .cloned()
+            .or_else(|| out.get("Prelude.Just").cloned())
+        {
+            out.entry("Data.Maybe.Just".to_string()).or_insert(just);
+        }
+        if let Some(nothing) = out
+            .get("Nothing")
+            .cloned()
+            .or_else(|| out.get("Prelude.Nothing").cloned())
+        {
+            out.entry("Data.Maybe.Nothing".to_string())
+                .or_insert(nothing);
+        }
+
+        for it in &module.items {
+            let ast::Item::Import(id) = it else {
+                continue;
+            };
+            if id.module != "Data.Maybe" {
+                continue;
+            }
+            let Some(as_name) = &id.as_name else {
+                continue;
+            };
+            if let Some(just) = out.get("Data.Maybe.Just").cloned() {
+                out.entry(format!("{}.Just", as_name)).or_insert(just);
+            }
+            if let Some(nothing) = out.get("Data.Maybe.Nothing").cloned() {
+                out.entry(format!("{}.Nothing", as_name)).or_insert(nothing);
+            }
+        }
+    }
+
+    // Ensure instance dictionary bindings referenced by name are available to rewrite-time inference.
+    // `infer_in_module_with_class_env` only consults `inferred`, not module items, so injected
+    // dict bindings like `Prelude.__dict_Show_Integer` must have schemes here.
+    for dict_name in class_env.instances.values() {
+        // Dict names are stored as qualified bindings (e.g. `Prelude.__dict_Show_Integer` or
+        // `Prelude.Num.__dict_Num_Integer`). Imported scheme maps use the module-local name key
+        // (e.g. `__dict_Show_Integer`).
+        let (module_prefix, local_name) = match dict_name.rsplit_once('.') {
+            Some(x) => x,
+            None => continue,
+        };
+        let Some(schemes) = imported.get(module_prefix) else {
+            continue;
+        };
+        let Some(scheme) = schemes.get(local_name) else {
+            continue;
+        };
+
+        // Make both the qualified dict name and the unqualified forwarder name visible.
+        out.entry(dict_name.clone())
+            .or_insert_with(|| scheme.clone());
+        out.entry(local_name.to_string())
+            .or_insert_with(|| scheme.clone());
+    }
+
+    out
+}
+
 fn typecheck_internal_core_with_entry_path(
     mut module: ast::Module,
     stdlib_class_env: Option<&ClassEnv>,
@@ -8348,6 +8706,51 @@ fn typecheck_internal_core_with_entry_path(
             .map(|it| expand_item(it, &aliases))
             .collect::<Result<Vec<_>>>()?;
 
+        fn filter_stdlib_env_for_prelude_import_spec(
+            module: &ast::Module,
+            stdlib_env: &ClassEnv,
+        ) -> ClassEnv {
+            use std::collections::HashSet;
+
+            let mut hidden_names: HashSet<String> = HashSet::new();
+            for it in &module.items {
+                let ast::Item::Import(id) = it else {
+                    continue;
+                };
+                if id.module != "Prelude" {
+                    continue;
+                }
+                let Some(ast::ImportSpec::Hiding(specs)) = &id.import_spec else {
+                    continue;
+                };
+                for s in specs {
+                    if let ast::ExportSpec::Name(n) = s {
+                        hidden_names.insert(n.clone());
+                    }
+                }
+            }
+
+            if hidden_names.is_empty() {
+                return stdlib_env.clone();
+            }
+
+            let mut out = stdlib_env.clone();
+            for name in hidden_names {
+                if let Some(classes) = out.method_classes.get_mut(&name) {
+                    classes.retain(|cid| !cid.name.starts_with("Prelude."));
+                    if classes.is_empty() {
+                        out.method_classes.remove(&name);
+                    }
+                }
+
+                // Also remove the method type entries so we can build a unique-by-name
+                // method scheme index for inference.
+                out.methods
+                    .retain(|(cid, m), _| !(m == &name && cid.name.starts_with("Prelude.")));
+            }
+            out
+        }
+
         // Desugar typeclasses. For stdlib modules, use relaxed validation since
         // superclasses may be in other stdlib modules not yet in this module's env.
         let is_stdlib = entry_path.is_some_and(is_stdlib_path);
@@ -8379,10 +8782,51 @@ fn typecheck_internal_core_with_entry_path(
         } else {
             desugar_typeclasses(&mut module)?
         };
-
-        // Merge stdlib class env
+        // Merge stdlib class env.
+        // IMPORTANT: honor `import Prelude hiding (...)` for method-name disambiguation.
         if let Some(stdlib_env) = stdlib_class_env {
-            merge_class_env(&mut class_env, stdlib_env)?;
+            let filtered = filter_stdlib_env_for_prelude_import_spec(&module, stdlib_env);
+            merge_class_env(&mut class_env, &filtered)?;
+
+            if std::env::var("KSCR_DEBUG_EQ_INTEGER").ok().as_deref() == Some("1") {
+                let eq = class_env
+                    .class_params
+                    .keys()
+                    .find(|cid| cid.name == "Prelude.Eq" || cid.name.ends_with(".Eq"))
+                    .cloned();
+                if let Some(eq) = eq {
+                    let key = (eq.clone(), "Integer".to_string());
+                    let in_filtered = filtered.instances.contains_key(&key);
+                    let in_merged = class_env.instances.contains_key(&key);
+                    eprintln!(
+                        "[KSCR_DEBUG_EQ_INTEGER] module={:?} Eq class={} module_id={:?} in_filtered={} in_merged={} filtered_instances={} merged_instances={}",
+                        module.name,
+                        eq.name,
+                        eq.module,
+                        in_filtered,
+                        in_merged,
+                        filtered.instances.len(),
+                        class_env.instances.len()
+                    );
+                    if !in_filtered {
+                        let keys: Vec<_> = filtered
+                            .instances
+                            .keys()
+                            .filter(|(c, _)| c.name.ends_with(".Eq"))
+                            .map(|(c, t)| format!("{} {}", c.name, t))
+                            .collect();
+                        eprintln!(
+                            "[KSCR_DEBUG_EQ_INTEGER] filtered Eq instance keys: {:?}",
+                            keys
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "[KSCR_DEBUG_EQ_INTEGER] module={:?} Prelude.Eq class not found in class_env",
+                        module.name
+                    );
+                }
+            }
         }
 
         // Load and merge class instances from imported user modules.
@@ -8477,16 +8921,26 @@ fn typecheck_internal_core_with_entry_path(
         // like `__dict_Num_Integer = Prelude.Num.__dict_Num_Integer`.
         inject_stdlib_instance_dict_forwarders_post_typecheck(&mut module)?;
 
+        // During rewrite we may need imported schemes (e.g. `M.fromMaybe`) that were available
+        // during inference via `.ksif` imports but are not emitted as top-level bindings in `inferred`.
+        let inferred_for_rewrite = build_inferred_for_rewrite(
+            &module,
+            &inferred,
+            &class_env,
+            imported.as_ref(),
+            entry_path,
+        );
+
         typeclass_dict_passing_common::rewrite_class_dict_passing_in_module(
             &mut module,
             &class_env,
-            &inferred,
+            &inferred_for_rewrite,
         )?;
 
         rewrite_entry_main_apply_dicts(&mut module, &class_env, &main_entry_class_constraints)?;
 
         // Rewrite method calls/vars while dictionary bindings still exist.
-        rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred)?;
+        rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred_for_rewrite)?;
 
         // Drop class / instance decls after desugaring.
         module
@@ -8713,6 +9167,31 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
             t_all.elapsed().as_secs_f64()
         );
     }
+
+    // Safety net: ensure primitive Eq instances exist.
+    // Some programs rely on `Prelude.(==)` which introduces an `Eq` constraint,
+    // and must be dischargeable for primitive types like Integer.
+    fn find_class(env: &ClassEnv, short: &str) -> Option<ast::ClassId> {
+        let preferred = format!("Prelude.{short}");
+        if let Some(cid) = env.class_params.keys().find(|cid| cid.name == preferred) {
+            return Some(cid.clone());
+        }
+        env.class_params
+            .keys()
+            .find(|cid| cid.name == short || cid.name.ends_with(&format!(".{short}")))
+            .cloned()
+    }
+
+    if let Some(eq_class) = find_class(&merged_env, "Eq") {
+        for ty_key in ["Integer", "Bool", "Char", "Unit", "Float64"] {
+            let key = (eq_class.clone(), ty_key.to_string());
+            merged_env
+                .instances
+                .entry(key)
+                .or_insert_with(|| "__builtinEqDict".to_string());
+        }
+    }
+
     Ok(merged_env)
 }
 
@@ -8918,22 +9397,30 @@ fn load_imported_instances(
                 .filter(|it| {
                     matches!(
                         it,
-                        ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_) | ast::Item::Import(_)
+                        ast::Item::ClassDecl(_)
+                            | ast::Item::InstanceDecl(_)
+                            | ast::Item::DataDecl(_)
+                            | ast::Item::Import(_)
                     )
                 })
                 .collect(),
         };
 
         // Skip if no instances or class declarations
-        if !tmp_module
-            .items
-            .iter()
-            .any(|it| matches!(it, ast::Item::InstanceDecl(_) | ast::Item::ClassDecl(_)))
-        {
+        if !tmp_module.items.iter().any(|it| {
+            matches!(
+                it,
+                ast::Item::InstanceDecl(_) | ast::Item::ClassDecl(_) | ast::Item::DataDecl(_)
+            )
+        }) {
             continue;
         }
 
         // Canonicalize class names and desugar typeclasses to get instances
+
+        // Bring stdlib class declarations into scope so `deriving (Show, Eq)` in imported
+        // modules can resolve to stdlib classes (e.g. Prelude.Show) when we collect instances.
+        inject_stdlib_class_decls(&mut tmp_module)?;
         let module_env = desugar_typeclasses(&mut tmp_module)?;
 
         // Collect dictionary bindings from the desugared module
@@ -9076,6 +9563,7 @@ fn merge_class_definitions_only(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()
     for (m, classes) in &src.method_classes {
         let e = dst.method_classes.entry(m.clone()).or_default();
         e.extend(classes.iter().cloned());
+
         e.sort();
         e.dedup();
     }
@@ -12286,12 +12774,20 @@ fn rewrite_class_method_var(
 
     // Check if this name is defined as a user function/value in the module.
     // If so, don't rewrite it as a typeclass method.
+    // NOTE: We ignore injected import forwarders (dummy spans), because those are just
+    // `x = M.x` re-exports and still need method rewriting.
     for item in &module_snapshot.items {
         if let ast::Item::Binding(b) = item {
             if let ast::PatternKind::Var(name) = &b.pat.kind {
                 if name == &mname {
-                    // This is a user-defined binding, not a typeclass method reference.
-                    return Ok(Expr::new(span, ExprKind::Var(mname)));
+                    let injected_forwarder = b.span.start == 0
+                        && b.span.end == 0
+                        && b.expr.span.start == 0
+                        && b.expr.span.end == 0;
+                    if !injected_forwarder {
+                        // This is a user-defined binding, not a typeclass method reference.
+                        return Ok(Expr::new(span, ExprKind::Var(mname)));
+                    }
                 }
             }
         }
@@ -12683,10 +13179,7 @@ fn resolve_method_dict_expr(
                     } else {
                         pi.dict_name.clone()
                     };
-                    return Ok(Some((
-                        Expr::new(ctx.span, ExprKind::Var(dict_ref)),
-                        None,
-                    )));
+                    return Ok(Some((Expr::new(ctx.span, ExprKind::Var(dict_ref)), None)));
                 }
                 if poly_candidates.len() > 1 {
                     return Err(Error::msg_with_span(
@@ -12723,7 +13216,34 @@ fn resolve_method_dict_expr(
         return Ok(Some((d, None)));
     }
 
-    // Removed enclosing-binding fallback: prefer deferring to runtime resolution.
+    // Fallback: if argument types are not ground, try to pick an instance from the
+    // enclosing binding's return type. This is important for `do`-desugared code
+    // where `>>` / `>>=` may not have fully-ground argument types at this stage.
+    if determined_by_args {
+        if let Some(binding_name) = find_enclosing_binding(ctx.module_snapshot, ctx.span) {
+            if let Some(scheme) = ctx.inferred.get(&binding_name) {
+                fn return_ty(mut t: &Ty) -> &Ty {
+                    while let Ty::Func(_, b) = t {
+                        t = b;
+                    }
+                    t
+                }
+
+                let rt = return_ty(&scheme.ty);
+                if ftv_ty(rt).is_empty() {
+                    if let Ok(head) = instance_head_key_ty_for_class(ctx.class_env, class_id, rt) {
+                        if let Some(d) = ctx.class_env.instances.get(&(class_id.clone(), head)) {
+                            let chosen_name_for_known = Some(d.clone());
+                            return Ok(Some((
+                                Expr::new(ctx.span, ExprKind::Var(d.clone())),
+                                chosen_name_for_known,
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // If we saw only concrete (ground) argument types and still couldn't find an instance,
     // this is a real “missing instance” error.
@@ -12824,7 +13344,14 @@ fn rewrite_class_method_apply(
         let is_user_defined = ctx.module_snapshot.items.iter().any(|item| {
             if let ast::Item::Binding(b) = item {
                 if let ast::PatternKind::Var(name) = &b.pat.kind {
-                    return name == mname;
+                    if name != mname {
+                        return false;
+                    }
+                    let injected_forwarder = b.span.start == 0
+                        && b.span.end == 0
+                        && b.expr.span.start == 0
+                        && b.expr.span.end == 0;
+                    return !injected_forwarder;
                 }
             }
             false
@@ -13408,6 +13935,7 @@ fn infer_module_with_class_env(
         class_env: class_index.clone(),
         ..Default::default()
     };
+    cx.full_class_env = std::sync::Arc::new(class_env.clone());
     let data_env = collect_data_env(module);
     let mut env_global = collect_ctor_env_with_class_env(&mut cx, module, class_env, None)?;
     let mut env_global_ftv = ftv_env(&env_global);
@@ -13545,6 +14073,7 @@ fn infer_module_with_class_env_with_entry_path(
         class_env: class_index.clone(),
         ..Default::default()
     };
+    cx.full_class_env = std::sync::Arc::new(class_env.clone());
     let mut data_env = collect_data_env(module);
 
     // IMPORTANT: Also collect DataDecls from imported modules for deriving info.

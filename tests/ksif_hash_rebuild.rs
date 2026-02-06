@@ -1,6 +1,7 @@
 //! Test .ksif hash validation and rebuild policy
 
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -13,6 +14,12 @@ impl Drop for PolicyResetGuard {
     fn drop(&mut self) {
         kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy::default());
     }
+}
+
+fn ksif_path(root: &Path, module: &str) -> PathBuf {
+    root.join("target")
+        .join("ksif")
+        .join(format!("{module}.ksif"))
 }
 
 #[test]
@@ -57,8 +64,8 @@ fn test_ksif_rebuild_on_hash_mismatch() {
     assert!(result.is_ok(), "initial typecheck should succeed");
 
     // Check that A.ksif and B.ksif exist
-    let a_ksif = temp_path.join("A.ksif");
-    let b_ksif = temp_path.join("B.ksif");
+    let a_ksif = ksif_path(temp_path, "A");
+    let b_ksif = ksif_path(temp_path, "B");
     assert!(a_ksif.exists(), "A.ksif should exist");
     assert!(b_ksif.exists(), "B.ksif should exist");
 
@@ -173,8 +180,8 @@ fn test_ksif_force_rebuild_flag() {
     let result = kscr::types::typecheck_file(&temp_path.join("Main.ks"));
     assert!(result.is_ok(), "initial build failed: {:?}", result.err());
 
-    // The .ksif file for C should be created next to the source file
-    let c_ksif = temp_path.join("C.ksif");
+    // The .ksif file for C should be created under target/ksif
+    let c_ksif = ksif_path(temp_path, "C");
     assert!(
         c_ksif.exists(),
         "C.ksif should exist at {}",
@@ -330,8 +337,8 @@ fn test_suppress_recursive_rebuild_skips_dependency_validation() {
         result.err()
     );
 
-    let d_ksif = temp_path.join("D.ksif");
-    let e_ksif = temp_path.join("E.ksif");
+    let d_ksif = ksif_path(temp_path, "D");
+    let e_ksif = ksif_path(temp_path, "E");
     assert!(d_ksif.exists(), "D.ksif should exist");
     assert!(e_ksif.exists(), "E.ksif should exist");
 

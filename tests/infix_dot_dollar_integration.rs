@@ -4,7 +4,7 @@ use std::process::Command;
 #[test]
 fn infix_dot_dollar_execution() {
     let status = Command::new("cargo")
-        .args(&[
+        .args([
             "run",
             "--bin",
             "kscr",

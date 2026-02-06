@@ -743,6 +743,27 @@ fn value_type_name(v: &Value) -> &'static str {
     }
 }
 
+fn is_probably_typeclass_dict_record(v: &Value) -> bool {
+    let Value::Record(fields) = v else {
+        return false;
+    };
+
+    // Avoid treating constructor-encoded records as dictionaries.
+    if fields.iter().any(|(k, _)| k == "__ctor" || k == "__args") {
+        return false;
+    }
+
+    fields.iter().any(|(k, _)| {
+        k == "eq"
+            || k == "show"
+            || k == "+"
+            || k == "-"
+            || k == "*"
+            || k == "/"
+            || k.starts_with("__super_")
+    })
+}
+
 /// Auto-apply a dictionary when a Closure expects one in an IO context.
 /// This handles do-notation that desugars to lambdas expecting dictionaries.
 ///
@@ -909,8 +930,24 @@ fn auto_apply_dict(g: &Globals, v: Value) -> Result<Value> {
 /// Force a value and auto-apply dict-lambdas for builtin operations.
 /// This is used in contexts where we expect concrete values (e.g., arithmetic).
 fn force_and_auto_apply(g: &Globals, v: Value) -> Result<Value> {
-    let forced = force_value(g, v)?;
-    auto_apply_dict(g, forced)
+    let mut v = force_value(g, v)?;
+    // Dict-lambdas can escape into runtime contexts that expect concrete values.
+    // Apply a matching dictionary if possible, then force again so callers don't
+    // observe thunks/closures at value boundaries.
+    for _ in 0..4 {
+        let next = auto_apply_dict(g, v)?;
+        let next = force_value(g, next)?;
+        match &next {
+            Value::Closure { params, .. }
+                if params.len() == 1 && params[0].starts_with("__dict_") =>
+            {
+                v = next;
+                continue;
+            }
+            _ => return Ok(next),
+        }
+    }
+    Ok(v)
 }
 
 fn force_value(g: &Globals, mut v: Value) -> Result<Value> {
@@ -1107,95 +1144,109 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         // Minimal dictionaries for `.ksif`-only execution.
         // These are methods that accept the dictionary as their first argument; we ignore it.
         "__dict_Prelude.Monad.Monad" | "__dict_Prelude.Monad.Monad_IO" => {
-            return only_if_undefined(g, name, Value::Record(vec![
-            (
-                ">>".to_string(),
-                Value::Closure {
-                    params: vec![
-                        "_dict".to_string(),
-                        "first".to_string(),
-                        "second".to_string(),
-                    ],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("__ioThen".to_string())),
-                        args: vec![
-                            IrExpr::Var("first".to_string()),
-                            IrExpr::Var("second".to_string()),
-                        ],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            (
-                ">>=".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("__ioBind".to_string())),
-                        args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            (
-                "return".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "x".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("IO".to_string())),
-                        args: vec![IrExpr::Var("x".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-        ]));
-        },
+            return only_if_undefined(
+                g,
+                name,
+                Value::Record(vec![
+                    (
+                        ">>".to_string(),
+                        Value::Closure {
+                            params: vec![
+                                "_dict".to_string(),
+                                "first".to_string(),
+                                "second".to_string(),
+                            ],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("__ioThen".to_string())),
+                                args: vec![
+                                    IrExpr::Var("first".to_string()),
+                                    IrExpr::Var("second".to_string()),
+                                ],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                    (
+                        ">>=".to_string(),
+                        Value::Closure {
+                            params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("__ioBind".to_string())),
+                                args: vec![
+                                    IrExpr::Var("act".to_string()),
+                                    IrExpr::Var("f".to_string()),
+                                ],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                    (
+                        "return".to_string(),
+                        Value::Closure {
+                            params: vec!["_dict".to_string(), "x".to_string()],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("IO".to_string())),
+                                args: vec![IrExpr::Var("x".to_string())],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                ]),
+            );
+        }
 
         // Backwards-compat / alternate naming.
         "__dict_Monad_IO" => {
-            return only_if_undefined(g, name, Value::Record(vec![
-            (
-                ">>".to_string(),
-                Value::Closure {
-                    params: vec![
-                        "_dict".to_string(),
-                        "first".to_string(),
-                        "second".to_string(),
-                    ],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("__ioThen".to_string())),
-                        args: vec![
-                            IrExpr::Var("first".to_string()),
-                            IrExpr::Var("second".to_string()),
-                        ],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            (
-                ">>=".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("__ioBind".to_string())),
-                        args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            (
-                "return".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "x".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("IO".to_string())),
-                        args: vec![IrExpr::Var("x".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-        ]));
-        },
+            return only_if_undefined(
+                g,
+                name,
+                Value::Record(vec![
+                    (
+                        ">>".to_string(),
+                        Value::Closure {
+                            params: vec![
+                                "_dict".to_string(),
+                                "first".to_string(),
+                                "second".to_string(),
+                            ],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("__ioThen".to_string())),
+                                args: vec![
+                                    IrExpr::Var("first".to_string()),
+                                    IrExpr::Var("second".to_string()),
+                                ],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                    (
+                        ">>=".to_string(),
+                        Value::Closure {
+                            params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("__ioBind".to_string())),
+                                args: vec![
+                                    IrExpr::Var("act".to_string()),
+                                    IrExpr::Var("f".to_string()),
+                                ],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                    (
+                        "return".to_string(),
+                        Value::Closure {
+                            params: vec!["_dict".to_string(), "x".to_string()],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("IO".to_string())),
+                                args: vec![IrExpr::Var("x".to_string())],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                ]),
+            );
+        }
 
         "__recordGet" => Value::BuiltinRecordGet,
         "error" => Value::BuiltinError,
@@ -1652,7 +1703,16 @@ fn run_io_then(
 fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
     match fun {
         Value::IoCtor => Ok(Value::IoAction(Box::new(IoAction::Pure(arg)))),
-        Value::BuiltinStdoutWrite => apply_builtin_stdout_write(g, arg),
+        Value::BuiltinStdoutWrite => {
+            let arg = force_and_auto_apply(g, arg)?;
+            // Dict-passing can supply a leading `Show` dictionary to `print`.
+            // When `print` falls back to this builtin, ignore that dictionary.
+            if is_probably_typeclass_dict_record(&arg) {
+                Ok(Value::BuiltinStdoutWrite)
+            } else {
+                apply_builtin_stdout_write(g, arg)
+            }
+        }
         Value::BuiltinPutStrLn => apply_builtin_put_str_ln(g, arg),
         Value::BuiltinConcatMap => Ok(Value::BuiltinConcatMap1(Box::new(arg))),
         Value::BuiltinConcatMap1(f) => concat_map(g, *f, arg),
@@ -1675,7 +1735,17 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinModInt => Ok(Value::BuiltinModInt1(Box::new(arg))),
         Value::BuiltinModInt1(a) => mod_floor_int(g, *a, arg),
 
-        Value::BuiltinEq => Ok(Value::BuiltinEq1(Box::new(arg))),
+        Value::BuiltinEq => {
+            let arg = force_and_auto_apply(g, arg)?;
+            // Typeclass method calls pass the instance dictionary as the first arg.
+            // When `__primEq` is used as an instance method body (e.g. `eq = __primEq`),
+            // ignore that leading dictionary.
+            if is_probably_typeclass_dict_record(&arg) {
+                Ok(Value::BuiltinEq)
+            } else {
+                Ok(Value::BuiltinEq1(Box::new(arg)))
+            }
+        }
         Value::BuiltinEq1(a) => eq_value(g, *a, arg),
         Value::BuiltinEqInt => Ok(Value::BuiltinEqInt1(Box::new(arg))),
         Value::BuiltinEqInt1(a) => eq_int(g, *a, arg),
@@ -1687,7 +1757,14 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinGtInt1(a) => gt_int(g, *a, arg),
         Value::BuiltinGeInt => Ok(Value::BuiltinGeInt1(Box::new(arg))),
         Value::BuiltinGeInt1(a) => ge_int(g, *a, arg),
-        Value::BuiltinNe => Ok(Value::BuiltinNe1(Box::new(arg))),
+        Value::BuiltinNe => {
+            let arg = force_and_auto_apply(g, arg)?;
+            if is_probably_typeclass_dict_record(&arg) {
+                Ok(Value::BuiltinNe)
+            } else {
+                Ok(Value::BuiltinNe1(Box::new(arg)))
+            }
+        }
         Value::BuiltinNe1(a) => ne_value(g, *a, arg),
         Value::BuiltinNeInt => Ok(Value::BuiltinNeInt1(Box::new(arg))),
         Value::BuiltinNeInt1(a) => ne_int(g, *a, arg),
@@ -1723,7 +1800,15 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         }
         Value::BuiltinRecordGet => Ok(Value::BuiltinRecordGet1(Box::new(arg))),
         Value::BuiltinRecordGet1(d) => record_get(g, *d, arg),
-        Value::BuiltinShow => show_to_string(g, arg),
+        Value::BuiltinShow => {
+            let arg = force_and_auto_apply(g, arg)?;
+            // See BuiltinEq note above.
+            if is_probably_typeclass_dict_record(&arg) {
+                Ok(Value::BuiltinShow)
+            } else {
+                show_to_string(g, arg)
+            }
+        }
 
         Value::BuiltinError => builtin_error(g, arg),
         Value::BuiltinThrow => builtin_throw(g, arg),
@@ -2031,14 +2116,14 @@ fn string_to_char_list(s: &str) -> Value {
 }
 
 fn value_to_string(g: &Globals, v: Value) -> Result<String> {
-    let v = force_value(g, v)?;
+    let v = force_and_auto_apply(g, v)?;
     match v {
         Value::String(s) => Ok(s),
         Value::ListNil | Value::ListCons(_, _) => {
             let elems = list_to_vec(g, v)?;
             let mut out = String::new();
             for e in elems {
-                let e = force_value(g, e)?;
+                let e = force_and_auto_apply(g, e)?;
                 let Value::Char(ch) = e else {
                     return Err(Error::msg("expected [Char]"));
                 };
@@ -2532,7 +2617,7 @@ fn quote_char(c: char) -> String {
 }
 
 fn show_value_str(g: &Globals, v: Value) -> Result<String> {
-    let v = force_value(g, v)?;
+    let v = force_and_auto_apply(g, v)?;
     Ok(match v {
         Value::Integer(n) => n.to_string(),
         Value::Float64(x) => x.to_string(),
@@ -2553,7 +2638,7 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
             let mut chars = Vec::with_capacity(elems.len());
             let mut all_char = true;
             for e in &elems {
-                let e = force_value(g, e.clone())?;
+                let e = force_and_auto_apply(g, e.clone())?;
                 if let Value::Char(ch) = e {
                     chars.push(ch);
                 } else {
@@ -2582,7 +2667,7 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
                 .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
 
             if let (Some(ctor), Some(args)) = (ctor, args) {
-                let ctor = force_value(g, ctor)?;
+                let ctor = force_and_auto_apply(g, ctor)?;
                 if let Value::String(ctor) = ctor {
                     let elems = list_to_vec(g, args)?;
                     if elems.is_empty() {
@@ -2603,7 +2688,12 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
             }
             format!("{{{}}}", parts.join(", "))
         }
-        _ => return Err(Error::msg("show/toString expects a printable value")),
+        other => {
+            if std::env::var("KSCR_DEBUG_SHOW_VALUE_STR").ok().as_deref() == Some("1") {
+                eprintln!("[KSCR_DEBUG_SHOW_VALUE_STR] got non-printable value: {other:?}");
+            }
+            return Err(Error::msg("show/toString expects a printable value"));
+        }
     })
 }
 
@@ -2715,7 +2805,12 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
             true
         }
 
-        _ => return Err(Error::msg("== expects equatable values")),
+        (a, b) => {
+            if std::env::var("KSCR_DEBUG_EQ_VALUES").ok().as_deref() == Some("1") {
+                eprintln!("[KSCR_DEBUG_EQ_VALUES] got non-equatable values: a={a:?} b={b:?}");
+            }
+            return Err(Error::msg("== expects equatable values"));
+        }
     })
 }
 

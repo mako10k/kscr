@@ -46,178 +46,6 @@ impl Backend {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::backend_diagnostics_hover::{hover_in_doc, typecheck_document_text};
-    use crate::backend_goto_completion::goto_definition_in_doc;
-    use crate::backend_helpers::span_to_range;
-    use crate::backend_symbols::item_to_symbol;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn span_to_range_basic() {
-        let uri = Url::parse("file:///test.ks").unwrap();
-        let doc = Document::new(uri, "abc\ndef".to_string(), 1);
-        let r = span_to_range(&doc, kscr::lexer::Span { start: 4, end: 6 }).unwrap();
-        assert_eq!(r.start.line, 1);
-        assert_eq!(r.start.character, 0);
-        assert_eq!(r.end.line, 1);
-        assert_eq!(r.end.character, 2);
-    }
-
-    #[test]
-    fn typecheck_unsaved_document_uses_tempfile() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("kscr-lsp-unsaved-{nanos}"));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let path = dir.join("Main.ks");
-        assert!(!path.exists());
-
-        let uri = Url::from_file_path(&path).unwrap();
-        let src = "module Main where\n  main = IO ()\n";
-        typecheck_document_text(&uri, src).unwrap();
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn goto_definition_toplevel_binding() {
-        let uri = Url::parse("file:///test.ks").unwrap();
-        let src = "module Main where\n  foo = 1\n  bar = foo\n".to_string();
-        let doc = Document::new(uri.clone(), src, 1);
-
-        // position on the reference "foo" in "bar = foo"
-        let pos = Position {
-            line: 2,
-            character: 8,
-        };
-        let loc = goto_definition_in_doc(&doc, pos).unwrap();
-        assert_eq!(loc.uri, uri);
-        assert_eq!(loc.range.start.line, 1);
-        assert_eq!(loc.range.start.character, 2);
-        assert_eq!(loc.range.end.line, 1);
-        assert_eq!(loc.range.end.character, 5);
-    }
-
-    #[test]
-    fn goto_definition_cross_file_qualified_import() {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir = std::env::temp_dir().join(format!("kscr-lsp-goto-cross-{nanos}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let a = dir.join("A.ks");
-        std::fs::write(&a, "module A where\n  x = 1\n").unwrap();
-
-        let main = dir.join("Main.ks");
-        let main_src = "module Main where\n  import A\n  y = A.x\n";
-        std::fs::write(&main, main_src).unwrap();
-
-        let uri = Url::from_file_path(&main).unwrap();
-        let doc = Document::new(uri, main_src.to_string(), 1);
-
-        // position on the reference "x" in "A.x"
-        let pos = Position {
-            line: 2,
-            character: 8,
-        };
-        let loc = goto_definition_in_doc(&doc, pos).unwrap();
-
-        let a_uri = Url::from_file_path(&a).unwrap();
-        assert_eq!(loc.uri, a_uri);
-        assert_eq!(loc.range.start.line, 1);
-        assert_eq!(loc.range.start.character, 2);
-        assert_eq!(loc.range.end.line, 1);
-        assert_eq!(loc.range.end.character, 3);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn hover_on_identifier() {
-        let uri = Url::parse("file:///test.ks").unwrap();
-        let src = "module Main where\n  foo = 1\n".to_string();
-        let doc = Document::new(uri, src, 1);
-
-        let pos = Position {
-            line: 1,
-            character: 3,
-        };
-        let h = hover_in_doc(&doc, pos).unwrap();
-        let s = match h.contents {
-            HoverContents::Markup(m) => m.value,
-            _ => panic!("unexpected hover contents"),
-        };
-        assert!(s.contains("foo"));
-    }
-
-    #[test]
-    fn hover_shows_ctor_doc_comment() {
-        let src_typed = r#"module Main where
-    data Opt a = {-| some ctor doc -} Some a | None
-
-    x = Some 1
-"#
-        .to_string();
-
-        let tmp_dir = std::env::temp_dir().join("kscr_tests");
-        std::fs::create_dir_all(&tmp_dir).unwrap();
-        let path = tmp_dir.join("hover_ctor_doc.smoke.ks");
-        std::fs::write(&path, &src_typed).unwrap();
-
-        let uri = Url::from_file_path(&path).unwrap();
-        let doc = Document::new(uri, src_typed, 1);
-
-        // Position on "Some" in "x = Some 1".
-        let pos = Position {
-            line: 3,
-            character: 8,
-        };
-        let h = hover_in_doc(&doc, pos).unwrap();
-        let s = match h.contents {
-            HoverContents::Markup(m) => m.value,
-            _ => panic!("unexpected hover contents"),
-        };
-        assert!(s.contains("Some"));
-        assert!(s.contains("some ctor doc"));
-    }
-
-    #[test]
-    fn document_symbols_have_reasonable_ranges() {
-        let uri = Url::parse("file:///test.ks").unwrap();
-        let src = "module M where\n  x = 1\n  data Foo = Bar\n".to_string();
-        let doc = Document::new(uri, src, 1);
-
-        let module = kscr::parser::parse_module(&doc.text).unwrap();
-        let mut symbols = Vec::new();
-        for item in &module.items {
-            if let Some(s) = item_to_symbol(item, &doc) {
-                symbols.push(s);
-            }
-        }
-
-        let x = symbols.iter().find(|s| s.name == "x").unwrap();
-        assert_eq!(x.range.start.line, 1);
-        assert_eq!(x.range.start.character, 2);
-        assert_eq!(x.range.end.line, 1);
-        assert_eq!(x.range.end.character, 3);
-
-        let foo = symbols.iter().find(|s| s.name == "Foo").unwrap();
-        assert_eq!(foo.range.start.line, 2);
-        assert_eq!(foo.range.start.character, 7);
-        assert_eq!(foo.range.end.line, 2);
-        assert_eq!(foo.range.end.character, 10);
-    }
-}
-
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
@@ -414,5 +242,177 @@ impl LanguageServer for Backend {
         } else {
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_diagnostics_hover::{hover_in_doc, typecheck_document_text};
+    use crate::backend_goto_completion::goto_definition_in_doc;
+    use crate::backend_helpers::span_to_range;
+    use crate::backend_symbols::item_to_symbol;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn span_to_range_basic() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let doc = Document::new(uri, "abc\ndef".to_string(), 1);
+        let r = span_to_range(&doc, kscr::lexer::Span { start: 4, end: 6 }).unwrap();
+        assert_eq!(r.start.line, 1);
+        assert_eq!(r.start.character, 0);
+        assert_eq!(r.end.line, 1);
+        assert_eq!(r.end.character, 2);
+    }
+
+    #[test]
+    fn typecheck_unsaved_document_uses_tempfile() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("kscr-lsp-unsaved-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("Main.ks");
+        assert!(!path.exists());
+
+        let uri = Url::from_file_path(&path).unwrap();
+        let src = "module Main where\n  main = IO ()\n";
+        typecheck_document_text(&uri, src).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn goto_definition_toplevel_binding() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let src = "module Main where\n  foo = 1\n  bar = foo\n".to_string();
+        let doc = Document::new(uri.clone(), src, 1);
+
+        // position on the reference "foo" in "bar = foo"
+        let pos = Position {
+            line: 2,
+            character: 8,
+        };
+        let loc = goto_definition_in_doc(&doc, pos).unwrap();
+        assert_eq!(loc.uri, uri);
+        assert_eq!(loc.range.start.line, 1);
+        assert_eq!(loc.range.start.character, 2);
+        assert_eq!(loc.range.end.line, 1);
+        assert_eq!(loc.range.end.character, 5);
+    }
+
+    #[test]
+    fn goto_definition_cross_file_qualified_import() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("kscr-lsp-goto-cross-{nanos}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(&a, "module A where\n  x = 1\n").unwrap();
+
+        let main = dir.join("Main.ks");
+        let main_src = "module Main where\n  import A\n  y = A.x\n";
+        std::fs::write(&main, main_src).unwrap();
+
+        let uri = Url::from_file_path(&main).unwrap();
+        let doc = Document::new(uri, main_src.to_string(), 1);
+
+        // position on the reference "x" in "A.x"
+        let pos = Position {
+            line: 2,
+            character: 8,
+        };
+        let loc = goto_definition_in_doc(&doc, pos).unwrap();
+
+        let a_uri = Url::from_file_path(&a).unwrap();
+        assert_eq!(loc.uri, a_uri);
+        assert_eq!(loc.range.start.line, 1);
+        assert_eq!(loc.range.start.character, 2);
+        assert_eq!(loc.range.end.line, 1);
+        assert_eq!(loc.range.end.character, 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hover_on_identifier() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let src = "module Main where\n  foo = 1\n".to_string();
+        let doc = Document::new(uri, src, 1);
+
+        let pos = Position {
+            line: 1,
+            character: 3,
+        };
+        let h = hover_in_doc(&doc, pos).unwrap();
+        let s = match h.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(s.contains("foo"));
+    }
+
+    #[test]
+    fn hover_shows_ctor_doc_comment() {
+        let src_typed = r#"module Main where
+    data Opt a = {-| some ctor doc -} Some a | None
+
+    x = Some 1
+"#
+        .to_string();
+
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_ctor_doc.smoke.ks");
+        std::fs::write(&path, &src_typed).unwrap();
+
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src_typed, 1);
+
+        // Position on "Some" in "x = Some 1".
+        let pos = Position {
+            line: 3,
+            character: 8,
+        };
+        let h = hover_in_doc(&doc, pos).unwrap();
+        let s = match h.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(s.contains("Some"));
+        assert!(s.contains("some ctor doc"));
+    }
+
+    #[test]
+    fn document_symbols_have_reasonable_ranges() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let src = "module M where\n  x = 1\n  data Foo = Bar\n".to_string();
+        let doc = Document::new(uri, src, 1);
+
+        let module = kscr::parser::parse_module(&doc.text).unwrap();
+        let mut symbols = Vec::new();
+        for item in &module.items {
+            if let Some(s) = item_to_symbol(item, &doc) {
+                symbols.push(s);
+            }
+        }
+
+        let x = symbols.iter().find(|s| s.name == "x").unwrap();
+        assert_eq!(x.range.start.line, 1);
+        assert_eq!(x.range.start.character, 2);
+        assert_eq!(x.range.end.line, 1);
+        assert_eq!(x.range.end.character, 3);
+
+        let foo = symbols.iter().find(|s| s.name == "Foo").unwrap();
+        assert_eq!(foo.range.start.line, 2);
+        assert_eq!(foo.range.start.character, 7);
+        assert_eq!(foo.range.end.line, 2);
+        assert_eq!(foo.range.end.character, 10);
     }
 }

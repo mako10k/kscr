@@ -49,8 +49,27 @@ struct RewriteCx<'a> {
     local_tys: &'a HashMap<String, Ty>,
     class_index: Option<&'a super::ClassEnvIndex>,
     inferred_unqual_index: Option<&'a HashMap<String, Option<String>>>,
+    expected_root_ty: Option<&'a Ty>,
     dicts_in_scope: &'a HashSet<String>,
     shadowed_in_scope: &'a HashSet<String>,
+}
+
+fn lookup_needs_dicts<'a>(cx: RewriteCx<'a>, name: &str) -> Option<&'a Vec<String>> {
+    if cx.shadowed_in_scope.contains(name) {
+        return cx.needs_dicts_local.get(name);
+    }
+
+    cx.needs_dicts_local
+        .get(name)
+        .or_else(|| cx.needs_dicts_global.get(name))
+        .or_else(|| {
+            if name.contains('.') {
+                return None;
+            }
+            let idx = cx.inferred_unqual_index?;
+            let qualified = idx.get(name).and_then(|q| q.as_ref())?;
+            cx.needs_dicts_global.get(qualified)
+        })
 }
 
 fn rewrite_expr_cx(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
@@ -136,8 +155,7 @@ fn infer_in_module_with_class_env_and_ground_locals(
 
         if name.contains('.') {
             let suffix = name.rsplit('.').next().unwrap_or(name.as_str()).to_string();
-            if suffix_counts.get(&suffix).copied().unwrap_or(0) == 1 && !env.contains_key(&suffix)
-            {
+            if suffix_counts.get(&suffix).copied().unwrap_or(0) == 1 && !env.contains_key(&suffix) {
                 env.insert(
                     suffix,
                     EnvEntry {
@@ -195,7 +213,6 @@ fn infer_in_module_with_class_env_and_ground_locals(
         }
     }
 
-
     let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &Subst::new(), &env, expr)?;
     let _ = simplify_constraints(&data_env, class_env, apply_constraints(&s, cs))?;
     Ok(apply(&s, t))
@@ -223,18 +240,9 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
     let _module_snapshot = cx.module_snapshot;
     let class_env = cx.class_env;
     let _inferred = cx.inferred;
-    let needs_dicts_global = cx.needs_dicts_global;
-    let needs_dicts_local = cx.needs_dicts_local;
     let dicts_in_scope = cx.dicts_in_scope;
-    let shadowed_in_scope = cx.shadowed_in_scope;
 
-    let classes: Option<&Vec<String>> = if shadowed_in_scope.contains(&name) {
-        needs_dicts_local.get(&name)
-    } else {
-        needs_dicts_local
-            .get(&name)
-            .or_else(|| needs_dicts_global.get(&name))
-    };
+    let classes: Option<&Vec<String>> = lookup_needs_dicts(cx, &name);
 
     let Some(classes) = classes else {
         return Ok(Expr::new(span, ExprKind::Var(name)));
@@ -255,9 +263,7 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
         // If not in scope, try to pick a concrete instance based on the variable's type
         if picked.is_none() {
             let var_expr = Expr::new(span, ExprKind::Var(name.clone()));
-            if let Ok(var_ty) =
-                infer_in_rewrite(cx, var_expr)
-            {
+            if let Ok(var_ty) = infer_in_rewrite(cx, var_expr) {
                 // Try to pick instance based on the inferred type
                 if let Some(d) = common::pick_instance_dict_expr_from_scope(
                     span,
@@ -418,22 +424,13 @@ fn rewrite_apply_arg_vars(
     use ast::{Expr, ExprKind};
 
     let class_env = cx.class_env;
-    let needs_dicts_global = cx.needs_dicts_global;
-    let needs_dicts_local = cx.needs_dicts_local;
     let dicts_in_scope = cx.dicts_in_scope;
-    let shadowed_in_scope = cx.shadowed_in_scope;
 
     for (i, a) in args.iter_mut().enumerate() {
         let ast::ExprKind::Var(name) = &a.kind else {
             continue;
         };
-        let classes: Option<&Vec<String>> = if shadowed_in_scope.contains(name) {
-            needs_dicts_local.get(name)
-        } else {
-            needs_dicts_local
-                .get(name)
-                .or_else(|| needs_dicts_global.get(name))
-        };
+        let classes: Option<&Vec<String>> = lookup_needs_dicts(cx, name);
         let Some(classes) = classes else {
             continue;
         };
@@ -523,18 +520,10 @@ fn rewrite_apply_func_var(
     let _module_snapshot = cx.module_snapshot;
     let class_env = cx.class_env;
     let _inferred = cx.inferred;
-    let needs_dicts_global = cx.needs_dicts_global;
-    let needs_dicts_local = cx.needs_dicts_local;
     let dicts_in_scope = cx.dicts_in_scope;
     let shadowed_in_scope = cx.shadowed_in_scope;
 
-    let classes: Option<&Vec<String>> = if shadowed_in_scope.contains(func_name) {
-        needs_dicts_local.get(func_name)
-    } else {
-        needs_dicts_local
-            .get(func_name)
-            .or_else(|| needs_dicts_global.get(func_name))
-    };
+    let classes: Option<&Vec<String>> = lookup_needs_dicts(cx, func_name);
 
     let Some(classes) = classes else {
         return Ok(());
@@ -702,9 +691,7 @@ fn rewrite_apply(
 
     let mut callsite_ground_tys: Vec<Ty> = Vec::new();
     for a in &args_snapshot {
-        if let Ok(t) =
-            infer_in_rewrite(cx, a.clone())
-        {
+        if let Ok(t) = infer_in_rewrite(cx, a.clone()) {
             if ftv_ty(&t).is_empty() {
                 callsite_ground_tys.push(t);
             }
@@ -785,8 +772,6 @@ fn rewrite_if(
     ))
 }
 
-
-
 fn bind_pat_ground_tys(
     module: &ast::Module,
     class_env: &ClassEnv,
@@ -823,7 +808,10 @@ fn bind_pat_ground_tys(
             bind_pat_ground_tys(module, class_env, tl, ty, out);
         }
         (PatternKind::Record(fields), Ty::Record(ts)) => {
-            let map = ts.iter().cloned().collect::<std::collections::HashMap<_, _>>();
+            let map = ts
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashMap<_, _>>();
             for (label, p) in fields {
                 if let Some(t) = map.get(label) {
                     bind_pat_ground_tys(module, class_env, p, t, out);
@@ -831,7 +819,10 @@ fn bind_pat_ground_tys(
             }
         }
         (PatternKind::Record(fields), Ty::RecordOpen(ts, _rest)) => {
-            let map = ts.iter().cloned().collect::<std::collections::HashMap<_, _>>();
+            let map = ts
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashMap<_, _>>();
             for (label, p) in fields {
                 if let Some(t) = map.get(label) {
                     bind_pat_ground_tys(module, class_env, p, t, out);
@@ -839,7 +830,10 @@ fn bind_pat_ground_tys(
             }
         }
         (PatternKind::RecordLoose(fields, _rest_name), Ty::Record(ts)) => {
-            let map = ts.iter().cloned().collect::<std::collections::HashMap<_, _>>();
+            let map = ts
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashMap<_, _>>();
             for (label, p) in fields {
                 if let Some(t) = map.get(label) {
                     bind_pat_ground_tys(module, class_env, p, t, out);
@@ -847,7 +841,10 @@ fn bind_pat_ground_tys(
             }
         }
         (PatternKind::RecordLoose(fields, _rest_name), Ty::RecordOpen(ts, _rest)) => {
-            let map = ts.iter().cloned().collect::<std::collections::HashMap<_, _>>();
+            let map = ts
+                .iter()
+                .cloned()
+                .collect::<std::collections::HashMap<_, _>>();
             for (label, p) in fields {
                 if let Some(t) = map.get(label) {
                     bind_pat_ground_tys(module, class_env, p, t, out);
@@ -856,7 +853,8 @@ fn bind_pat_ground_tys(
         }
         (PatternKind::Constructor { name, args }, _) => {
             let mut infer_cx = InferCtx::default();
-            let Ok(env) = collect_ctor_env_with_class_env(&mut infer_cx, module, class_env, None) else {
+            let Ok(env) = collect_ctor_env_with_class_env(&mut infer_cx, module, class_env, None)
+            else {
                 return;
             };
 
@@ -987,8 +985,8 @@ fn rewrite_let(
     bindings: Vec<ast::Binding>,
     body: ast::Expr,
 ) -> Result<ast::Expr> {
-    use ast::{Expr, ExprKind};
     use ast::PatternKind;
+    use ast::{Expr, ExprKind};
 
     with_extended_binding_scope(cx, bindings, |inner_cx, local_needs, bindings| {
         // Shadow all binders from the outer local type env first (let binds shadow outer names).
@@ -1005,7 +1003,12 @@ fn rewrite_let(
 
         // Sequential: earlier binders are in scope for later binders (for our ground-type tracking).
         for b in bindings {
-            let ast::Binding { doc: _, pat, expr, span: _ } = b;
+            let ast::Binding {
+                doc: _,
+                pat,
+                expr,
+                span: _,
+            } = b;
             let span = expr.span;
             let expr_for_infer = expr.clone();
 
@@ -1066,8 +1069,8 @@ fn rewrite_where(
     expr: ast::Expr,
     bindings: Vec<ast::Binding>,
 ) -> Result<ast::Expr> {
-    use ast::{Expr, ExprKind};
     use ast::PatternKind;
+    use ast::{Expr, ExprKind};
 
     with_extended_binding_scope(cx, bindings, |inner_cx, local_needs, bindings| {
         // Shadow all binders from the outer local type env first (where binds shadow outer names).
@@ -1084,7 +1087,12 @@ fn rewrite_where(
 
         // Sequential for our ground-type tracking: earlier binders may help later binder inference.
         for b in bindings {
-            let ast::Binding { doc: _, pat, expr, span: _ } = b;
+            let ast::Binding {
+                doc: _,
+                pat,
+                expr,
+                span: _,
+            } = b;
             let span = expr.span;
             let expr_for_infer = expr.clone();
 
@@ -1209,7 +1217,13 @@ fn rewrite_do(cx: RewriteCx<'_>, span: ast::Span, stmts: Vec<ast::DoStmt>) -> Re
                         _ => {}
                     }
 
-                    bind_pat_ground_tys(cx.module_snapshot, cx.class_env, &pat, inner, &mut local_tys2);
+                    bind_pat_ground_tys(
+                        cx.module_snapshot,
+                        cx.class_env,
+                        &pat,
+                        inner,
+                        &mut local_tys2,
+                    );
                 }
 
                 for n in names {
@@ -1334,6 +1348,7 @@ pub(super) fn rewrite_expr(
     local_tys: &HashMap<String, Ty>,
     class_index: Option<&super::ClassEnvIndex>,
     inferred_unqual_index: Option<&HashMap<String, Option<String>>>,
+    expected_root_ty: Option<&Ty>,
     dicts_in_scope: &HashSet<String>,
     shadowed_in_scope: &HashSet<String>,
     expr: ast::Expr,
@@ -1347,6 +1362,7 @@ pub(super) fn rewrite_expr(
         local_tys,
         class_index,
         inferred_unqual_index,
+        expected_root_ty,
         dicts_in_scope,
         shadowed_in_scope,
     };
@@ -1367,9 +1383,22 @@ fn rewrite_expr_impl(cx: RewriteCx<'_>, expr: ast::Expr) -> Result<ast::Expr> {
 
     let span = expr.span;
 
+    // (helper defined at module level)
+
     Ok(match expr.kind {
         ExprKind::Var(name) => rewrite_var(cx, span, name)?,
-        ExprKind::Lambda { params, body } => rewrite_lambda(cx, span, params, *body)?,
+        ExprKind::Lambda { params, body } => {
+            let expected = cx.expected_root_ty;
+            let cx2 = RewriteCx {
+                expected_root_ty: None,
+                ..cx
+            };
+            if expected.is_some() {
+                rewrite_lambda_with_expected(cx2, span, params, *body, expected)?
+            } else {
+                rewrite_lambda(cx2, span, params, *body)?
+            }
+        }
         ExprKind::Apply { func, args } => rewrite_apply(cx, span, *func, args)?,
         ExprKind::If {
             cond,

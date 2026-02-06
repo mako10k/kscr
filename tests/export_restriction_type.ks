@@ -4,4 +4,4 @@ module Main where
 
   main = do
     let x = T.A
-    print "OK"
+    putStrLn "OK"

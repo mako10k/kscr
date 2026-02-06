@@ -12,6 +12,13 @@ pub(super) fn rewrite_class_dict_passing_in_module(
 ) -> Result<()> {
     use ast::PatternKind;
 
+    fn is_injected_import_forwarder(b: &ast::Binding) -> bool {
+        let injected =
+            b.span.start == 0 && b.span.end == 0 && b.expr.span.start == 0 && b.expr.span.end == 0;
+        let rhs_is_qual_var = matches!(&b.expr.kind, ast::ExprKind::Var(q) if q.contains('.'));
+        injected && rhs_is_qual_var
+    }
+
     // name -> classes (stable order) that require an explicit dictionary arg.
     let mut needs_dicts: HashMap<String, Vec<String>> = HashMap::new();
     for (name, scheme) in inferred {
@@ -88,7 +95,12 @@ pub(super) fn rewrite_class_dict_passing_in_module(
             let it = match it {
                 ast::Item::Binding(b) => {
                     if let PatternKind::Var(name) = &b.pat.kind {
-                        if let Some(classes) = needs_dicts.get(name) {
+                        // Skip adding dict params to injected import-forwarders like `print = Prelude.print`.
+                        // These forwarders are already aliases to dictionary-taking functions; adding dict params
+                        // here can accidentally duplicate dictionary arguments (e.g. `Prelude.print d d`).
+                        if is_injected_import_forwarder(&b) {
+                            ast::Item::Binding(b)
+                        } else if let Some(classes) = needs_dicts.get(name) {
                             ast::Item::Binding(ast::Binding {
                                 doc: None,
                                 pat: b.pat,
@@ -140,6 +152,19 @@ pub(super) fn rewrite_class_dict_passing_in_module(
         .map(|it| {
             Ok(match it {
                 ast::Item::Binding(mut b) => {
+                    let expected_root_ty: Option<&Ty> = match &b.pat.kind {
+                        ast::PatternKind::Var(name) => {
+                            // Only seed expected types when we did not add dict params.
+                            // Otherwise, scheme.ty would be misaligned with the rewritten lambda params.
+                            if needs_dicts.contains_key(name) {
+                                None
+                            } else {
+                                inferred.get(name).map(|s| &s.ty)
+                            }
+                        }
+                        _ => None,
+                    };
+
                     b.expr = super::typeclass_dict_passing_rewrite::rewrite_expr(
                         &snapshot,
                         class_env,
@@ -149,6 +174,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
                         &empty_local_tys,
                         class_index.as_ref(),
                         Some(&inferred_unqual_index),
+                        expected_root_ty,
                         &ground_dicts,
                         &empty_shadowed,
                         b.expr,
