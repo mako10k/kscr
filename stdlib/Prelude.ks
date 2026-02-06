@@ -1,5 +1,5 @@
 module Prelude where
-  export String, print, readLine, getLine, putStr, putStrLn, getArgs, readFile, writeFile, exitWith, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Rational(..), numerator, denominator, toPair, Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, (.), ($), flip, (&), on, until, concatMap, map, filter, concat, append, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export String, print, readLine, getLine, putStr, putStrLn, getArgs, readFile, writeFile, exitWith, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Eq(..), eq, (==), (/=), Show(..), show, toString, Rational(..), numerator, denominator, toPair, Num(..), (+), (*), Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, (.), ($), flip, (&), on, until, concatMap, map, filter, concat, append, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   import Prelude.Functor
   import Prelude.Applicative
@@ -11,6 +11,7 @@ module Prelude where
   import Prelude.Field
   import Prelude.Integral
   import Prelude.Rational
+  import Prelude.Num
 
   -- Haskell-like alias: String ~ [Char]
   type String = [Char]
@@ -20,6 +21,69 @@ module Prelude where
     enumFromThen :: a -> a -> [a]
     enumFromTo :: a -> a -> [a]
     enumFromThenTo :: a -> a -> a -> [a]
+
+  infix 40 ==
+  infix 40 /=
+
+  class Eq a where
+    eq :: a -> a -> Bool
+
+  (==) a b = eq a b
+
+  -- Default Eq instances for primitive types.
+  -- These are normal instances (not special-cased primitives), but their implementations
+  -- delegate to the structural runtime builtin.
+  instance Eq Integer where
+    eq = __primEq
+
+  instance Eq Char where
+    eq = __primEq
+
+  instance Eq Bool where
+    eq = __primEq
+
+  instance Eq Unit where
+    eq = __primEq
+
+  (/=) = \a -> \b -> if a == b then False else True
+
+  class Show a where
+    show :: a -> [Char]
+
+  -- Haskell-like alias: `toString` via Show.
+  toString x = show x
+
+  -- Default Show instances for primitive types.
+  -- These are normal instances (not special-cased primitives), but their implementations
+  -- delegate to stable primitives.
+  instance Show Integer where
+    show = intToString
+
+  instance Show Bool where
+    show = boolToString
+
+  instance Show Char where
+    show = __primShow
+
+  instance Show Unit where
+    show = __primShow
+
+  instance Show Float64 where
+    show = __primShow
+
+  instance Show String where
+    show = \s -> s
+
+  -- Composite Show instances (polymorphic heads).
+  -- Delegate to the structural runtime builtin for MVP.
+  instance Show [a] where
+    show = __primShow
+
+  instance Show (a, b) where
+    show = __primShow
+
+  instance Show {a: a, b: b} where
+    show = __primShow
 
   instance Enum Integer where
     enumFrom a = a : enumFrom (a + 1)

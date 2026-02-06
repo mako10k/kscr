@@ -123,15 +123,12 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
             Ok(())
         }
         "run" => {
-            eprintln!("[CLI] Run command started");
             let (stdlib_dir, path) = parse_stdlib_dir_and_file(args)?;
             if let Some(dir) = stdlib_dir {
                 types::set_stdlib_dir_override(dir);
             }
             let path_ref = Path::new(&path);
-            eprintln!("[CLI] Typechecking and linking: {}", path_ref.display());
             let irm = typecheck_and_link_ir(path_ref)?;
-            eprintln!("[CLI] Running main...");
             let _ = ir::run_main(&irm)?;
             Ok(())
         }
@@ -467,8 +464,8 @@ impl ReplState {
 
         // Phase 1: typecheck `it` without forcing a printing strategy.
         let _src0 = self.write_src(Some(expr), None)?;
-        let tm = types::typecheck_file(&self.repl_path)?;
-        let Some(it) = tm.inferred.get("it") else {
+        let tm0 = types::typecheck_file(&self.repl_path)?;
+        let Some(it) = tm0.inferred.get("it") else {
             return Err(crate::error::Error::msg("internal: missing it"));
         };
 
@@ -485,21 +482,109 @@ impl ReplState {
             None => "main = putStrLn (toString it)".to_string(),
         };
 
-        // Phase 3: run using the typechecked module from Phase 1.
+        // Phase 3: rewrite src with `main` included and typecheck again.
+        // This ensures desugaring/dict-passing is applied to the appended `main`.
+        let _src1 = self.write_src(Some(expr), Some(&main_src))?;
+        if std::env::var("KSCR_DEBUG_REPL_IR").ok().as_deref() == Some("1") {
+            eprintln!("[KSCR_DEBUG_REPL_IR] main_src: {main_src}");
+            eprintln!("[KSCR_DEBUG_REPL_IR] src:\n{_src1}");
+        }
+
+        let tm_run = types::typecheck_file(&self.repl_path)?;
+
         // NOTE: `typecheck_file()` no longer flattens imports, so runtime must link/bundle
         // transitive imports here (same as `kscr run`).
-        let mut module = tm.module.clone();
-        let main_mod = parser::parse_module(&format!("{main_src}\n"))?;
-        module.items.extend(main_mod.items);
+        let module = tm_run.module.clone();
 
         let mut irm = ir::lower_to_ir(&module)?;
-        if let Ok(imports) = types::load_transitive_imports_for_runtime(&self.repl_path) {
-            for (module_name, module_ast) in &imports {
-                if let Ok(imported_ir) = ir::lower_to_ir(module_ast) {
-                    merge_imported_ir(&mut irm, &imported_ir, module_name, &[]);
+
+        if std::env::var("KSCR_DEBUG_REPL_IR").ok().as_deref() == Some("1") {
+            use crate::ir::IrItem;
+            match irm
+                .items
+                .iter()
+                .find(|it| matches!(it, IrItem::Binding { name, .. } if name == "main"))
+            {
+                Some(IrItem::Binding { name, expr }) => {
+                    eprintln!("[KSCR_DEBUG_REPL_IR] IR main binding: {name} = {expr:?}");
+                    // Helpful extra probes
+                    for probe in [
+                        "toString",
+                        "show",
+                        "__dict_Show_poly0",
+                        "Prelude.toString",
+                        "Prelude.show",
+                    ] {
+                        if let Some(crate::ir::IrItem::Binding { name, expr }) = irm.items.iter().find(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == probe)) {
+                            eprintln!("[KSCR_DEBUG_REPL_IR] IR probe binding: {name} = {expr:?}");
+                        }
+                    }
+                }
+                _ => eprintln!("[KSCR_DEBUG_REPL_IR] IR main binding not found"),
+            }
+        }
+
+        // Load and typecheck transitive imports (same as typecheck_and_link_ir)
+        // We need typechecked modules because instance dict bindings are generated during typecheck
+        match load_and_typecheck_transitive_imports(&self.repl_path) {
+            Ok(imports) => {
+                // Lower each typechecked imported module to IR and merge with qualified names
+                for (module_name, typechecked_module) in &imports {
+                    let imported_ir = ir::lower_to_ir(&typechecked_module.module)?;
+
+                    // Collect aliases from the REPL module for this import
+                    let repl_aliases: Vec<String> = module
+                        .items
+                        .iter()
+                        .filter_map(|it| match it {
+                            ast::Item::Import(id) if id.module == *module_name => {
+                                id.as_name.clone()
+                            }
+                            _ => None,
+                        })
+                        .collect();
+
+                    merge_imported_ir(&mut irm, &imported_ir, module_name, &repl_aliases);
+
+                    // ALSO handle transitive import aliases: if module B imports A as OM,
+                    // we need to provide OM.x bindings when we merge B.
+                    inject_transitive_import_aliases(
+                        &mut irm,
+                        &typechecked_module.module,
+                        module_name,
+                        &imports,
+                    );
+                }
+
+                // Convert TypedModule map to ast::Module map for inject_constructor_forwarders
+                let ast_imports: HashMap<String, ast::Module> = imports
+                    .into_iter()
+                    .map(|(name, tm)| (name, tm.module))
+                    .collect();
+                inject_constructor_forwarders(&mut irm, &ast_imports, &module);
+
+                // Inject unqualified forwarders for stdlib instance dictionaries
+                inject_stdlib_dict_forwarders(&mut irm);
+            }
+            Err(e) => {
+                eprintln!("[WARN] Failed to load transitive imports: {}", e);
+                eprintln!("[WARN] IR may be incomplete; runtime errors may occur");
+            }
+        }
+
+        if std::env::var("KSCR_DEBUG_REPL_IR").ok().as_deref() == Some("1") {
+            use crate::ir::IrItem;
+            eprintln!("[KSCR_DEBUG_REPL_IR] FINAL dict/show bindings:");
+            for item in &irm.items {
+                let IrItem::Binding { name, expr } = item;
+                if name.contains("__dict_Show")
+                    || name.contains("__inst_Show")
+                    || name == "Prelude.toString"
+                    || name == "Prelude.show"
+                {
+                    eprintln!("[KSCR_DEBUG_REPL_IR]   {name} = {expr:?}");
                 }
             }
-            inject_constructor_forwarders(&mut irm, &imports, &module);
         }
 
         let _ = ir::run_main(&irm)?;
@@ -1292,6 +1377,52 @@ fn inject_constructor_forwarders(
     }
 }
 
+/// Inject unqualified forwarders for stdlib instance dictionaries.
+/// When stdlib modules like Prelude define `__dict_Num_Integer`, it becomes
+/// `Prelude.__dict_Num_Integer` in runtime IR. But typechecker-generated code
+/// may reference it as `__dict_Num_Integer`. Add forwarders so both work.
+fn inject_stdlib_dict_forwarders(irm: &mut ir::IrModule) {
+    use ir::{IrExpr, IrItem};
+
+    // Collect existing bindings
+    let mut existing: HashSet<String> = HashSet::new();
+    for item in &irm.items {
+        let IrItem::Binding { name, .. } = item;
+        existing.insert(name.clone());
+    }
+
+    // Find all Prelude.__dict_ and Prelude.__inst_ bindings and create unqualified forwarders
+    let mut forwarders: Vec<(String, String)> = Vec::new();
+    for item in &irm.items {
+        let IrItem::Binding { name, .. } = item;
+
+        // Check if this is a qualified stdlib dict/inst binding
+        if let Some(rest) = name.strip_prefix("Prelude.") {
+            if rest.starts_with("__dict_") || rest.starts_with("__inst_") {
+                // Create unqualified forwarder: __dict_Foo_Bar = Prelude.__dict_Foo_Bar
+                if !existing.contains(rest) {
+                    forwarders.push((rest.to_string(), name.clone()));
+                }
+            }
+        }
+    }
+
+    // Add the forwarders
+    if std::env::var("KSCR_DEBUG_DICT_FORWARDERS").is_ok() {
+        eprintln!("[DICT_FORWARDERS] Creating {} forwarders", forwarders.len());
+        for (target, source) in &forwarders {
+            eprintln!("[DICT_FORWARDERS]   {} -> {}", target, source);
+        }
+    }
+    for (target, source) in forwarders {
+        irm.items.push(IrItem::Binding {
+            name: target.clone(),
+            expr: IrExpr::Var(source),
+        });
+        existing.insert(target);
+    }
+}
+
 /// Typecheck a file and produce IR with all transitive imports linked.
 /// This is the standard path for running programs that matches CLI behavior.
 ///
@@ -1348,6 +1479,9 @@ pub fn typecheck_and_link_ir(entry: &Path) -> Result<ir::IrModule> {
                 .map(|(name, tm)| (name, tm.module))
                 .collect();
             inject_constructor_forwarders(&mut irm, &ast_imports, &tm.module);
+
+            // Inject unqualified forwarders for stdlib instance dictionaries
+            inject_stdlib_dict_forwarders(&mut irm);
         }
         Err(e) => {
             eprintln!("[WARN] Failed to load transitive imports: {}", e);
@@ -1370,14 +1504,33 @@ fn load_and_typecheck_transitive_imports(
     // First, get the list of all transitive imports
     let raw_imports = types::load_transitive_imports_for_runtime(&entry)?;
 
+    if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
+        eprintln!("[DEBUG_IMPORTS] Found {} raw imports", raw_imports.len());
+        for m in raw_imports.keys() {
+            eprintln!("[DEBUG_IMPORTS]   - {}", m);
+        }
+    }
+
     // Now typecheck each imported module
     let mut result: HashMap<String, types::TypedModule> = HashMap::new();
     for (module_name, _module_ast) in raw_imports {
         // Resolve module path using the same logic as load_transitive_imports_for_runtime
         let module_path = match resolve_module_path_for_runtime(entry_dir, &module_name) {
             Ok(p) => p,
-            Err(_) => continue, // Skip modules we can't resolve
+            Err(e) => {
+                if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "[DEBUG_IMPORTS] Failed to resolve path for {}: {}",
+                        module_name, e
+                    );
+                }
+                continue; // Skip modules we can't resolve
+            }
         };
+
+        if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
+            eprintln!("[DEBUG_IMPORTS] Typechecking: {}", module_name);
+        }
 
         match types::typecheck_file(&module_path) {
             Ok(tm) => {
@@ -1387,6 +1540,13 @@ fn load_and_typecheck_transitive_imports(
                 eprintln!("[WARN] Failed to typecheck import {}: {}", module_name, e);
             }
         }
+    }
+
+    if std::env::var("KSCR_DEBUG_IMPORTS").ok().as_deref() == Some("1") {
+        eprintln!(
+            "[DEBUG_IMPORTS] Successfully typechecked {} modules",
+            result.len()
+        );
     }
 
     Ok(result)

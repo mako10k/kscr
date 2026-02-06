@@ -1878,6 +1878,8 @@ fn typeclass_operator_method_and_class_default_impl() {
     // - class provides a default implementation using infix operator syntax
     // - instance omits the method, so the default is used
     let src = r#"
+import Prelude hiding ((+))
+
 class Add1 a where
     (+) :: a -> a -> a
     x + y = x
@@ -1940,49 +1942,64 @@ fn typecheck_list_comprehension_with_pattern_bind() {
     assert_eq!(tm.inferred["xs"].to_string(), "[Integer]");
 }
 
+fn find_ir_binding_expr<'a>(ir: &'a crate::ir::IrModule, name: &str) -> &'a crate::ir::IrExpr {
+    ir.items
+        .iter()
+        .find_map(|it| match it {
+            crate::ir::IrItem::Binding { name: n, expr } if n == name => Some(expr),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing IR binding: {name}"))
+}
+
 #[test]
 fn ir_lowering_basic_binding() {
-    let m = crate::parser::parse_module("x = if True then 1 else 2\n").unwrap();
+    let m = crate::parser::parse_module(
+        "x = if True then 1 else 2
+",
+    )
+    .unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    assert!(matches!(
-        &ir.items[..],
-        [crate::ir::IrItem::Binding { name, .. }] if name == "x"
-    ));
+    let _expr = find_ir_binding_expr(&ir, "x");
 }
 
 #[test]
 fn ir_lowering_case_expr() {
-    let m = crate::parser::parse_module("x = case 1 of\n  0 -> 1\n  _ -> 2\n").unwrap();
+    let m = crate::parser::parse_module(
+        "x = case 1 of
+  0 -> 1
+  _ -> 2
+",
+    )
+    .unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
+    let expr = find_ir_binding_expr(&ir, "x");
     assert!(matches!(expr, crate::ir::IrExpr::Case { .. }));
 }
 
 #[test]
 fn ir_lowering_where_expr() {
-    let src = "x = 1 where\n  y = 2\n";
+    let src = "x = 1 where
+  y = 2
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
+    let expr = find_ir_binding_expr(&ir, "x");
     assert!(matches!(expr, crate::ir::IrExpr::Let { .. }));
 }
 
 #[test]
 fn ir_lowering_as_pattern() {
-    let src = "x = case 1 of\n  n @ _ -> n\n";
+    let src = "x = case 1 of
+  n @ _ -> n
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
+    let expr = find_ir_binding_expr(&ir, "x");
     let crate::ir::IrExpr::Case { arms, .. } = expr else {
         panic!("expected case");
     };
@@ -1991,13 +2008,14 @@ fn ir_lowering_as_pattern() {
 
 #[test]
 fn ir_lowering_loose_record_pattern() {
-    let src = "x = case {a: 1, b: 2} of\n  {a: n, ...} -> n\n  _ -> 0\n";
+    let src = "x = case {a: 1, b: 2} of
+  {a: n, ...} -> n
+  _ -> 0
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
+    let expr = find_ir_binding_expr(&ir, "x");
     let crate::ir::IrExpr::Case { arms, .. } = expr else {
         panic!("expected case");
     };
@@ -2009,13 +2027,15 @@ fn ir_lowering_loose_record_pattern() {
 
 #[test]
 fn ir_lowering_view_pattern() {
-    let src = "id = \\x -> x\nx = case 1 of\n  (n <- id) -> n\n  _ -> 0\n";
+    let src = "id = \\x -> x
+x = case 1 of
+  (n <- id) -> n
+  _ -> 0
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [_, crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected two bindings");
-    };
+    let expr = find_ir_binding_expr(&ir, "x");
     let crate::ir::IrExpr::Case { arms, .. } = expr else {
         panic!("expected case");
     };
@@ -2024,13 +2044,13 @@ fn ir_lowering_view_pattern() {
 
 #[test]
 fn ir_lowering_hole_pattern() {
-    let src = "x = case 1 of\n  ? -> 0\n";
+    let src = "x = case 1 of
+  ? -> 0
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
+    let expr = find_ir_binding_expr(&ir, "x");
     let crate::ir::IrExpr::Case { arms, .. } = expr else {
         panic!("expected case");
     };
@@ -2039,49 +2059,114 @@ fn ir_lowering_hole_pattern() {
 
 #[test]
 fn ir_lowering_do_expr() {
-    let src = "x = do\n  y <- IO 1\n  IO y\n";
+    let src = "x = do
+  y <- IO 1
+  IO y
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
-    assert!(matches!(expr, crate::ir::IrExpr::IoBind { .. }));
+    let expr = find_ir_binding_expr(&ir, "x");
+    let is_iobind = matches!(expr, crate::ir::IrExpr::IoBind { .. });
+
+    // Do-notation may be lowered in 2 ways:
+    // - IO-only fallback: IrExpr::IoBind / IrExpr::IoThen
+    // - Monad-op desugaring: uses dictionary method lookup via __recordGet
+    let is_apply_iobind = matches!(
+        expr,
+        crate::ir::IrExpr::Apply { func, args }
+            if matches!(
+                func.as_ref(),
+                crate::ir::IrExpr::Var(n)
+                    if n == "__ioBind" || n == ">>=" || n.ends_with(".>>=")
+            ) && args.len() == 2
+    );
+
+    let is_dict_method_iobind = matches!(
+        expr,
+        crate::ir::IrExpr::Apply { func, args }
+            if args.len() == 3
+                && matches!(
+                    func.as_ref(),
+                    crate::ir::IrExpr::Apply { func: get, args: get_args }
+                        if matches!(
+                            get.as_ref(),
+                            crate::ir::IrExpr::Var(n) if n == "__recordGet" || n.ends_with(".__recordGet")
+                        )
+                        && get_args.len() == 2
+                        && matches!(&get_args[1], crate::ir::IrExpr::String(m) if m == ">>=")
+                )
+    );
+
+    assert!(
+        is_iobind || is_apply_iobind || is_dict_method_iobind,
+        "expected IoBind or monad bind, got: {expr:?}"
+    );
 }
 
 #[test]
 fn ir_lowering_do_then() {
-    let src = "x = do\n  IO 1\n  IO 2\n";
+    let src = "x = do
+  IO 1
+  IO 2
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
-    assert!(matches!(expr, crate::ir::IrExpr::IoThen { .. }));
+    let expr = find_ir_binding_expr(&ir, "x");
+    let is_iothen = matches!(expr, crate::ir::IrExpr::IoThen { .. });
+
+    let is_apply_iothen = matches!(
+        expr,
+        crate::ir::IrExpr::Apply { func, args }
+            if matches!(
+                func.as_ref(),
+                crate::ir::IrExpr::Var(n) if n == "__ioThen" || n == ">>" || n.ends_with(".>>")
+            ) && args.len() == 2
+    );
+
+    let is_dict_method_iothen = matches!(
+        expr,
+        crate::ir::IrExpr::Apply { func, args }
+            if args.len() == 3
+                && matches!(
+                    func.as_ref(),
+                    crate::ir::IrExpr::Apply { func: get, args: get_args }
+                        if matches!(
+                            get.as_ref(),
+                            crate::ir::IrExpr::Var(n) if n == "__recordGet" || n.ends_with(".__recordGet")
+                        )
+                        && get_args.len() == 2
+                        && matches!(&get_args[1], crate::ir::IrExpr::String(m) if m == ">>")
+                )
+    );
+
+    assert!(
+        is_iothen || is_apply_iothen || is_dict_method_iothen,
+        "expected IoThen or monad then, got: {expr:?}"
+    );
 }
 
 #[test]
 fn ir_lowering_pattern_let() {
-    let src = "x = let (a, b) = (1, 2) in a\n";
+    let src = "x = let (a, b) = (1, 2) in a
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
+    let expr = find_ir_binding_expr(&ir, "x");
     assert!(matches!(expr, crate::ir::IrExpr::Let { .. }));
 }
 
 #[test]
 fn ir_lowering_pattern_where() {
-    let src = "x = a where\n  (a, b) = (1, 2)\n";
+    let src = "x = a where
+  (a, b) = (1, 2)
+";
     let m = crate::parser::parse_module(src).unwrap();
     let tm = crate::types::typecheck(m).unwrap();
     let ir = crate::ir::lower_to_ir(&tm.module).unwrap();
-    let [crate::ir::IrItem::Binding { expr, .. }] = &ir.items[..] else {
-        panic!("expected single binding");
-    };
+    let expr = find_ir_binding_expr(&ir, "x");
     assert!(matches!(expr, crate::ir::IrExpr::Let { .. }));
 }
 

@@ -1,14 +1,18 @@
 use tower_lsp::lsp_types::{MarkupKind, Position};
 
+#[allow(dead_code)]
 #[path = "../crates/kscr_lsp/src/vfs.rs"]
 mod vfs;
 
+#[allow(dead_code)]
 #[path = "../crates/kscr_lsp/src/backend_helpers.rs"]
 mod backend_helpers;
 
+#[allow(dead_code)]
 #[path = "../crates/kscr_lsp/src/backend_goto_completion.rs"]
 mod backend_goto_completion;
 
+#[allow(dead_code)]
 #[path = "../crates/kscr_lsp/src/backend_diagnostics_hover.rs"]
 mod backend_diagnostics_hover;
 

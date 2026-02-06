@@ -625,9 +625,11 @@ pub enum Value {
     BuiltinShow,
     BuiltinShowDictApply,
     BuiltinShowDictApply1(Box<Value>),
+    BuiltinShowDictApply2(Box<Value>, Box<Value>),
     BuiltinEqDictApply,
     BuiltinEqDictApply1(Box<Value>),
     BuiltinEqDictApply2(Box<Value>, Box<Value>),
+    BuiltinEqDictApply3(Box<Value>, Box<Value>, Box<Value>),
     BuiltinRecordGet,
     BuiltinRecordGet1(Box<Value>),
     BuiltinError,
@@ -741,6 +743,27 @@ fn value_type_name(v: &Value) -> &'static str {
     }
 }
 
+fn is_probably_typeclass_dict_record(v: &Value) -> bool {
+    let Value::Record(fields) = v else {
+        return false;
+    };
+
+    // Avoid treating constructor-encoded records as dictionaries.
+    if fields.iter().any(|(k, _)| k == "__ctor" || k == "__args") {
+        return false;
+    }
+
+    fields.iter().any(|(k, _)| {
+        k == "eq"
+            || k == "show"
+            || k == "+"
+            || k == "-"
+            || k == "*"
+            || k == "/"
+            || k.starts_with("__super_")
+    })
+}
+
 /// Auto-apply a dictionary when a Closure expects one in an IO context.
 /// This handles do-notation that desugars to lambdas expecting dictionaries.
 ///
@@ -750,6 +773,9 @@ fn value_type_name(v: &Value) -> &'static str {
 ///
 /// While this relies on naming conventions, it matches the desugaring behavior
 /// of the typechecker/compiler, which generates these parameter names.
+///
+/// Additionally, for certain classes (Num, Eq, Show), if no concrete dict is
+/// available in globals, we inject a default dictionary at runtime.
 fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
     if let Value::Closure {
         params,
@@ -761,12 +787,164 @@ fn auto_apply_io_dict(g: &Globals, v: Value) -> Result<Value> {
             // Most dictionary-passing rewrites use the concrete dictionary name directly
             // (e.g. `__dict_Monad_IO`).
             let candidates = [params[0].clone(), format!("{}_IO", params[0])];
-            for name in candidates {
-                if let Ok(dict) = eval_var(g, &std::collections::HashMap::new(), &name) {
+
+            // Try to find dict in globals first
+            for name in &candidates {
+                if let Ok(dict) = eval_var(g, &std::collections::HashMap::new(), name) {
                     let v = apply_one(g, v, dict)?;
                     return force_value(g, v);
                 }
             }
+
+            // If no dict found in globals, try to inject a default dict for specific classes
+            // Extract class name from param (e.g., "__dict_Prelude.Show.Show" -> "Prelude.Show.Show")
+            let class_name = params[0].strip_prefix("__dict_").unwrap_or("");
+            if let Ok(default_dict) = try_get_default_dict(class_name) {
+                let v = apply_one(g, v, default_dict)?;
+                return force_value(g, v);
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// Try to get a default dictionary for a class.
+/// Only supports Num, Eq, and Show - other classes return None.
+fn try_get_default_dict(class_name: &str) -> Result<Value> {
+    let unqualified = class_name.rsplit('.').next().unwrap_or(class_name);
+
+    match unqualified {
+        "Show" => {
+            // Default Show instance uses show_value_str
+            Ok(Value::Record(vec![(
+                "show".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "x".to_string()],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("show".to_string())),
+                        args: vec![IrExpr::Var("x".to_string())],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            )]))
+        }
+        "Num" => {
+            // Default Num instance uses Integer operations
+            Ok(Value::Record(vec![
+                (
+                    "+".to_string(),
+                    Value::Closure {
+                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                        body: Box::new(IrExpr::Apply {
+                            func: Box::new(IrExpr::Var("+".to_string())),
+                            args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
+                        }),
+                        env: std::collections::HashMap::new(),
+                    },
+                ),
+                (
+                    "-".to_string(),
+                    Value::Closure {
+                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                        body: Box::new(IrExpr::Apply {
+                            func: Box::new(IrExpr::Var("-".to_string())),
+                            args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
+                        }),
+                        env: std::collections::HashMap::new(),
+                    },
+                ),
+                (
+                    "*".to_string(),
+                    Value::Closure {
+                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                        body: Box::new(IrExpr::Apply {
+                            func: Box::new(IrExpr::Var("*".to_string())),
+                            args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
+                        }),
+                        env: std::collections::HashMap::new(),
+                    },
+                ),
+            ]))
+        }
+        "Eq" => {
+            // Default Eq instance uses structural equality
+            Ok(Value::Record(vec![(
+                "eq".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                    body: Box::new(IrExpr::Apply {
+                        func: Box::new(IrExpr::Var("==".to_string())),
+                        args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
+                    }),
+                    env: std::collections::HashMap::new(),
+                },
+            )]))
+        }
+        _ => {
+            // For classes without default dicts, return error
+            Err(Error::msg(format!(
+                "no default dictionary available for class: {}",
+                class_name
+            )))
+        }
+    }
+}
+
+/// Auto-apply a dictionary when a Closure expects one.
+/// This handles dict-lambdas that escape into contexts where concrete values are expected,
+/// such as arithmetic operations (e.g., `b + 1` where `b` is a dict-lambda).
+///
+/// The function checks if the value is a Closure with exactly one parameter starting with
+/// "__dict_" and attempts to find a matching dictionary from globals, or uses a default
+/// dictionary for classes like Num, Eq, Show.
+fn auto_apply_dict(g: &Globals, v: Value) -> Result<Value> {
+    if let Value::Closure {
+        params,
+        body: _,
+        env: _,
+    } = &v
+    {
+        if params.len() == 1 && params[0].starts_with("__dict_") {
+            // Try to find dict in globals first
+            if let Ok(dict) = eval_var(g, &std::collections::HashMap::new(), &params[0]) {
+                // Apply the dict but don't recursively force to avoid infinite loops
+                return apply_one(g, v, dict);
+            }
+
+            // If no dict found in globals, try to inject a default dict for specific classes
+            // Extract class name from param (e.g., "__dict_Num_Integer" -> "Num")
+            let class_name = params[0].strip_prefix("__dict_").unwrap_or("");
+            // Handle both short names (e.g., "Num_Integer") and qualified names
+            let class_base = class_name.split('_').next().unwrap_or(class_name);
+            let class_unqualified = class_base.rsplit('.').next().unwrap_or(class_base);
+
+            if let Ok(default_dict) = try_get_default_dict(class_unqualified) {
+                // Apply the dict but don't recursively force to avoid infinite loops
+                return apply_one(g, v, default_dict);
+            }
+        }
+    }
+    Ok(v)
+}
+
+/// Force a value and auto-apply dict-lambdas for builtin operations.
+/// This is used in contexts where we expect concrete values (e.g., arithmetic).
+fn force_and_auto_apply(g: &Globals, v: Value) -> Result<Value> {
+    let mut v = force_value(g, v)?;
+    // Dict-lambdas can escape into runtime contexts that expect concrete values.
+    // Apply a matching dictionary if possible, then force again so callers don't
+    // observe thunks/closures at value boundaries.
+    for _ in 0..4 {
+        let next = auto_apply_dict(g, v)?;
+        let next = force_value(g, next)?;
+        match &next {
+            Value::Closure { params, .. }
+                if params.len() == 1 && params[0].starts_with("__dict_") =>
+            {
+                v = next;
+                continue;
+            }
+            _ => return Ok(next),
         }
     }
     Ok(v)
@@ -821,6 +999,26 @@ fn force_thunk(g: &Globals, t: &std::rc::Rc<std::cell::RefCell<ThunkState>>) -> 
     Ok(v)
 }
 
+fn eval_qualified_dict_var_fallback(
+    g: &Globals,
+    env: &std::collections::HashMap<String, Value>,
+    name: &str,
+) -> Option<Value> {
+    // AST-only typecheck paths can reference qualified dict vars like
+    // `Prelude.__dict_Monad_IO` even when the runtime globals only contain
+    // the unqualified name (e.g. `__dict_Monad_IO`).
+    if !name.contains('.') {
+        return None;
+    }
+
+    let last = name.rsplit('.').next()?;
+    if !(last.starts_with("__dict_") || last.starts_with("__inst_")) {
+        return None;
+    }
+
+    eval_var(g, env, last).ok()
+}
+
 fn eval_var(
     g: &Globals,
     env: &std::collections::HashMap<String, Value>,
@@ -835,6 +1033,9 @@ fn eval_var(
     }
 
     if !g.defs.contains_key(name) {
+        if let Some(v) = eval_qualified_dict_var_fallback(g, env, name) {
+            return Ok(v);
+        }
         return Err(Error::msg(format!("unbound variable: {name}")));
     }
 
@@ -869,6 +1070,26 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         }
     }
 
+    // `.ksif`-only / AST-only compilation paths can produce qualified dict/inst references
+    // like `Prelude.__dict_Monad_IO` or `Prelude.Num.__dict_Num_Integer`.
+    // When the qualified name is not defined in globals, fall back to the unqualified
+    // `__dict_...` / `__inst_...` name so existing builtin minimal dictionaries and
+    // default dict injection can apply.
+    if !g.defs.contains_key(name) {
+        if let Some(pos) = name.rfind(".__dict_") {
+            let unqualified = &name[pos + 1..];
+            if let Some(v) = eval_builtin_var(g, unqualified) {
+                return Some(v);
+            }
+        }
+        if let Some(pos) = name.rfind(".__inst_") {
+            let unqualified = &name[pos + 1..];
+            if let Some(v) = eval_builtin_var(g, unqualified) {
+                return Some(v);
+            }
+        }
+    }
+
     let v = match name {
         // Built-in IO constructor used by the minimal typecheck prelude.
         "IO" => Value::IoCtor,
@@ -889,12 +1110,16 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         "__divInt" => Value::BuiltinDivInt,
         "__modInt" => Value::BuiltinModInt,
 
-        "==" => Value::BuiltinEq,
+        // Integer arithmetic builtins (used by Num Integer instance).
+        "__builtin_Integer_add" => Value::BuiltinAdd,
+        "__builtin_Integer_mul" => Value::BuiltinMul,
+
+        "==" => return only_if_undefined(g, name, Value::BuiltinEq),
         "<" => Value::BuiltinLtInt,
         "<=" => Value::BuiltinLeInt,
         ">" => Value::BuiltinGtInt,
         ">=" => Value::BuiltinGeInt,
-        "/=" => Value::BuiltinNe,
+        "/=" => return only_if_undefined(g, name, Value::BuiltinNe),
 
         "&&" => Value::BuiltinAnd,
         "||" => Value::BuiltinOr,
@@ -904,7 +1129,11 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         "boolToString" => Value::BuiltinBoolToString,
         "++" => Value::BuiltinListAppend,
 
-        "show" | "toString" => Value::BuiltinShow,
+        // Stable primitives used by derived instances (avoid conflict with overloaded names).
+        "__primShow" => Value::BuiltinShow,
+        "__primEq" => Value::BuiltinEq,
+
+        "show" | "toString" => return only_if_undefined(g, name, Value::BuiltinShow),
         "__show" | "__toString" => Value::BuiltinShowDictApply,
 
         "__builtinShowDict" => Value::Record(vec![("show".to_string(), Value::BuiltinShow)]),
@@ -914,92 +1143,110 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
 
         // Minimal dictionaries for `.ksif`-only execution.
         // These are methods that accept the dictionary as their first argument; we ignore it.
-        "__dict_Prelude.Monad.Monad" | "__dict_Prelude.Monad.Monad_IO" => Value::Record(vec![
-            (
-                ">>".to_string(),
-                Value::Closure {
-                    params: vec![
-                        "_dict".to_string(),
-                        "first".to_string(),
-                        "second".to_string(),
-                    ],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("__ioThen".to_string())),
-                        args: vec![
-                            IrExpr::Var("first".to_string()),
-                            IrExpr::Var("second".to_string()),
-                        ],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            (
-                ">>=".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("__ioBind".to_string())),
-                        args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            (
-                "return".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "x".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("IO".to_string())),
-                        args: vec![IrExpr::Var("x".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-        ]),
+        "__dict_Prelude.Monad.Monad" | "__dict_Prelude.Monad.Monad_IO" => {
+            return only_if_undefined(
+                g,
+                name,
+                Value::Record(vec![
+                    (
+                        ">>".to_string(),
+                        Value::Closure {
+                            params: vec![
+                                "_dict".to_string(),
+                                "first".to_string(),
+                                "second".to_string(),
+                            ],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("__ioThen".to_string())),
+                                args: vec![
+                                    IrExpr::Var("first".to_string()),
+                                    IrExpr::Var("second".to_string()),
+                                ],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                    (
+                        ">>=".to_string(),
+                        Value::Closure {
+                            params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("__ioBind".to_string())),
+                                args: vec![
+                                    IrExpr::Var("act".to_string()),
+                                    IrExpr::Var("f".to_string()),
+                                ],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                    (
+                        "return".to_string(),
+                        Value::Closure {
+                            params: vec!["_dict".to_string(), "x".to_string()],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("IO".to_string())),
+                                args: vec![IrExpr::Var("x".to_string())],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                ]),
+            );
+        }
 
         // Backwards-compat / alternate naming.
-        "__dict_Monad_IO" => Value::Record(vec![
-            (
-                ">>".to_string(),
-                Value::Closure {
-                    params: vec![
-                        "_dict".to_string(),
-                        "first".to_string(),
-                        "second".to_string(),
-                    ],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("__ioThen".to_string())),
-                        args: vec![
-                            IrExpr::Var("first".to_string()),
-                            IrExpr::Var("second".to_string()),
-                        ],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            (
-                ">>=".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("__ioBind".to_string())),
-                        args: vec![IrExpr::Var("act".to_string()), IrExpr::Var("f".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-            (
-                "return".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "x".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("IO".to_string())),
-                        args: vec![IrExpr::Var("x".to_string())],
-                    }),
-                    env: std::collections::HashMap::new(),
-                },
-            ),
-        ]),
+        "__dict_Monad_IO" => {
+            return only_if_undefined(
+                g,
+                name,
+                Value::Record(vec![
+                    (
+                        ">>".to_string(),
+                        Value::Closure {
+                            params: vec![
+                                "_dict".to_string(),
+                                "first".to_string(),
+                                "second".to_string(),
+                            ],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("__ioThen".to_string())),
+                                args: vec![
+                                    IrExpr::Var("first".to_string()),
+                                    IrExpr::Var("second".to_string()),
+                                ],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                    (
+                        ">>=".to_string(),
+                        Value::Closure {
+                            params: vec!["_dict".to_string(), "act".to_string(), "f".to_string()],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("__ioBind".to_string())),
+                                args: vec![
+                                    IrExpr::Var("act".to_string()),
+                                    IrExpr::Var("f".to_string()),
+                                ],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                    (
+                        "return".to_string(),
+                        Value::Closure {
+                            params: vec!["_dict".to_string(), "x".to_string()],
+                            body: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("IO".to_string())),
+                                args: vec![IrExpr::Var("x".to_string())],
+                            }),
+                            env: std::collections::HashMap::new(),
+                        },
+                    ),
+                ]),
+            );
+        }
 
         "__recordGet" => Value::BuiltinRecordGet,
         "error" => Value::BuiltinError,
@@ -1027,6 +1274,24 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         }
         "print" => {
             return only_if_undefined(g, name, Value::BuiltinStdoutWrite);
+        }
+
+        n if n.starts_with("__dict_") => {
+            // If stdlib instance dictionaries are missing (e.g. AST-only typecheck prelude),
+            // fall back to a minimal default dictionary for supported classes.
+            if g.defs.contains_key(n) {
+                return None;
+            }
+
+            let class_name = n.strip_prefix("__dict_").unwrap_or("");
+            let class_base = class_name.split('_').next().unwrap_or(class_name);
+            let class_unqualified = class_base.rsplit('.').next().unwrap_or(class_base);
+
+            if let Ok(default_dict) = try_get_default_dict(class_unqualified) {
+                return Some(default_dict);
+            }
+
+            return None;
         }
 
         _ => return None,
@@ -1135,7 +1400,9 @@ fn eval_let(
         };
     }
 
-    eval_expr(g, &env2, body)
+    let result = eval_expr(g, &env2, body)?;
+    // Auto-apply dict lambdas when returning from let expressions
+    auto_apply_io_dict(g, result)
 }
 
 fn eval_cons(
@@ -1180,6 +1447,8 @@ fn eval_case(
     arms: &[IrCaseArm],
 ) -> Result<Value> {
     let scrut = eval_expr(g, env, expr)?;
+    // Auto-apply dict-lambdas on the scrutinee before pattern matching
+    let scrut = auto_apply_dict(g, scrut)?;
     for arm in arms {
         if let Some(binds) = match_pat(g, env, &arm.pat, &scrut)? {
             let mut env_arm = env.clone();
@@ -1192,7 +1461,9 @@ fn eval_case(
                     continue;
                 }
             }
-            return eval_expr(g, &env_arm, &arm.body);
+            let result = eval_expr(g, &env_arm, &arm.body)?;
+            // Auto-apply dict lambdas when returning from case branches
+            return auto_apply_io_dict(g, result);
         }
     }
     Err(Error::msg("non-exhaustive case"))
@@ -1432,7 +1703,16 @@ fn run_io_then(
 fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
     match fun {
         Value::IoCtor => Ok(Value::IoAction(Box::new(IoAction::Pure(arg)))),
-        Value::BuiltinStdoutWrite => apply_builtin_stdout_write(g, arg),
+        Value::BuiltinStdoutWrite => {
+            let arg = force_and_auto_apply(g, arg)?;
+            // Dict-passing can supply a leading `Show` dictionary to `print`.
+            // When `print` falls back to this builtin, ignore that dictionary.
+            if is_probably_typeclass_dict_record(&arg) {
+                Ok(Value::BuiltinStdoutWrite)
+            } else {
+                apply_builtin_stdout_write(g, arg)
+            }
+        }
         Value::BuiltinPutStrLn => apply_builtin_put_str_ln(g, arg),
         Value::BuiltinConcatMap => Ok(Value::BuiltinConcatMap1(Box::new(arg))),
         Value::BuiltinConcatMap1(f) => concat_map(g, *f, arg),
@@ -1455,7 +1735,17 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinModInt => Ok(Value::BuiltinModInt1(Box::new(arg))),
         Value::BuiltinModInt1(a) => mod_floor_int(g, *a, arg),
 
-        Value::BuiltinEq => Ok(Value::BuiltinEq1(Box::new(arg))),
+        Value::BuiltinEq => {
+            let arg = force_and_auto_apply(g, arg)?;
+            // Typeclass method calls pass the instance dictionary as the first arg.
+            // When `__primEq` is used as an instance method body (e.g. `eq = __primEq`),
+            // ignore that leading dictionary.
+            if is_probably_typeclass_dict_record(&arg) {
+                Ok(Value::BuiltinEq)
+            } else {
+                Ok(Value::BuiltinEq1(Box::new(arg)))
+            }
+        }
         Value::BuiltinEq1(a) => eq_value(g, *a, arg),
         Value::BuiltinEqInt => Ok(Value::BuiltinEqInt1(Box::new(arg))),
         Value::BuiltinEqInt1(a) => eq_int(g, *a, arg),
@@ -1467,7 +1757,14 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinGtInt1(a) => gt_int(g, *a, arg),
         Value::BuiltinGeInt => Ok(Value::BuiltinGeInt1(Box::new(arg))),
         Value::BuiltinGeInt1(a) => ge_int(g, *a, arg),
-        Value::BuiltinNe => Ok(Value::BuiltinNe1(Box::new(arg))),
+        Value::BuiltinNe => {
+            let arg = force_and_auto_apply(g, arg)?;
+            if is_probably_typeclass_dict_record(&arg) {
+                Ok(Value::BuiltinNe)
+            } else {
+                Ok(Value::BuiltinNe1(Box::new(arg)))
+            }
+        }
         Value::BuiltinNe1(a) => ne_value(g, *a, arg),
         Value::BuiltinNeInt => Ok(Value::BuiltinNeInt1(Box::new(arg))),
         Value::BuiltinNeInt1(a) => ne_int(g, *a, arg),
@@ -1483,13 +1780,35 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinListAppend => Ok(Value::BuiltinListAppend1(Box::new(arg))),
         Value::BuiltinListAppend1(a) => list_append(g, *a, arg),
         Value::BuiltinShowDictApply => Ok(Value::BuiltinShowDictApply1(Box::new(arg))),
-        Value::BuiltinShowDictApply1(d) => show_with_dict(g, *d, arg),
+        Value::BuiltinShowDictApply1(builtin_dict) => {
+            Ok(Value::BuiltinShowDictApply2(builtin_dict, Box::new(arg)))
+        }
+        Value::BuiltinShowDictApply2(builtin_dict, inst_dict) => {
+            show_with_dict(g, *builtin_dict, *inst_dict, arg)
+        }
         Value::BuiltinEqDictApply => Ok(Value::BuiltinEqDictApply1(Box::new(arg))),
-        Value::BuiltinEqDictApply1(d) => Ok(Value::BuiltinEqDictApply2(d, Box::new(arg))),
-        Value::BuiltinEqDictApply2(d, a) => eq_with_dict(g, *d, *a, arg),
+        Value::BuiltinEqDictApply1(builtin_dict) => {
+            Ok(Value::BuiltinEqDictApply2(builtin_dict, Box::new(arg)))
+        }
+        Value::BuiltinEqDictApply2(builtin_dict, inst_dict) => Ok(Value::BuiltinEqDictApply3(
+            builtin_dict,
+            inst_dict,
+            Box::new(arg),
+        )),
+        Value::BuiltinEqDictApply3(builtin_dict, inst_dict, a) => {
+            eq_with_dict(g, *builtin_dict, *inst_dict, *a, arg)
+        }
         Value::BuiltinRecordGet => Ok(Value::BuiltinRecordGet1(Box::new(arg))),
         Value::BuiltinRecordGet1(d) => record_get(g, *d, arg),
-        Value::BuiltinShow => show_to_string(g, arg),
+        Value::BuiltinShow => {
+            let arg = force_and_auto_apply(g, arg)?;
+            // See BuiltinEq note above.
+            if is_probably_typeclass_dict_record(&arg) {
+                Ok(Value::BuiltinShow)
+            } else {
+                show_to_string(g, arg)
+            }
+        }
 
         Value::BuiltinError => builtin_error(g, arg),
         Value::BuiltinThrow => builtin_throw(g, arg),
@@ -1699,8 +2018,8 @@ fn div_mod_floor(a: Integer, b: Integer) -> (Integer, Integer) {
 }
 
 fn quot_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("__quotInt expects Integer"));
     };
@@ -1715,8 +2034,8 @@ fn quot_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn rem_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("__remInt expects Integer"));
     };
@@ -1731,8 +2050,8 @@ fn rem_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn div_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("__divInt expects Integer"));
     };
@@ -1747,8 +2066,8 @@ fn div_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn mod_floor_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("__modInt expects Integer"));
     };
@@ -1797,14 +2116,14 @@ fn string_to_char_list(s: &str) -> Value {
 }
 
 fn value_to_string(g: &Globals, v: Value) -> Result<String> {
-    let v = force_value(g, v)?;
+    let v = force_and_auto_apply(g, v)?;
     match v {
         Value::String(s) => Ok(s),
         Value::ListNil | Value::ListCons(_, _) => {
             let elems = list_to_vec(g, v)?;
             let mut out = String::new();
             for e in elems {
-                let e = force_value(g, e)?;
+                let e = force_and_auto_apply(g, e)?;
                 let Value::Char(ch) = e else {
                     return Err(Error::msg("expected [Char]"));
                 };
@@ -1812,7 +2131,12 @@ fn value_to_string(g: &Globals, v: Value) -> Result<String> {
             }
             Ok(out)
         }
-        _ => Err(Error::msg("expected String/[Char]")),
+        other => {
+            if std::env::var("KSCR_DEBUG_VALUE_TO_STRING").ok().as_deref() == Some("1") {
+                eprintln!("[KSCR_DEBUG_VALUE_TO_STRING] got non-string value: {other:?}");
+            }
+            Err(Error::msg("expected String/[Char]"))
+        }
     }
 }
 
@@ -2046,8 +2370,8 @@ fn ffi_add_f32(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("+ expects Integer"));
     };
@@ -2061,8 +2385,8 @@ fn add_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("- expects Integer"));
     };
@@ -2076,8 +2400,8 @@ fn sub_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("* expects Integer"));
     };
@@ -2091,8 +2415,8 @@ fn mul_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("/ expects Integer"));
     };
@@ -2110,8 +2434,8 @@ fn div_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn eq_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("== expects Integer"));
     };
@@ -2122,8 +2446,8 @@ fn eq_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn lt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("< expects Integer"));
     };
@@ -2134,8 +2458,8 @@ fn lt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("<= expects Integer"));
     };
@@ -2146,8 +2470,8 @@ fn le_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn gt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("> expects Integer"));
     };
@@ -2158,8 +2482,8 @@ fn gt_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn ge_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg(">= expects Integer"));
     };
@@ -2170,8 +2494,8 @@ fn ge_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
 }
 
 fn ne_int(g: &Globals, a: Value, b: Value) -> Result<Value> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
     let Value::Integer(a) = a else {
         return Err(Error::msg("/= expects Integer"));
     };
@@ -2293,7 +2617,7 @@ fn quote_char(c: char) -> String {
 }
 
 fn show_value_str(g: &Globals, v: Value) -> Result<String> {
-    let v = force_value(g, v)?;
+    let v = force_and_auto_apply(g, v)?;
     Ok(match v {
         Value::Integer(n) => n.to_string(),
         Value::Float64(x) => x.to_string(),
@@ -2314,7 +2638,7 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
             let mut chars = Vec::with_capacity(elems.len());
             let mut all_char = true;
             for e in &elems {
-                let e = force_value(g, e.clone())?;
+                let e = force_and_auto_apply(g, e.clone())?;
                 if let Value::Char(ch) = e {
                     chars.push(ch);
                 } else {
@@ -2343,7 +2667,7 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
                 .find_map(|(k, v)| if k == "__args" { Some(v.clone()) } else { None });
 
             if let (Some(ctor), Some(args)) = (ctor, args) {
-                let ctor = force_value(g, ctor)?;
+                let ctor = force_and_auto_apply(g, ctor)?;
                 if let Value::String(ctor) = ctor {
                     let elems = list_to_vec(g, args)?;
                     if elems.is_empty() {
@@ -2364,7 +2688,12 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
             }
             format!("{{{}}}", parts.join(", "))
         }
-        _ => return Err(Error::msg("show/toString expects a printable value")),
+        other => {
+            if std::env::var("KSCR_DEBUG_SHOW_VALUE_STR").ok().as_deref() == Some("1") {
+                eprintln!("[KSCR_DEBUG_SHOW_VALUE_STR] got non-printable value: {other:?}");
+            }
+            return Err(Error::msg("show/toString expects a printable value"));
+        }
     })
 }
 
@@ -2372,7 +2701,7 @@ fn show_to_string(g: &Globals, a: Value) -> Result<Value> {
     Ok(string_to_char_list(&show_value_str(g, a)?))
 }
 
-fn show_with_dict(g: &Globals, dict: Value, a: Value) -> Result<Value> {
+fn show_with_dict(g: &Globals, builtin_dict: Value, dict: Value, a: Value) -> Result<Value> {
     let dict = force_value(g, dict)?;
     let Value::Record(fields) = dict else {
         return Err(Error::msg(
@@ -2384,12 +2713,13 @@ fn show_with_dict(g: &Globals, dict: Value, a: Value) -> Result<Value> {
         return Err(Error::msg("Show dictionary missing field: show"));
     };
     let show_fn = force_value(g, show_fn)?;
-    apply_one(g, show_fn, a)
+    let f = apply_one(g, show_fn, builtin_dict)?;
+    apply_one(g, f, a)
 }
 
 fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
-    let a = force_value(g, a)?;
-    let b = force_value(g, b)?;
+    let a = force_and_auto_apply(g, a)?;
+    let b = force_and_auto_apply(g, b)?;
 
     Ok(match (a, b) {
         (Value::Unit, Value::Unit) => true,
@@ -2475,7 +2805,12 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
             true
         }
 
-        _ => return Err(Error::msg("== expects equatable values")),
+        (a, b) => {
+            if std::env::var("KSCR_DEBUG_EQ_VALUES").ok().as_deref() == Some("1") {
+                eprintln!("[KSCR_DEBUG_EQ_VALUES] got non-equatable values: a={a:?} b={b:?}");
+            }
+            return Err(Error::msg("== expects equatable values"));
+        }
     })
 }
 
@@ -2487,7 +2822,13 @@ fn ne_value(g: &Globals, a: Value, b: Value) -> Result<Value> {
     Ok(Value::Bool(!eq_values(g, a, b)?))
 }
 
-fn eq_with_dict(g: &Globals, dict: Value, a: Value, b: Value) -> Result<Value> {
+fn eq_with_dict(
+    g: &Globals,
+    builtin_dict: Value,
+    dict: Value,
+    a: Value,
+    b: Value,
+) -> Result<Value> {
     let dict = force_value(g, dict)?;
     let Value::Record(fields) = dict else {
         return Err(Error::msg("__eq expects an Eq dictionary record"));
@@ -2497,7 +2838,8 @@ fn eq_with_dict(g: &Globals, dict: Value, a: Value, b: Value) -> Result<Value> {
         return Err(Error::msg("Eq dictionary missing field: eq"));
     };
     let eq_fn = force_value(g, eq_fn)?;
-    let f = apply_one(g, eq_fn, a)?;
+    let f = apply_one(g, eq_fn, builtin_dict)?;
+    let f = apply_one(g, f, a)?;
     apply_one(g, f, b)
 }
 
@@ -2592,7 +2934,7 @@ fn match_pat_cons(
     tl: &IrPattern,
     v: &Value,
 ) -> Result<Option<std::collections::HashMap<String, Value>>> {
-    let v = force_value(g, v.clone())?;
+    let v = force_and_auto_apply(g, v.clone())?;
     let Value::ListCons(h, t) = v else {
         return Ok(None);
     };
@@ -2724,7 +3066,7 @@ fn match_pat(
         return Ok(Some(binds));
     }
 
-    let val = force_value(g, val.clone())?;
+    let val = force_and_auto_apply(g, val.clone())?;
     match (pat, &val) {
         (P::Literal(l), v) => {
             if match_pat_literal(l, v)? {

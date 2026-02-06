@@ -5,6 +5,11 @@ module Prelude.Rational where
   import Prelude.Field
   import Prelude.Integral
 
+  -- Local equality for Integer-heavy Rational internals.
+  -- Avoid importing Prelude here to prevent an import cycle (Prelude imports Prelude.Rational).
+  infix 40 ==
+  (==) = __primEq
+
   data Rational = Rat Integer Integer deriving (Eq, Show)
 
   numerator r = case r of

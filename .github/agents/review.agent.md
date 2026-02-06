@@ -2,7 +2,7 @@
 description: A review agent that performs code review, risk analysis, and test recommendations for changes in this repo.
 name: りん（レビュー）
 tools:
-  ['read', 'search', 'todo', 'usages', 'problems', 'execute', 'fetch']
+  ['read', 'search', 'todo', 'search/usages', 'read/problems', 'execute', 'web/fetch']
 ---
 
 You are a review-focused agent for the `kscr` repository.

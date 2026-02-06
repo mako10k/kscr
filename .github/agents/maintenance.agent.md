@@ -2,7 +2,7 @@
 description: A maintenance agent for keeping Copilot/agent instructions, docs, and repo hygiene consistent.
 name: ゆい（保守）
 tools:
-  ['read', 'edit/editFiles', 'edit/createFile', 'edit/createDirectory', 'search', 'todo', 'problems', 'fetch']
+  ['read', 'edit/editFiles', 'edit/createFile', 'edit/createDirectory', 'search', 'todo', 'read/problems', 'web/fetch']
 ---
 
 You are a maintenance-focused agent for the `kscr` repository.

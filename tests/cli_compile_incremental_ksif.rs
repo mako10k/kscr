@@ -52,7 +52,7 @@ fn test_cli_compile_skips_ksif_emission_when_hashes_match() {
         result.err()
     );
 
-    let lib_ksif = temp_path.join("Lib.ksif");
+    let lib_ksif = temp_path.join("target").join("ksif").join("Lib.ksif");
     assert!(lib_ksif.exists(), "Lib.ksif should exist");
 
     // Now compile Main.ks to generate Main executable and Main.ksif
@@ -182,7 +182,7 @@ fn test_cli_compile_rebuilds_ksif_when_dependency_changes() {
     fs::write(temp_path.join("Lib.ks"), lib_content_modified).expect("write modified Lib.ks");
 
     // Delete Lib.ksif to force rebuild
-    let lib_ksif = temp_path.join("Lib.ksif");
+    let lib_ksif = temp_path.join("target").join("ksif").join("Lib.ksif");
     fs::remove_file(&lib_ksif).expect("remove Lib.ksif");
 
     // Rebuild Lib.ksif by re-typechecking Dummy

@@ -12,13 +12,6 @@ pub(super) fn rewrite_class_dict_passing_in_module(
 ) -> Result<()> {
     use ast::PatternKind;
 
-    fn is_injected_import_forwarder(b: &ast::Binding) -> bool {
-        let injected =
-            b.span.start == 0 && b.span.end == 0 && b.expr.span.start == 0 && b.expr.span.end == 0;
-        let rhs_is_qual_var = matches!(&b.expr.kind, ast::ExprKind::Var(q) if q.contains('.'));
-        injected && rhs_is_qual_var
-    }
-
     // name -> classes (stable order) that require an explicit dictionary arg.
     let mut needs_dicts: HashMap<String, Vec<String>> = HashMap::new();
     for (name, scheme) in inferred {
@@ -31,11 +24,6 @@ pub(super) fn rewrite_class_dict_passing_in_module(
             .iter()
             .filter_map(|c| match c {
                 Constraint::Class { class, .. } => Some(class.name.clone()),
-                // Built-in constraints still require dictionary passing.
-                Constraint::Show(_) => Some("Show".to_string()),
-                Constraint::Eq(_) => Some("Eq".to_string()),
-                Constraint::ShowRow(_) => Some("ShowRow".to_string()),
-                Constraint::EqRow(_) => Some("EqRow".to_string()),
                 _ => None,
             })
             .collect();
@@ -47,36 +35,6 @@ pub(super) fn rewrite_class_dict_passing_in_module(
     }
 
     let snapshot = module.clone();
-
-    // Build class method scheme index once per module rewrite.
-    // This avoids constructing it repeatedly in call-site queries.
-    let class_index: Option<super::ClassEnvIndex> = {
-        let mut cx_for_index = InferCtx::default();
-        super::build_class_method_scheme_index(&mut cx_for_index, class_env).ok()
-    };
-
-    // Build unqualified callee lookup once per module rewrite.
-    // This avoids repeatedly scanning `inferred` for unique suffix matches.
-    // Map: unqualified_name -> Some(qualified_name) if unique, None if ambiguous.
-    let inferred_unqual_index: HashMap<String, Option<String>> = {
-        let mut idx: HashMap<String, Option<String>> = HashMap::new();
-        for k in inferred.keys() {
-            if !k.contains('.') {
-                continue;
-            }
-            let last = k.split('.').next_back().unwrap_or(k.as_str()).to_string();
-            match idx.get_mut(&last) {
-                None => {
-                    idx.insert(last, Some(k.clone()));
-                }
-                Some(slot @ Some(_)) => {
-                    *slot = None;
-                }
-                Some(None) => {}
-            }
-        }
-        idx
-    };
 
     // 0) Ensure ground instance dictionaries referenced by name actually exist as bindings.
     // Some constraints are discharged at typecheck time (e.g. `Monad IO`, `Ring Integer`) and
@@ -95,12 +53,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
             let it = match it {
                 ast::Item::Binding(b) => {
                     if let PatternKind::Var(name) = &b.pat.kind {
-                        // Skip adding dict params to injected import-forwarders like `print = Prelude.print`.
-                        // These forwarders are already aliases to dictionary-taking functions; adding dict params
-                        // here can accidentally duplicate dictionary arguments (e.g. `Prelude.print d d`).
-                        if is_injected_import_forwarder(&b) {
-                            ast::Item::Binding(b)
-                        } else if let Some(classes) = needs_dicts.get(name) {
+                        if let Some(classes) = needs_dicts.get(name) {
                             ast::Item::Binding(ast::Binding {
                                 doc: None,
                                 pat: b.pat,
@@ -121,61 +74,22 @@ pub(super) fn rewrite_class_dict_passing_in_module(
         .collect::<Result<Vec<_>>>()?;
 
     // 2) Rewrite call sites to supply dictionaries.
-    // Populate ground_dicts with all available instance dictionaries from ClassEnv.
-    // This allows method references like `+` in nested contexts to resolve their dictionaries.
-    // Strip module qualification to get unqualified dict names that match actual bindings in the module.
-    let ground_dicts: HashSet<String> = class_env
-        .instances
-        .values()
-        .filter_map(|dict_name| {
-            // Extract unqualified name (last component after the last dot)
-            dict_name.split('.').next_back().map(|s| s.to_string())
-        })
-        .collect();
-
-    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
-        eprintln!(
-            "[DICT] ground_dicts populated with {} entries:",
-            ground_dicts.len()
-        );
-        for dict in &ground_dicts {
-            eprintln!("[DICT]   - {}", dict);
-        }
-    }
-
+    let empty_scope: HashSet<String> = HashSet::new();
     let empty_shadowed: HashSet<String> = HashSet::new();
     let empty_local: HashMap<String, Vec<String>> = HashMap::new();
-    let empty_local_tys: HashMap<String, Ty> = HashMap::new();
     module.items = module
         .items
         .drain(..)
         .map(|it| {
             Ok(match it {
                 ast::Item::Binding(mut b) => {
-                    let expected_root_ty: Option<&Ty> = match &b.pat.kind {
-                        ast::PatternKind::Var(name) => {
-                            // Only seed expected types when we did not add dict params.
-                            // Otherwise, scheme.ty would be misaligned with the rewritten lambda params.
-                            if needs_dicts.contains_key(name) {
-                                None
-                            } else {
-                                inferred.get(name).map(|s| &s.ty)
-                            }
-                        }
-                        _ => None,
-                    };
-
                     b.expr = super::typeclass_dict_passing_rewrite::rewrite_expr(
                         &snapshot,
                         class_env,
                         inferred,
                         &needs_dicts,
                         &empty_local,
-                        &empty_local_tys,
-                        class_index.as_ref(),
-                        Some(&inferred_unqual_index),
-                        expected_root_ty,
-                        &ground_dicts,
+                        &empty_scope,
                         &empty_shadowed,
                         b.expr,
                     )?;
@@ -190,14 +104,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
 }
 
 pub(super) fn dict_param_name(class: &str) -> String {
-    // Use unqualified class name for dict parameters to avoid dots in parameter names.
-    // For example, class "Prelude.Num.Num" becomes "__dict_Num" not "__dict_Prelude.Num.Num".
-    let unqualified = class.split('.').next_back().unwrap_or(class);
-    let result = format!("__dict_{unqualified}");
-    if std::env::var("KSCR_DEBUG_DICT_PARAM").is_ok() {
-        eprintln!("[DICT_PARAM] class='{}' -> param='{}'", class, result);
-    }
-    result
+    format!("__dict_{class}")
 }
 
 pub(super) fn super_field_name(class: &str) -> String {
@@ -208,10 +115,7 @@ pub(super) fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Opt
     use std::collections::{HashMap, VecDeque};
 
     fn find_unique_class_id_by_name(class_env: &ClassEnv, name: &str) -> Option<ast::ClassId> {
-        // Prefer exact match; if `name` is unqualified, allow a unique suffix match.
         let mut found: Option<ast::ClassId> = None;
-
-        // 1) Exact match (qualified or unqualified)
         for id in class_env.class_params.keys() {
             if id.name == name {
                 if found.is_some() {
@@ -220,26 +124,7 @@ pub(super) fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Opt
                 found = Some(id.clone());
             }
         }
-        if found.is_some() {
-            return found;
-        }
-
-        // 2) If unqualified, try unique suffix match by last segment.
-        if !name.contains('.') {
-            let mut suffix_found: Option<ast::ClassId> = None;
-            for id in class_env.class_params.keys() {
-                let last = id.name.split('.').next_back().unwrap_or(id.name.as_str());
-                if last == name {
-                    if suffix_found.is_some() {
-                        return None;
-                    }
-                    suffix_found = Some(id.clone());
-                }
-            }
-            return suffix_found;
-        }
-
-        None
+        found
     }
 
     if from == to {
@@ -438,9 +323,6 @@ fn required_classes_in_var(
 ) {
     if let Some(classes) = needs_dicts.get(name) {
         insert_all(out, classes);
-        // If the name is a user-defined function/value with known requirements,
-        // don't also treat it as a typeclass method.
-        return;
     }
     if let Some(classes) = class_env.method_classes.get(name) {
         for c in classes {
@@ -551,49 +433,27 @@ pub(super) fn pick_instance_dict_expr_from_scope(
 ) -> Result<Option<ast::Expr>> {
     use ast::{Expr, ExprKind};
 
-    if !ftv_ty(ty).is_empty() {
-        // Not ground: we cannot soundly choose a global instance dictionary here.
-        return Ok(None);
-    }
-
-    let ty_norm = super::normalize_ty_for_instance_key(ty);
-
-    if let Ok(head) = instance_head_key_ty(&ty_norm) {
-        // Stage 2: instances are keyed by ClassId, but dict passing currently selects by
-        // unqualified class name (compatible with existing stdlib dict names).
-        if let Some(class_id) = class_env
-            .class_params
-            .keys()
-            .find(|id| {
-                id.name.rsplit('.').next().unwrap_or(id.name.as_str())
-                    == class.rsplit('.').next().unwrap_or(class)
-            })
-            .cloned()
-        {
-            let key = (class_id, head);
-            if let Some(d) = class_env.instances.get(&key).cloned() {
-                // For stdlib dicts (Prelude.*), use unqualified names at AST level.
-                // For user-defined dicts, keep qualification to avoid conflicts.
-                let dict_ref = if d.starts_with("Prelude.") {
-                    d.split('.').next_back().unwrap_or(d.as_str()).to_string()
-                } else {
-                    d
-                };
-                return Ok(Some(Expr::new(span, ExprKind::Var(dict_ref))));
+    if ftv_ty(ty).is_empty() {
+        if let Ok(head) = instance_head_key_ty(ty) {
+            // Stage 2: instances are keyed by ClassId, but dict passing currently selects by
+            // unqualified class name (compatible with existing stdlib dict names).
+            if let Some(class_id) = class_env
+                .class_params
+                .keys()
+                .find(|id| id.name == class)
+                .cloned()
+            {
+                let key = (class_id, head);
+                if let Some(d) = class_env.instances.get(&key).cloned() {
+                    return Ok(Some(Expr::new(span, ExprKind::Var(d))));
+                }
             }
         }
     }
 
     let mut candidates: Vec<&PolyInstance> = Vec::new();
     for pi in &class_env.poly_instances {
-        if pi
-            .class
-            .name
-            .rsplit('.')
-            .next()
-            .unwrap_or(pi.class.name.as_str())
-            != class.rsplit('.').next().unwrap_or(class)
-        {
+        if pi.class.name != class {
             continue;
         }
 
@@ -637,8 +497,7 @@ pub(super) fn pick_instance_dict_expr_from_scope(
         }
 
         let pat = rename_vars(&pi.head_pat, &mut map, &mut next);
-        let ok = unify(pat.clone(), ty_norm.clone()).is_ok();
-        if ok {
+        if unify(pat, ty.clone()).is_ok() {
             candidates.push(pi);
         }
     }
@@ -654,17 +513,7 @@ pub(super) fn pick_instance_dict_expr_from_scope(
     }
 
     let pi = candidates[0];
-    // For stdlib dicts, use unqualified names (same as above)
-    let dict_ref = if pi.dict_name.starts_with("Prelude.") {
-        pi.dict_name
-            .split('.')
-            .next_back()
-            .unwrap_or(pi.dict_name.as_str())
-            .to_string()
-    } else {
-        pi.dict_name.clone()
-    };
-    let mut expr = Expr::new(span, ExprKind::Var(dict_ref));
+    let mut expr = Expr::new(span, ExprKind::Var(pi.dict_name.clone()));
     for i in 0..pi.ctx_len {
         let pname = format!("__ctx_dict_{i}");
         if !dicts_in_scope.contains(&pname) {
@@ -694,59 +543,11 @@ pub(super) fn call_info_for_call(
     inferred: &HashMap<String, Scheme>,
     callee: &str,
     args: &[ast::Expr],
-    class_index: Option<&super::ClassEnvIndex>,
-    inferred_unqual_index: Option<&HashMap<String, Option<String>>>,
 ) -> Option<CallInfo> {
-    // Prefer exact match; if `callee` is unqualified, allow a unique suffix match
-    // against inferred bindings (e.g. lookup "print" via "Prelude.print").
-    // If not found, fall back to class-method schemes (methods are values).
-    let scheme: Scheme = inferred
-        .get(callee)
-        .cloned()
-        .or_else(|| {
-            if callee.contains('.') {
-                return None;
-            }
-
-            if let Some(idx) = inferred_unqual_index {
-                if let Some(hit) = idx.get(callee) {
-                    match hit {
-                        Some(qualified) => return inferred.get(qualified).cloned(),
-                        None => return None,
-                    }
-                }
-            }
-
-            let mut found: Option<Scheme> = None;
-            for (k, v) in inferred.iter() {
-                let last = k.split('.').next_back().unwrap_or(k.as_str());
-                if last == callee {
-                    if found.is_some() {
-                        return None;
-                    }
-                    found = Some(v.clone());
-                }
-            }
-            found
-        })
-        .or_else(|| {
-            // e.g. `>>=` / `>>` inserted via class method index during inference,
-            // but not necessarily present as a top-level binding in `inferred`.
-            if !class_env.method_classes.contains_key(callee) {
-                return None;
-            }
-            if let Some(idx) = class_index {
-                return idx.methods_by_name.get(callee).cloned();
-            }
-
-            // Fallback: build on-demand if no module-level index was provided.
-            let mut cx_for_index = InferCtx::default();
-            let idx = super::build_class_method_scheme_index(&mut cx_for_index, class_env).ok()?;
-            idx.methods_by_name.get(callee).cloned()
-        })?;
+    let scheme = inferred.get(callee)?;
 
     let mut cx = InferCtx::default();
-    let (cs, mut callee_ty) = instantiate_qual(&mut cx, &scheme);
+    let (cs, mut callee_ty) = instantiate_qual(&mut cx, scheme);
     let mut subst = Subst::new();
     let mut expected: Vec<Ty> = Vec::new();
 
@@ -770,24 +571,10 @@ pub(super) fn call_info_for_call(
 
     let mut class_tys: HashMap<String, Ty> = HashMap::new();
     for c in cs {
-        match c {
-            Constraint::Class { class, ty } => {
-                class_tys.insert(class.name, apply(&subst, ty));
-            }
-            Constraint::Show(ty) => {
-                class_tys.insert("Show".to_string(), apply(&subst, ty));
-            }
-            Constraint::Eq(ty) => {
-                class_tys.insert("Eq".to_string(), apply(&subst, ty));
-            }
-            Constraint::ShowRow(ty) => {
-                class_tys.insert("ShowRow".to_string(), apply(&subst, ty));
-            }
-            Constraint::EqRow(ty) => {
-                class_tys.insert("EqRow".to_string(), apply(&subst, ty));
-            }
-            _ => {}
-        }
+        let Constraint::Class { class, ty } = c else {
+            continue;
+        };
+        class_tys.insert(class.name, apply(&subst, ty));
     }
 
     Some(CallInfo {
