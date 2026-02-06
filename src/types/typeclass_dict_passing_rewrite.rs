@@ -47,6 +47,8 @@ struct RewriteCx<'a> {
     needs_dicts_global: &'a HashMap<String, Vec<String>>,
     needs_dicts_local: &'a HashMap<String, Vec<String>>,
     local_tys: &'a HashMap<String, Ty>,
+    class_index: Option<&'a super::ClassEnvIndex>,
+    inferred_unqual_index: Option<&'a HashMap<String, Option<String>>>,
     dicts_in_scope: &'a HashSet<String>,
     shadowed_in_scope: &'a HashSet<String>,
 }
@@ -684,7 +686,15 @@ fn rewrite_apply(
         if shadowed_in_scope.contains(callee) {
             None
         } else {
-            common::call_info_for_call(module_snapshot, class_env, inferred, callee, &args_snapshot)
+            common::call_info_for_call(
+                module_snapshot,
+                class_env,
+                inferred,
+                callee,
+                &args_snapshot,
+                cx.class_index,
+                cx.inferred_unqual_index,
+            )
         }
     } else {
         None
@@ -1322,6 +1332,8 @@ pub(super) fn rewrite_expr(
     needs_dicts_global: &HashMap<String, Vec<String>>,
     needs_dicts_local: &HashMap<String, Vec<String>>,
     local_tys: &HashMap<String, Ty>,
+    class_index: Option<&super::ClassEnvIndex>,
+    inferred_unqual_index: Option<&HashMap<String, Option<String>>>,
     dicts_in_scope: &HashSet<String>,
     shadowed_in_scope: &HashSet<String>,
     expr: ast::Expr,
@@ -1333,6 +1345,8 @@ pub(super) fn rewrite_expr(
         needs_dicts_global,
         needs_dicts_local,
         local_tys,
+        class_index,
+        inferred_unqual_index,
         dicts_in_scope,
         shadowed_in_scope,
     };

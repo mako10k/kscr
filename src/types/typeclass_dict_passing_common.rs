@@ -41,6 +41,36 @@ pub(super) fn rewrite_class_dict_passing_in_module(
 
     let snapshot = module.clone();
 
+    // Build class method scheme index once per module rewrite.
+    // This avoids constructing it repeatedly in call-site queries.
+    let class_index: Option<super::ClassEnvIndex> = {
+        let mut cx_for_index = InferCtx::default();
+        super::build_class_method_scheme_index(&mut cx_for_index, class_env).ok()
+    };
+
+    // Build unqualified callee lookup once per module rewrite.
+    // This avoids repeatedly scanning `inferred` for unique suffix matches.
+    // Map: unqualified_name -> Some(qualified_name) if unique, None if ambiguous.
+    let inferred_unqual_index: HashMap<String, Option<String>> = {
+        let mut idx: HashMap<String, Option<String>> = HashMap::new();
+        for k in inferred.keys() {
+            if !k.contains('.') {
+                continue;
+            }
+            let last = k.split('.').next_back().unwrap_or(k.as_str()).to_string();
+            match idx.get_mut(&last) {
+                None => {
+                    idx.insert(last, Some(k.clone()));
+                }
+                Some(slot @ Some(_)) => {
+                    *slot = None;
+                }
+                Some(None) => {}
+            }
+        }
+        idx
+    };
+
     // 0) Ensure ground instance dictionaries referenced by name actually exist as bindings.
     // Some constraints are discharged at typecheck time (e.g. `Monad IO`, `Ring Integer`) and
     // later rewrites may refer to their concrete dictionary names (e.g. `__dict_Monad_IO`).
@@ -117,6 +147,8 @@ pub(super) fn rewrite_class_dict_passing_in_module(
                         &needs_dicts,
                         &empty_local,
                         &empty_local_tys,
+                        class_index.as_ref(),
+                        Some(&inferred_unqual_index),
                         &ground_dicts,
                         &empty_shadowed,
                         b.expr,
@@ -636,6 +668,8 @@ pub(super) fn call_info_for_call(
     inferred: &HashMap<String, Scheme>,
     callee: &str,
     args: &[ast::Expr],
+    class_index: Option<&super::ClassEnvIndex>,
+    inferred_unqual_index: Option<&HashMap<String, Option<String>>>,
 ) -> Option<CallInfo> {
     // Prefer exact match; if `callee` is unqualified, allow a unique suffix match
     // against inferred bindings (e.g. lookup "print" via "Prelude.print").
@@ -647,6 +681,16 @@ pub(super) fn call_info_for_call(
             if callee.contains('.') {
                 return None;
             }
+
+            if let Some(idx) = inferred_unqual_index {
+                if let Some(hit) = idx.get(callee) {
+                    match hit {
+                        Some(qualified) => return inferred.get(qualified).cloned(),
+                        None => return None,
+                    }
+                }
+            }
+
             let mut found: Option<Scheme> = None;
             for (k, v) in inferred.iter() {
                 let last = k.split('.').next_back().unwrap_or(k.as_str());
@@ -665,6 +709,11 @@ pub(super) fn call_info_for_call(
             if !class_env.method_classes.contains_key(callee) {
                 return None;
             }
+            if let Some(idx) = class_index {
+                return idx.methods_by_name.get(callee).cloned();
+            }
+
+            // Fallback: build on-demand if no module-level index was provided.
             let mut cx_for_index = InferCtx::default();
             let idx = super::build_class_method_scheme_index(&mut cx_for_index, class_env).ok()?;
             idx.methods_by_name.get(callee).cloned()
