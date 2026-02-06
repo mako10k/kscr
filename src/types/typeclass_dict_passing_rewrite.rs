@@ -6,6 +6,39 @@ use super::typeclass_dict_passing_common as common;
 
 use std::collections::{HashMap, HashSet};
 
+fn lookup_class_ty<'a>(class_tys: &'a HashMap<String, Ty>, class: &str) -> Option<&'a Ty> {
+    if let Some(t) = class_tys.get(class) {
+        return Some(t);
+    }
+    let unqualified = class.split('.').next_back().unwrap_or(class);
+    if let Some(t) = class_tys.get(unqualified) {
+        return Some(t);
+    }
+
+    // Unique suffix match (by last segment)
+    let mut found: Option<&Ty> = None;
+    for (k, v) in class_tys.iter() {
+        let last = k.split('.').next_back().unwrap_or(k.as_str());
+        if last == unqualified {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(v);
+        }
+    }
+    found
+}
+
+fn placeholder_local_ty(name: &str) -> Ty {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut h = DefaultHasher::new();
+    name.hash(&mut h);
+    let v = (h.finish() as u32) | 0x8000_0000;
+    Ty::Var(v)
+}
+
 #[derive(Clone, Copy)]
 struct RewriteCx<'a> {
     module_snapshot: &'a ast::Module,
@@ -77,6 +110,17 @@ fn infer_in_module_with_class_env_and_ground_locals(
     let data_env = collect_data_env(module);
     let mut env = collect_ctor_env_with_class_env(&mut cx, module, class_env, None)?;
 
+    // Rewrite-time inference often sees unqualified names (e.g. `try`, `throw`, `print`)
+    // even when the inferred environment stores them qualified (e.g. `Prelude.try`).
+    // Add a best-effort unqualified alias when the suffix is unique.
+    let mut suffix_counts: HashMap<String, usize> = HashMap::new();
+    for name in inferred.keys() {
+        if name.contains('.') {
+            let suffix = name.rsplit('.').next().unwrap_or(name.as_str());
+            *suffix_counts.entry(suffix.to_string()).or_insert(0) += 1;
+        }
+    }
+
     for (name, scheme) in inferred {
         if !env.contains_key(name) {
             env.insert(
@@ -87,20 +131,68 @@ fn infer_in_module_with_class_env_and_ground_locals(
                 },
             );
         }
+
+        if name.contains('.') {
+            let suffix = name.rsplit('.').next().unwrap_or(name.as_str()).to_string();
+            if suffix_counts.get(&suffix).copied().unwrap_or(0) == 1 && !env.contains_key(&suffix)
+            {
+                env.insert(
+                    suffix,
+                    EnvEntry {
+                        scheme: scheme.clone(),
+                        def_site: None,
+                    },
+                );
+            }
+        }
     }
 
-    // Only inject *ground* local types to avoid `Ty::Var` id collisions across InferCtx instances.
+    fn refresh_tyvars(cx: &mut InferCtx, ty: &Ty, m: &mut HashMap<u32, Ty>) -> Ty {
+        match ty {
+            Ty::Var(v) => m.entry(*v).or_insert_with(|| cx.fresh()).clone(),
+            Ty::Con(c) => Ty::Con(c.clone()),
+            Ty::List(t) => Ty::List(Box::new(refresh_tyvars(cx, t, m))),
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| refresh_tyvars(cx, t, m)).collect()),
+            Ty::Record(fields) => Ty::Record(
+                fields
+                    .iter()
+                    .map(|(k, t)| (k.clone(), refresh_tyvars(cx, t, m)))
+                    .collect(),
+            ),
+            Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
+                fields
+                    .iter()
+                    .map(|(k, t)| (k.clone(), refresh_tyvars(cx, t, m)))
+                    .collect(),
+                Box::new(refresh_tyvars(cx, rest, m)),
+            ),
+            Ty::App { head, args } => Ty::App {
+                head: Box::new(refresh_tyvars(cx, head, m)),
+                args: args.iter().map(|t| refresh_tyvars(cx, t, m)).collect(),
+            },
+            Ty::Func(a, b) => Ty::Func(
+                Box::new(refresh_tyvars(cx, a, m)),
+                Box::new(refresh_tyvars(cx, b, m)),
+            ),
+        }
+    }
+
+    // Inject local types (including non-ground), refreshing tyvar ids to avoid collisions
+    // across InferCtx instances created during rewrite.
+    let mut refreshed: HashMap<u32, Ty> = HashMap::new();
     for (name, ty) in local_tys {
-        if ftv_ty(ty).is_empty() && !env.contains_key(name) {
+        if !env.contains_key(name) {
+            let ty2 = refresh_tyvars(&mut cx, ty, &mut refreshed);
             env.insert(
                 name.clone(),
                 EnvEntry {
-                    scheme: Scheme::mono(ty.clone()),
+                    scheme: Scheme::mono(ty2),
                     def_site: None,
                 },
             );
         }
     }
+
 
     let (s, cs, t) = infer_expr_in(&mut cx, &data_env, &Subst::new(), &env, expr)?;
     let _ = simplify_constraints(&data_env, class_env, apply_constraints(&s, cs))?;
@@ -147,6 +239,7 @@ fn rewrite_var(cx: RewriteCx<'_>, span: ast::Span, name: String) -> Result<ast::
     };
 
     let mut dict_args: Vec<ast::Expr> = Vec::new();
+
     let mut all_resolved = true;
 
     for class in classes {
@@ -221,6 +314,9 @@ fn rewrite_lambda(
 
         if p.starts_with("__dict_") {
             scope.insert(p.clone());
+        } else {
+            // Best-effort placeholder so infer_in_rewrite can see local binders.
+            local_tys.insert(p.clone(), placeholder_local_ty(p));
         }
     }
 
@@ -281,9 +377,13 @@ fn rewrite_lambda_with_expected(
         // Always shadow outer names; then re-insert if we learned a ground param type.
         local_tys.remove(p);
         if let Some(t) = expected_param_tys.get(i) {
-            if ftv_ty(t).is_empty() {
+            if !p.starts_with("__dict_") {
+                // Keep even non-ground expected types; they are often informative enough
+                // to recover ground constructor argument types in nested pattern matches.
                 local_tys.insert(p.clone(), t.clone());
             }
+        } else if !p.starts_with("__dict_") {
+            local_tys.insert(p.clone(), placeholder_local_ty(p));
         }
 
         if p.starts_with("__dict_") {
@@ -453,7 +553,7 @@ fn rewrite_apply_func_var(
 
         if !shadowed_in_scope.contains(func_name) {
             if let Some(ci) = call_info {
-                if let Some(target_ty) = ci.class_tys.get(class) {
+                if let Some(target_ty) = lookup_class_ty(&ci.class_tys, class) {
                     picked = common::pick_instance_dict_expr_from_scope(
                         span,
                         class_env,
@@ -485,6 +585,7 @@ fn rewrite_apply_func_var(
                 };
 
                 if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+                    eprintln!("[DICT]   arg: {a:?}");
                     eprintln!("[DICT]   arg inferred type: {a_ty}");
                 }
 
@@ -504,6 +605,34 @@ fn rewrite_apply_func_var(
                 )? {
                     picked = Some(d);
                     break;
+                }
+            }
+
+            // Fallback: if rewrite-time inference cannot make any argument ground,
+            // use the expected argument types computed during typecheck (CallInfo).
+            // This is important for cases like `case ... of Left e -> print e`,
+            // where `e` can stay a tyvar in rewrite-time inference even though the
+            // original typecheck knows it is, say, `String`.
+            if picked.is_none() && !shadowed_in_scope.contains(func_name) {
+                if let Some(ci) = call_info {
+                    for t in ci.expected_arg_tys.iter() {
+                        if !ftv_ty(t).is_empty() {
+                            continue;
+                        }
+                        if let Some(d) = common::pick_instance_dict_expr_from_scope(
+                            span,
+                            class_env,
+                            dicts_in_scope,
+                            class,
+                            t,
+                        )? {
+                            if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+                                eprintln!("[DICT]   picked from expected_arg_tys: {t}");
+                            }
+                            picked = Some(d);
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -582,6 +711,14 @@ fn rewrite_apply(
 
         let rewritten = match a.kind {
             ExprKind::Lambda { params, body } => {
+                if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+                    if let Some(t) = expected_arg_ty {
+                        eprintln!("[DICT] apply: lambda arg #{i} expected type: {t}");
+                    } else {
+                        eprintln!("[DICT] apply: lambda arg #{i} expected type: <none>");
+                    }
+                    eprintln!("[DICT] apply: callee pre-rewrite: {func:?}");
+                }
                 rewrite_lambda_with_expected(cx, a.span, params, *body, expected_arg_ty)?
             }
             _ => rewrite_expr_cx(cx, a)?,
@@ -649,16 +786,16 @@ fn bind_pat_ground_tys(
 ) {
     use ast::PatternKind;
 
-    if !ftv_ty(ty).is_empty() {
-        return;
-    }
-
     match (&pat.kind, ty) {
         (PatternKind::Var(name), _) => {
-            out.insert(name.clone(), ty.clone());
+            if ftv_ty(ty).is_empty() {
+                out.insert(name.clone(), ty.clone());
+            }
         }
         (PatternKind::As(name, p), _) => {
-            out.insert(name.clone(), ty.clone());
+            if ftv_ty(ty).is_empty() {
+                out.insert(name.clone(), ty.clone());
+            }
             bind_pat_ground_tys(module, class_env, p, ty, out);
         }
         (PatternKind::Tuple(ps), Ty::Tuple(ts)) if ps.len() == ts.len() => {
@@ -1041,7 +1178,27 @@ fn rewrite_do(cx: RewriteCx<'_>, span: ast::Span, stmts: Vec<ast::DoStmt>) -> Re
                     local_tys2.remove(n);
                 }
 
+                // Seed placeholders for binders so rewrite-time inference can make progress
+                // even when the binder type isn't ground yet.
+                for n in &names {
+                    if !n.starts_with("__dict_") {
+                        local_tys2.insert(n.clone(), placeholder_local_ty(n));
+                    }
+                }
+
                 if let Some(inner) = &inferred_inner {
+                    // For do-bind variables, it's useful to keep even non-ground types
+                    // so later pattern matches can recover ground constructor arg types.
+                    match &pat.kind {
+                        ast::PatternKind::Var(name) => {
+                            local_tys2.insert(name.clone(), inner.clone());
+                        }
+                        ast::PatternKind::As(name, _) => {
+                            local_tys2.insert(name.clone(), inner.clone());
+                        }
+                        _ => {}
+                    }
+
                     bind_pat_ground_tys(cx.module_snapshot, cx.class_env, &pat, inner, &mut local_tys2);
                 }
 
@@ -1081,6 +1238,13 @@ fn rewrite_case(
 
     // Best-effort ground scrutinee type, used to seed local var types for simple patterns.
     let scrut_ty = infer_in_rewrite(cx, expr.clone()).ok();
+    if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+        match &scrut_ty {
+            Some(t) => eprintln!("[DICT] case scrutinee inferred type: {t}"),
+            None => eprintln!("[DICT] case scrutinee inference failed"),
+        }
+        eprintln!("[DICT] case scrutinee expr: {expr:?}");
+    }
 
     let expr = Box::new(rewrite_expr_cx(cx, expr)?);
 
@@ -1098,11 +1262,26 @@ fn rewrite_case(
                 local_tys2.remove(n);
                 if n.starts_with("__dict_") {
                     scope.insert(n.clone());
+                } else {
+                    // Seed placeholders so rewrite-time inference can see pattern binders.
+                    local_tys2.insert(n.clone(), placeholder_local_ty(n));
                 }
             }
 
             if let Some(t) = &scrut_ty {
                 bind_pat_ground_tys(cx.module_snapshot, cx.class_env, &a.pat, t, &mut local_tys2);
+            }
+
+            if std::env::var("KSCR_DEBUG_DICT").is_ok() {
+                let mut names_dbg = HashSet::new();
+                pat_defined_names(&a.pat, &mut names_dbg);
+                for n in names_dbg {
+                    if let Some(t) = local_tys2.get(&n) {
+                        eprintln!("[DICT] case binder: {n} : {t}");
+                    } else {
+                        eprintln!("[DICT] case binder: {n} : <none>");
+                    }
+                }
             }
 
             Ok(ast::CaseArm {

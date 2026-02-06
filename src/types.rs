@@ -5493,6 +5493,16 @@ fn simplify_process_constraint(
         Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, in_progress)?),
         Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
         Constraint::Class { class, ty } => {
+            // Even with ordinary typeclasses, we keep the historical restriction that
+            // `Show` cannot be satisfied for function types.
+            // This catches cases like: `show (\\y -> y)` which would otherwise
+            // generalize to an unsatisfiable/ambiguous constraint.
+            if (class.name == "Show" || class.name.ends_with(".Show"))
+                && matches!(ty, Ty::Func(_, _))
+            {
+                return Err(Error::msg("cannot satisfy constraint: Show (function)"));
+            }
+
             let expand_key = format!("{}:{ty:?}", class.name);
             if expanded.insert(expand_key, ()).is_none() {
                 if let Some(supers) = class_env.class_supers.get(&class) {
@@ -5503,6 +5513,21 @@ fn simplify_process_constraint(
             }
 
             if !ftv_ty(&ty).is_empty() {
+                // Keep the class constraint deferred, but still emit structural row
+                // constraints for open records (MVP behavior).
+                if matches!(ty, Ty::RecordOpen(_, _)) {
+                    if class.name == "Show" || class.name.ends_with(".Show") {
+                        for c2 in entails_show(data_env, &ty, in_progress)? {
+                            work.push_back(c2);
+                        }
+                    }
+                    if class.name == "Eq" || class.name.ends_with(".Eq") {
+                        for c2 in entails_eq(data_env, &ty, in_progress)? {
+                            work.push_back(c2);
+                        }
+                    }
+                }
+
                 out.push(Constraint::Class { class, ty });
             } else {
                 let ty_norm = normalize_ty_for_instance_key(&ty);
@@ -15552,7 +15577,7 @@ mod inference_tests {
         let env = infer_module(&m).unwrap();
         assert_eq!(
             format!("{}", env.get("x").unwrap()),
-            "forall a. Show a => a -> a"
+            "forall a. Prelude.Show a => a -> a"
         );
     }
 
@@ -16100,10 +16125,14 @@ x = do
         let s = env.get("f").unwrap();
 
         assert_eq!(s.constraints.len(), 1);
-        let t = match &s.constraints[0] {
-            Constraint::Show(t) => t,
-            other => panic!("expected Show constraint, got {other:?}"),
+        let (class_name, t) = match &s.constraints[0] {
+            Constraint::Class { class, ty } => (&class.name, ty),
+            other => panic!("expected Class constraint, got {other:?}"),
         };
+        assert!(
+            class_name == "Show" || class_name.ends_with(".Show"),
+            "expected Show class, got {class_name}"
+        );
 
         let Ty::Func(a, b) = &s.ty else {
             panic!("expected function type");
@@ -16160,7 +16189,7 @@ y = show Nothing
         assert!(y
             .constraints
             .iter()
-            .any(|c| matches!(c, Constraint::Show(_))));
+            .any(|c| matches!(c, Constraint::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))));
     }
 
     #[test]
@@ -16179,10 +16208,9 @@ x = show (Bad (\y -> y))
         let env = infer_module(&m).unwrap();
         let s = env.get("f").unwrap();
 
-        assert!(s
-            .constraints
-            .iter()
-            .any(|c| matches!(c, Constraint::Show(_))));
+        assert!(s.constraints.iter().any(
+            |c| matches!(c, Constraint::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))
+        ));
         assert!(s
             .constraints
             .iter()

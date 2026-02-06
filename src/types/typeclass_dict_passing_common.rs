@@ -150,7 +150,10 @@ pub(super) fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Opt
     use std::collections::{HashMap, VecDeque};
 
     fn find_unique_class_id_by_name(class_env: &ClassEnv, name: &str) -> Option<ast::ClassId> {
+        // Prefer exact match; if `name` is unqualified, allow a unique suffix match.
         let mut found: Option<ast::ClassId> = None;
+
+        // 1) Exact match (qualified or unqualified)
         for id in class_env.class_params.keys() {
             if id.name == name {
                 if found.is_some() {
@@ -159,7 +162,26 @@ pub(super) fn find_super_path(class_env: &ClassEnv, from: &str, to: &str) -> Opt
                 found = Some(id.clone());
             }
         }
-        found
+        if found.is_some() {
+            return found;
+        }
+
+        // 2) If unqualified, try unique suffix match by last segment.
+        if !name.contains('.') {
+            let mut suffix_found: Option<ast::ClassId> = None;
+            for id in class_env.class_params.keys() {
+                let last = id.name.split('.').next_back().unwrap_or(id.name.as_str());
+                if last == name {
+                    if suffix_found.is_some() {
+                        return None;
+                    }
+                    suffix_found = Some(id.clone());
+                }
+            }
+            return suffix_found;
+        }
+
+        None
     }
 
     if from == to {
@@ -615,10 +637,41 @@ pub(super) fn call_info_for_call(
     callee: &str,
     args: &[ast::Expr],
 ) -> Option<CallInfo> {
-    let scheme = inferred.get(callee)?;
+    // Prefer exact match; if `callee` is unqualified, allow a unique suffix match
+    // against inferred bindings (e.g. lookup "print" via "Prelude.print").
+    // If not found, fall back to class-method schemes (methods are values).
+    let scheme: Scheme = inferred
+        .get(callee)
+        .cloned()
+        .or_else(|| {
+            if callee.contains('.') {
+                return None;
+            }
+            let mut found: Option<Scheme> = None;
+            for (k, v) in inferred.iter() {
+                let last = k.split('.').next_back().unwrap_or(k.as_str());
+                if last == callee {
+                    if found.is_some() {
+                        return None;
+                    }
+                    found = Some(v.clone());
+                }
+            }
+            found
+        })
+        .or_else(|| {
+            // e.g. `>>=` / `>>` inserted via class method index during inference,
+            // but not necessarily present as a top-level binding in `inferred`.
+            if !class_env.method_classes.contains_key(callee) {
+                return None;
+            }
+            let mut cx_for_index = InferCtx::default();
+            let idx = super::build_class_method_scheme_index(&mut cx_for_index, class_env).ok()?;
+            idx.methods_by_name.get(callee).cloned()
+        })?;
 
     let mut cx = InferCtx::default();
-    let (cs, mut callee_ty) = instantiate_qual(&mut cx, scheme);
+    let (cs, mut callee_ty) = instantiate_qual(&mut cx, &scheme);
     let mut subst = Subst::new();
     let mut expected: Vec<Ty> = Vec::new();
 
