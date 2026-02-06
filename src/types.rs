@@ -5440,10 +5440,56 @@ fn simplify_process_constraint(
     out: &mut Vec<Constraint>,
     c: Constraint,
 ) -> Result<()> {
+    fn find_class_by_name(class_env: &ClassEnv, name: &str) -> Option<ast::ClassId> {
+        // Prefer looking up by a distinctive method name when possible.
+        // This is robust even if class names are qualified (e.g. `Prelude.Eq`).
+        let method_hint = match name {
+            "Eq" => Some("eq"),
+            "Show" => Some("show"),
+            _ => None,
+        };
+        if let Some(m) = method_hint {
+            if let Some(classes) = class_env.method_classes.get(m) {
+                if let Some(cid) = classes.iter().find(|cid| {
+                    cid.name == name || cid.name.ends_with(&format!(".{name}"))
+                }) {
+                    return Some(cid.clone());
+                }
+                if let Some(cid) = classes.first() {
+                    return Some(cid.clone());
+                }
+            }
+        }
+
+        let mut fallback = None;
+        for cid in class_env.class_params.keys() {
+            if cid.name == name || cid.name.ends_with(&format!(".{name}")) {
+                // Prefer resolved module ids.
+                if cid.module.0 != 0 {
+                    return Some(cid.clone());
+                }
+                fallback = Some(cid.clone());
+            }
+        }
+        fallback
+    }
+
     match c {
-        Constraint::Show(t) => out.extend(entails_show(data_env, &t, in_progress)?),
+        Constraint::Show(t) => {
+            if let Some(class) = find_class_by_name(class_env, "Show") {
+                work.push_back(Constraint::Class { class, ty: t });
+            } else {
+                out.extend(entails_show(data_env, &t, in_progress)?);
+            }
+        }
         Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, in_progress)?),
-        Constraint::Eq(t) => out.extend(entails_eq(data_env, &t, in_progress)?),
+        Constraint::Eq(t) => {
+            if let Some(class) = find_class_by_name(class_env, "Eq") {
+                work.push_back(Constraint::Class { class, ty: t });
+            } else {
+                out.extend(entails_eq(data_env, &t, in_progress)?);
+            }
+        }
         Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, in_progress)?),
         Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
         Constraint::Class { class, ty } => {
@@ -7413,8 +7459,7 @@ fn ensure_ksif_for_module(
 
         if src_is_newer {
             true
-        } else
-        if policy.force_rebuild {
+        } else if policy.force_rebuild {
             // Force rebuild requested
             true
         } else if policy.suppress_recursive_rebuild {
