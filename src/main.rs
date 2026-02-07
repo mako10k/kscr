@@ -41,6 +41,40 @@ fn main() {
             }
         }
 
+        fn render_snippet(src: &str, start_off: usize, end_off: usize) -> Option<String> {
+            if src.is_empty() {
+                return None;
+            }
+
+            let start_off = start_off.min(src.len());
+            let end_off = end_off.min(src.len());
+            let line_start = src[..start_off].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line_end = src[start_off..]
+                .find('\n')
+                .map(|i| start_off + i)
+                .unwrap_or(src.len());
+            let line_text = &src[line_start..line_end];
+            if line_text.is_empty() {
+                return None;
+            }
+
+            let col = src[line_start..start_off].chars().count();
+            let mut span_len = end_off.saturating_sub(start_off);
+            if span_len == 0 {
+                span_len = 1;
+            }
+            let max_len = line_text.chars().count().saturating_sub(col).max(1);
+            let span_len = span_len.min(max_len);
+
+            let caret = if span_len <= 1 {
+                "^".to_string()
+            } else {
+                format!("^{}", "~".repeat(span_len - 1))
+            };
+            let pad = " ".repeat(col);
+            Some(format!("  {line_text}\n  {pad}{caret}"))
+        }
+
         if let Some(path) = file_arg {
             let src = std::fs::read_to_string(&path).ok();
             let src_s = src.as_deref();
@@ -56,6 +90,11 @@ fn main() {
                     let (line, col, start_off, end_off) = span_to_loc(src_s, primary);
                     if src_s.is_some() {
                         eprintln!("error: {path}:{line}:{col}: {e} (span {start_off}..{end_off})");
+                        if let Some(src) = src_s {
+                            if let Some(snippet) = render_snippet(src, start_off, end_off) {
+                                eprintln!("{snippet}");
+                            }
+                        }
                     } else {
                         eprintln!("error: {path}: {e} (span {start_off}..{end_off})");
                     }
@@ -71,6 +110,11 @@ fn main() {
                             eprintln!(
                                 "note: {path}:{l2}:{c2}: related location (span {so2}..{eo2})"
                             );
+                            if let Some(src) = src_s {
+                                if let Some(snippet) = render_snippet(src, so2, eo2) {
+                                    eprintln!("{snippet}");
+                                }
+                            }
                         } else {
                             eprintln!("note: {path}: related location (span {so2}..{eo2})");
                         }

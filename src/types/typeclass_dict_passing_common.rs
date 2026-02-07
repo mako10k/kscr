@@ -30,12 +30,27 @@ pub(super) fn rewrite_class_dict_passing_in_module(
             .constraints
             .iter()
             .filter_map(|c| match c {
-                Constraint::Class { class, .. } => Some(class.name.clone()),
+                Constraint {
+                    kind: ConstraintKind::Class { class, .. },
+                    ..
+                } => Some(class.name.clone()),
                 // Built-in constraints still require dictionary passing.
-                Constraint::Show(_) => Some("Show".to_string()),
-                Constraint::Eq(_) => Some("Eq".to_string()),
-                Constraint::ShowRow(_) => Some("ShowRow".to_string()),
-                Constraint::EqRow(_) => Some("EqRow".to_string()),
+                Constraint {
+                    kind: ConstraintKind::Show(_),
+                    ..
+                } => Some("Show".to_string()),
+                Constraint {
+                    kind: ConstraintKind::Eq(_),
+                    ..
+                } => Some("Eq".to_string()),
+                Constraint {
+                    kind: ConstraintKind::ShowRow(_),
+                    ..
+                } => Some("ShowRow".to_string()),
+                Constraint {
+                    kind: ConstraintKind::EqRow(_),
+                    ..
+                } => Some("EqRow".to_string()),
                 _ => None,
             })
             .collect();
@@ -770,23 +785,23 @@ pub(super) fn call_info_for_call(
 
     let mut class_tys: HashMap<String, Ty> = HashMap::new();
     for c in cs {
-        match c {
-            Constraint::Class { class, ty } => {
+        match c.kind {
+            ConstraintKind::Class { class, ty } => {
                 class_tys.insert(class.name, apply(&subst, ty));
             }
-            Constraint::Show(ty) => {
+            ConstraintKind::Show(ty) => {
                 class_tys.insert("Show".to_string(), apply(&subst, ty));
             }
-            Constraint::Eq(ty) => {
+            ConstraintKind::Eq(ty) => {
                 class_tys.insert("Eq".to_string(), apply(&subst, ty));
             }
-            Constraint::ShowRow(ty) => {
+            ConstraintKind::ShowRow(ty) => {
                 class_tys.insert("ShowRow".to_string(), apply(&subst, ty));
             }
-            Constraint::EqRow(ty) => {
+            ConstraintKind::EqRow(ty) => {
                 class_tys.insert("EqRow".to_string(), apply(&subst, ty));
             }
-            _ => {}
+            ConstraintKind::Lacks { .. } => {}
         }
     }
 
