@@ -16844,7 +16844,7 @@ y = show Nothing
         assert!(y
             .constraints
             .iter()
-            .any(|c| matches!(c.kind, ConstraintKind::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))));
+            .any(|c| matches!(&c.kind, ConstraintKind::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))));
     }
 
     #[test]
@@ -16864,7 +16864,7 @@ x = show (Bad (\y -> y))
         let s = env.get("f").unwrap();
 
         assert!(s.constraints.iter().any(
-            |c| matches!(c.kind, ConstraintKind::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))
+            |c| matches!(&c.kind, ConstraintKind::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))
         ));
         assert!(s
             .constraints
@@ -16882,7 +16882,7 @@ x = show (Bad (\y -> y))
         assert!(s
             .constraints
             .iter()
-            .any(|c| matches!(c.kind, ConstraintKind::Lacks { label, .. } if label == "a")));
+            .any(|c| matches!(&c.kind, ConstraintKind::Lacks { label, .. } if label == "a")));
     }
 
     #[test]
