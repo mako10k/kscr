@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 fn print_compile_help() {
     eprintln!(
-        "USAGE:\n  kscr compile <file> [options]\n\nOPTIONS:\n  -o, --output <path>   Output executable path (default: <file> with extension stripped)\n      --release          Build optimized runner (-O)\n      --llvm             Compile via LLVM backend + clang (requires --features llvm)\n      --ksif-out <dir>   Emit `.ksif` into <dir> (default: ./target/ksif)\n      --allow-no-main    Allow compilation without a `main` entry point\n  -h, --help             Show this help\n"
+        "USAGE:\n  kscr compile <file> [options]\n\nOPTIONS:\n  -o, --output <path>   Output executable path (default: <file> with extension stripped)\n      --release          Build optimized runner (-O)\n      --llvm             Compile via LLVM backend + clang (requires --features llvm)\n      --allow-no-main    Allow compile even when `main` binding is missing\n      --ksif-out <dir>   Emit `.ksif` into <dir> (default: ./target/ksif)\n  -h, --help             Show this help\n"
     );
 }
 
@@ -61,17 +61,19 @@ where
 
     let tm = crate::types::typecheck_file(&input_path)?;
 
-    let irm = crate::ir::lower_to_ir(&tm.module)?;
-
-    if !allow_no_main && !ir_has_main(&irm) {
-        return Err(crate::error::Error::msg(
-            "compile requires a `main` binding; pass --allow-no-main to override",
-        ));
-    }
-
     // Stage 2 (MVP): emit an interface-only artifact (.ksif) that carries exported value schemes.
     // This is not yet consumed by the compiler pipeline; it is produced for upcoming work.
     emit_ksif(&input_path, &tm, ksif_out_dir.as_deref())?;
+
+    let irm = crate::ir::lower_to_ir(&tm.module)?;
+    if !allow_no_main
+        && !irm
+            .items
+            .iter()
+            .any(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == "main"))
+    {
+        return Err(crate::error::Error::msg("compile requires a `main` binding"));
+    }
 
     if use_llvm {
         #[cfg(feature = "llvm")]
@@ -236,12 +238,6 @@ fn default_output_path(input_path: &Path) -> PathBuf {
     let mut out = input_path.to_path_buf();
     out.set_extension("");
     out
-}
-
-fn ir_has_main(module: &crate::ir::IrModule) -> bool {
-    module.items.iter().any(|item| match item {
-        crate::ir::IrItem::Binding { name, .. } => name == "main",
-    })
 }
 
 fn compile_rust_runner(
