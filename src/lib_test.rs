@@ -227,6 +227,38 @@ instance C a => C (Maybe a) where
 }
 
 #[test]
+fn parser_instance_head_accepts_parenthesized_infix_type_operator() {
+    let src = r#"
+class Eq a where
+    eq :: a -> a -> Bool
+
+instance Eq (a :*: b) where
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let inst = m
+        .items
+        .iter()
+        .find_map(|it| match it {
+            crate::ast::Item::InstanceDecl(i) => Some(i),
+            _ => None,
+        })
+        .expect("expected instance decl");
+
+    assert_eq!(inst.class.name, "Eq");
+    assert_eq!(
+        inst.ty,
+        crate::ast::Type::App {
+            head: Box::new(crate::ast::Type::Var(":*:".to_string())),
+            args: vec![
+                crate::ast::Type::Var("a".to_string()),
+                crate::ast::Type::Var("b".to_string()),
+            ],
+        }
+    );
+}
+
+#[test]
 fn typecheck_rejects_bad_superclass_predicate_shape() {
     let src = r#"
 class Inc a where
