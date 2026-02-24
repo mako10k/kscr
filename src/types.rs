@@ -1342,7 +1342,7 @@ pub fn apply(subst: &Subst, t: Ty) -> Ty {
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConstraintKind {
+pub enum Constraint {
     Show(Ty),
     ShowRow(Ty),
     Eq(Ty),
@@ -1357,42 +1357,6 @@ pub enum ConstraintKind {
         label: String,
         row: Ty,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Constraint {
-    pub kind: ConstraintKind,
-    pub span: ast::Span,
-}
-
-impl Constraint {
-    pub(crate) fn new(kind: ConstraintKind, span: ast::Span) -> Self {
-        Self { kind, span }
-    }
-
-    pub(crate) fn show(ty: Ty, span: ast::Span) -> Self {
-        Self::new(ConstraintKind::Show(ty), span)
-    }
-
-    pub(crate) fn show_row(ty: Ty, span: ast::Span) -> Self {
-        Self::new(ConstraintKind::ShowRow(ty), span)
-    }
-
-    pub(crate) fn eq(ty: Ty, span: ast::Span) -> Self {
-        Self::new(ConstraintKind::Eq(ty), span)
-    }
-
-    pub(crate) fn eq_row(ty: Ty, span: ast::Span) -> Self {
-        Self::new(ConstraintKind::EqRow(ty), span)
-    }
-
-    pub(crate) fn class(class: ast::ClassId, ty: Ty, span: ast::Span) -> Self {
-        Self::new(ConstraintKind::Class { class, ty }, span)
-    }
-
-    pub(crate) fn lacks(label: String, row: Ty, span: ast::Span) -> Self {
-        Self::new(ConstraintKind::Lacks { label, row }, span)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1417,28 +1381,28 @@ fn fmt_constraint(
     c: &Constraint,
     vars: &HashMap<u32, String>,
 ) -> fmt::Result {
-    match &c.kind {
-        ConstraintKind::Show(t) => {
+    match c {
+        Constraint::Show(t) => {
             write!(f, "Show ")?;
             fmt_ty_prec(f, t, 0, vars)
         }
-        ConstraintKind::ShowRow(t) => {
+        Constraint::ShowRow(t) => {
             write!(f, "ShowRow ")?;
             fmt_ty_prec(f, t, 0, vars)
         }
-        ConstraintKind::Eq(t) => {
+        Constraint::Eq(t) => {
             write!(f, "Eq ")?;
             fmt_ty_prec(f, t, 0, vars)
         }
-        ConstraintKind::EqRow(t) => {
+        Constraint::EqRow(t) => {
             write!(f, "EqRow ")?;
             fmt_ty_prec(f, t, 0, vars)
         }
-        ConstraintKind::Class { class, ty } => {
+        Constraint::Class { class, ty } => {
             write!(f, "{} ", class.name)?;
             fmt_ty_prec(f, ty, 0, vars)
         }
-        ConstraintKind::Lacks { label, row } => {
+        Constraint::Lacks { label, row } => {
             write!(f, "Lacks \"{label}\" ")?;
             fmt_ty_prec(f, row, 0, vars)
         }
@@ -1546,13 +1510,13 @@ pub fn ftv_ty(ty: &Ty) -> HashSet<u32> {
 }
 
 fn ftv_constraint(c: &Constraint) -> HashSet<u32> {
-    match &c.kind {
-        ConstraintKind::Show(t)
-        | ConstraintKind::ShowRow(t)
-        | ConstraintKind::Eq(t)
-        | ConstraintKind::EqRow(t)
-        | ConstraintKind::Class { ty: t, .. } => ftv_ty(t),
-        ConstraintKind::Lacks { row, .. } => ftv_ty(row),
+    match c {
+        Constraint::Show(t)
+        | Constraint::ShowRow(t)
+        | Constraint::Eq(t)
+        | Constraint::EqRow(t)
+        | Constraint::Class { ty: t, .. } => ftv_ty(t),
+        Constraint::Lacks { row, .. } => ftv_ty(row),
     }
 }
 
@@ -1607,18 +1571,19 @@ pub fn instantiate(cx: &mut InferCtx, s: &Scheme) -> Ty {
 }
 
 fn replace_vars_constraint(c: &Constraint, m: &HashMap<u32, Ty>) -> Constraint {
-    let span = c.span;
-    match &c.kind {
-        ConstraintKind::Show(t) => Constraint::show(replace_vars(t, m), span),
-        ConstraintKind::ShowRow(t) => Constraint::show_row(replace_vars(t, m), span),
-        ConstraintKind::Eq(t) => Constraint::eq(replace_vars(t, m), span),
-        ConstraintKind::EqRow(t) => Constraint::eq_row(replace_vars(t, m), span),
-        ConstraintKind::Class { class, ty } => {
-            Constraint::class(class.clone(), replace_vars(ty, m), span)
-        }
-        ConstraintKind::Lacks { label, row } => {
-            Constraint::lacks(label.clone(), replace_vars(row, m), span)
-        }
+    match c {
+        Constraint::Show(t) => Constraint::Show(replace_vars(t, m)),
+        Constraint::ShowRow(t) => Constraint::ShowRow(replace_vars(t, m)),
+        Constraint::Eq(t) => Constraint::Eq(replace_vars(t, m)),
+        Constraint::EqRow(t) => Constraint::EqRow(replace_vars(t, m)),
+        Constraint::Class { class, ty } => Constraint::Class {
+            class: class.clone(),
+            ty: replace_vars(ty, m),
+        },
+        Constraint::Lacks { label, row } => Constraint::Lacks {
+            label: label.clone(),
+            row: replace_vars(row, m),
+        },
     }
 }
 
@@ -1664,18 +1629,19 @@ fn replace_vars(ty: &Ty, m: &HashMap<u32, Ty>) -> Ty {
 }
 
 fn apply_constraint(subst: &Subst, c: &Constraint) -> Constraint {
-    let span = c.span;
-    match &c.kind {
-        ConstraintKind::Show(t) => Constraint::show(apply(subst, t.clone()), span),
-        ConstraintKind::ShowRow(t) => Constraint::show_row(apply(subst, t.clone()), span),
-        ConstraintKind::Eq(t) => Constraint::eq(apply(subst, t.clone()), span),
-        ConstraintKind::EqRow(t) => Constraint::eq_row(apply(subst, t.clone()), span),
-        ConstraintKind::Class { class, ty } => {
-            Constraint::class(class.clone(), apply(subst, ty.clone()), span)
-        }
-        ConstraintKind::Lacks { label, row } => {
-            Constraint::lacks(label.clone(), apply(subst, row.clone()), span)
-        }
+    match c {
+        Constraint::Show(t) => Constraint::Show(apply(subst, t.clone())),
+        Constraint::ShowRow(t) => Constraint::ShowRow(apply(subst, t.clone())),
+        Constraint::Eq(t) => Constraint::Eq(apply(subst, t.clone())),
+        Constraint::EqRow(t) => Constraint::EqRow(apply(subst, t.clone())),
+        Constraint::Class { class, ty } => Constraint::Class {
+            class: class.clone(),
+            ty: apply(subst, ty.clone()),
+        },
+        Constraint::Lacks { label, row } => Constraint::Lacks {
+            label: label.clone(),
+            row: apply(subst, row.clone()),
+        },
     }
 }
 
@@ -1845,7 +1811,10 @@ fn infer_pat_record_loose(
     let rest_ty = cx.fresh();
     if rest_name.is_some() {
         for (n, _) in &out {
-            cs_out.push(Constraint::lacks(n.clone(), rest_ty.clone(), pat.span));
+            cs_out.push(Constraint::Lacks {
+                label: n.clone(),
+                row: rest_ty.clone(),
+            });
         }
     }
 
@@ -3467,44 +3436,52 @@ fn lower_class_method_scheme(
     let class_param_ty = holes.entry(param).or_insert_with(|| cx.fresh()).clone();
 
     let mut cs: Vec<Constraint> = Vec::new();
-    let span = ast::dummy_span();
 
     // Built-in classes use specialized constraints.
     // This keeps inference/solver behavior consistent and avoids forcing all code paths
     // to handle fully-general class constraints.
     match class.name.rsplit('.').next().unwrap_or(class.name.as_str()) {
-        "Show" => cs.push(Constraint::show(class_param_ty, span)),
-        "Eq" => cs.push(Constraint::eq(class_param_ty, span)),
-        "ShowRow" => cs.push(Constraint::show_row(class_param_ty, span)),
-        "EqRow" => cs.push(Constraint::eq_row(class_param_ty, span)),
-        _ => cs.push(Constraint::class(class.clone(), class_param_ty, span)),
+        "Show" => cs.push(Constraint::Show(class_param_ty)),
+        "Eq" => cs.push(Constraint::Eq(class_param_ty)),
+        "ShowRow" => cs.push(Constraint::ShowRow(class_param_ty)),
+        "EqRow" => cs.push(Constraint::EqRow(class_param_ty)),
+        _ => cs.push(Constraint::Class {
+            class: class.clone(),
+            ty: class_param_ty,
+        }),
     }
 
     for p in &qt.preds {
         match p {
             ast::Predicate::Show(t) => {
                 let t = lower_surface_type(cx, t, &mut holes);
-                cs.push(Constraint::show(t, span));
+                cs.push(Constraint::Show(t));
             }
             ast::Predicate::ShowRow(t) => {
                 let t = lower_surface_type(cx, t, &mut holes);
-                cs.push(Constraint::show_row(t, span));
+                cs.push(Constraint::ShowRow(t));
             }
             ast::Predicate::Eq(t) => {
                 let t = lower_surface_type(cx, t, &mut holes);
-                cs.push(Constraint::eq(t, span));
+                cs.push(Constraint::Eq(t));
             }
             ast::Predicate::EqRow(t) => {
                 let t = lower_surface_type(cx, t, &mut holes);
-                cs.push(Constraint::eq_row(t, span));
+                cs.push(Constraint::EqRow(t));
             }
             ast::Predicate::Class { class, ty } => {
                 let t = lower_surface_type(cx, ty, &mut holes);
-                cs.push(Constraint::class(class.clone(), t, span));
+                cs.push(Constraint::Class {
+                    class: class.clone(),
+                    ty: t,
+                });
             }
             ast::Predicate::Lacks { label, row } => {
                 let row = lower_surface_type(cx, row, &mut holes);
-                cs.push(Constraint::lacks(label.clone(), row, span));
+                cs.push(Constraint::Lacks {
+                    label: label.clone(),
+                    row,
+                });
             }
         }
     }
@@ -3544,18 +3521,6 @@ fn lower_surface_type_with_params(
 fn apply_constraints(subst: &Subst, cs: Vec<Constraint>) -> Vec<Constraint> {
     cs.into_iter()
         .map(|c| apply_constraint(subst, &c))
-        .collect()
-}
-
-fn respan_constraints(cs: Vec<Constraint>, span: ast::Span) -> Vec<Constraint> {
-    cs.into_iter()
-        .map(|c| {
-            if c.span.start == 0 && c.span.end == 0 {
-                Constraint { span, ..c }
-            } else {
-                c
-            }
-        })
         .collect()
 }
 
@@ -5404,17 +5369,16 @@ fn check_case_adt_exhaustive(
     }))
 }
 
-fn lower_super_predicate_for_constraints(
-    p: &ast::Predicate,
-    ty: &Ty,
-    span: ast::Span,
-) -> Constraint {
+fn lower_super_predicate_for_constraints(p: &ast::Predicate, ty: &Ty) -> Constraint {
     match p {
-        ast::Predicate::Show(_) => Constraint::show(ty.clone(), span),
-        ast::Predicate::ShowRow(_) => Constraint::show_row(ty.clone(), span),
-        ast::Predicate::Eq(_) => Constraint::eq(ty.clone(), span),
-        ast::Predicate::EqRow(_) => Constraint::eq_row(ty.clone(), span),
-        ast::Predicate::Class { class, .. } => Constraint::class(class.clone(), ty.clone(), span),
+        ast::Predicate::Show(_) => Constraint::Show(ty.clone()),
+        ast::Predicate::ShowRow(_) => Constraint::ShowRow(ty.clone()),
+        ast::Predicate::Eq(_) => Constraint::Eq(ty.clone()),
+        ast::Predicate::EqRow(_) => Constraint::EqRow(ty.clone()),
+        ast::Predicate::Class { class, .. } => Constraint::Class {
+            class: class.clone(),
+            ty: ty.clone(),
+        },
         ast::Predicate::Lacks { .. } => {
             unreachable!("internal error: Lacks predicate is not allowed in superclass constraints")
         }
@@ -5601,30 +5565,25 @@ fn simplify_process_constraint(
         fallback
     }
 
-    let span = c.span;
-    match c.kind {
-        ConstraintKind::Show(t) => {
+    match c {
+        Constraint::Show(t) => {
             if let Some(class) = find_class_by_name(class_env, "Show") {
-                work.push_back(Constraint::class(class, t, span));
+                work.push_back(Constraint::Class { class, ty: t });
             } else {
-                out.extend(entails_show(data_env, &t, in_progress, span)?);
+                out.extend(entails_show(data_env, &t, in_progress)?);
             }
         }
-        ConstraintKind::ShowRow(t) => {
-            out.extend(entails_show_row(data_env, &t, in_progress, span)?)
-        }
-        ConstraintKind::Eq(t) => {
+        Constraint::ShowRow(t) => out.extend(entails_show_row(data_env, &t, in_progress)?),
+        Constraint::Eq(t) => {
             if let Some(class) = find_class_by_name(class_env, "Eq") {
-                work.push_back(Constraint::class(class, t, span));
+                work.push_back(Constraint::Class { class, ty: t });
             } else {
-                out.extend(entails_eq(data_env, &t, in_progress, span)?);
+                out.extend(entails_eq(data_env, &t, in_progress)?);
             }
         }
-        ConstraintKind::EqRow(t) => out.extend(entails_eq_row(data_env, &t, in_progress, span)?),
-        ConstraintKind::Lacks { label, row } => {
-            out.extend(entails_lacks(&label, &row, span)?)
-        }
-        ConstraintKind::Class { class, ty } => {
+        Constraint::EqRow(t) => out.extend(entails_eq_row(data_env, &t, in_progress)?),
+        Constraint::Lacks { label, row } => out.extend(entails_lacks(&label, &row)?),
+        Constraint::Class { class, ty } => {
             // Even with ordinary typeclasses, we keep the historical restriction that
             // `Show` cannot be satisfied for function types.
             // This catches cases like: `show (\\y -> y)` which would otherwise
@@ -5632,17 +5591,14 @@ fn simplify_process_constraint(
             if (class.name == "Show" || class.name.ends_with(".Show"))
                 && matches!(ty, Ty::Func(_, _))
             {
-                return Err(Error::msg_with_span(
-                    "cannot satisfy constraint: Show (function)",
-                    span,
-                ));
+                return Err(Error::msg("cannot satisfy constraint: Show (function)"));
             }
 
             let expand_key = format!("{}:{ty:?}", class.name);
             if expanded.insert(expand_key, ()).is_none() {
                 if let Some(supers) = class_env.class_supers.get(&class) {
                     for p in supers {
-                        work.push_back(lower_super_predicate_for_constraints(p, &ty, span));
+                        work.push_back(lower_super_predicate_for_constraints(p, &ty));
                     }
                 }
             }
@@ -5652,18 +5608,18 @@ fn simplify_process_constraint(
                 // constraints for open records (MVP behavior).
                 if matches!(ty, Ty::RecordOpen(_, _)) {
                     if class.name == "Show" || class.name.ends_with(".Show") {
-                        for c2 in entails_show(data_env, &ty, in_progress, span)? {
+                        for c2 in entails_show(data_env, &ty, in_progress)? {
                             work.push_back(c2);
                         }
                     }
                     if class.name == "Eq" || class.name.ends_with(".Eq") {
-                        for c2 in entails_eq(data_env, &ty, in_progress, span)? {
+                        for c2 in entails_eq(data_env, &ty, in_progress)? {
                             work.push_back(c2);
                         }
                     }
                 }
 
-                out.push(Constraint::class(class, ty, span));
+                out.push(Constraint::Class { class, ty });
             } else {
                 let ty_norm = normalize_ty_for_instance_key(&ty);
                 let key_ty = instance_head_key_ty(&ty_norm)?;
@@ -5715,10 +5671,10 @@ fn simplify_process_constraint(
                             eqish
                         );
                     }
-                    return Err(Error::msg_with_span(
-                        format!("cannot satisfy constraint: {} {ty}", class.name),
-                        span,
-                    ));
+                    return Err(Error::msg(format!(
+                        "cannot satisfy constraint: {} {ty}",
+                        class.name
+                    )));
                 }
             }
         }
@@ -5768,7 +5724,7 @@ fn simplify_context_reduce_user_classes(
 ) -> Vec<Constraint> {
     let mut keep: Vec<bool> = vec![true; cs.len()];
     for (i, ci_constraint) in cs.iter().enumerate() {
-        let ConstraintKind::Class { class: ci, ty: ti } = &ci_constraint.kind else {
+        let Constraint::Class { class: ci, ty: ti } = ci_constraint else {
             continue;
         };
 
@@ -5776,7 +5732,7 @@ fn simplify_context_reduce_user_classes(
             if i == j {
                 continue;
             }
-            let ConstraintKind::Class { class: cj, ty: tj } = &cj_constraint.kind else {
+            let Constraint::Class { class: cj, ty: tj } = cj_constraint else {
                 continue;
             };
 
@@ -5844,14 +5800,9 @@ fn stdlib_derives_eq(ty_name: &str) -> bool {
     matches!(ty_name, "Rational")
 }
 
-fn entails_show(
-    data_env: &DataEnv,
-    ty: &Ty,
-    in_progress: &mut Vec<Ty>,
-    span: ast::Span,
-) -> Result<Vec<Constraint>> {
+fn entails_show(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
     Ok(match ty {
-        Ty::Var(_) => vec![Constraint::show(ty.clone(), span)],
+        Ty::Var(_) => vec![Constraint::Show(ty.clone())],
         Ty::Con(name) => {
             if show_primitives(name) {
                 vec![]
@@ -5861,81 +5812,55 @@ fn entails_show(
                 vec![]
             } else if let Some(d) = data_env.get(name) {
                 if !data_derives_show(d) {
-                    return Err(Error::msg_with_span(
-                        format!("cannot satisfy constraint: Show {ty}"),
-                        span,
-                    ));
+                    return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
                 }
                 if !d.params.is_empty() {
-                    return Err(Error::msg_with_span(
-                        format!("cannot satisfy constraint: Show {ty}"),
-                        span,
-                    ));
+                    return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
                 }
-                entails_show_data_decl(data_env, d, &[], in_progress, span)?
+                entails_show_data_decl(data_env, d, &[], in_progress)?
             } else {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Show {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
             }
         }
-        Ty::List(t) => entails_show(data_env, t, in_progress, span)?,
+        Ty::List(t) => entails_show(data_env, t, in_progress)?,
         Ty::Tuple(ts) => {
             let mut out = Vec::new();
             for t in ts {
-                out.extend(entails_show(data_env, t, in_progress, span)?);
+                out.extend(entails_show(data_env, t, in_progress)?);
             }
             out
         }
         Ty::Record(fields) => {
             let mut out = Vec::new();
             for (_, t) in fields {
-                out.extend(entails_show(data_env, t, in_progress, span)?);
+                out.extend(entails_show(data_env, t, in_progress)?);
             }
             out
         }
         Ty::RecordOpen(fields, rest) => {
             let mut out = Vec::new();
             for (_, t) in fields {
-                out.extend(entails_show(data_env, t, in_progress, span)?);
+                out.extend(entails_show(data_env, t, in_progress)?);
             }
-            out.push(Constraint::show_row((**rest).clone(), span));
+            out.push(Constraint::ShowRow((**rest).clone()));
             out
         }
         Ty::App { head, args } => {
             let Ty::Con(name) = &**head else {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Show {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
             };
             let Some(d) = data_env.get(name) else {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Show {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
             };
             if !data_derives_show(d) {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Show {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
             }
             if d.params.len() != args.len() {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Show {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}")));
             }
-            entails_show_data_decl(data_env, d, args, in_progress, span)?
+            entails_show_data_decl(data_env, d, args, in_progress)?
         }
-        Ty::Func(_, _) => {
-            return Err(Error::msg_with_span(
-                format!("cannot satisfy constraint: Show {ty}"),
-                span,
-            ))
-        }
+        Ty::Func(_, _) => return Err(Error::msg(format!("cannot satisfy constraint: Show {ty}"))),
     })
 }
 
@@ -5943,42 +5868,35 @@ fn entails_show_row(
     data_env: &DataEnv,
     ty: &Ty,
     in_progress: &mut Vec<Ty>,
-    span: ast::Span,
 ) -> Result<Vec<Constraint>> {
     Ok(match ty {
-        Ty::Var(_) => vec![Constraint::show_row(ty.clone(), span)],
+        Ty::Var(_) => vec![Constraint::ShowRow(ty.clone())],
         Ty::Record(fields) => {
             let mut out = Vec::new();
             for (_, t) in fields {
-                out.extend(entails_show(data_env, t, in_progress, span)?);
+                out.extend(entails_show(data_env, t, in_progress)?);
             }
             out
         }
         Ty::RecordOpen(fields, rest) => {
             let mut out = Vec::new();
             for (_, t) in fields {
-                out.extend(entails_show(data_env, t, in_progress, span)?);
+                out.extend(entails_show(data_env, t, in_progress)?);
             }
-            out.extend(entails_show_row(data_env, rest, in_progress, span)?);
+            out.extend(entails_show_row(data_env, rest, in_progress)?);
             out
         }
         _ => {
-            return Err(Error::msg_with_span(
-                format!("cannot satisfy constraint: ShowRow {ty}"),
-                span,
-            ))
+            return Err(Error::msg(format!(
+                "cannot satisfy constraint: ShowRow {ty}"
+            )))
         }
     })
 }
 
-fn entails_eq(
-    data_env: &DataEnv,
-    ty: &Ty,
-    in_progress: &mut Vec<Ty>,
-    span: ast::Span,
-) -> Result<Vec<Constraint>> {
+fn entails_eq(data_env: &DataEnv, ty: &Ty, in_progress: &mut Vec<Ty>) -> Result<Vec<Constraint>> {
     Ok(match ty {
-        Ty::Var(_) => vec![Constraint::eq(ty.clone(), span)],
+        Ty::Var(_) => vec![Constraint::Eq(ty.clone())],
         Ty::Con(name) => {
             if eq_primitives(name) {
                 vec![]
@@ -5988,81 +5906,55 @@ fn entails_eq(
                 vec![]
             } else if let Some(d) = data_env.get(name) {
                 if !data_derives_eq(d) {
-                    return Err(Error::msg_with_span(
-                        format!("cannot satisfy constraint: Eq {ty}"),
-                        span,
-                    ));
+                    return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
                 }
                 if !d.params.is_empty() {
-                    return Err(Error::msg_with_span(
-                        format!("cannot satisfy constraint: Eq {ty}"),
-                        span,
-                    ));
+                    return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
                 }
-                entails_eq_data_decl(data_env, d, &[], in_progress, span)?
+                entails_eq_data_decl(data_env, d, &[], in_progress)?
             } else {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Eq {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
             }
         }
-        Ty::List(t) => entails_eq(data_env, t, in_progress, span)?,
+        Ty::List(t) => entails_eq(data_env, t, in_progress)?,
         Ty::Tuple(ts) => {
             let mut out = Vec::new();
             for t in ts {
-                out.extend(entails_eq(data_env, t, in_progress, span)?);
+                out.extend(entails_eq(data_env, t, in_progress)?);
             }
             out
         }
         Ty::Record(fields) => {
             let mut out = Vec::new();
             for (_, t) in fields {
-                out.extend(entails_eq(data_env, t, in_progress, span)?);
+                out.extend(entails_eq(data_env, t, in_progress)?);
             }
             out
         }
         Ty::RecordOpen(fields, rest) => {
             let mut out = Vec::new();
             for (_, t) in fields {
-                out.extend(entails_eq(data_env, t, in_progress, span)?);
+                out.extend(entails_eq(data_env, t, in_progress)?);
             }
-            out.push(Constraint::eq_row((**rest).clone(), span));
+            out.push(Constraint::EqRow((**rest).clone()));
             out
         }
         Ty::App { head, args } => {
             let Ty::Con(name) = &**head else {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Eq {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
             };
             let Some(d) = data_env.get(name) else {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Eq {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
             };
             if !data_derives_eq(d) {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Eq {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
             }
             if d.params.len() != args.len() {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Eq {ty}"),
-                    span,
-                ));
+                return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}")));
             }
-            entails_eq_data_decl(data_env, d, args, in_progress, span)?
+            entails_eq_data_decl(data_env, d, args, in_progress)?
         }
-        Ty::Func(_, _) => {
-            return Err(Error::msg_with_span(
-                format!("cannot satisfy constraint: Eq {ty}"),
-                span,
-            ))
-        }
+        Ty::Func(_, _) => return Err(Error::msg(format!("cannot satisfy constraint: Eq {ty}"))),
     })
 }
 
@@ -6070,31 +5962,25 @@ fn entails_eq_row(
     data_env: &DataEnv,
     ty: &Ty,
     in_progress: &mut Vec<Ty>,
-    span: ast::Span,
 ) -> Result<Vec<Constraint>> {
     Ok(match ty {
-        Ty::Var(_) => vec![Constraint::eq_row(ty.clone(), span)],
+        Ty::Var(_) => vec![Constraint::EqRow(ty.clone())],
         Ty::Record(fields) => {
             let mut out = Vec::new();
             for (_, t) in fields {
-                out.extend(entails_eq(data_env, t, in_progress, span)?);
+                out.extend(entails_eq(data_env, t, in_progress)?);
             }
             out
         }
         Ty::RecordOpen(fields, rest) => {
             let mut out = Vec::new();
             for (_, t) in fields {
-                out.extend(entails_eq(data_env, t, in_progress, span)?);
+                out.extend(entails_eq(data_env, t, in_progress)?);
             }
-            out.extend(entails_eq_row(data_env, rest, in_progress, span)?);
+            out.extend(entails_eq_row(data_env, rest, in_progress)?);
             out
         }
-        _ => {
-            return Err(Error::msg_with_span(
-                format!("cannot satisfy constraint: EqRow {ty}"),
-                span,
-            ))
-        }
+        _ => return Err(Error::msg(format!("cannot satisfy constraint: EqRow {ty}"))),
     })
 }
 
@@ -6103,7 +5989,6 @@ fn entails_eq_data_decl(
     d: &ast::DataDecl,
     args: &[Ty],
     in_progress: &mut Vec<Ty>,
-    span: ast::Span,
 ) -> Result<Vec<Constraint>> {
     let self_ty = if args.is_empty() {
         Ty::Con(d.name.clone())
@@ -6130,7 +6015,7 @@ fn entails_eq_data_decl(
         let mut holes = HashMap::new();
         for t_ast in &ctor.args {
             let t = lower_surface_type_with_tys(t_ast, &mut holes, &param_map)?;
-            out.extend(entails_eq(data_env, &t, in_progress, span)?);
+            out.extend(entails_eq(data_env, &t, in_progress)?);
         }
     }
 
@@ -6143,7 +6028,6 @@ fn entails_show_data_decl(
     d: &ast::DataDecl,
     args: &[Ty],
     in_progress: &mut Vec<Ty>,
-    span: ast::Span,
 ) -> Result<Vec<Constraint>> {
     let self_ty = if args.is_empty() {
         Ty::Con(d.name.clone())
@@ -6170,7 +6054,7 @@ fn entails_show_data_decl(
         let mut holes = HashMap::new();
         for t_ast in &ctor.args {
             let t = lower_surface_type_with_tys(t_ast, &mut holes, &param_map)?;
-            out.extend(entails_show(data_env, &t, in_progress, span)?);
+            out.extend(entails_show(data_env, &t, in_progress)?);
         }
     }
 
@@ -6178,32 +6062,32 @@ fn entails_show_data_decl(
     Ok(out)
 }
 
-fn entails_lacks(label: &str, row: &Ty, span: ast::Span) -> Result<Vec<Constraint>> {
+fn entails_lacks(label: &str, row: &Ty) -> Result<Vec<Constraint>> {
     Ok(match row {
-        Ty::Var(_) => vec![Constraint::lacks(label.to_string(), row.clone(), span)],
+        Ty::Var(_) => vec![Constraint::Lacks {
+            label: label.to_string(),
+            row: row.clone(),
+        }],
         Ty::Record(fields) => {
             if fields.iter().any(|(k, _)| k == label) {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Lacks {label} {row}"),
-                    span,
-                ));
+                return Err(Error::msg(format!(
+                    "cannot satisfy constraint: Lacks {label} {row}"
+                )));
             }
             vec![]
         }
         Ty::RecordOpen(fields, rest) => {
             if fields.iter().any(|(k, _)| k == label) {
-                return Err(Error::msg_with_span(
-                    format!("cannot satisfy constraint: Lacks {label} {row}"),
-                    span,
-                ));
+                return Err(Error::msg(format!(
+                    "cannot satisfy constraint: Lacks {label} {row}"
+                )));
             }
-            entails_lacks(label, rest, span)?
+            entails_lacks(label, rest)?
         }
         _ => {
-            return Err(Error::msg_with_span(
-                format!("cannot satisfy constraint: Lacks {label} {row}"),
-                span,
-            ))
+            return Err(Error::msg(format!(
+                "cannot satisfy constraint: Lacks {label} {row}"
+            )))
         }
     })
 }
@@ -6249,7 +6133,7 @@ fn rewrite_entry_main_apply_dicts(
 
     let mut dict_args: Vec<Expr> = Vec::new();
     for c in main_cs {
-        let ConstraintKind::Class { class, ty } = &c.kind else {
+        let Constraint::Class { class, ty } = c else {
             return Err(Error::msg("main must have type IO _"));
         };
         let ty_key = instance_head_key_ty_for_class(class_env, class, ty)?;
@@ -6609,7 +6493,6 @@ fn infer_expr_in(
                 .or(from_methods)
                 .ok_or_else(|| Error::msg_with_span(format!("unbound variable: {name}"), span))?;
             let (cs, ty) = instantiate_qual(cx, &s);
-            let cs = respan_constraints(cs, span);
             Ok((Subst::new(), cs, ty))
         }
 
@@ -6621,7 +6504,6 @@ fn infer_expr_in(
             })?;
             let s = apply_scheme(subst_env, &entry.scheme);
             let (cs, ty) = instantiate_qual(cx, &s);
-            let cs = respan_constraints(cs, span);
             Ok((Subst::new(), cs, ty))
         }
 
@@ -6791,27 +6673,33 @@ fn infer_expr_annot(
         match p {
             ast::Predicate::Show(t) => {
                 let t = lower_surface_type(cx, t, &mut holes);
-                cs1.push(Constraint::show(t, annot_span));
+                cs1.push(Constraint::Show(t));
             }
             ast::Predicate::ShowRow(t) => {
                 let t = lower_surface_type(cx, t, &mut holes);
-                cs1.push(Constraint::show_row(t, annot_span));
+                cs1.push(Constraint::ShowRow(t));
             }
             ast::Predicate::Eq(t) => {
                 let t = lower_surface_type(cx, t, &mut holes);
-                cs1.push(Constraint::eq(t, annot_span));
+                cs1.push(Constraint::Eq(t));
             }
             ast::Predicate::EqRow(t) => {
                 let t = lower_surface_type(cx, t, &mut holes);
-                cs1.push(Constraint::eq_row(t, annot_span));
+                cs1.push(Constraint::EqRow(t));
             }
             ast::Predicate::Lacks { label, row } => {
                 let row = lower_surface_type(cx, row, &mut holes);
-                cs1.push(Constraint::lacks(label.clone(), row, annot_span));
+                cs1.push(Constraint::Lacks {
+                    label: label.clone(),
+                    row,
+                });
             }
             ast::Predicate::Class { class, ty } => {
                 let ty = lower_surface_type(cx, ty, &mut holes);
-                cs1.push(Constraint::class(class.clone(), ty, annot_span));
+                cs1.push(Constraint::Class {
+                    class: class.clone(),
+                    ty,
+                });
             }
         }
     }
@@ -9014,13 +8902,13 @@ fn typecheck_internal_core_with_entry_path(
             // Any non-class constraints still reject entrypoints.
             if cs_simplified
                 .iter()
-                .any(|c| !matches!(c.kind, ConstraintKind::Class { .. }))
+                .any(|c| !matches!(c, Constraint::Class { .. }))
             {
                 return Err(Error::msg("main must have type IO _"));
             }
             main_entry_class_constraints = cs_raw
                 .into_iter()
-                .filter(|c| matches!(c.kind, ConstraintKind::Class { .. }))
+                .filter(|c| matches!(c, Constraint::Class { .. }))
                 .collect();
         }
 
@@ -13054,7 +12942,7 @@ fn extract_return_monad_type(func_ty: &Ty, poly_ty: &Ty) -> Option<Ty> {
                     args: poly_args,
                 },
                 Ty::App {
-                    head: _conc_head,
+                    head: conc_head,
                     args: conc_args,
                 },
             ) if poly_args.len() == conc_args.len() => {
@@ -16184,7 +16072,7 @@ mod inference_tests {
     fn scheme_display_includes_single_constraint() {
         let s = Scheme {
             vars: vec![2],
-            constraints: vec![Constraint::show(Ty::Var(2), ast::dummy_span())],
+            constraints: vec![Constraint::Show(Ty::Var(2))],
             ty: Ty::Func(
                 Box::new(Ty::Var(2)),
                 Box::new(Ty::Con("String".to_string())),
@@ -16198,8 +16086,11 @@ mod inference_tests {
         let s = Scheme {
             vars: vec![2, 3],
             constraints: vec![
-                Constraint::show(Ty::Var(2), ast::dummy_span()),
-                Constraint::lacks("x".to_string(), Ty::Var(3), ast::dummy_span()),
+                Constraint::Show(Ty::Var(2)),
+                Constraint::Lacks {
+                    label: "x".to_string(),
+                    row: Ty::Var(3),
+                },
             ],
             ty: Ty::Func(Box::new(Ty::Var(3)), Box::new(Ty::Var(3))),
         };
@@ -16255,41 +16146,30 @@ mod inference_tests {
     fn lower_qual_type_for_test(qt: &ast::QualType) -> (Vec<Constraint>, Ty) {
         let mut cx = InferCtx::default();
         let mut holes = HashMap::new();
-        let span = ast::dummy_span();
 
         let mut cs = Vec::new();
         for p in &qt.preds {
             match p {
                 ast::Predicate::Show(t) => {
-                    cs.push(Constraint::show(
-                        lower_surface_type(&mut cx, t, &mut holes),
-                        span,
-                    ))
+                    cs.push(Constraint::Show(lower_surface_type(&mut cx, t, &mut holes)))
                 }
-                ast::Predicate::ShowRow(t) => cs.push(Constraint::show_row(
-                    lower_surface_type(&mut cx, t, &mut holes),
-                    span,
-                )),
+                ast::Predicate::ShowRow(t) => cs.push(Constraint::ShowRow(lower_surface_type(
+                    &mut cx, t, &mut holes,
+                ))),
                 ast::Predicate::Eq(t) => {
-                    cs.push(Constraint::eq(
-                        lower_surface_type(&mut cx, t, &mut holes),
-                        span,
-                    ))
+                    cs.push(Constraint::Eq(lower_surface_type(&mut cx, t, &mut holes)))
                 }
-                ast::Predicate::EqRow(t) => cs.push(Constraint::eq_row(
-                    lower_surface_type(&mut cx, t, &mut holes),
-                    span,
-                )),
-                ast::Predicate::Lacks { label, row } => cs.push(Constraint::lacks(
-                    label.clone(),
-                    lower_surface_type(&mut cx, row, &mut holes),
-                    span,
-                )),
-                ast::Predicate::Class { class, ty } => cs.push(Constraint::class(
-                    class.clone(),
-                    lower_surface_type(&mut cx, ty, &mut holes),
-                    span,
-                )),
+                ast::Predicate::EqRow(t) => cs.push(Constraint::EqRow(lower_surface_type(
+                    &mut cx, t, &mut holes,
+                ))),
+                ast::Predicate::Lacks { label, row } => cs.push(Constraint::Lacks {
+                    label: label.clone(),
+                    row: lower_surface_type(&mut cx, row, &mut holes),
+                }),
+                ast::Predicate::Class { class, ty } => cs.push(Constraint::Class {
+                    class: class.clone(),
+                    ty: lower_surface_type(&mut cx, ty, &mut holes),
+                }),
             }
         }
 
@@ -16339,18 +16219,19 @@ mod inference_tests {
         m: &mut HashMap<u32, u32>,
         next: &mut u32,
     ) -> Constraint {
-        let span = c.span;
-        match &c.kind {
-            ConstraintKind::Show(t) => Constraint::show(canon_ty_in(t, m, next), span),
-            ConstraintKind::ShowRow(t) => Constraint::show_row(canon_ty_in(t, m, next), span),
-            ConstraintKind::Eq(t) => Constraint::eq(canon_ty_in(t, m, next), span),
-            ConstraintKind::EqRow(t) => Constraint::eq_row(canon_ty_in(t, m, next), span),
-            ConstraintKind::Class { class, ty } => {
-                Constraint::class(class.clone(), canon_ty_in(ty, m, next), span)
-            }
-            ConstraintKind::Lacks { label, row } => {
-                Constraint::lacks(label.clone(), canon_ty_in(row, m, next), span)
-            }
+        match c {
+            Constraint::Show(t) => Constraint::Show(canon_ty_in(t, m, next)),
+            Constraint::ShowRow(t) => Constraint::ShowRow(canon_ty_in(t, m, next)),
+            Constraint::Eq(t) => Constraint::Eq(canon_ty_in(t, m, next)),
+            Constraint::EqRow(t) => Constraint::EqRow(canon_ty_in(t, m, next)),
+            Constraint::Class { class, ty } => Constraint::Class {
+                class: class.clone(),
+                ty: canon_ty_in(ty, m, next),
+            },
+            Constraint::Lacks { label, row } => Constraint::Lacks {
+                label: label.clone(),
+                row: canon_ty_in(row, m, next),
+            },
         }
     }
 
@@ -16369,11 +16250,10 @@ mod inference_tests {
     fn roundtrip_scheme_display_parse_open_record_type() {
         let s = Scheme {
             vars: vec![0, 1],
-            constraints: vec![Constraint::lacks(
-                "x".to_string(),
-                Ty::Var(1),
-                ast::dummy_span(),
-            )],
+            constraints: vec![Constraint::Lacks {
+                label: "x".to_string(),
+                row: Ty::Var(1),
+            }],
             ty: Ty::Func(
                 Box::new(Ty::RecordOpen(
                     vec![("a".to_string(), Ty::Var(0))],
@@ -16394,13 +16274,10 @@ mod inference_tests {
     fn roundtrip_scheme_display_parse_showrow_open_record() {
         let s = Scheme {
             vars: vec![0],
-            constraints: vec![Constraint::show_row(
-                Ty::RecordOpen(
-                    vec![("a".to_string(), Ty::Con("Integer".to_string()))],
-                    Box::new(Ty::Var(0)),
-                ),
-                ast::dummy_span(),
-            )],
+            constraints: vec![Constraint::ShowRow(Ty::RecordOpen(
+                vec![("a".to_string(), Ty::Con("Integer".to_string()))],
+                Box::new(Ty::Var(0)),
+            ))],
             ty: Ty::Con("Unit".to_string()),
         };
 
@@ -16778,10 +16655,7 @@ x = do
 
         assert_eq!(s.constraints.len(), 1);
         let (class_name, t) = match &s.constraints[0] {
-            Constraint {
-                kind: ConstraintKind::Class { class, ty },
-                ..
-            } => (&class.name, ty),
+            Constraint::Class { class, ty } => (&class.name, ty),
             other => panic!("expected Class constraint, got {other:?}"),
         };
         assert!(
@@ -16844,7 +16718,7 @@ y = show Nothing
         assert!(y
             .constraints
             .iter()
-            .any(|c| matches!(&c.kind, ConstraintKind::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))));
+            .any(|c| matches!(c, Constraint::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))));
     }
 
     #[test]
@@ -16864,12 +16738,12 @@ x = show (Bad (\y -> y))
         let s = env.get("f").unwrap();
 
         assert!(s.constraints.iter().any(
-            |c| matches!(&c.kind, ConstraintKind::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))
+            |c| matches!(c, Constraint::Class { class, .. } if class.name == "Show" || class.name.ends_with(".Show"))
         ));
         assert!(s
             .constraints
             .iter()
-            .any(|c| matches!(c.kind, ConstraintKind::ShowRow(_))));
+            .any(|c| matches!(c, Constraint::ShowRow(_))));
     }
 
     #[test]
@@ -16882,17 +16756,16 @@ x = show (Bad (\y -> y))
         assert!(s
             .constraints
             .iter()
-            .any(|c| matches!(&c.kind, ConstraintKind::Lacks { label, .. } if label == "a")));
+            .any(|c| matches!(c, Constraint::Lacks { label, .. } if label == "a")));
     }
 
     #[test]
     fn simplify_lacks_rejects_present_label() {
         let data_env = DataEnv::new();
-        let cs = vec![Constraint::lacks(
-            "a".to_string(),
-            Ty::Record(vec![("a".to_string(), Ty::Con("Integer".to_string()))]),
-            ast::dummy_span(),
-        )];
+        let cs = vec![Constraint::Lacks {
+            label: "a".to_string(),
+            row: Ty::Record(vec![("a".to_string(), Ty::Con("Integer".to_string()))]),
+        }];
         assert!(simplify_constraints(&data_env, &ClassEnv::default(), cs).is_err());
     }
 

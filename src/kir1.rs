@@ -11,7 +11,7 @@
 
 use crate::ast;
 use crate::ir::{CastTarget, IrCaseArm, IrExpr, IrItem, IrLiteral, IrModule, IrPattern};
-use crate::types::{Constraint, ConstraintKind, Scheme, Ty};
+use crate::types::{Constraint, Scheme, Ty};
 
 const MAGIC: [u8; 4] = *b"KIR1";
 const VERSION_MAJOR: u16 = 0;
@@ -407,18 +407,15 @@ fn collect_strings_ty(ty: &Ty, interner: &mut StringInterner) {
 }
 
 fn collect_strings_constraint(c: &Constraint, interner: &mut StringInterner) {
-    match &c.kind {
-        ConstraintKind::Show(t)
-        | ConstraintKind::ShowRow(t)
-        | ConstraintKind::Eq(t)
-        | ConstraintKind::EqRow(t) => {
+    match c {
+        Constraint::Show(t) | Constraint::ShowRow(t) | Constraint::Eq(t) | Constraint::EqRow(t) => {
             collect_strings_ty(t, interner)
         }
-        ConstraintKind::Class { class, ty } => {
+        Constraint::Class { class, ty } => {
             interner.intern(&class.name);
             collect_strings_ty(ty, interner);
         }
-        ConstraintKind::Lacks { label, row } => {
+        Constraint::Lacks { label, row } => {
             interner.intern(label);
             collect_strings_ty(row, interner);
         }
@@ -558,24 +555,24 @@ fn decode_scheme(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Result
 }
 
 fn encode_constraint(out: &mut Vec<u8>, c: &Constraint, interner: &StringInterner) {
-    match &c.kind {
-        ConstraintKind::Show(t) => {
+    match c {
+        Constraint::Show(t) => {
             write_u8(out, 1);
             encode_ty(out, t, interner);
         }
-        ConstraintKind::ShowRow(t) => {
+        Constraint::ShowRow(t) => {
             write_u8(out, 2);
             encode_ty(out, t, interner);
         }
-        ConstraintKind::Eq(t) => {
+        Constraint::Eq(t) => {
             write_u8(out, 3);
             encode_ty(out, t, interner);
         }
-        ConstraintKind::EqRow(t) => {
+        Constraint::EqRow(t) => {
             write_u8(out, 4);
             encode_ty(out, t, interner);
         }
-        ConstraintKind::Class { class, ty } => {
+        Constraint::Class { class, ty } => {
             write_u8(out, 5);
             let id = interner
                 .index
@@ -585,7 +582,7 @@ fn encode_constraint(out: &mut Vec<u8>, c: &Constraint, interner: &StringInterne
             write_varu32(out, id);
             encode_ty(out, ty, interner);
         }
-        ConstraintKind::Lacks { label, row } => {
+        Constraint::Lacks { label, row } => {
             write_u8(out, 6);
             let id = interner
                 .index
@@ -601,37 +598,24 @@ fn encode_constraint(out: &mut Vec<u8>, c: &Constraint, interner: &StringInterne
 fn decode_constraint(input: &mut &[u8], interner: &mut StringInterner) -> Kir1Result<Constraint> {
     let tag = read_u8(input)?;
     match tag {
-        1 => Ok(Constraint::show(
-            decode_ty(input, interner)?,
-            ast::dummy_span(),
-        )),
-        2 => Ok(Constraint::show_row(
-            decode_ty(input, interner)?,
-            ast::dummy_span(),
-        )),
-        3 => Ok(Constraint::eq(
-            decode_ty(input, interner)?,
-            ast::dummy_span(),
-        )),
-        4 => Ok(Constraint::eq_row(
-            decode_ty(input, interner)?,
-            ast::dummy_span(),
-        )),
+        1 => Ok(Constraint::Show(decode_ty(input, interner)?)),
+        2 => Ok(Constraint::ShowRow(decode_ty(input, interner)?)),
+        3 => Ok(Constraint::Eq(decode_ty(input, interner)?)),
+        4 => Ok(Constraint::EqRow(decode_ty(input, interner)?)),
         5 => {
             let class_id = read_varu32(input)?;
             let class = interner.get(class_id)?.to_string();
             let ty = decode_ty(input, interner)?;
-            Ok(Constraint::class(
-                crate::ast::ClassId::dummy(class),
+            Ok(Constraint::Class {
+                class: ast::ClassId::dummy(class),
                 ty,
-                ast::dummy_span(),
-            ))
+            })
         }
         6 => {
             let label_id = read_varu32(input)?;
             let label = interner.get(label_id)?.to_string();
             let row = decode_ty(input, interner)?;
-            Ok(Constraint::lacks(label, row, ast::dummy_span()))
+            Ok(Constraint::Lacks { label, row })
         }
         other => Err(Kir1Error::Msg(format!("unknown Constraint tag: {other}"))),
     }
