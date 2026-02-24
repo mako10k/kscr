@@ -244,7 +244,19 @@ fn parse_type_atom(
             }
 
             let first = parse_type_expr(ts, stop, is_paren_type_end)?;
-            if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
+            if matches!(ts.peek_kind(), Some(TokenKind::Operator(_))) {
+                let mut lhs = first;
+                while let Some(TokenKind::Operator(op)) = ts.peek_kind().cloned() {
+                    ts.bump();
+                    let rhs = parse_type_expr(ts, stop, is_paren_infix_rhs_end)?;
+                    lhs = ast::Type::App {
+                        head: Box::new(ast::Type::Var(op)),
+                        args: vec![lhs, rhs],
+                    };
+                }
+                ts.expect(TokenKind::RParen)?;
+                Ok(lhs)
+            } else if matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
                 let mut elems = vec![first];
                 while matches!(ts.peek_kind(), Some(TokenKind::Comma)) {
                     ts.bump();
@@ -328,6 +340,13 @@ fn is_bracket_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
 
 fn is_record_field_type_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
     matches!(kind, Some(TokenKind::Comma) | Some(TokenKind::RBrace))
+}
+
+fn is_paren_infix_rhs_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
+    matches!(
+        kind,
+        Some(TokenKind::Operator(_)) | Some(TokenKind::Comma) | Some(TokenKind::RParen)
+    )
 }
 
 pub(crate) fn parse_annot(ts: &mut TokenStream, expr: ast::Expr, stop: Stop) -> Result<ast::Expr> {
