@@ -32,10 +32,7 @@ fn cli_compile_fails_without_main() {
         .output()
         .expect("run kscr compile");
 
-    assert!(
-        !output.status.success(),
-        "compile should fail without main"
-    );
+    assert!(!output.status.success(), "compile should fail without main");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("compile requires a `main` binding"),

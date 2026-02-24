@@ -72,7 +72,9 @@ where
             .iter()
             .any(|it| matches!(it, crate::ir::IrItem::Binding { name, .. } if name == "main"))
     {
-        return Err(crate::error::Error::msg("compile requires a `main` binding"));
+        return Err(crate::error::Error::msg(
+            "compile requires a `main` binding",
+        ));
     }
 
     if use_llvm {

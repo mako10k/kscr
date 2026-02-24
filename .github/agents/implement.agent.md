@@ -91,6 +91,7 @@ If it is missing, stop and request it (or run `pwd` / `git rev-parse --show-topl
 5. **Preserve work:** If change touches 3+ files or >100 lines, create WIP branch/commit (see Work preservation above).
 6. Implement with small commits in mind (but do not run destructive git commands).
 6. Validate:
+   - Run formatting gate first: `cargo fmt --all -- --check` (if failing, run `cargo fmt --all` before commit/push).
    - Prefer targeted tests first.
    - Then run `cargo test` when reasonable.
    - If clippy is needed, use `cargo clippy -- -D warnings`.

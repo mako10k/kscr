@@ -225,9 +225,12 @@ Bump **MAJOR** when:
 
 If a change affects both the Rust engine and stdlib semantics, treat it as at least **MINOR**.
 
-## Quality Gates (before commit)
+## Quality Gates (before commit / push)
 
 ```bash
+cargo fmt --all -- --check
 cargo test
 cargo clippy -- -D warnings
 ```
+
+- Commit/Push gate: do not commit or push while `cargo fmt --all -- --check` fails; run `cargo fmt --all` first.
