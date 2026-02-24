@@ -7232,13 +7232,13 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // Prelude is auto-imported unless the module has explicit imports.
     // Note: import-flattening is removed; `.ksif` artifacts provide imported schemes.
     let entry = std::fs::canonicalize(entry)?;
-    let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
 
     let mut loader = ModuleLoader::new();
     loader.stack = vec![entry.clone()];
 
     // Load via ModuleLoader so stdlib cache + qualified-name desugaring stays consistent.
     let mut entry_mod = loader.load_ast(&entry)?;
+    let entry_dir = module_search_root_from_entry(&entry, entry_mod.name.as_deref());
 
     // Do not inject implicit Prelude for stdlib files themselves.
     // Otherwise, opening e.g. `stdlib/Prelude/Functor.ks` causes an injected
@@ -7260,8 +7260,8 @@ pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
 
     // Default: use `.ksif` for imports. (No opt-out; import-flattening is removed.)
     // This now includes imports injected by inject_stdlib_class_decls above.
-    let imported = load_imported_ksif_schemes(&entry_mod, entry_dir)?;
-    inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported, entry_dir)?;
+    let imported = load_imported_ksif_schemes(&entry_mod, &entry_dir)?;
+    inject_imported_ksif_forwarders(&mut module, &entry_mod, &imported, &entry_dir)?;
     WithDefEvidence::run(def_ctx, || {
         typecheck_with_stdlib_class_env_with_imported_with_entry_path(
             module,
@@ -7282,13 +7282,13 @@ pub fn load_transitive_imports_for_runtime(entry: &Path) -> Result<HashMap<Strin
         );
     }
     let entry = std::fs::canonicalize(entry)?;
-    let entry_dir = entry.parent().unwrap_or_else(|| Path::new("."));
 
     let mut loader = ModuleLoader::new();
     loader.stack = vec![entry.clone()];
 
     // Load the entry module
     let mut entry_mod = loader.load_ast(&entry)?;
+    let entry_dir = module_search_root_from_entry(&entry, entry_mod.name.as_deref());
 
     // Add implicit Prelude import if needed (same logic as typecheck_file)
     if !is_stdlib_path(&entry) {
@@ -7327,7 +7327,7 @@ pub fn load_transitive_imports_for_runtime(entry: &Path) -> Result<HashMap<Strin
         }
 
         // Resolve module path
-        let module_path = resolve_module_path(entry_dir, &module_name)?;
+        let module_path = resolve_module_path(&entry_dir, &module_name)?;
 
         // Load the module AST
         let module_ast = loader.load_ast(&module_path)?;
@@ -7364,6 +7364,42 @@ pub(crate) fn resolve_module_path(entry_dir: &Path, module: &str) -> Result<Path
                 stdlib.display()
             ))
         })
+}
+
+fn module_search_root_from_entry(entry: &Path, module_name: Option<&str>) -> PathBuf {
+    let fallback_root = entry
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
+
+    let Some(module_name) = module_name else {
+        return fallback_root;
+    };
+
+    let parts: Vec<&str> = module_name.split('.').collect();
+    if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
+        return fallback_root;
+    }
+
+    let mut candidate_root = fallback_root.clone();
+    for _ in 1..parts.len() {
+        let Some(parent) = candidate_root.parent() else {
+            return fallback_root;
+        };
+        candidate_root = parent.to_path_buf();
+    }
+
+    let mut module_rel_path = PathBuf::new();
+    for part in &parts {
+        module_rel_path.push(part);
+    }
+    module_rel_path.set_extension("ks");
+
+    if candidate_root.join(module_rel_path) == entry {
+        candidate_root
+    } else {
+        fallback_root
+    }
 }
 
 fn inject_imported_ksif_forwarders(
@@ -7670,7 +7706,7 @@ fn ensure_ksif_for_module(
             let ast::Item::Import(id) = it else {
                 continue;
             };
-            ensure_ksif_for_module(&id.module, module_dir, visiting, done)?;
+            ensure_ksif_for_module(&id.module, entry_dir, visiting, done)?;
         }
     } else {
         // When recursive rebuild is suppressed, we do not build dependencies.
@@ -7691,7 +7727,7 @@ fn ensure_ksif_for_module(
 
             let dep_ksif_exists = candidates.iter().any(|p| p.exists());
             if !dep_ksif_exists {
-                let dep_module_path = resolve_module_path(module_dir, &id.module)?;
+                let dep_module_path = resolve_module_path(entry_dir, &id.module)?;
                 if !is_stdlib_path(&dep_module_path) {
                     return Err(Error::msg(format!(
                         "missing dependency ksif for import {} (expected {}.ksif); build it first or run without --no-ksif-rebuild-deps",
@@ -7732,7 +7768,7 @@ fn ensure_ksif_for_module(
             let hash = compute_file_sha256(&dep_path)?;
             dep_hashes.push((id.module.clone(), hash));
         } else if policy.suppress_recursive_rebuild {
-            let dep_module_path = resolve_module_path(module_dir, &id.module)?;
+            let dep_module_path = resolve_module_path(entry_dir, &id.module)?;
             if !is_stdlib_path(&dep_module_path) {
                 return Err(Error::msg(format!(
                     "missing dependency ksif for import {} (expected {}.ksif); build it first or run without --no-ksif-rebuild-deps",
