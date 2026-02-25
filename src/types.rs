@@ -7228,6 +7228,11 @@ pub fn install_embedded_stdlib() -> Result<PathBuf> {
     stdlib_cache::install_embedded_stdlib()
 }
 
+/// Reinstall the embedded stdlib into a user-writable location and return its path.
+pub fn reinstall_embedded_stdlib() -> Result<PathBuf> {
+    stdlib_cache::reinstall_embedded_stdlib()
+}
+
 pub fn typecheck_file(entry: &Path) -> Result<TypedModule> {
     // Prelude is auto-imported unless the module has explicit imports.
     // Note: import-flattening is removed; `.ksif` artifacts provide imported schemes.

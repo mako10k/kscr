@@ -133,20 +133,37 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
             Ok(())
         }
         "repl" => repl(),
-        "--install-stdlib" | "install-stdlib" => match types::install_embedded_stdlib() {
-            Ok(p) => {
-                println!("stdlib installed to: {}", p.display());
-                Ok(())
-            }
-            Err(e) => Err(crate::error::Error::msg(format!(
-                "failed to install embedded stdlib: {}",
-                e
-            ))),
-        },
+        "--install-stdlib" | "install-stdlib" => cmd_install_stdlib(args),
         "llvm-ir" => crate::cli::cli_llvm_ir::cmd_llvm_ir(args),
         "compile" => crate::cli::cli_compile::cmd_compile(args),
         _ => Err(crate::error::Error::msg(format!("unknown command: {cmd}"))),
     }
+}
+
+fn cmd_install_stdlib(mut args: std::vec::IntoIter<String>) -> Result<()> {
+    let mut reinstall = false;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--reinstall-stdlib" => reinstall = true,
+            _ => {
+                return Err(crate::error::Error::msg(format!(
+                    "unknown arg for install-stdlib: {arg}"
+                )))
+            }
+        }
+    }
+
+    let path = if reinstall {
+        types::reinstall_embedded_stdlib()?
+    } else {
+        types::install_embedded_stdlib()?
+    };
+    if reinstall {
+        println!("stdlib reinstalled to: {}", path.display());
+    } else {
+        println!("stdlib installed to: {}", path.display());
+    }
+    Ok(())
 }
 
 struct ParsedArgs {
@@ -317,7 +334,7 @@ fn render_typecheck_report(
 
 fn print_help() {
     eprintln!(
-        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   Options: --all, --stdlib-dir <path>\n  ir <file>         Typecheck then lower to IR (debug)\n                   Options: --stdlib-dir <path>, --ksif-rebuild, --no-ksif-rebuild-deps\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable\n                   Default: embeds packed IR and runs via Rust executor\n                   Emits `.ksif` by default to `./target/ksif/<file>.ksif`\n                   Options: -o/--output <path>, --release, --llvm, --ksif-out <dir>\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n                   Default: uses `.ksif` for imports when available\n                   Opt out: set `KSCR_USE_KSIF=0`\n                   Options: --stdlib-dir <path>, --ksif-rebuild, --no-ksif-rebuild-deps\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  help              Show this help\n  version           Show version information\n\nKSIF REBUILD OPTIONS:\n  --ksif-rebuild            Force rebuild all .ksif files (ignores hash validation)\n  --no-ksif-rebuild-deps    When used with --ksif-rebuild, only rebuild target module,\n                           not its dependencies (useful for iterative development)\n\nENV:\n  KSCR_STDLIB_DIR   Stdlib root directory (fallback)\n"
+        "kscr - lazy functional scripting language (scaffold)\n\nUSAGE:\n  kscr <command> [args]\n\nCOMMANDS:\n  parse <file>      Parse source and print AST (debug)\n  lex <file>        Lex source and print tokens (debug)\n  typecheck <file>  Typecheck and print inferred schemes\n                   (if export decl exists, only exported names are shown)\n                   Options: --all, --stdlib-dir <path>\n  ir <file>         Typecheck then lower to IR (debug)\n                   Options: --stdlib-dir <path>, --ksif-rebuild, --no-ksif-rebuild-deps\n  llvm-ir <file>    Generate LLVM IR (requires --features llvm)\n  compile <file>    Compile to native executable\n                   Default: embeds packed IR and runs via Rust executor\n                   Emits `.ksif` by default to `./target/ksif/<file>.ksif`\n                   Options: -o/--output <path>, --release, --llvm, --ksif-out <dir>\n                   With --llvm: compiles via LLVM backend + clang\n                   (requires --features llvm and clang on PATH)\n  run <file>        Typecheck, lower to IR, then run main (minimal)\n                   Default: uses `.ksif` for imports when available\n                   Opt out: set `KSCR_USE_KSIF=0`\n                   Options: --stdlib-dir <path>, --ksif-rebuild, --no-ksif-rebuild-deps\n  repl              Interactive REPL\n                   Commands: :type <expr>, :info <name>, :load <path>, :edit [path], :! <cmd>, :modules, :quit\n                   (command names accept unique prefixes, e.g. :t for :type)\n                   For readline editing/history: build with --features readline\n  install-stdlib    Install embedded stdlib into user data dir\n                   Option: --reinstall-stdlib (replace existing installed stdlib)\n  help              Show this help\n  version           Show version information\n\nKSIF REBUILD OPTIONS:\n  --ksif-rebuild            Force rebuild all .ksif files (ignores hash validation)\n  --no-ksif-rebuild-deps    When used with --ksif-rebuild, only rebuild target module,\n                           not its dependencies (useful for iterative development)\n\nENV:\n  KSCR_STDLIB_DIR   Stdlib root directory (fallback)\n"
     );
 }
 
