@@ -610,6 +610,30 @@ pub(super) fn install_embedded_stdlib() -> Result<PathBuf> {
     }
 }
 
+pub(super) fn reinstall_embedded_stdlib() -> Result<PathBuf> {
+    let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+    let dest = base.join("kscr").join("stdlib");
+
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+
+    if let Err(e) = extract_embedded_to(&dest) {
+        return Err(crate::error::Error::msg(format!(
+            "failed to extract embedded stdlib: {}",
+            e
+        )));
+    }
+
+    if is_valid_stdlib_root(&dest) {
+        Ok(dest)
+    } else {
+        Err(crate::error::Error::msg(
+            "embedded stdlib extraction did not produce a valid stdlib".to_string(),
+        ))
+    }
+}
+
 fn resolve_stdlib_root() -> Result<PathBuf> {
     let mut tried: Vec<PathBuf> = Vec::new();
 
