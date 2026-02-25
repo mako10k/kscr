@@ -140,9 +140,9 @@ fn dispatch_cmd(cmd: &str, mut args: std::vec::IntoIter<String>) -> Result<()> {
     }
 }
 
-fn cmd_install_stdlib(mut args: std::vec::IntoIter<String>) -> Result<()> {
+fn cmd_install_stdlib(args: std::vec::IntoIter<String>) -> Result<()> {
     let mut reinstall = false;
-    while let Some(arg) = args.next() {
+    for arg in args {
         match arg.as_str() {
             "--reinstall-stdlib" => reinstall = true,
             _ => {
