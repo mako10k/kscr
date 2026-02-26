@@ -43,6 +43,41 @@ jobs:
       - name: cargo clippy (deny warnings)
         run: cargo clippy --all-features -- -D warnings
 
+  unsafe_crates:
+    name: unsafe crates (required)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-unsafe_crates-
+
+      - name: cargo test/clippy (kscr_unsafe_ffi)
+        run: |
+          cargo test --manifest-path crates/kscr_unsafe_ffi/Cargo.toml --locked
+          cargo clippy --manifest-path crates/kscr_unsafe_ffi/Cargo.toml --locked -- -D warnings
+
+      - name: cargo test/clippy (kscr_unsafe_bigint)
+        run: |
+          cargo test --manifest-path crates/kscr_unsafe_bigint/Cargo.toml --locked
+          cargo clippy --manifest-path crates/kscr_unsafe_bigint/Cargo.toml --locked -- -D warnings
+
 
   nightly_udeps:
     name: nightly udeps (informational)
