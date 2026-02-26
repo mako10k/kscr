@@ -70,11 +70,13 @@ jobs:
 
       - name: cargo test/clippy (kscr_unsafe_ffi)
         run: |
+          cargo generate-lockfile --manifest-path crates/kscr_unsafe_ffi/Cargo.toml
           cargo test --manifest-path crates/kscr_unsafe_ffi/Cargo.toml --locked
           cargo clippy --manifest-path crates/kscr_unsafe_ffi/Cargo.toml --locked -- -D warnings
 
       - name: cargo test/clippy (kscr_unsafe_bigint)
         run: |
+          cargo generate-lockfile --manifest-path crates/kscr_unsafe_bigint/Cargo.toml
           cargo test --manifest-path crates/kscr_unsafe_bigint/Cargo.toml --locked
           cargo clippy --manifest-path crates/kscr_unsafe_bigint/Cargo.toml --locked -- -D warnings
 
