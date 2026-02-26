@@ -1,6 +1,6 @@
 // Test for Haskell-style import lists and hiding clauses
 
-use kscr::{ast, parser_impl};
+use kscr::{ast, parser};
 
 #[test]
 fn test_import_simple() {
@@ -9,7 +9,7 @@ module Main where
     import Foo
     main = x
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -29,7 +29,7 @@ module Main where
     import Foo (x, y, z)
     main = x
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -55,7 +55,7 @@ module Main where
     import Foo (x, (++), y)
     main = x
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -80,7 +80,7 @@ module Main where
     import Foo hiding (x, y)
     main = z
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -105,7 +105,7 @@ module Main where
     import qualified Foo as F (x, y)
     main = F.x
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -136,7 +136,7 @@ module Main where
     )
     main = x
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -161,7 +161,7 @@ module Main where
     import Foo ()
     main = x
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -183,7 +183,7 @@ module Main where
     import Foo hiding (x, y,)
     main = z
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -208,7 +208,7 @@ module Main where
     import Foo as F (x, y)
     main = x
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -236,7 +236,7 @@ module Main where
     import qualified Foo as F hiding (x)
     main = F.y
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -263,7 +263,7 @@ module Main where
     import Prelude (Maybe(..))
     main = Just 42
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -294,7 +294,7 @@ module Main where
     import Prelude (Either(Left, Right))
     main = Left 42
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,
@@ -332,7 +332,7 @@ module Main where
     import MyMod (foo, Bar(..), baz)
     main = foo
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     let import = match &module.items[0] {
         ast::Item::Import(id) => id,

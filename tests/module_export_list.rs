@@ -1,6 +1,6 @@
 // Test for Haskell-style module export lists
 
-use kscr::parser_impl;
+use kscr::parser;
 
 #[test]
 fn test_module_export_list_simple() {
@@ -10,7 +10,7 @@ module Foo (x, y) where
     y = 2
     z = 3
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -41,7 +41,7 @@ module Foo (
     y = 2
     z = 3
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -56,7 +56,7 @@ fn test_module_export_list_with_type_all_ctors() {
 module Foo (MyType(..)) where
     data MyType = A | B | C
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -79,7 +79,7 @@ fn test_module_export_list_with_type_some_ctors() {
 module Foo (MyType(A, B)) where
     data MyType = A | B | C
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -110,7 +110,7 @@ module Foo where
     x = 1
     y = 2
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_none());
@@ -126,7 +126,7 @@ module Foo (
     x = 1
     y = 2
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -141,7 +141,7 @@ fn test_module_empty_export_list() {
 module Foo () where
     x = 1
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -157,7 +157,7 @@ fn test_module_export_type_with_trailing_comma_in_ctor_list() {
 module Foo (MyType(A, B,)) where
     data MyType = A | B | C
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -188,7 +188,7 @@ fn test_module_export_empty_ctor_list_error() {
 module Foo (MyType()) where
     data MyType = A | B
 "#;
-    let result = parser_impl::parse_module(src);
+    let result = parser::parse_module(src);
     assert!(result.is_err(), "T() should be a syntax error");
     let err = result.unwrap_err();
     assert!(
@@ -205,7 +205,7 @@ fn test_module_export_type_only() {
 module Foo (MyType) where
     data MyType = A | B
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     let specs = module.export_specs.unwrap();
@@ -226,7 +226,7 @@ fn test_module_export_all_ctors_still_works() {
 module Foo (MyType(..)) where
     data MyType = A | B
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     let specs = module.export_specs.unwrap();
@@ -250,7 +250,7 @@ where
     x = 1
     y = 2
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -268,7 +268,7 @@ module Foo (x, y, z)
     y = 2
     z = 3
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -287,7 +287,7 @@ where
     x = 1
     y = 2
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());
@@ -305,7 +305,7 @@ where
     x = 1
     y = 2
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_none());
@@ -325,7 +325,7 @@ where
     y = 2
     z = 3
 "#;
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     assert_eq!(module.name, Some("Foo".to_string()));
     assert!(module.export_specs.is_some());

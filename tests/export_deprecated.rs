@@ -1,6 +1,6 @@
 // Test for deprecated export declaration warning
 
-use kscr::parser_impl;
+use kscr::parser;
 
 #[test]
 fn test_export_decl_deprecated_warning() {
@@ -14,7 +14,7 @@ export x, y
     // Capture stderr to verify the warning is emitted
     // Note: In practice, the warning goes to stderr via eprintln!
     // This test just ensures parsing still works
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     // Find the export declaration
     let has_export = module
@@ -36,7 +36,7 @@ foo = 42
 data Bar = Baz | Qux
 "#;
 
-    let module = parser_impl::parse_module(src).unwrap();
+    let module = parser::parse_module(src).unwrap();
 
     // Find the export item
     let export_item = module

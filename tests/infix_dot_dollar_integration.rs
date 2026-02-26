@@ -1,4 +1,4 @@
-use kscr::parser_impl::parse_module;
+use kscr::parser::parse_module;
 use std::process::Command;
 
 #[test]

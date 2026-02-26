@@ -14,9 +14,9 @@ pub mod ksif;
 pub mod lexer;
 pub mod parser;
 
-// Build `src/parser_impl.rs` as a public module for testing.
+// Keep parser internals private; use `crate::parser` as the public API.
 #[path = "parser_impl.rs"]
-pub mod parser_impl;
+mod parser_impl;
 #[cfg(not(feature = "unsafe_bigint"))]
 mod safe_bigint;
 pub mod types;
