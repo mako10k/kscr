@@ -79,9 +79,35 @@ fn use_isolated_stdlib(temp_path: &Path) -> StdlibEnvGuard {
     let prev = std::env::var_os("KSCR_STDLIB_DIR");
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
     let dst = temp_path.join("stdlib");
+    let cache_dir = temp_path.join("target").join("ksif");
     copy_dir_recursive(&src, &dst);
-    mirror_stdlib_ksif_into_cache(&dst, &temp_path.join("target").join("ksif"));
+    mirror_stdlib_ksif_into_cache(&dst, &cache_dir);
     std::env::set_var("KSCR_STDLIB_DIR", &dst);
+
+    // CI checkouts may not contain prebuilt stdlib .ksif files.
+    // Warm up Prelude from copied .ks sources so tests stay deterministic.
+    if !cache_dir.join("Prelude.ksif").exists() {
+        let warmup = temp_path.join("__StdlibWarmup.ks");
+        fs::write(
+            &warmup,
+            r#"module StdlibWarmup where
+  import Prelude
+
+  export ok
+
+  ok = 0
+"#,
+        )
+        .expect("write stdlib warmup module");
+
+        let result = kscr::types::typecheck_file(&warmup);
+        assert!(
+            result.is_ok(),
+            "failed to generate stdlib ksif cache in isolated stdlib setup: {:?}",
+            result.err()
+        );
+    }
+
     StdlibEnvGuard { prev }
 }
 
