@@ -1,154 +1,139 @@
 # Implementation Plan
 
-This document describes the implementation plan for **kscr**, a Rust-based toolchain for a lazy functional scripting language.
+This document tracks the implementation plan for **kscr** from the current repository state.
 
-Scope notes:
-- The language design is described in `docs/LanguageBNF.md`, `docs/TypeSystem.md`, `docs/LanguageSemantics.md`, and `docs/IntermediateRepresentation.md`.
-- The codebase is **end-to-end runnable** (lexer → parser → typechecker → IR → runtime), and includes:
-	- Multi-file module resolution with import/export boundaries and qualified imports
-	- Typeclasses (`Show`/`Eq`) with dictionary passing and `deriving`
-	- REPL (stdio by default; optional readline via `--features readline`)
-	- Optional LLVM IR text generation via `--features llvm` (`crates/kscr_llvm`)
-	- Optional unsafe features isolated into subcrates (e.g. `--features unsafe_ffi/unsafe_bigint`)
+Policy:
+- If implementation/tests/CI and docs disagree, implementation is the source-of-truth.
+- This file is not a changelog; it defines baseline, gaps, and execution order.
 
-For the up-to-date execution-first priorities, see `docs/PriorityChecklist.md`.
+Last updated: 2026-02-27
 
 ---
 
-## Milestone 0 — Project Foundations (Buildable Skeleton)
+## Baseline Status (As Implemented)
 
-### Mid-goal 0.1 — Repository ergonomics
-- **Small-goal 0.1.1**: Ensure `cargo test` and `cargo run -- help` are stable in CI/local.
-- **Small-goal 0.1.2**: Define crate/module boundaries (`lexer`, `parser`, `types`, `ir`, `cli`, `error`).
-- **Small-goal 0.1.3**: Decide error-reporting format (source spans, pretty messages) and keep it consistent.
+The codebase is end-to-end runnable (lexer -> parser -> typechecker -> IR -> runtime) and currently includes:
+- Multi-file module resolution with import/export boundaries and qualified imports.
+- Deriving-based typeclass support (`Show`/`Eq`) with dictionary passing.
+- REPL (`kscr repl`) with stdio mode and optional readline (`--features readline`), plus `:load` and `:modules`.
+- Optional unsafe-isolated features via subcrates (`unsafe_ffi`, `unsafe_bigint`).
+- Optional LLVM text-generation path (`--features llvm`).
+- CI gates active on main (test/fmt/clippy + required unsafe crates checks).
 
-### Mid-goal 0.2 — Basic golden tests
-- **Small-goal 0.2.1**: Add a small set of `.ks` fixtures.
-- **Small-goal 0.2.2**: Add parser/lexer golden tests (expected AST/debug output).
-
----
-
-## Milestone 1 — Lexer + Parser (Surface Syntax)
-
-### Mid-goal 1.1 — Lexer implementation
-- **Small-goal 1.1.1**: Tokenize identifiers, keywords (`module`, `import`, `export`, `data`, `type`, `let`, `in`, `where`, `case`, `of`, `if`, `then`, `else`, `do`).
-- **Small-goal 1.1.2**: Tokenize literals: integers, Float64 literals, chars, strings, booleans, unit.
-- **Small-goal 1.1.3**: Implement comments (line and nested block) and shebang stripping.
-- **Small-goal 1.1.4**: Implement indentation tracking and emit INDENT/DEDENT.
-
-### Mid-goal 1.2 — Parser implementation
-- **Small-goal 1.2.1**: Parse module blocks (`module ... where` + indent group).
-- **Small-goal 1.2.2**: Parse top-level items: bindings, `data` declarations, `type` aliases.
-- **Small-goal 1.2.3**: Parse expression grammar (lambda, application, infix application, let/where, if, case, list/tuple/record).
-- **Small-goal 1.2.4**: Parse patterns (including view/or patterns) and ensure binding rules (no duplicate variables).
+Reference docs:
+- `docs/PriorityChecklist.md` (execution-first priorities)
+- `docs/TypeSystem.md`
+- `docs/LanguageSemantics.md`
+- `docs/IntermediateRepresentation.md`
 
 ---
 
-## Milestone 2 — Type System Core (HM + Aliases + Effects)
+## Milestone Status Matrix
 
-### Mid-goal 2.1 — Type representation + alias expansion
-- **Small-goal 2.1.1**: Represent surface types (`Integer`, `Bool`, `Float64`, `String`, lists, tuples, records, functions, ADTs).
-- **Small-goal 2.1.2**: Implement type alias declaration storage and expansion.
-- **Small-goal 2.1.3**: Implement type holes (`?` / `?name`) as constraints/placeholders.
+## M0-M2 Foundations, Syntax, HM Core
+Status: Done (operational baseline).
+- Lexer/parser/type inference pipeline is active and tested.
+- Module syntax and import traversal are production paths.
 
-### Mid-goal 2.2 — Hindley–Milner inference
-- **Small-goal 2.2.1**: Implement unification, substitution, generalization/instantiation.
-- **Small-goal 2.2.2**: Infer types for core expressions and patterns.
-- **Small-goal 2.2.3**: Provide helpful type errors (unification mismatch, occurs check, missing constraints).
+## M3 Typeclasses
+Status: Partially complete.
+- Done:
+  - Constraint representation and dictionary passing for existing built-in class path.
+  - `deriving Show`, `deriving Eq`, and `deriving (Eq, Show)`.
+- Not done:
+  - General user-defined `class` / `instance` feature set (Phase 3).
 
-### Mid-goal 2.3 — Effect typing boundary (IO)
-- **Small-goal 2.3.1**: Represent `IO` type constructor.
-- **Small-goal 2.3.2**: Ensure the program entrypoint policy (`main :: IO ()`) is enforced.
+## M4 IR Elaboration
+Status: Done for current interpreter path.
+- Typed AST to IR lowering is active for current language features.
+- Import/no-flattening behavior is already integrated into current architecture.
 
----
+## M5 Runtime + Interpreter
+Status: Done for current language scope.
+- Thunks, lazy evaluation, IO sequencing, and exception support are operational.
 
-## Milestone 3 — Type Classes (✅ Implemented)
+## M6 FFI Boundaries
+Status: MVP complete; broad expansion pending.
+- Done:
+  - Checked boundary builtins (`ffiAddI32`, `ffiAddF32`).
+  - Unsafe-isolated real C ABI MVP (`ffiPuts`) under `--features unsafe_ffi`.
+- Pending (future extension):
+  - Wider C ABI surface and richer ownership/encoding policies.
 
-### Mid-goal 3.1 — Constraints + dictionaries
-- **Small-goal 3.1.1**: ✅ Represent constraints in types (e.g. `Show a => a -> String`).
-- **Small-goal 3.1.2**: ✅ Lower constraints via dictionary passing in IR.
-- **Small-goal 3.1.3**: ✅ Support `Show` and `Eq` typeclasses.
+## M7 LLVM Backend
+Status: Partial/optional.
+- Optional LLVM-related path exists.
+- Full lowering/JIT parity with interpreter is not yet a completed project milestone.
 
-### Mid-goal 3.2 — Show and Eq typeclasses
-- **Small-goal 3.2.1**: ✅ Implement `Show` and `Eq` for primitive types.
-- **Small-goal 3.2.2**: ✅ Implement structural instances (lists, tuples, records).
-- **Small-goal 3.2.3**: ✅ Support `deriving Show`, `deriving Eq`, and `deriving (Eq, Show)` for data types.
-
-**Status**: Type classes are fully implemented with dictionary passing. See `TypeClassesPlan.md` for implementation details.
-
----
-
-## Milestone 4 — IR Elaboration (Typed AST → Pure IR)
-
-### Mid-goal 4.1 — Define Pure IR data structures
-- **Small-goal 4.1.1**: Define IR for thunks/closures and core expressions.
-- **Small-goal 4.1.2**: Add IR nodes for pattern matching/case and function application.
-
-### Mid-goal 4.2 — Numeric lowering policy (LLVM-aligned)
-- **Small-goal 4.2.1**: Introduce backend numeric types (integers `iN`, floats `f32/f64`).
-- **Small-goal 4.2.2**: Implement **pure IR subtyping**: integer widening only (`i32 <: i64`), no float widening subtyping.
-- **Small-goal 4.2.3**: Implement **checked casts at boundaries** (literals/FFI), failing at runtime on overflow/invalid conversion.
+## M8 Tooling and UX
+Status: Partial.
+- Diagnostics improved in multiple areas (especially imports), but formatter/linter scope is not a finished milestone.
 
 ---
 
-## Milestone 5 — Runtime + IR Interpreter (Correctness First)
+## Corrections Applied vs Older Plan Text
 
-### Note: String representation (future)
-- **Current (MVP):** plain `String` values + minimal primitives (e.g. concatenation) for basic usability.
-- **Future direction:** make String an internal structure where we can explicitly control **substrings**, **interning**, and **concatenation/ropes** via dedicated builtin primitives (so stdlib can choose policies without Rust-side ad-hoc helpers).
+1. Typeclasses were previously labeled as fully implemented at milestone granularity.
+- Corrected: deriving + dictionary baseline is implemented, but user `class`/`instance` remains an open milestone.
 
-### Mid-goal 5.1 — Thunk runtime
-- **Small-goal 5.1.1**: Implement thunk states (Unevaluated/Evaluating/Evaluated) and memoization.
-- **Small-goal 5.1.2**: Implement blackholing/cycle detection policy.
+2. FFI section previously implied mostly future work.
+- Corrected: MVP checked-boundary and unsafe-isolated real C ABI path are already implemented.
 
-### Mid-goal 5.2 — IOAction interpreter
-- **Small-goal 5.2.1**: Represent and execute primitive IO actions.
-- **Small-goal 5.2.2**: Implement monadic sequencing semantics (bind/then).
+3. CI/unsafe gate posture was partially described as pending.
+- Corrected: required CI checks are active and green on `main`.
 
-### Mid-goal 5.3 — Exceptions via IO
-- **Small-goal 5.3.1**: Implement IR/runtime support for Throw/Catch/Try.
-- **Small-goal 5.3.2**: Add tests for exception ordering and handler scoping.
+4. Test reliability gap around stdlib `.ksif` assumptions.
+- Corrected in implementation and acknowledged as baseline hardening (clean-checkout deterministic setup).
 
 ---
 
-## Milestone 6 — FFI (C ABI) with Safety
+## Rebased Execution Order (From Current State)
 
-### Mid-goal 6.1 — FFI type mapping
-- **Small-goal 6.1.1**: Define mapping between surface types and FFI/backend types.
-- **Small-goal 6.1.2**: Enforce checked casts on boundary values (no silent truncation).
+## Stage A - Complete Typeclasses Phase 3 (Highest Priority)
+Goal: user-defined `class` / `instance` with coherent resolution and stable IR/runtime behavior.
 
-### Mid-goal 6.2 — Minimal FFI API
-- **Small-goal 6.2.1**: Implement calling a small set of C functions (e.g., puts/strlen) as a proof.
-- **Small-goal 6.2.2**: Decide/implement ownership and string encoding rules.
+A1. Surface and environment
+- Parse/validate user classes and instances across imported modules.
+- Keep MVP guardrails (reject user `class Show`/`class Eq` redefinitions).
+
+A2. Resolution semantics
+- Support constrained non-ground instances.
+- Enforce coherence (no overlap/duplicates) with deterministic diagnostics.
+
+A3. IR/runtime and module boundaries
+- Complete dictionary passing for method-as-value and transitive imports.
+- Add focused regression suites for aliasing, qualification, and cross-module forwarding.
+
+A4. Hardening
+- Expand CI-targeted class/instance regressions.
+- Update language/typeclass docs to match implemented semantics.
+
+## Stage B - Diagnostics and Developer UX
+Goal: reduce debugging cost and improve error explainability.
+
+B1. Improve deep import/class-instance diagnostic traces.
+B2. Add stable, incremental lints.
+B3. Define formatter/linter MVP scope and implementation order.
+
+## Stage C - LLVM/JIT Expansion (Optional, after Stage A stability)
+Goal: broaden optional backend only after semantic parity strategy is clear.
+
+C1. Expand lowering coverage beyond current subset.
+C2. Add parity checks against interpreter behavior.
+C3. Define acceptance gates for LLVM/JIT reliability.
+
+## Stage D - Extended FFI Surface (Optional)
+Goal: broaden safe-enough boundary API while keeping unsafe isolated.
+
+D1. Prioritize a minimal additional C ABI set based on user demand.
+D2. Keep boundary checks and ownership rules explicit and tested.
+D3. Preserve default safe build posture and required CI gates.
 
 ---
 
-## Milestone 7 — LLVM Backend (Optional, After Interpreter)
+## Practical Rule for Contributors
 
-### Mid-goal 7.1 — IR → LLVM IR lowering
-- **Small-goal 7.1.1**: Lower a pure subset (literals, arithmetic, calls).
-- **Small-goal 7.1.2**: Lower thunks/closures to heap structures and functions.
-
-### Mid-goal 7.2 — JIT execution
-- **Small-goal 7.2.1**: Run lowered code via LLVM JIT.
-- **Small-goal 7.2.2**: Validate semantics equivalence vs the interpreter.
-
----
-
-## Milestone 8 — Tooling (Formatter/Linter) and UX
-
-### Mid-goal 8.1 — Diagnostics and source mapping
-- **Small-goal 8.1.1**: Propagate spans through lexer/parser/typechecker.
-- **Small-goal 8.1.2**: Improve CLI errors and add `--verbose`/`--debug` modes.
-
-### Mid-goal 8.2 — Formatter / Linter
-- **Small-goal 8.2.1**: Formatter for a stable subset.
-- **Small-goal 8.2.2**: Linter rules (unused bindings, non-exhaustive matches, shadowing warnings).
-
----
-
-## Suggested execution order
-1. Milestone 1 (Lexer/Parser) + Milestone 2 (HM core) as the main backbone.
-2. Milestone 4/5 (IR + interpreter runtime) for semantic validation.
-3. Milestone 6 (FFI) once numeric lowering + checked casts are well tested.
-4. Milestone 7 (LLVM) only after interpreter semantics are stable.
+Before starting new implementation work:
+1. Update `docs/PriorityChecklist.md` first if priority ordering changes.
+2. Ensure this plan reflects actual code/CI state.
+3. Keep diffs proportional; avoid mixing broad redesign with single failing-test fixes.
