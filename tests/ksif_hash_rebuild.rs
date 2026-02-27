@@ -8,12 +8,53 @@ use tempfile::TempDir;
 // Ksif rebuild policy is global mutable state; these tests must not run in parallel.
 static KSIF_POLICY_MUTEX: Mutex<()> = Mutex::new(());
 
+fn lock_ksif_policy_mutex() -> std::sync::MutexGuard<'static, ()> {
+    KSIF_POLICY_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 struct PolicyResetGuard;
 
 impl Drop for PolicyResetGuard {
     fn drop(&mut self) {
         kscr::types::set_ksif_rebuild_policy(kscr::types::KsifRebuildPolicy::default());
     }
+}
+
+struct StdlibEnvGuard {
+    prev: Option<std::ffi::OsString>,
+}
+
+impl Drop for StdlibEnvGuard {
+    fn drop(&mut self) {
+        if let Some(prev) = self.prev.take() {
+            std::env::set_var("KSCR_STDLIB_DIR", prev);
+        } else {
+            std::env::remove_var("KSCR_STDLIB_DIR");
+        }
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("create dst directory");
+    for entry in fs::read_dir(src).expect("read src directory") {
+        let entry = entry.expect("dir entry");
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path);
+        } else {
+            fs::copy(&src_path, &dst_path).expect("copy file");
+        }
+    }
+}
+
+fn use_isolated_stdlib(temp_path: &Path) -> StdlibEnvGuard {
+    let prev = std::env::var_os("KSCR_STDLIB_DIR");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
+    let dst = temp_path.join("stdlib");
+    copy_dir_recursive(&src, &dst);
+    std::env::set_var("KSCR_STDLIB_DIR", &dst);
+    StdlibEnvGuard { prev }
 }
 
 fn ksif_path(root: &Path, module: &str) -> PathBuf {
@@ -24,12 +65,13 @@ fn ksif_path(root: &Path, module: &str) -> PathBuf {
 
 #[test]
 fn test_ksif_rebuild_on_hash_mismatch() {
-    let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
+    let _lock = lock_ksif_policy_mutex();
     let _policy_guard = PolicyResetGuard;
 
     // Create temporary directory
     let temp = TempDir::new().expect("create temp dir");
     let temp_path = temp.path();
+    let _stdlib_env_guard = use_isolated_stdlib(temp_path);
 
     // Write module A (no dependencies)
     let a_content = r#"module A where
@@ -152,11 +194,12 @@ fn test_ksif_rebuild_on_hash_mismatch() {
 
 #[test]
 fn test_ksif_force_rebuild_flag() {
-    let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
+    let _lock = lock_ksif_policy_mutex();
     let _policy_guard = PolicyResetGuard;
 
     let temp = TempDir::new().expect("create temp dir");
     let temp_path = temp.path();
+    let _stdlib_env_guard = use_isolated_stdlib(temp_path);
 
     // Create module C
     let content_c = r#"module C where
@@ -219,11 +262,12 @@ fn test_ksif_force_rebuild_flag() {
 
 #[test]
 fn test_suppress_recursive_rebuild_errors_on_missing_dependency_ksif() {
-    let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
+    let _lock = lock_ksif_policy_mutex();
     let _policy_guard = PolicyResetGuard;
 
     let temp = TempDir::new().expect("create temp dir");
     let temp_path = temp.path();
+    let _stdlib_env_guard = use_isolated_stdlib(temp_path);
 
     // Create module A (no dependencies)
     let a_content = r#"module A where
@@ -294,11 +338,12 @@ fn test_suppress_recursive_rebuild_errors_on_missing_dependency_ksif() {
 
 #[test]
 fn test_suppress_recursive_rebuild_skips_dependency_validation() {
-    let _lock = KSIF_POLICY_MUTEX.lock().unwrap();
+    let _lock = lock_ksif_policy_mutex();
     let _policy_guard = PolicyResetGuard;
 
     let temp = TempDir::new().expect("create temp dir");
     let temp_path = temp.path();
+    let _stdlib_env_guard = use_isolated_stdlib(temp_path);
 
     // Create module D (leaf dependency)
     let d_content = r#"module D where
