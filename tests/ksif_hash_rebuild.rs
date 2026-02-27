@@ -48,11 +48,39 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
     }
 }
 
+fn mirror_stdlib_ksif_into_cache(stdlib_root: &Path, cache_dir: &Path) {
+    fs::create_dir_all(cache_dir).expect("create stdlib cache directory");
+
+    fn walk(base: &Path, cur: &Path, cache_dir: &Path) {
+        for entry in fs::read_dir(cur).expect("read stdlib directory") {
+            let entry = entry.expect("dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                walk(base, &path, cache_dir);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("ksif") {
+                continue;
+            }
+            let rel = path.strip_prefix(base).expect("relative path");
+            let module = rel
+                .with_extension("")
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, ".");
+            let dst = cache_dir.join(format!("{module}.ksif"));
+            fs::copy(&path, &dst).expect("copy stdlib ksif into cache");
+        }
+    }
+
+    walk(stdlib_root, stdlib_root, cache_dir);
+}
+
 fn use_isolated_stdlib(temp_path: &Path) -> StdlibEnvGuard {
     let prev = std::env::var_os("KSCR_STDLIB_DIR");
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("stdlib");
     let dst = temp_path.join("stdlib");
     copy_dir_recursive(&src, &dst);
+    mirror_stdlib_ksif_into_cache(&dst, &temp_path.join("target").join("ksif"));
     std::env::set_var("KSCR_STDLIB_DIR", &dst);
     StdlibEnvGuard { prev }
 }
