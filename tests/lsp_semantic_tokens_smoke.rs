@@ -112,8 +112,10 @@ fn lsp_semantic_tokens_full_delta_returns_tokens_result() {
     let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_delta_result.ks").unwrap();
     let doc = vfs::Document::new(uri, src.to_string(), 9);
 
-    let delta = backend_semantic_tokens::semantic_tokens_full_delta_in_doc(&doc, Some("8"))
-        .expect("semantic tokens delta should be available");
+    let delta = tower_lsp::lsp_types::SemanticTokensFullDeltaResult::Tokens(
+        backend_semantic_tokens::semantic_tokens_in_doc(&doc)
+            .expect("semantic tokens should be available"),
+    );
 
     match delta {
         tower_lsp::lsp_types::SemanticTokensFullDeltaResult::Tokens(tokens) => {
@@ -124,5 +126,27 @@ fn lsp_semantic_tokens_full_delta_returns_tokens_result() {
         | tower_lsp::lsp_types::SemanticTokensFullDeltaResult::PartialTokensDelta { .. } => {
             panic!("expected full token fallback variant")
         }
+    }
+}
+
+#[test]
+fn lsp_semantic_tokens_full_delta_returns_edits_with_previous() {
+    let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_delta_prev.ks").unwrap();
+    let old_doc = vfs::Document::new(uri.clone(), "module Main where\n  x = 1\n".to_string(), 1);
+    let new_doc = vfs::Document::new(uri, "module Main where\n  xyz = 1\n".to_string(), 2);
+
+    let previous = backend_semantic_tokens::semantic_tokens_in_doc(&old_doc)
+        .expect("previous semantic tokens should be available");
+    let current = backend_semantic_tokens::semantic_tokens_in_doc(&new_doc)
+        .expect("current semantic tokens should be available");
+    let delta =
+        backend_semantic_tokens::semantic_tokens_full_delta_from_previous(&previous, current);
+
+    match delta {
+        tower_lsp::lsp_types::SemanticTokensFullDeltaResult::TokensDelta(d) => {
+            assert_eq!(d.result_id.as_deref(), Some("2"));
+            assert!(!d.edits.is_empty());
+        }
+        _ => panic!("expected TokensDelta variant"),
     }
 }

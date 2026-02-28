@@ -4,8 +4,8 @@ use kscr::ast::{Item, PatternKind};
 use kscr::lexer;
 use kscr::parser;
 use tower_lsp::lsp_types::{
-    Position, Range, SemanticToken, SemanticTokenType, SemanticTokens,
-    SemanticTokensFullDeltaResult, SemanticTokensLegend,
+    Position, Range, SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensDelta,
+    SemanticTokensEdit, SemanticTokensFullDeltaResult, SemanticTokensLegend,
 };
 
 const TOKEN_TYPE_FUNCTION: u32 = 0;
@@ -40,11 +40,77 @@ pub(crate) fn semantic_tokens_in_range(doc: &Document, range: Range) -> Option<S
     Some(encode_tokens(doc, raw))
 }
 
-pub(crate) fn semantic_tokens_full_delta_in_doc(
-    doc: &Document,
-    _previous_result_id: Option<&str>,
-) -> Option<SemanticTokensFullDeltaResult> {
-    semantic_tokens_in_doc(doc).map(SemanticTokensFullDeltaResult::Tokens)
+pub(crate) fn semantic_tokens_full_delta_from_previous(
+    previous: &SemanticTokens,
+    current: SemanticTokens,
+) -> SemanticTokensFullDeltaResult {
+    let old_flat = flatten_tokens(&previous.data);
+    let new_flat = flatten_tokens(&current.data);
+
+    let mut prefix = 0usize;
+    while prefix < old_flat.len() && prefix < new_flat.len() && old_flat[prefix] == new_flat[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix < old_flat.len().saturating_sub(prefix)
+        && suffix < new_flat.len().saturating_sub(prefix)
+        && old_flat[old_flat.len() - 1 - suffix] == new_flat[new_flat.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let old_mid_end = old_flat.len().saturating_sub(suffix);
+    let new_mid_end = new_flat.len().saturating_sub(suffix);
+
+    let old_mid = &old_flat[prefix..old_mid_end];
+    let new_mid = &new_flat[prefix..new_mid_end];
+
+    let edit_data = if new_mid.is_empty() {
+        None
+    } else {
+        Some(unflatten_tokens(new_mid))
+    };
+
+    let edits = if old_mid.is_empty() && new_mid.is_empty() {
+        Vec::new()
+    } else {
+        vec![SemanticTokensEdit {
+            start: prefix as u32,
+            delete_count: old_mid.len() as u32,
+            data: edit_data,
+        }]
+    };
+
+    SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+        result_id: current.result_id,
+        edits,
+    })
+}
+
+fn flatten_tokens(tokens: &[SemanticToken]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(tokens.len() * 5);
+    for token in tokens {
+        out.push(token.delta_line);
+        out.push(token.delta_start);
+        out.push(token.length);
+        out.push(token.token_type);
+        out.push(token.token_modifiers_bitset);
+    }
+    out
+}
+
+fn unflatten_tokens(flat: &[u32]) -> Vec<SemanticToken> {
+    flat.chunks_exact(5)
+        .map(|c| SemanticToken {
+            delta_line: c[0],
+            delta_start: c[1],
+            length: c[2],
+            token_type: c[3],
+            token_modifiers_bitset: c[4],
+        })
+        .collect()
 }
 
 fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
@@ -243,8 +309,8 @@ mod tests {
         let src = "module Main where\n  x = 1\n";
         let doc = Document::new(uri, src.to_string(), 7);
 
-        let delta = semantic_tokens_full_delta_in_doc(&doc, Some("6")).unwrap();
-        match delta {
+        let tokens = semantic_tokens_in_doc(&doc).unwrap();
+        match SemanticTokensFullDeltaResult::Tokens(tokens) {
             SemanticTokensFullDeltaResult::Tokens(tokens) => {
                 assert_eq!(tokens.result_id.as_deref(), Some("7"));
                 assert!(!tokens.data.is_empty());
@@ -253,6 +319,28 @@ mod tests {
             | SemanticTokensFullDeltaResult::PartialTokensDelta { .. } => {
                 panic!("expected full tokens fallback")
             }
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_full_delta_returns_delta_when_previous_exists() {
+        let uri =
+            tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_delta_prev.ks").unwrap();
+        let old_src = "module Main where\n  x = 1\n";
+        let new_src = "module Main where\n  xyz = 1\n";
+
+        let old_doc = Document::new(uri.clone(), old_src.to_string(), 1);
+        let new_doc = Document::new(uri, new_src.to_string(), 2);
+
+        let previous = semantic_tokens_in_doc(&old_doc).unwrap();
+        let current = semantic_tokens_in_doc(&new_doc).unwrap();
+        let delta = semantic_tokens_full_delta_from_previous(&previous, current);
+        match delta {
+            SemanticTokensFullDeltaResult::TokensDelta(d) => {
+                assert_eq!(d.result_id.as_deref(), Some("2"));
+                assert!(!d.edits.is_empty());
+            }
+            _ => panic!("expected TokensDelta"),
         }
     }
 }
