@@ -11,6 +11,7 @@ This crate provides a Language Server Protocol (LSP) server for kscr, enabling I
 - **Hover** (planned): Show type information on hover
 - **Go-to-Definition** (planned): Navigate to symbol definitions
 - **Code Completion** (planned): Intelligent code completion
+- **Semantic Tokens**: Semantic highlighting tokens (`textDocument/semanticTokens/full`)
 
 ## Building
 
@@ -79,6 +80,7 @@ RUST_LOG=debug ./target/release/kscr-lsp
 - Diagnostics report errors at line 0 (position extraction from error messages not yet implemented)
 - Documents must be saved to disk for type checking (VFS-only typechecking not yet supported)
 - No support for workspace-level analysis
+- Only full semantic tokens are supported (no range/delta requests yet)
 
 ## Future Enhancements
 

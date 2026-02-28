@@ -3,6 +3,7 @@
 use crate::backend_diagnostics_hover as diag_hover;
 use crate::backend_goto_completion;
 use crate::backend_references_rename;
+use crate::backend_semantic_tokens;
 use crate::backend_symbols;
 use crate::vfs::{Document, Vfs};
 use kscr::parser;
@@ -76,6 +77,18 @@ impl LanguageServer for Backend {
                 }),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            work_done_progress_options: WorkDoneProgressOptions {
+                                work_done_progress: Some(false),
+                            },
+                            legend: backend_semantic_tokens::semantic_tokens_legend(),
+                            range: Some(false),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
         })
@@ -242,6 +255,21 @@ impl LanguageServer for Backend {
         } else {
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         }
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let vfs = self.vfs.read().await;
+        let doc = match vfs.get(&params.text_document.uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let tokens =
+            backend_semantic_tokens::semantic_tokens_in_doc(doc).map(SemanticTokensResult::Tokens);
+        Ok(tokens)
     }
 }
 

@@ -12983,7 +12983,7 @@ fn extract_return_monad_type(func_ty: &Ty, poly_ty: &Ty) -> Option<Ty> {
                     args: poly_args,
                 },
                 Ty::App {
-                    head: conc_head,
+                    head: _conc_head,
                     args: conc_args,
                 },
             ) if poly_args.len() == conc_args.len() => {

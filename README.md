@@ -243,6 +243,7 @@ The binary will be at `crates/kscr_lsp/target/release/kscr-lsp`.
 - **Document Symbols**: Outline view of functions, types, and classes
 - **Hover** (planned): Type information on hover
 - **Go-to-Definition** (planned): Navigate to definitions
+- **Semantic Tokens**: Semantic highlighting tokens for declarations
 
 ### Editor Integration
 

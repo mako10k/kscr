@@ -43,6 +43,10 @@ A complete LSP server binary (`kscr-lsp`) that provides IDE features for kscr la
    - Type class declarations
    - Provides outline view in editors
 
+3. **Semantic Tokens (MVP)**
+   - `textDocument/semanticTokens/full`
+   - Semantic tokenization for top-level declarations (bindings, type/class names, constructors)
+
 #### 🔄 Planned (Future Work)
 
 1. **Hover**: Show inferred types when hovering over identifiers
@@ -50,6 +54,7 @@ A complete LSP server binary (`kscr-lsp`) that provides IDE features for kscr la
 3. **Code Completion**: Context-aware suggestions
 4. **Find References**: Find all usages of a symbol
 5. **Rename**: Rename symbols across files
+6. **Semantic Tokens Range/Delta**: Incremental semantic tokens support
 
 ### Architecture
 
