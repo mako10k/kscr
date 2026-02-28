@@ -9603,6 +9603,16 @@ fn load_imported_instances(
     let mut merged_env = ClassEnv::default();
     let mut dict_bindings: Vec<ast::Item> = Vec::new();
     let stdlib_root = stdlib_cache::stdlib_root()?;
+    let mut queued_modules: std::collections::VecDeque<String> = module
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            ast::Item::Import(id) => Some(id.module.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut visited_module_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
 
     // Track module names to detect collisions
     let mut module_name_to_paths: std::collections::HashMap<String, Vec<std::path::PathBuf>> =
@@ -9618,19 +9628,19 @@ fn load_imported_instances(
         }
     }
 
-    for it in &module.items {
-        let ast::Item::Import(id) = it else {
-            continue;
-        };
-
+    while let Some(imported_module_name) = queued_modules.pop_front() {
         // Skip stdlib modules - they're handled via load_stdlib_class_env.
-        let rel = id.module.replace('.', "/");
+        let rel = imported_module_name.replace('.', "/");
         let local = entry_dir.join(format!("{}.ks", rel));
 
         // Only process if it's a local (non-stdlib) module
         let Ok(module_path) = std::fs::canonicalize(&local) else {
             continue;
         };
+
+        if !visited_module_paths.insert(module_path.clone()) {
+            continue;
+        }
 
         if module_path.starts_with(&stdlib_root) {
             continue;
@@ -9640,6 +9650,12 @@ fn load_imported_instances(
         let src = std::fs::read_to_string(&module_path)?;
         let mut imported_ast = parser::parse_module(&src)?;
         desugar_module_qualified_names(&mut imported_ast)?;
+
+        for nested in &imported_ast.items {
+            if let ast::Item::Import(id) = nested {
+                queued_modules.push_back(id.module.clone());
+            }
+        }
 
         // Populate def_module for ClassDecls
         if let Some(name) = &imported_ast.name {
@@ -9712,8 +9728,9 @@ fn load_imported_instances(
                 if let ast::PatternKind::Var(name) = &b.pat.kind {
                     if name.starts_with("__dict_") || name.starts_with("__inst_") {
                         // Qualify the binding name and all __dict_/__inst_ references in the expression
-                        let qual_name = format!("{}.{}", id.module, name);
-                        let qual_expr = qualify_dict_refs_in_expr(b.expr.clone(), &id.module);
+                        let qual_name = format!("{}.{}", imported_module_name, name);
+                        let qual_expr =
+                            qualify_dict_refs_in_expr(b.expr.clone(), &imported_module_name);
                         let qual_binding = ast::Binding {
                             doc: b.doc.clone(),
                             pat: ast::Pattern::new(b.pat.span, ast::PatternKind::Var(qual_name)),
@@ -9730,7 +9747,7 @@ fn load_imported_instances(
         // Qualification happens when merging into the importing module's class_env.
 
         // Merge this module's instances into the accumulated env
-        merge_class_env_with_module_prefix(&mut merged_env, &module_env, &id.module)?;
+        merge_class_env_with_module_prefix(&mut merged_env, &module_env, &imported_module_name)?;
     }
 
     Ok((merged_env, dict_bindings))
@@ -16207,6 +16224,101 @@ mod inference_tests {
         std::fs::write(
             &main,
             "module Main where\n  import A\n  x = f 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_resolves_method_value_with_transitive_instance_unqualified() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_transitive_method_value_unqual_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Inc(..)\n  class Inc a where\n    inc :: a -> a\n  instance Inc Integer where\n    inc x = x + 1\n",
+        )
+        .unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(
+            &b,
+            "module B where\n  export applyInc\n  import A\n  applyInc = inc\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import B\n  x = applyInc 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_resolves_method_value_with_transitive_instance_qualified() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_transitive_method_value_qual_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Inc(..)\n  class Inc a where\n    inc :: a -> a\n  instance Inc Integer where\n    inc x = x + 1\n",
+        )
+        .unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(
+            &b,
+            "module B where\n  export applyInc\n  import A\n  applyInc = inc\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import qualified B as BX\n  x = BX.applyInc 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn typecheck_file_resolves_method_value_exported_from_direct_import() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_method_value_direct_import_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Inc(..), applyInc\n  class Inc a where\n    inc :: a -> a\n  instance Inc Integer where\n    inc x = x + 1\n  applyInc = inc\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import A\n  x = applyInc 1\n  main = IO ()\n",
         )
         .unwrap();
 
