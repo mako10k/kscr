@@ -3595,6 +3595,41 @@ fn poly_instance_unique_var_count(ty: &Ty) -> usize {
     vars.len()
 }
 
+fn format_overlap_candidates(candidates: &[(String, Ty)]) -> (String, String) {
+    let mut candidate_notes: Vec<String> = candidates
+        .iter()
+        .map(|(name, head)| {
+            format!(
+                "{} [head: {}, vars: {}]",
+                name,
+                head,
+                poly_instance_unique_var_count(head)
+            )
+        })
+        .collect();
+    candidate_notes.sort();
+    candidate_notes.dedup();
+
+    let mut origins: Vec<String> = candidates
+        .iter()
+        .map(|(name, _)| poly_instance_origin(name))
+        .collect();
+    origins.sort();
+    origins.dedup();
+
+    (candidate_notes.join(", "), origins.join(", "))
+}
+
+fn method_dict_failfast_enabled() -> bool {
+    std::env::var("KSCR_FAILFAST_METHOD_DICT").ok().as_deref() == Some("1")
+}
+
+fn method_dict_failfast_message(mname: &str, class: &str) -> String {
+    format!(
+        "cannot choose dictionary for method call `{mname}`: {class} (insufficient information; strict mode enabled by KSCR_FAILFAST_METHOD_DICT=1; set KSCR_FAILFAST_METHOD_DICT=0 to keep polymorphic fallback)"
+    )
+}
+
 fn choose_best_poly_candidate_idx(
     class: &str,
     target_ty: &Ty,
@@ -3623,32 +3658,17 @@ fn choose_best_poly_candidate_idx(
         return Ok(Some(best_idx));
     }
 
-    let mut candidate_notes: Vec<String> = candidates
+    let pairs: Vec<(String, Ty)> = candidates
         .iter()
-        .map(|pi| {
-            format!(
-                "{} [head: {}, vars: {}]",
-                pi.dict_name,
-                pi.head_pat,
-                poly_instance_unique_var_count(&pi.head_pat)
-            )
-        })
+        .map(|pi| (pi.dict_name.clone(), pi.head_pat.clone()))
         .collect();
-    candidate_notes.sort();
-    candidate_notes.dedup();
-
-    let mut origins: Vec<String> = candidates
-        .iter()
-        .map(|pi| poly_instance_origin(&pi.dict_name))
-        .collect();
-    origins.sort();
-    origins.dedup();
+    let (candidate_notes, origin_notes) = format_overlap_candidates(&pairs);
 
     Err(Error::msg(format!(
         "overlapping instances for `{}`: cannot choose for type {target_ty}; candidates: {}; import origins: {}",
         class,
-        candidate_notes.join(", "),
-        origins.join(", ")
+        candidate_notes,
+        origin_notes
     )))
 }
 
@@ -4851,12 +4871,7 @@ fn preregister_instance_dicts(
     let mut new_ground_heads: Vec<(ast::ClassId, Ty, String)> = Vec::new();
 
     let report_overlap = |class_name: &str, a: (String, Ty), b: (String, Ty)| -> Result<()> {
-        let candidates = format!("{} [head: {}], {} [head: {}]", a.0, a.1, b.0, b.1);
-        let origins = format!(
-            "{}, {}",
-            poly_instance_origin(&a.0),
-            poly_instance_origin(&b.0)
-        );
+        let (candidates, origins) = format_overlap_candidates(&[a, b]);
         Err(Error::msg(format!(
             "overlapping instances for `{}` during preregistration: candidates: {}; import origins: {}",
             class_name, candidates, origins
@@ -13520,7 +13535,7 @@ fn resolve_method_dict_expr(
     // IMPORTANT: Dictionary choice failure means we don't have enough information at this
     // rewrite stage. Historically we kept such calls polymorphic by producing a dict-lambda.
     // This behaves like a fallback and can mask bugs, so allow opting into strict fail-fast.
-    let failfast = std::env::var("KSCR_FAILFAST_METHOD_DICT").ok().as_deref() == Some("1");
+    let failfast = method_dict_failfast_enabled();
     if failfast {
         eprintln!(
             "[KSCR_FAILFAST_METHOD_DICT] cannot choose dictionary for `{mname}` (class={class}) args_len={} span={:?}",
@@ -13528,9 +13543,7 @@ fn resolve_method_dict_expr(
             ctx.span
         );
         return Err(Error::msg_with_span(
-            format!(
-                "cannot choose dictionary for method call `{mname}`: {class} (insufficient information)"
-            ),
+            method_dict_failfast_message(mname, class),
             ctx.span,
         ));
     }
@@ -15902,6 +15915,29 @@ mod class_ambiguity_resolution_tests {
 mod overlap_diagnostics_tests {
     use super::*;
 
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let old = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.old {
+                std::env::set_var(self.key, v);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
     #[test]
     fn preregister_rejects_poly_ground_overlap() {
         let src = r#"
@@ -15987,6 +16023,29 @@ instance C (Maybe Integer) where
         );
         assert!(msg.contains("candidates:"), "unexpected error: {msg}");
         assert!(msg.contains("import origins:"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn method_dict_failfast_message_has_non_strict_hint() {
+        let msg = method_dict_failfast_message("f", "C");
+        assert!(
+            msg.contains("KSCR_FAILFAST_METHOD_DICT=1"),
+            "unexpected: {msg}"
+        );
+        assert!(
+            msg.contains("KSCR_FAILFAST_METHOD_DICT=0"),
+            "unexpected: {msg}"
+        );
+        assert!(msg.contains("polymorphic fallback"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn method_dict_failfast_enabled_only_for_one() {
+        let _g = EnvGuard::set("KSCR_FAILFAST_METHOD_DICT", "1");
+        assert!(method_dict_failfast_enabled());
+
+        std::env::set_var("KSCR_FAILFAST_METHOD_DICT", "0");
+        assert!(!method_dict_failfast_enabled());
     }
 }
 
