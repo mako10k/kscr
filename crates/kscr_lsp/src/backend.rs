@@ -7,6 +7,7 @@ use crate::backend_semantic_tokens;
 use crate::backend_symbols;
 use crate::vfs::{Document, Vfs};
 use kscr::parser;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
@@ -17,6 +18,7 @@ use tower_lsp::{Client, LanguageServer};
 pub struct Backend {
     client: Client,
     vfs: Arc<RwLock<Vfs>>,
+    semantic_tokens_cache: Arc<RwLock<HashMap<Url, SemanticTokens>>>,
 }
 
 impl Backend {
@@ -24,6 +26,7 @@ impl Backend {
         Self {
             client,
             vfs: Arc::new(RwLock::new(Vfs::new())),
+            semantic_tokens_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -125,6 +128,10 @@ impl LanguageServer for Backend {
             vfs.update(&uri, change.text, version);
             drop(vfs);
 
+            let mut cache = self.semantic_tokens_cache.write().await;
+            cache.remove(&uri);
+            drop(cache);
+
             self.publish_diagnostics(uri).await;
         }
     }
@@ -135,8 +142,13 @@ impl LanguageServer for Backend {
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        let uri = params.text_document.uri;
         let mut vfs = self.vfs.write().await;
-        vfs.remove(&params.text_document.uri);
+        vfs.remove(&uri);
+        drop(vfs);
+
+        let mut cache = self.semantic_tokens_cache.write().await;
+        cache.remove(&uri);
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -267,8 +279,14 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let tokens =
-            backend_semantic_tokens::semantic_tokens_in_doc(doc).map(SemanticTokensResult::Tokens);
+        let Some(tokens) = backend_semantic_tokens::semantic_tokens_in_doc(doc) else {
+            return Ok(None);
+        };
+
+        let mut cache = self.semantic_tokens_cache.write().await;
+        cache.insert(doc.uri.clone(), tokens.clone());
+
+        let tokens = Some(SemanticTokensResult::Tokens(tokens));
         Ok(tokens)
     }
 
@@ -297,11 +315,33 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let tokens = backend_semantic_tokens::semantic_tokens_full_delta_in_doc(
-            doc,
-            Some(params.previous_result_id.as_str()),
-        );
-        Ok(tokens)
+        let previous_result_id = params.previous_result_id;
+
+        let Some(current_tokens) = backend_semantic_tokens::semantic_tokens_in_doc(doc) else {
+            return Ok(None);
+        };
+
+        let previous = {
+            let cache = self.semantic_tokens_cache.read().await;
+            cache
+                .get(&doc.uri)
+                .filter(|t| t.result_id.as_deref() == Some(previous_result_id.as_str()))
+                .cloned()
+        };
+
+        let result = if let Some(previous_tokens) = previous.as_ref() {
+            backend_semantic_tokens::semantic_tokens_full_delta_from_previous(
+                previous_tokens,
+                current_tokens.clone(),
+            )
+        } else {
+            SemanticTokensFullDeltaResult::Tokens(current_tokens.clone())
+        };
+
+        let mut cache = self.semantic_tokens_cache.write().await;
+        cache.insert(doc.uri.clone(), current_tokens);
+
+        Ok(Some(result))
     }
 }
 
