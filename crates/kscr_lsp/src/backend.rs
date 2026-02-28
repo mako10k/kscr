@@ -84,8 +84,8 @@ impl LanguageServer for Backend {
                                 work_done_progress: Some(false),
                             },
                             legend: backend_semantic_tokens::semantic_tokens_legend(),
-                            range: Some(false),
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: Some(true),
+                            full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
                         },
                     ),
                 ),
@@ -269,6 +269,38 @@ impl LanguageServer for Backend {
 
         let tokens =
             backend_semantic_tokens::semantic_tokens_in_doc(doc).map(SemanticTokensResult::Tokens);
+        Ok(tokens)
+    }
+
+    async fn semantic_tokens_range(
+        &self,
+        params: SemanticTokensRangeParams,
+    ) -> Result<Option<SemanticTokensRangeResult>> {
+        let vfs = self.vfs.read().await;
+        let doc = match vfs.get(&params.text_document.uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let tokens = backend_semantic_tokens::semantic_tokens_in_range(doc, params.range)
+            .map(SemanticTokensRangeResult::Tokens);
+        Ok(tokens)
+    }
+
+    async fn semantic_tokens_full_delta(
+        &self,
+        params: SemanticTokensDeltaParams,
+    ) -> Result<Option<SemanticTokensFullDeltaResult>> {
+        let vfs = self.vfs.read().await;
+        let doc = match vfs.get(&params.text_document.uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        let tokens = backend_semantic_tokens::semantic_tokens_full_delta_in_doc(
+            doc,
+            Some(params.previous_result_id.as_str()),
+        );
         Ok(tokens)
     }
 }

@@ -4,7 +4,8 @@ use kscr::ast::{Item, PatternKind};
 use kscr::lexer;
 use kscr::parser;
 use tower_lsp::lsp_types::{
-    SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend,
+    Position, Range, SemanticToken, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullDeltaResult, SemanticTokensLegend,
 };
 
 const TOKEN_TYPE_FUNCTION: u32 = 0;
@@ -27,6 +28,26 @@ pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
 }
 
 pub(crate) fn semantic_tokens_in_doc(doc: &Document) -> Option<SemanticTokens> {
+    let mut raw = collect_raw_tokens(doc)?;
+    raw.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    Some(encode_tokens(doc, raw))
+}
+
+pub(crate) fn semantic_tokens_in_range(doc: &Document, range: Range) -> Option<SemanticTokens> {
+    let mut raw = collect_raw_tokens(doc)?;
+    raw.retain(|(line, start, _length, _ty)| token_in_range(*line, *start, &range));
+    raw.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    Some(encode_tokens(doc, raw))
+}
+
+pub(crate) fn semantic_tokens_full_delta_in_doc(
+    doc: &Document,
+    _previous_result_id: Option<&str>,
+) -> Option<SemanticTokensFullDeltaResult> {
+    semantic_tokens_in_doc(doc).map(SemanticTokensFullDeltaResult::Tokens)
+}
+
+fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
     let module = parser::parse_module(&doc.text).ok()?;
     let mut raw: Vec<(u32, u32, u32, u32)> = Vec::new();
 
@@ -72,8 +93,10 @@ pub(crate) fn semantic_tokens_in_doc(doc: &Document) -> Option<SemanticTokens> {
         }
     }
 
-    raw.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    Some(raw)
+}
 
+fn encode_tokens(doc: &Document, raw: Vec<(u32, u32, u32, u32)>) -> SemanticTokens {
     let mut data = Vec::with_capacity(raw.len());
     let mut prev_line = 0;
     let mut prev_start = 0;
@@ -102,10 +125,28 @@ pub(crate) fn semantic_tokens_in_doc(doc: &Document) -> Option<SemanticTokens> {
         prev_start = start;
     }
 
-    Some(SemanticTokens {
-        result_id: None,
+    SemanticTokens {
+        result_id: Some(doc.version.to_string()),
         data,
-    })
+    }
+}
+
+fn token_in_range(line: u32, start_col: u32, range: &Range) -> bool {
+    let pos = Position {
+        line,
+        character: start_col,
+    };
+
+    if pos.line < range.start.line || pos.line > range.end.line {
+        return false;
+    }
+    if pos.line == range.start.line && pos.character < range.start.character {
+        return false;
+    }
+    if pos.line == range.end.line && pos.character >= range.end.character {
+        return false;
+    }
+    true
 }
 
 fn push_span_token(
@@ -167,5 +208,51 @@ mod tests {
         assert_eq!(legend.token_types[2], SemanticTokenType::CLASS);
         assert_eq!(legend.token_types[3], SemanticTokenType::METHOD);
         assert_eq!(legend.token_types[4], SemanticTokenType::ENUM_MEMBER);
+    }
+
+    #[test]
+    fn semantic_tokens_in_range_filters_outside_lines() {
+        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_range.ks").unwrap();
+        let src = r#"module Main where
+  data Opt a = Some a | None
+  answer = Some 42
+"#;
+        let doc = Document::new(uri, src.to_string(), 3);
+
+        let range = Range {
+            start: Position {
+                line: 2,
+                character: 0,
+            },
+            end: Position {
+                line: 3,
+                character: 0,
+            },
+        };
+        let tokens = semantic_tokens_in_range(&doc, range).unwrap();
+        assert!(!tokens.data.is_empty());
+        assert!(tokens
+            .data
+            .iter()
+            .all(|t| t.delta_line == 0 || t.delta_line == 2));
+    }
+
+    #[test]
+    fn semantic_tokens_full_delta_returns_tokens_variant() {
+        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_delta.ks").unwrap();
+        let src = "module Main where\n  x = 1\n";
+        let doc = Document::new(uri, src.to_string(), 7);
+
+        let delta = semantic_tokens_full_delta_in_doc(&doc, Some("6")).unwrap();
+        match delta {
+            SemanticTokensFullDeltaResult::Tokens(tokens) => {
+                assert_eq!(tokens.result_id.as_deref(), Some("7"));
+                assert!(!tokens.data.is_empty());
+            }
+            SemanticTokensFullDeltaResult::TokensDelta(_)
+            | SemanticTokensFullDeltaResult::PartialTokensDelta { .. } => {
+                panic!("expected full tokens fallback")
+            }
+        }
     }
 }
