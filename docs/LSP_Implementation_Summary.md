@@ -45,6 +45,8 @@ A complete LSP server binary (`kscr-lsp`) that provides IDE features for kscr la
 
 3. **Semantic Tokens (MVP)**
    - `textDocument/semanticTokens/full`
+   - `textDocument/semanticTokens/range`
+   - `textDocument/semanticTokens/full/delta` (currently returns full-token fallback payload)
    - Semantic tokenization for top-level declarations (bindings, type/class names, constructors)
 
 #### 🔄 Planned (Future Work)
@@ -54,7 +56,7 @@ A complete LSP server binary (`kscr-lsp`) that provides IDE features for kscr la
 3. **Code Completion**: Context-aware suggestions
 4. **Find References**: Find all usages of a symbol
 5. **Rename**: Rename symbols across files
-6. **Semantic Tokens Range/Delta**: Incremental semantic tokens support
+6. **Semantic Tokens Incremental Edits**: Return true delta edit lists instead of full-token fallback
 
 ### Architecture
 
