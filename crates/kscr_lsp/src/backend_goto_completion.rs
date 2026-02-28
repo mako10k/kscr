@@ -333,11 +333,40 @@ pub(super) fn completion_items_in_doc(
         .keys()
         .cloned()
         .chain(tm.docs.keys().cloned())
-        .filter(|n| n.starts_with(prefix))
         .take(200)
         .collect();
-    names.sort();
     names.dedup();
+
+    fn match_quality(name: &str, prefix: &str) -> Option<u8> {
+        if prefix.is_empty() {
+            return Some(2);
+        }
+        if name == prefix {
+            return Some(0);
+        }
+        if name.starts_with(prefix) {
+            return Some(1);
+        }
+        let lower_name = name.to_ascii_lowercase();
+        let lower_prefix = prefix.to_ascii_lowercase();
+        if lower_name.starts_with(&lower_prefix) {
+            return Some(2);
+        }
+        None
+    }
+
+    fn kind_rank(kind: CompletionItemKind) -> u8 {
+        match kind {
+            CompletionItemKind::VARIABLE => 0,
+            CompletionItemKind::FUNCTION => 1,
+            CompletionItemKind::METHOD => 2,
+            CompletionItemKind::CONSTRUCTOR => 3,
+            CompletionItemKind::TYPE_PARAMETER => 4,
+            CompletionItemKind::STRUCT => 5,
+            CompletionItemKind::CLASS => 6,
+            _ => 9,
+        }
+    }
 
     // Best-effort: classify completion kind from the typechecked module.
     // This keeps working even when the document text is incomplete.
@@ -365,29 +394,49 @@ pub(super) fn completion_items_in_doc(
         )
     };
 
+    let mut ranked: Vec<(String, u8, CompletionItemKind)> = names
+        .into_iter()
+        .filter_map(|name| {
+            let quality = match_quality(&name, prefix)?;
+            let kind = local_kind
+                .as_ref()
+                .and_then(|m| m.get(&name).copied())
+                .unwrap_or_else(|| {
+                    if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                        CompletionItemKind::CLASS
+                    } else {
+                        CompletionItemKind::VARIABLE
+                    }
+                });
+            Some((name, quality, kind))
+        })
+        .collect();
+
+    ranked.sort_by(|a, b| {
+        let a_name_lower = a.0.to_ascii_lowercase();
+        let b_name_lower = b.0.to_ascii_lowercase();
+        (a.1, kind_rank(a.2), a.0.len(), &a_name_lower, &a.0).cmp(&(
+            b.1,
+            kind_rank(b.2),
+            b.0.len(),
+            &b_name_lower,
+            &b.0,
+        ))
+    });
+
     Some(
-        names
+        ranked
             .into_iter()
-            .map(|name| CompletionItem {
+            .map(|(name, quality, kind)| CompletionItem {
                 label: name.clone(),
-                kind: Some(
-                    local_kind
-                        .as_ref()
-                        .and_then(|m| m.get(&name).copied())
-                        .unwrap_or_else(|| {
-                            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-                                CompletionItemKind::CLASS
-                            } else {
-                                CompletionItemKind::VARIABLE
-                            }
-                        }),
-                ),
+                kind: Some(kind),
                 documentation: tm.docs.get(&name).map(|doc| {
                     Documentation::MarkupContent(MarkupContent {
                         kind: MarkupKind::Markdown,
                         value: doc.clone(),
                     })
                 }),
+                sort_text: Some(format!("{quality:01}-{:02}-{name}", kind_rank(kind))),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range,
                     new_text: name,
