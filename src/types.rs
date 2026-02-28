@@ -4675,7 +4675,7 @@ fn collect_instance_decls(module: &ast::Module) -> Vec<ast::InstanceDecl> {
 fn preregister_instance_dicts(
     env: &mut ClassEnv,
     instance_decls: &[ast::InstanceDecl],
-    _module_name: Option<&str>,
+    module_name: Option<&str>,
 ) -> Result<()> {
     // Phase 1: pre-register all instance dictionary names.
     // We also collect polymorphic instance metadata for later selection.
@@ -4730,6 +4730,70 @@ fn preregister_instance_dicts(
             ),
         }
     }
+
+    fn freshen_ty_vars(ty: &Ty, seed: &mut u32) -> Ty {
+        fn go(ty: &Ty, map: &mut HashMap<u32, u32>, seed: &mut u32) -> Ty {
+            match ty {
+                Ty::Var(v) => {
+                    let nv = *map.entry(*v).or_insert_with(|| {
+                        let out = *seed;
+                        *seed += 1;
+                        out
+                    });
+                    Ty::Var(nv)
+                }
+                Ty::Con(c) => Ty::Con(c.clone()),
+                Ty::List(t) => Ty::List(Box::new(go(t, map, seed))),
+                Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| go(t, map, seed)).collect()),
+                Ty::Record(fields) => Ty::Record(
+                    fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), go(v, map, seed)))
+                        .collect(),
+                ),
+                Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
+                    fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), go(v, map, seed)))
+                        .collect(),
+                    Box::new(go(rest, map, seed)),
+                ),
+                Ty::App { head, args } => Ty::App {
+                    head: Box::new(go(head, map, seed)),
+                    args: args.iter().map(|a| go(a, map, seed)).collect(),
+                },
+                Ty::Func(a, b) => Ty::Func(Box::new(go(a, map, seed)), Box::new(go(b, map, seed))),
+            }
+        }
+
+        let mut map = HashMap::new();
+        go(ty, &mut map, seed)
+    }
+
+    fn poly_heads_overlap(a: &Ty, b: &Ty) -> bool {
+        let mut seed = 100_000;
+        let a = freshen_ty_vars(a, &mut seed);
+        let b = freshen_ty_vars(b, &mut seed);
+        unify(a, b).is_ok()
+    }
+
+    let module_hint = module_name.unwrap_or("<current module>");
+
+    let mut new_ground_heads: Vec<(ast::ClassId, Ty, String)> = Vec::new();
+
+    let report_overlap = |class_name: &str, a: (String, Ty), b: (String, Ty)| -> Result<()> {
+        let candidates = format!("{} [head: {}], {} [head: {}]", a.0, a.1, b.0, b.1);
+        let origins = format!(
+            "{}, {}",
+            poly_instance_origin(&a.0),
+            poly_instance_origin(&b.0)
+        );
+        Err(Error::msg(format!(
+            "overlapping instances for `{}` during preregistration: candidates: {}; import origins: {}",
+            class_name, candidates, origins
+        )))
+    };
+
     for inst in instance_decls {
         // Use unqualified class name for dictionary names to avoid dots
         // E.g., "Prelude.Ring.Ring" -> "Ring"
@@ -4742,6 +4806,29 @@ fn preregister_instance_dicts(
 
         match instance_head_key_ast(&inst.ty) {
             Ok(ty_key) => {
+                let mut cx = InferCtx::default();
+                let head_ty = normalize_ty_for_instance_key(&lower_surface_type(
+                    &mut cx,
+                    &inst.ty,
+                    &mut HashMap::new(),
+                ));
+
+                for pi in env
+                    .poly_instances
+                    .iter()
+                    .chain(poly_to_register.iter())
+                    .filter(|pi| pi.class == inst.class)
+                {
+                    if unify_instance_head(&pi.head_pat, &head_ty).is_some() {
+                        let new_name = format!("{}.{}", module_hint, "<pending-ground-instance>");
+                        return report_overlap(
+                            unqualified_class,
+                            (pi.dict_name.clone(), pi.head_pat.clone()),
+                            (new_name, head_ty.clone()),
+                        );
+                    }
+                }
+
                 let ty_mangled = mangle_ident(&ty_key);
                 let dict_name = format!("__dict_{}_{}", unqualified_class, ty_mangled);
 
@@ -4750,6 +4837,7 @@ fn preregister_instance_dicts(
                     return Err(Error::msg("duplicate instance"));
                 }
                 env.instances.insert(key, dict_name);
+                new_ground_heads.push((inst.class.clone(), head_ty, module_hint.to_string()));
             }
             Err(_) => {
                 // Polymorphic (non-ground) instance: pre-register a stable dictionary name.
@@ -4762,7 +4850,38 @@ fn preregister_instance_dicts(
 
                 // Lower the instance head type into an internal type pattern.
                 let mut cx = InferCtx::default();
-                let head_pat = lower_surface_type(&mut cx, &inst.ty, &mut HashMap::new());
+                let head_pat = normalize_ty_for_instance_key(&lower_surface_type(
+                    &mut cx,
+                    &inst.ty,
+                    &mut HashMap::new(),
+                ));
+
+                for (g_class, g_head, g_origin) in &new_ground_heads {
+                    if *g_class == inst.class && unify_instance_head(&head_pat, g_head).is_some() {
+                        let new_name = format!("{}.{}", module_hint, dict_name);
+                        return report_overlap(
+                            unqualified_class,
+                            (new_name, head_pat.clone()),
+                            (format!("{}.<ground-instance>", g_origin), g_head.clone()),
+                        );
+                    }
+                }
+
+                for pi in env
+                    .poly_instances
+                    .iter()
+                    .chain(poly_to_register.iter())
+                    .filter(|pi| pi.class == inst.class)
+                {
+                    if poly_heads_overlap(&pi.head_pat, &head_pat) {
+                        let new_name = format!("{}.{}", module_hint, dict_name);
+                        return report_overlap(
+                            unqualified_class,
+                            (pi.dict_name.clone(), pi.head_pat.clone()),
+                            (new_name, head_pat.clone()),
+                        );
+                    }
+                }
 
                 poly_to_register.push(PolyInstance {
                     class: inst.class.clone(),
@@ -15750,6 +15869,34 @@ mod overlap_diagnostics_tests {
         assert!(candidates.contains("A.__dict_C_Maybe_Integer"));
         assert!(origins.contains("<current module>"));
         assert!(origins.contains("A"));
+    }
+
+    #[test]
+    fn preregister_rejects_poly_ground_overlap() {
+        let src = r#"
+class C a where
+    f :: a -> a
+
+data Maybe a = Nothing | Just a
+
+instance C (Maybe a) where
+    f x = x
+
+instance C (Maybe Integer) where
+    f x = x
+"#;
+
+        let module = parser::parse_module(src).unwrap();
+        let instance_decls = collect_instance_decls(&module);
+        let mut env = ClassEnv::default();
+        let err = preregister_instance_dicts(&mut env, &instance_decls, Some("Main")).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("overlapping instances"),
+            "unexpected error: {msg}"
+        );
+        assert!(msg.contains("candidates:"), "unexpected error: {msg}");
+        assert!(msg.contains("import origins:"), "unexpected error: {msg}");
     }
 }
 
