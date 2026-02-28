@@ -45,3 +45,51 @@ module Main where
     let ast = crate::parser::parse_module(src).unwrap();
     crate::types::typecheck(ast).unwrap();
 }
+
+#[test]
+fn typecheck_rejects_user_redefinition_of_reserved_show_class() {
+    let src = r#"
+module Main where
+
+    class Show a where
+        render :: a -> String
+
+    main :: IO Unit
+    main = IO ()
+"#;
+
+    let ast = crate::parser::parse_module(src).unwrap();
+    let err = crate::types::typecheck(ast).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("reserved class name `Show` cannot be redefined"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn typecheck_file_rejects_user_redefinition_of_reserved_eq_class() {
+    let dir = tempfile::tempdir().unwrap();
+    let main = dir.path().join("Main.ks");
+
+    std::fs::write(
+        &main,
+        r#"
+module Main where
+
+    class Eq a where
+        same :: a -> a -> Bool
+
+    main :: IO Unit
+    main = IO ()
+"#,
+    )
+    .unwrap();
+
+    let err = crate::types::typecheck_file(&main).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("reserved class name `Eq` cannot be redefined"),
+        "unexpected error: {err}"
+    );
+}

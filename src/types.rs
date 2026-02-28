@@ -4092,6 +4092,10 @@ type ClassDeclInfo = (
     HashMap<(ast::ClassId, String), ast::Expr>,
 );
 
+fn is_reserved_builtin_class_name(name: &str) -> bool {
+    matches!(name, "Show" | "Eq")
+}
+
 fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<ClassDeclInfo> {
     // class name -> method names (declaration order)
     let mut class_method_names: HashMap<ast::ClassId, Vec<String>> = HashMap::new();
@@ -4103,6 +4107,15 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
         let ast::Item::ClassDecl(c) = it else {
             continue;
         };
+
+        let is_prelude_decl =
+            c.def_module.as_deref() == Some("Prelude") || module.name.as_deref() == Some("Prelude");
+        if is_reserved_builtin_class_name(&c.name) && !is_prelude_decl {
+            return Err(Error::msg(format!(
+                "reserved class name `{}` cannot be redefined",
+                c.name
+            )));
+        }
 
         // Use canonical class name: def_module.name if available, else just name.
         let class_name = if let Some(ref m) = c.def_module {
