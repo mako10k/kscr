@@ -302,3 +302,70 @@ fn lsp_toplevel_doc_after_where_attaches_to_next_decl() {
         other => panic!("unexpected documentation: {other:?}"),
     }
 }
+
+#[test]
+fn lsp_completion_prefers_exact_prefix_match() {
+    let src_typed = r#"module Main where
+  map = 1
+  mapMaybe = 2
+  mapper = 3
+"#
+    .to_string();
+
+    let tmp_dir = std::env::temp_dir().join("kscr_tests");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let path = tmp_dir.join("completion_ranking_exact_prefix.ks");
+    std::fs::write(&path, &src_typed).unwrap();
+
+    let tm = kscr::types::typecheck_file(&path).unwrap();
+
+    let src_doc = format!("{src_typed}\nmap");
+    let line = src_doc.lines().count() as u32 - 1;
+    let uri = tower_lsp::lsp_types::Url::from_file_path(&path).unwrap();
+    let doc = vfs::Document::new(uri, src_doc, 1);
+    let items = backend_goto_completion::completion_items_in_doc(&doc, Position::new(line, 3), &tm)
+        .unwrap();
+
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    let map_like: Vec<_> = labels
+        .iter()
+        .copied()
+        .filter(|label| label.starts_with("map"))
+        .collect();
+    assert!(
+        map_like.len() >= 3,
+        "expected >=3 map-like completion items, got: {labels:?}"
+    );
+    assert_eq!(map_like[0], "map", "exact prefix should rank first");
+    assert!(map_like.contains(&"mapMaybe"));
+    assert!(map_like.contains(&"mapper"));
+}
+
+#[test]
+fn lsp_completion_matches_case_insensitive_prefix() {
+    let src_typed = r#"module Main where
+  solve = 1
+  sortValue = 2
+"#
+    .to_string();
+
+    let tmp_dir = std::env::temp_dir().join("kscr_tests");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let path = tmp_dir.join("completion_ranking_case_insensitive.ks");
+    std::fs::write(&path, &src_typed).unwrap();
+
+    let tm = kscr::types::typecheck_file(&path).unwrap();
+
+    let src_doc = format!("{src_typed}\nSO");
+    let uri = tower_lsp::lsp_types::Url::from_file_path(&path).unwrap();
+    let doc = vfs::Document::new(uri, src_doc, 1);
+    let line = doc.text.lines().count() as u32 - 1;
+    let items = backend_goto_completion::completion_items_in_doc(&doc, Position::new(line, 2), &tm)
+        .unwrap();
+
+    assert!(
+        items.iter().any(|i| i.label == "solve"),
+        "expected `solve` in completion items: {:?}",
+        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}
