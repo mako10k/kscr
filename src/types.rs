@@ -3565,10 +3565,74 @@ fn poly_instance_origin(dict_name: &str) -> String {
         .unwrap_or_else(|| "<current module>".to_string())
 }
 
-fn poly_instance_overlap_details(candidates: &[&PolyInstance]) -> (String, String) {
+fn poly_instance_unique_var_count(ty: &Ty) -> usize {
+    fn go(ty: &Ty, vars: &mut HashSet<u32>) {
+        match ty {
+            Ty::Var(v) => {
+                vars.insert(*v);
+            }
+            Ty::Con(_) => {}
+            Ty::List(t) => go(t, vars),
+            Ty::Tuple(ts) => ts.iter().for_each(|t| go(t, vars)),
+            Ty::Record(fields) => fields.iter().for_each(|(_, t)| go(t, vars)),
+            Ty::RecordOpen(fields, rest) => {
+                fields.iter().for_each(|(_, t)| go(t, vars));
+                go(rest, vars);
+            }
+            Ty::App { head, args } => {
+                go(head, vars);
+                args.iter().for_each(|a| go(a, vars));
+            }
+            Ty::Func(a, b) => {
+                go(a, vars);
+                go(b, vars);
+            }
+        }
+    }
+
+    let mut vars = HashSet::new();
+    go(ty, &mut vars);
+    vars.len()
+}
+
+fn choose_best_poly_candidate_idx(
+    class: &str,
+    target_ty: &Ty,
+    candidates: &[&PolyInstance],
+) -> Result<Option<usize>> {
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+
+    let mut best_idx = 0usize;
+    let mut best_score = poly_instance_unique_var_count(&candidates[0].head_pat);
+    let mut tied = false;
+
+    for (i, pi) in candidates.iter().enumerate().skip(1) {
+        let score = poly_instance_unique_var_count(&pi.head_pat);
+        if score < best_score {
+            best_idx = i;
+            best_score = score;
+            tied = false;
+        } else if score == best_score {
+            tied = true;
+        }
+    }
+
+    if !tied {
+        return Ok(Some(best_idx));
+    }
+
     let mut candidate_notes: Vec<String> = candidates
         .iter()
-        .map(|pi| format!("{} [head: {}]", pi.dict_name, pi.head_pat))
+        .map(|pi| {
+            format!(
+                "{} [head: {}, vars: {}]",
+                pi.dict_name,
+                pi.head_pat,
+                poly_instance_unique_var_count(&pi.head_pat)
+            )
+        })
         .collect();
     candidate_notes.sort();
     candidate_notes.dedup();
@@ -3580,7 +3644,12 @@ fn poly_instance_overlap_details(candidates: &[&PolyInstance]) -> (String, Strin
     origins.sort();
     origins.dedup();
 
-    (candidate_notes.join(", "), origins.join(", "))
+    Err(Error::msg(format!(
+        "overlapping instances for `{}`: cannot choose for type {target_ty}; candidates: {}; import origins: {}",
+        class,
+        candidate_notes.join(", "),
+        origins.join(", ")
+    )))
 }
 
 // NOTE: local let/where constraint solving uses InferCtx.full_class_env.
@@ -13358,7 +13427,7 @@ fn resolve_method_dict_expr(
             // We can only pick instances with no context dict args here.
             if ftv_ty(&a_ty).is_empty() {
                 let a_ty_norm = normalize_ty_for_instance_key(&a_ty);
-                let mut poly_candidates: Vec<&PolyInstance> = ctx
+                let poly_candidates: Vec<&PolyInstance> = ctx
                     .class_env
                     .poly_instances
                     .iter()
@@ -13366,8 +13435,10 @@ fn resolve_method_dict_expr(
                     .filter(|pi| unify_instance_head(&pi.head_pat, &a_ty_norm).is_some())
                     .collect();
 
-                if poly_candidates.len() == 1 {
-                    let pi = poly_candidates.remove(0);
+                if let Some(best_idx) =
+                    choose_best_poly_candidate_idx(class, &a_ty, &poly_candidates)?
+                {
+                    let pi = poly_candidates[best_idx];
                     let dict_ref = if pi.dict_name.starts_with("Prelude.") {
                         pi.dict_name
                             .split('.')
@@ -13378,17 +13449,6 @@ fn resolve_method_dict_expr(
                         pi.dict_name.clone()
                     };
                     return Ok(Some((Expr::new(ctx.span, ExprKind::Var(dict_ref)), None)));
-                }
-                if poly_candidates.len() > 1 {
-                    let (candidate_notes, origin_notes) =
-                        poly_instance_overlap_details(&poly_candidates);
-                    return Err(Error::msg_with_span(
-                        format!(
-                            "overlapping instances for `{}`: cannot choose for type {a_ty}; candidates: {}; import origins: {}",
-                            class, candidate_notes, origin_notes
-                        ),
-                        ctx.span,
-                    ));
                 }
             }
 
@@ -15843,35 +15903,6 @@ mod overlap_diagnostics_tests {
     use super::*;
 
     #[test]
-    fn overlap_details_include_candidates_and_origins() {
-        let class_id = ast::ClassId::dummy("C");
-        let local = PolyInstance {
-            class: class_id.clone(),
-            head_pat: Ty::App {
-                head: Box::new(Ty::Con("Maybe".to_string())),
-                args: vec![Ty::Var(1)],
-            },
-            ctx_len: 0,
-            dict_name: "__dict_C_poly_Maybe_poly".to_string(),
-        };
-        let imported = PolyInstance {
-            class: class_id,
-            head_pat: Ty::App {
-                head: Box::new(Ty::Con("Maybe".to_string())),
-                args: vec![Ty::Con("Integer".to_string())],
-            },
-            ctx_len: 0,
-            dict_name: "A.__dict_C_Maybe_Integer".to_string(),
-        };
-
-        let (candidates, origins) = poly_instance_overlap_details(&[&local, &imported]);
-        assert!(candidates.contains("__dict_C_poly_Maybe_poly"));
-        assert!(candidates.contains("A.__dict_C_Maybe_Integer"));
-        assert!(origins.contains("<current module>"));
-        assert!(origins.contains("A"));
-    }
-
-    #[test]
     fn preregister_rejects_poly_ground_overlap() {
         let src = r#"
 class C a where
@@ -15890,6 +15921,65 @@ instance C (Maybe Integer) where
         let instance_decls = collect_instance_decls(&module);
         let mut env = ClassEnv::default();
         let err = preregister_instance_dicts(&mut env, &instance_decls, Some("Main")).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("overlapping instances"),
+            "unexpected error: {msg}"
+        );
+        assert!(msg.contains("candidates:"), "unexpected error: {msg}");
+        assert!(msg.contains("import origins:"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn choose_best_poly_candidate_prefers_more_specific_head() {
+        let class_id = ast::ClassId::dummy("C");
+        let generic = PolyInstance {
+            class: class_id.clone(),
+            head_pat: Ty::App {
+                head: Box::new(Ty::Con("Maybe".to_string())),
+                args: vec![Ty::Var(1)],
+            },
+            ctx_len: 0,
+            dict_name: "__dict_C_poly_Maybe_poly".to_string(),
+        };
+        let specific = PolyInstance {
+            class: class_id,
+            head_pat: Ty::App {
+                head: Box::new(Ty::Con("Maybe".to_string())),
+                args: vec![Ty::Con("Integer".to_string())],
+            },
+            ctx_len: 0,
+            dict_name: "__dict_C_Maybe_Integer".to_string(),
+        };
+
+        let target = Ty::App {
+            head: Box::new(Ty::Con("Maybe".to_string())),
+            args: vec![Ty::Con("Integer".to_string())],
+        };
+        let idx = choose_best_poly_candidate_idx("C", &target, &[&generic, &specific])
+            .unwrap()
+            .unwrap();
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn choose_best_poly_candidate_errors_on_same_specificity() {
+        let class_id = ast::ClassId::dummy("C");
+        let a = PolyInstance {
+            class: class_id.clone(),
+            head_pat: Ty::Var(1),
+            ctx_len: 0,
+            dict_name: "A.__dict_C_poly".to_string(),
+        };
+        let b = PolyInstance {
+            class: class_id,
+            head_pat: Ty::Var(2),
+            ctx_len: 0,
+            dict_name: "B.__dict_C_poly".to_string(),
+        };
+
+        let err = choose_best_poly_candidate_idx("C", &Ty::Con("Integer".to_string()), &[&a, &b])
+            .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("overlapping instances"),
