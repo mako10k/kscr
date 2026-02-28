@@ -1863,6 +1863,102 @@ fn ir_run_main_user_defined_typeclass_imports_instance() {
 }
 
 #[test]
+fn ir_run_main_user_defined_typeclass_imports_instance_transitive_unqualified() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "kscr_typeclass_import_transitive_unqualified_{nanos}"
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let a = dir.join("A.ks");
+    std::fs::write(
+        &a,
+        "module A where\n  export Inc(..)\n  class Inc a where\n    inc :: a -> a\n  instance Inc Integer where\n    inc x = x + 1\n",
+    )
+    .unwrap();
+
+    let b = dir.join("B.ks");
+    std::fs::write(
+        &b,
+        "module B where\n  export applyInc\n  import A\n  applyInc = inc\n",
+    )
+    .unwrap();
+
+    let c = dir.join("C.ks");
+    std::fs::write(
+        &c,
+        "module C where\n  export useInc\n  import B\n  useInc = applyInc\n",
+    )
+    .unwrap();
+
+    let main = dir.join("Main.ks");
+    std::fs::write(
+        &main,
+        "module Main where\n  import C\n  main = do\n    stdoutWrite (show (useInc 1))\n    IO ()\n",
+    )
+    .unwrap();
+
+    let ir = crate::cli_impl::typecheck_and_link_ir(&main).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ir_run_main_user_defined_typeclass_imports_instance_transitive_qualified() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "kscr_typeclass_import_transitive_qualified_{nanos}"
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let a = dir.join("A.ks");
+    std::fs::write(
+        &a,
+        "module A where\n  export Inc(..)\n  class Inc a where\n    inc :: a -> a\n  instance Inc Integer where\n    inc x = x + 1\n",
+    )
+    .unwrap();
+
+    let b = dir.join("B.ks");
+    std::fs::write(
+        &b,
+        "module B where\n  export applyInc\n  import A\n  applyInc = inc\n",
+    )
+    .unwrap();
+
+    let c = dir.join("C.ks");
+    std::fs::write(
+        &c,
+        "module C where\n  export useInc\n  import B\n  useInc = applyInc\n",
+    )
+    .unwrap();
+
+    let main = dir.join("Main.ks");
+    std::fs::write(
+        &main,
+        "module Main where\n  import qualified C as CX\n  main = do\n    stdoutWrite (show (CX.useInc 1))\n    IO ()\n",
+    )
+    .unwrap();
+
+    let ir = crate::cli_impl::typecheck_and_link_ir(&main).unwrap();
+    let v = crate::ir::run_main(&ir).unwrap();
+    assert!(matches!(v, crate::ir::Value::Unit));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn ir_run_main_stdlib_classes_smoke() {
     let ir = crate::cli_impl::typecheck_and_link_ir(std::path::Path::new(
         "tests/stdlib_classes_smoke.ks",
