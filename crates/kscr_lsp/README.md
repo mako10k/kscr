@@ -8,9 +8,11 @@ This crate provides a Language Server Protocol (LSP) server for kscr, enabling I
 
 - **Diagnostics**: Real-time error reporting for parse, import, and type errors
 - **Document Symbols**: Outline view of functions, types, and classes
-- **Hover** (planned): Show type information on hover
-- **Go-to-Definition** (planned): Navigate to symbol definitions
-- **Code Completion** (planned): Intelligent code completion
+- **Hover**: Show type information on hover
+- **Go-to-Definition**: Navigate to symbol definitions
+- **Code Completion**: Intelligent code completion
+- **Find References**: Locate symbol usages in open workspace files
+- **Rename**: Rename symbols across open workspace files
 - **Semantic Tokens**: Semantic highlighting tokens (`textDocument/semanticTokens/full`, `.../range`, `.../full/delta`)
 
 ## Building
@@ -76,23 +78,18 @@ RUST_LOG=debug ./target/release/kscr-lsp
 
 ## Current Limitations
 
-- Hover and go-to-definition are not yet implemented
 - Diagnostics report errors at line 0 (position extraction from error messages not yet implemented)
 - Documents must be saved to disk for type checking (VFS-only typechecking not yet supported)
 - No support for workspace-level analysis
-- Delta responses currently fall back to full token payloads (no incremental edit list yet)
 
 ## Future Enhancements
 
 See `docs/LSPDesign.md` in the main repository for the full roadmap.
 
 Phase 2:
-- Hover with type information
-- Go-to-definition across modules
 - Better error position reporting
+- Broader cross-file navigation coverage
 
 Phase 3:
-- Code completion
-- Find references
-- Rename refactoring
-- Semantic tokens
+- Completion ranking/context improvements
+- Semantic token delta quality/performance improvements

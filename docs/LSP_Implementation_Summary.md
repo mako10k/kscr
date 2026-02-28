@@ -15,7 +15,14 @@ A complete LSP server binary (`kscr-lsp`) that provides IDE features for kscr la
    - `textDocument/didOpen`, `didChange`, `didSave`, `didClose` document synchronization
    - `textDocument/publishDiagnostics` for real-time error reporting
    - `textDocument/documentSymbol` for outline/navigation
-   - Stubs for `hover` and `goto_definition` (future work)
+   - `textDocument/hover`
+   - `textDocument/definition`
+   - `textDocument/completion`
+   - `textDocument/references`
+   - `textDocument/rename`
+   - `textDocument/semanticTokens/full`
+   - `textDocument/semanticTokens/range`
+   - `textDocument/semanticTokens/full/delta`
 
 2. **VFS (`src/vfs.rs`)**: Virtual File System
    - Manages document state including unsaved changes
@@ -46,17 +53,18 @@ A complete LSP server binary (`kscr-lsp`) that provides IDE features for kscr la
 3. **Semantic Tokens (MVP)**
    - `textDocument/semanticTokens/full`
    - `textDocument/semanticTokens/range`
-   - `textDocument/semanticTokens/full/delta` (currently returns full-token fallback payload)
+   - `textDocument/semanticTokens/full/delta` (returns `TokensDelta` edits when previous result id matches)
    - Semantic tokenization for top-level declarations (bindings, type/class names, constructors)
+
+4. **Navigation + Refactor**
+   - Hover, go-to-definition, completion, references, and rename are implemented
 
 #### 🔄 Planned (Future Work)
 
-1. **Hover**: Show inferred types when hovering over identifiers
-2. **Go-to-Definition**: Navigate to symbol definitions across files
-3. **Code Completion**: Context-aware suggestions
-4. **Find References**: Find all usages of a symbol
-5. **Rename**: Rename symbols across files
-6. **Semantic Tokens Incremental Edits**: Return true delta edit lists instead of full-token fallback
+1. **Completion Ranking**: Improve context/ranking quality for large workspaces
+2. **Broader Workspace Indexing**: Improve cross-file navigation coverage
+3. **Semantic Token Performance**: Improve delta quality and computation cost
+4. **Code Actions**: Suggested fixes and quick refactors
 
 ### Architecture
 
@@ -215,4 +223,4 @@ To contribute to the LSP implementation:
 ---
 
 **Implementation Date**: January 2026  
-**Status**: Phase 1 Complete - MVP with diagnostics and document symbols
+**Status**: Core IDE feature set implemented (diagnostics/symbols/hover/definition/completion/references/rename/semantic tokens)

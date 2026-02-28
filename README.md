@@ -241,8 +241,11 @@ The binary will be at `crates/kscr_lsp/target/release/kscr-lsp`.
 
 - **Real-time Diagnostics**: Parse, import, and type errors
 - **Document Symbols**: Outline view of functions, types, and classes
-- **Hover** (planned): Type information on hover
-- **Go-to-Definition** (planned): Navigate to definitions
+- **Hover**: Type information on hover
+- **Go-to-Definition**: Navigate to definitions
+- **Completion**: Context-aware symbol completion
+- **Find References**: Symbol usage search
+- **Rename**: Workspace edit generation for symbol rename
 - **Semantic Tokens**: Semantic highlighting tokens (`full`, `range`, `full/delta`)
 
 ### Editor Integration
@@ -262,7 +265,7 @@ Current implementation includes:
 - ✅ Do-notation for IO
 - ✅ Interactive REPL
 - ✅ Automatic deriving for typeclasses
-- ✅ LSP server with diagnostics and document symbols
+- ✅ LSP server with diagnostics, symbols, hover, definition, completion, references, rename, and semantic tokens
 
 For the latest development status and priorities, see `docs/PriorityChecklist.md`.
 
