@@ -3558,6 +3558,31 @@ struct PolyInstance {
     dict_name: String,
 }
 
+fn poly_instance_origin(dict_name: &str) -> String {
+    dict_name
+        .rsplit_once('.')
+        .map(|(module, _)| module.to_string())
+        .unwrap_or_else(|| "<current module>".to_string())
+}
+
+fn poly_instance_overlap_details(candidates: &[&PolyInstance]) -> (String, String) {
+    let mut candidate_notes: Vec<String> = candidates
+        .iter()
+        .map(|pi| format!("{} [head: {}]", pi.dict_name, pi.head_pat))
+        .collect();
+    candidate_notes.sort();
+    candidate_notes.dedup();
+
+    let mut origins: Vec<String> = candidates
+        .iter()
+        .map(|pi| poly_instance_origin(&pi.dict_name))
+        .collect();
+    origins.sort();
+    origins.dedup();
+
+    (candidate_notes.join(", "), origins.join(", "))
+}
+
 // NOTE: local let/where constraint solving uses InferCtx.full_class_env.
 
 fn instance_head_key_ast(ty: &ast::Type) -> Result<String> {
@@ -13236,10 +13261,12 @@ fn resolve_method_dict_expr(
                     return Ok(Some((Expr::new(ctx.span, ExprKind::Var(dict_ref)), None)));
                 }
                 if poly_candidates.len() > 1 {
+                    let (candidate_notes, origin_notes) =
+                        poly_instance_overlap_details(&poly_candidates);
                     return Err(Error::msg_with_span(
                         format!(
-                            "overlapping instances for `{}`: cannot choose for type {a_ty}",
-                            class
+                            "overlapping instances for `{}`: cannot choose for type {a_ty}; candidates: {}; import origins: {}",
+                            class, candidate_notes, origin_notes
                         ),
                         ctx.span,
                     ));
@@ -15689,6 +15716,40 @@ mod class_ambiguity_resolution_tests {
         }
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod overlap_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn overlap_details_include_candidates_and_origins() {
+        let class_id = ast::ClassId::dummy("C");
+        let local = PolyInstance {
+            class: class_id.clone(),
+            head_pat: Ty::App {
+                head: Box::new(Ty::Con("Maybe".to_string())),
+                args: vec![Ty::Var(1)],
+            },
+            ctx_len: 0,
+            dict_name: "__dict_C_poly_Maybe_poly".to_string(),
+        };
+        let imported = PolyInstance {
+            class: class_id,
+            head_pat: Ty::App {
+                head: Box::new(Ty::Con("Maybe".to_string())),
+                args: vec![Ty::Con("Integer".to_string())],
+            },
+            ctx_len: 0,
+            dict_name: "A.__dict_C_Maybe_Integer".to_string(),
+        };
+
+        let (candidates, origins) = poly_instance_overlap_details(&[&local, &imported]);
+        assert!(candidates.contains("__dict_C_poly_Maybe_poly"));
+        assert!(candidates.contains("A.__dict_C_Maybe_Integer"));
+        assert!(origins.contains("<current module>"));
+        assert!(origins.contains("A"));
     }
 }
 

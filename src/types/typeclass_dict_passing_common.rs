@@ -5,6 +5,31 @@ use crate::Result;
 
 use std::collections::{HashMap, HashSet};
 
+fn poly_instance_origin(dict_name: &str) -> String {
+    dict_name
+        .rsplit_once('.')
+        .map(|(module, _)| module.to_string())
+        .unwrap_or_else(|| "<current module>".to_string())
+}
+
+fn poly_instance_overlap_details(candidates: &[&PolyInstance]) -> (String, String) {
+    let mut candidate_notes: Vec<String> = candidates
+        .iter()
+        .map(|pi| format!("{} [head: {}]", pi.dict_name, pi.head_pat))
+        .collect();
+    candidate_notes.sort();
+    candidate_notes.dedup();
+
+    let mut origins: Vec<String> = candidates
+        .iter()
+        .map(|pi| poly_instance_origin(&pi.dict_name))
+        .collect();
+    origins.sort();
+    origins.dedup();
+
+    (candidate_notes.join(", "), origins.join(", "))
+}
+
 pub(super) fn rewrite_class_dict_passing_in_module(
     module: &mut ast::Module,
     class_env: &ClassEnv,
@@ -647,9 +672,10 @@ pub(super) fn pick_instance_dict_expr_from_scope(
         return Ok(None);
     }
     if candidates.len() > 1 {
+        let (candidate_notes, origin_notes) = poly_instance_overlap_details(&candidates);
         return Err(Error::msg(format!(
-            "overlapping instances for `{}`: cannot choose for type {ty}",
-            class
+            "overlapping instances for `{}`: cannot choose for type {ty}; candidates: {}; import origins: {}",
+            class, candidate_notes, origin_notes
         )));
     }
 
