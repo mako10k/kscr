@@ -5270,7 +5270,9 @@ fn resolve_instance_dict_name(
             let mut cx = InferCtx::default();
             let head_pat = lower_surface_type(&mut cx, &inst.ty, &mut HashMap::new());
             let Some(pi) = env.poly_instances.iter().find(|pi| {
-                pi.class == inst.class && pi.head_pat == head_pat && pi.ctx_len == inst.preds.len()
+                pi.class == inst.class
+                    && pi.ctx_len == inst.preds.len()
+                    && unify_instance_head(&pi.head_pat, &head_pat).is_some()
             }) else {
                 return Err(Error::msg("internal: missing poly instance"));
             };
