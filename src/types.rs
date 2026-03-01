@@ -16300,6 +16300,47 @@ mod inference_tests {
     }
 
     #[test]
+    fn typecheck_file_resolves_method_value_with_transitive_instance_nested_qualified() {
+        let dir = std::env::temp_dir().join(format!(
+            "kscr_typecheck_file_transitive_method_value_nested_qual_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("A.ks");
+        std::fs::write(
+            &a,
+            "module A where\n  export Inc(..)\n  class Inc a where\n    inc :: a -> a\n  instance Inc Integer where\n    inc x = x + 1\n",
+        )
+        .unwrap();
+
+        let b = dir.join("B.ks");
+        std::fs::write(
+            &b,
+            "module B where\n  export applyInc\n  import A\n  applyInc = inc\n",
+        )
+        .unwrap();
+
+        let c = dir.join("C.ks");
+        std::fs::write(
+            &c,
+            "module C where\n  export useInc\n  import qualified B as BX\n  useInc = BX.applyInc\n",
+        )
+        .unwrap();
+
+        let main = dir.join("Main.ks");
+        std::fs::write(
+            &main,
+            "module Main where\n  import qualified C as CX\n  x = CX.useInc 1\n  main = IO ()\n",
+        )
+        .unwrap();
+
+        let _tm = typecheck_file(&main).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn typecheck_file_resolves_method_value_exported_from_direct_import() {
         let dir = std::env::temp_dir().join(format!(
             "kscr_typecheck_file_method_value_direct_import_{}",

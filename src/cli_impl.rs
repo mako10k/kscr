@@ -1643,7 +1643,9 @@ fn inject_transitive_import_aliases(
             };
 
             // Create alias binding: alias.name -> target_qualified
-            let alias_name = format!("{}.{}", alias, name.rsplit('.').next_back().unwrap_or(name));
+            // Use the last segment (`A.B.x` -> `x`) as the alias member name.
+            let alias_member = name.rsplit('.').next().unwrap_or(name);
+            let alias_name = format!("{}.{}", alias, alias_member);
 
             if !existing.contains(&alias_name) {
                 main_ir.items.push(IrItem::Binding {

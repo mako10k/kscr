@@ -509,29 +509,6 @@ pub(super) fn add_dict_params_to_expr(
                 },
             )
         }
-        ExprKind::Var(ref name) if name.contains('.') => {
-            // Special case: if the expression is a qualified variable reference (e.g., an import
-            // forwarder like `f = A.f`), wrap it in a lambda that passes the dict params through.
-            // Otherwise, `f = \__dict -> A.f` would return A.f without applying the dict.
-            // We only do this for qualified names to avoid breaking method references.
-            let dict_args: Vec<Expr> = dict_params
-                .iter()
-                .map(|p| Expr::new(span, ExprKind::Var(p.clone())))
-                .collect();
-            Expr::new(
-                span,
-                ExprKind::Lambda {
-                    params: dict_params.clone(),
-                    body: Box::new(Expr::new(
-                        span,
-                        ExprKind::Apply {
-                            func: Box::new(expr),
-                            args: dict_args,
-                        },
-                    )),
-                },
-            )
-        }
         other => Expr::new(
             span,
             ExprKind::Lambda {
