@@ -7,7 +7,7 @@ Rules:
 - If implementation and docs differ, treat implementation/tests/CI as source-of-truth and update docs.
 - Potentially non-Haskell-compatible ideas are tracked as P3 and require explicit user instruction.
 
-Last updated: 2026-02-27
+Last updated: 2026-03-01
 
 ---
 
@@ -63,6 +63,13 @@ Purpose: Complete user-defined typeclasses/instances with coherent dictionary pa
 ### Phase 3D — Hardening and gate quality
 - [ ] Add focused CI tests for class/instance regressions and known edge cases.
 - [ ] Add docs for class/instance semantics and migration from deriving-only assumptions.
+
+Progress (2026-03-01):
+- Added focused regressions for transitive user typeclass method-as-value resolution:
+	- typecheck/runtime deep nested qualified chain in `src/types.rs` and `src/lib_test.rs`
+	- typecheck/runtime deep nested re-export chain in `src/types.rs` and `src/lib_test.rs`
+	- CLI integration regression in `tests/cli_run_typeclass_transitive_reexport.rs`
+- CI workflow wiring for an explicit dedicated Phase 3D job is still pending.
 
 Status:
 - [ ] Phase 3D not completed yet.
