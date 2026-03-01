@@ -3,4 +3,4 @@ module Main where
 
   main = do
     args <- getArgs
-    putStrLn (toString args)
+    putStrLn (show args)
