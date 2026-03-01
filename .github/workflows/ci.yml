@@ -34,6 +34,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-test_clippy-
 
+      - name: Clean cached KSIF artifacts
+        run: rm -rf target/ksif
+
       - name: cargo test
         run: cargo test -- --test-threads=1
 
@@ -65,6 +68,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-phase3d_typeclass_regressions-
+
+      - name: Clean cached KSIF artifacts
+        run: rm -rf target/ksif
 
       - name: typecheck transitive method-value regressions
         run: cargo test --lib typecheck_file_resolves_method_value_with_transitive_instance_ -- --test-threads=1
