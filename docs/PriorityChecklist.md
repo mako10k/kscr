@@ -61,8 +61,8 @@ Purpose: Complete user-defined typeclasses/instances with coherent dictionary pa
 - [x] Validate against current no-flattening architecture and keep changes minimal.
 
 ### Phase 3D — Hardening and gate quality
-- [ ] Add focused CI tests for class/instance regressions and known edge cases.
-- [ ] Add docs for class/instance semantics and migration from deriving-only assumptions.
+- [x] Add focused CI tests for class/instance regressions and known edge cases.
+- [x] Add docs for class/instance semantics and migration from deriving-only assumptions.
 
 Progress (2026-03-01):
 - Added focused regressions for transitive user typeclass method-as-value resolution:
@@ -72,8 +72,8 @@ Progress (2026-03-01):
 - CI workflow wiring for an explicit dedicated Phase 3D job is still pending.
 
 Status:
-- [ ] Phase 3D not completed yet.
 - [x] Phase 3C core path is implemented with transitive qualified/unqualified runtime+typecheck regressions.
+- [x] Phase 3D hardening baseline is in place (focused CI job + semantics guide).
 
 ## P18 — Diagnostics and Tooling Usability (Secondary)
 Purpose: Improve developer UX after P16 Phase 3 is stable.

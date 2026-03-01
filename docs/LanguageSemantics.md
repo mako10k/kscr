@@ -77,6 +77,7 @@ This example lazily generates a list of squares of `2` and `4`.
 ## Reference
 
 - For type system details, see `TypeSystem.md`.
+- For user class/instance behavior, see `TypeclassSemantics.md`.
 - For grammar and syntax, see `LanguageBNF.md`.
 - For internal representation, see `IntermediateRepresentation.md`.
 
