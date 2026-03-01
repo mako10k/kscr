@@ -56,17 +56,17 @@ Purpose: Complete user-defined typeclasses/instances with coherent dictionary pa
 - [ ] Improve ambiguity diagnostics with concrete candidate traces and import origin notes.
 
 ### Phase 3C — IR/runtime completion
-- [ ] Complete dictionary construction/passing for user class methods as values across module boundaries.
-- [ ] Add regression coverage for method forwarding, qualified/unqualified imports, and transitive instance visibility.
-- [ ] Validate against current no-flattening architecture and keep changes minimal.
+- [x] Complete dictionary construction/passing for user class methods as values across module boundaries.
+- [x] Add regression coverage for method forwarding, qualified/unqualified imports, and transitive instance visibility.
+- [x] Validate against current no-flattening architecture and keep changes minimal.
 
 ### Phase 3D — Hardening and gate quality
 - [ ] Add focused CI tests for class/instance regressions and known edge cases.
 - [ ] Add docs for class/instance semantics and migration from deriving-only assumptions.
 
 Status:
-- [ ] Not started as a complete milestone.
-- [ ] Partial groundwork exists from deriving and built-in dictionary passing.
+- [ ] Phase 3D not completed yet.
+- [x] Phase 3C core path is implemented with transitive qualified/unqualified runtime+typecheck regressions.
 
 ## P18 — Diagnostics and Tooling Usability (Secondary)
 Purpose: Improve developer UX after P16 Phase 3 is stable.
