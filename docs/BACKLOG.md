@@ -59,3 +59,21 @@ Source: initial extraction from `Future` category items in `docs/DOC_INDEX.md`.
 - Title: Toolchain design to implementation traceability
 - Background: `docs/ToolchainDesign.md` is conceptual and needs explicit mapping to actual crates and commands.
 - DoD: Cross-reference table added (design component -> crate/file/command/test), with gaps captured as backlog tasks.
+
+### BG-009
+- Priority: P2
+- Title: Design and implement a dedicated IR bytecode VM target
+- Background: Current IR execution is expression-tree evaluation in `src/ir.rs`; `docs/IntermediateRepresentation.md` now treats explicit VM bytecode as future work.
+- DoD: Define bytecode instruction set and execution model, implement encoder/decoder + runtime executor, and add roundtrip/execution regression tests.
+
+### BG-010
+- Priority: P1
+- Title: Add LLVM CLI integration regression coverage
+- Background: LLVM backend behavior is currently validated mainly by unit tests in `crates/kscr_llvm/src/lib.rs`; there is no repository-level CLI regression test that exercises `llvm-ir` output shape and `compile --llvm` invocation path with feature gating/toolchain assumptions.
+- DoD: Add gated integration tests that verify `llvm-ir` success/error paths and `compile --llvm` contract (feature-gate diagnostics and stable invocation behavior), including clear skip behavior when `clang` is unavailable.
+
+### BG-011
+- Priority: P1
+- Title: Add typeclass dictionary fallback traceability and regression coverage
+- Background: `src/types.rs` currently has evidence-based early dictionary selection paths (inferred application type and enclosing binding return type), but `docs/TypeclassDictFallbackPolicy.md` still tracks missing explicit trace metadata and automated regressions.
+- DoD: Add structured ambiguity metadata on deferred dictionary sites, add automated regression for `tests/repro_return_in_letrec_fail.ks`, and add an LSP completion test for incomplete-code default-mode behavior.

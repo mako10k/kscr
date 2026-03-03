@@ -100,9 +100,9 @@ Check your editor's outline/symbols view - you should see `add` and `Person`.
 ## 5. Verify Everything Works
 
 ✅ Syntax errors appear in real-time  
-✅ Type errors are shown  
+✅ Type errors are shown (file-backed typecheck)  
 ✅ Document outline works  
-✅ Unsaved changes are tracked  
+✅ Open-buffer changes are tracked for diagnostics and symbols  
 
 ## Troubleshooting
 
@@ -150,6 +150,6 @@ code example.ks
 - **As you type**: Parse errors appear immediately
 - **On save**: Type checking runs automatically
 - **Outline view**: See all functions and types
-- **Future**: Hover, completion, go-to-definition
+- **Also available**: Hover, go-to-definition, completion, references, rename, semantic tokens
 
 That's it! You're ready to use kscr with IDE features.

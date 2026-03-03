@@ -11,7 +11,7 @@ cd crates/kscr_lsp
 cargo build --release
 ```
 
-The binary will be at: `crates/kscr_lsp/target/release/kscr-lsp`
+The binary will be at: `target/release/kscr-lsp` (from `crates/kscr_lsp`) or `crates/kscr_lsp/target/release/kscr-lsp` (from repo root)
 
 ## Visual Studio Code
 
@@ -136,10 +136,13 @@ Once configured, you'll get:
 - Type aliases
 - Type classes
 
-### 🔄 Coming Soon
+### ✅ Navigation and Editing
 - Hover for type information
 - Go-to-definition
 - Code completion
+- Find references (open workspace files)
+- Rename symbols (open workspace files)
+- Semantic tokens
 
 ## Testing Your Configuration
 

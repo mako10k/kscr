@@ -19,7 +19,7 @@ The following APIs are available in the `Prelude` module:
 getArgs :: IO [[Char]]
 ```
 
-Returns all command-line arguments passed to the program, including the binary path and subcommand (if any).
+Returns all command-line arguments passed to the process, including the executable path and subcommand (if any).
 
 **Example:**
 ```haskell
@@ -28,10 +28,12 @@ main = do
   putStrLn (toString args)
 ```
 
-Running `kscr run myfile.ks arg1 arg2` will output:
+Running `kscr run myfile.ks arg1 arg2` will output a list like:
 ```
-["kscr", "run", "myfile.ks", "arg1", "arg2"]
+["target/debug/kscr", "run", "myfile.ks", "arg1", "arg2"]
 ```
+
+The first element is the executable path and may vary by environment.
 
 ### readFile
 

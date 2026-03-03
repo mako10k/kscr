@@ -14,16 +14,16 @@ This document describes the type system and related structural features of the l
 
 ### Primitive Types
 - **Unit**: Only one value, representing the absence of information. Syntax: `()`
-- **Integer (MVP)**: Signed 64-bit integer (`i64`). Syntax: `Integer` (overflow is a runtime error)
+- **Integer**: Arbitrary-precision signed integer. Syntax: `Integer`
 - **Char**: Unicode character values. Syntax: `Char`
 - **Bool**: Two values, `True` and `False`. Syntax: `Bool`
 - **Float64**: IEEE-754 binary64 floating-point. Syntax: `Float64`
-- **String (MVP)**: Primitive string values. Syntax: `String`
+- **String**: Alias-level name for character lists (`[Char]`)
 
 ### Composite Types
 - **Tuple**: Fixed-size, ordered collections. Syntax: `(TyA, TyB, ...)`
 - **List**: Homogeneous, possibly infinite sequences. Syntax: `[Ty]`
-- **String**: Syntactic sugar for `[Char]` (see above).
+- **String literals**: Typed as `[Char]`
 - **Record**: Named fields, supporting both closed and open variants. Syntax: `{ TagA: TyA, ... }`
 - **Function**: First-class, curried by default. Syntax: `TyA -> TyB`
 - **Data**: Algebraic data types. Syntax: `TypeName TyArgA ...`
@@ -104,19 +104,6 @@ main = do
 - Dictionary passing ensures uniform runtime behavior
 
 For detailed implementation, see `TypeClassesPlan.md`.
-
----
-
-## 4. Overloading (Deprecated)
-
-The original design included *contextual overloading* (selecting a definition based on expected type context).
-This approach is **not implemented** in the current `kscr` compiler, and the design is considered deprecated.
-
-For now, ad-hoc polymorphism is handled either by:
-- explicit, separate names (e.g. `intToString`, `boolToString`), or
-- a small number of polymorphic builtins (e.g. `show/toString :: forall a. a -> String`) with runtime behavior.
-
-Future direction: introduce type classes (constraints + dictionary passing) for principled overloading.
 
 ---
 

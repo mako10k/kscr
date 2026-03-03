@@ -30,14 +30,14 @@ This document defines the complete grammar and lexical structure of the language
 - **Block Comment**: Enclosed by `{-` and `-}`; can be nested.
 - Comments are ignored by the parser and do not affect program semantics.
 
-- **Shebang Line**: If the first line of a source file begins with `#`, it is treated as a special comment (shebang) and ignored by the parser. This allows scripts to be run directly as executables on Unix-like systems (e.g., `#!/usr/bin/env mylang`).
+- **Shebang Line**: If the first line of a source file begins with `#!`, it is treated as a special comment (shebang) and ignored by the parser. This allows scripts to be run directly as executables on Unix-like systems (e.g., `#!/usr/bin/env mylang`).
 
 ### Example
 ```
 #!/usr/bin/env mylang
 -- This is a line comment
 {- This is a
-	block comment -}
+block comment -}
 main = print "Hello"
 ```
 
@@ -46,18 +46,19 @@ main = print "Hello"
 ## Types
 
 type ::= unit_type
-	| integer_type
-	| char_type
-	| bool_type
-	| float64_type
-	| string_type
-	| tuple_type
-	| list_type
-	| record_type
-	| function_type
-	| data_type
-	| type_variable
-	| type_hole
+| integer_type
+| char_type
+| bool_type
+| float64_type
+| string_type
+| tuple_type
+| list_type
+| record_type
+| open_record_type
+| function_type
+| data_type
+| type_variable
+| type_hole
 
 unit_type ::= '()'
 integer_type ::= 'Integer'
@@ -68,6 +69,7 @@ string_type ::= 'String'   # alias for [Char]
 tuple_type ::= '(' type {',' type} ')'
 list_type ::= '[' type ']'
 record_type ::= '{' field_type_list '}'
+open_record_type ::= '{' field_type_list ',' '...' [<identifier>] '}'
 field_type_list ::= field_type {',' field_type}
 field_type ::= <identifier> ':' type
 function_type ::= type '->' type
@@ -80,21 +82,23 @@ type_hole ::= '?' | '?' <identifier>
 ## Expressions
 
 expr ::= literal
-	| variable
-	| tuple_expr
-	| list_expr
-	| record_expr
-	| lambda_expr
-	| application
-	| infix_application
-	| data_ctor_expr
-	| type_annotation
-	| let_expr
-	| where_expr
-	| if_expr
-	| case_expr
-	| list_comprehension
-	| do_block
+| variable
+| tuple_expr
+| list_expr
+| list_range_expr
+| list_step_range_expr
+| record_expr
+| lambda_expr
+| application
+| infix_application
+| data_ctor_expr
+| type_annotation
+| let_expr
+| where_expr
+| if_expr
+| case_expr
+| list_comprehension
+| do_block
 
 literal ::= <integer> | <float> | <char> | <bool> | <unit> | <string>
 variable ::= <identifier>
@@ -104,8 +108,8 @@ expr_list ::= expr {',' expr}
 record_expr ::= '{' field_expr_list '}'
 field_expr_list ::= field_expr {',' field_expr}
 field_expr ::= <identifier> ':' expr
-lambda_expr ::= '\' pattern_list '->' expr
-pattern_list ::= pattern {pattern}
+ident_list ::= <identifier> {<identifier>}
+lambda_expr ::= '\\' ident_list '->' expr
 application ::= expr expr {expr}
 infix_application ::= expr infix_op expr
 infix_op ::= '`' <identifier> '`' | '+' | '-' | '*' | '/' | '==' | '/=' | '<' | '>' | '<=' | '>=' | '&&' | '||' | ':' | '++' | ...
@@ -119,7 +123,7 @@ indent_bindings ::= INDENT {binding} DEDENT
 semi_bindings ::= binding {';' binding}
 braced_bindings ::= '{' [binding {';' binding}] '}'
 binding ::= pattern '=' expr
-	| pattern infix_op pattern '=' expr   # infix operator definition sugar (e.g. `a ++ b = ...`)
+| pattern infix_op pattern '=' expr   # infix operator definition sugar (e.g. `a ++ b = ...`)
 
 # Note: operator-named bindings can also be written as `(op) = expr` or `(op) a b = ...` (e.g. `(++) = concat`).
 if_expr ::= 'if' expr 'then' expr 'else' expr
@@ -128,6 +132,8 @@ case_alt_list ::= case_alt {';' case_alt}
 case_alt ::= pattern [guard] '->' expr
 guard ::= '|' expr
 list_comprehension ::= '[' expr '|' generator_list ']'
+list_range_expr ::= '[' expr '..' [expr] ']'
+list_step_range_expr ::= '[' expr ',' expr '..' [expr] ']'
 generator_list ::= generator {',' generator}
 generator ::= pattern '<-' expr | expr
 do_block ::= 'do' indent_block | 'do' braced_do
@@ -140,18 +146,18 @@ statement ::= pattern '<-' expr | expr
 ## Patterns
 
 pattern ::= literal
-	   | variable_pattern
-	   | wildcard_pattern
-	   | as_pattern
-	   | hole_pattern
-	   | tuple_pattern
-	   | list_pattern
-	   | cons_pattern
-	   | record_pattern_strict
-	   | record_pattern_loose
-	   | data_pattern
-	   | or_pattern
-	   | view_pattern
+   | variable_pattern
+   | wildcard_pattern
+   | as_pattern
+   | hole_pattern
+   | tuple_pattern
+   | list_pattern
+   | cons_pattern
+   | record_pattern_strict
+   | record_pattern_loose
+   | data_pattern
+   | or_pattern
+   | view_pattern
 
 variable_pattern ::= <identifier>
 wildcard_pattern ::= '_'
@@ -163,11 +169,11 @@ pattern_list ::= pattern {',' pattern}
 cons_pattern ::= pattern ':' pattern
 record_pattern_strict ::= '{' field_pattern_list '}'
 field_pattern_list ::= field_pattern {',' field_pattern}
-field_pattern ::= <identifier> ':' pattern
-record_pattern_loose ::= '{' field_pattern_list ',' '...' '}'
+field_pattern ::= <identifier> (':' | '=') pattern
+record_pattern_loose ::= '{' [field_pattern_list ','] '...' [<identifier>] '}'
 data_pattern ::= <identifier> {pattern}
 or_pattern ::= pattern '|' pattern
-view_pattern ::= pattern '<-' expr
+view_pattern ::= '(' pattern '<-' expr ')'
 
 ---
 
@@ -200,17 +206,35 @@ type_alias_decl ::= 'type' type_name type_vars '=' type
 
 ---
 
+## Class and Instance Declaration
+
+class_decl ::= 'class' [class_context '=>'] <identifier> <identifier> 'where' class_body
+class_context ::= predicate | '(' predicate {',' predicate} ')'
+predicate ::= <identifier> type
+class_body ::= INDENT {class_method_sig | binding} DEDENT
+class_method_sig ::= (<identifier> | '(' operator ')') '::' type
+
+instance_decl ::= 'instance' [class_context '=>'] <identifier> type 'where' instance_body
+instance_body ::= INDENT {binding} DEDENT
+
+fixity_decl ::= ('infix' | 'infixl' | 'infixr') <integer> fixity_op {',' fixity_op}
+fixity_op ::= <identifier> | operator
+
+---
+
 ## Module and Indent Grouping
 
 module_decl ::= 'module' <identifier> 'where' module_block
 module_block ::= INDENT {module_stmt} DEDENT
-module_stmt ::= import_decl | export_decl | data_decl | type_alias_decl | binding
+module_stmt ::= import_decl | export_decl | fixity_decl | data_decl | type_alias_decl | class_decl | instance_decl | binding
 
-import_decl ::= 'import' ['qualified'] <identifier> [ 'as' <identifier> ]
+import_decl ::= 'import' ['qualified'] <identifier> [ 'as' <identifier> ] [import_spec]
+import_spec ::= '(' [export_spec {',' export_spec}] ')'
+    | 'hiding' '(' [export_spec {',' export_spec}] ')'
 export_decl ::= 'export' export_spec {',' export_spec}
 export_spec ::= <identifier>
-	| <identifier> '(' '..' ')'
-	| <identifier> '(' <identifier> {',' <identifier>} ')'
+| <identifier> '(' '..' ')'
+| <identifier> '(' <identifier> {',' <identifier>} ')'
 
 ### INDENT/DEDENT Tokens
 - **INDENT**: Marks the beginning of an indented block. Generated when indentation level increases.
