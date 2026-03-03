@@ -7,11 +7,11 @@ Rules:
 - If implementation and docs differ, treat implementation/tests/CI as source-of-truth and update docs.
 - Potentially non-Haskell-compatible ideas are tracked as P3 and require explicit user instruction.
 
-Last updated: 2026-03-01
+Last updated: 2026-03-03
 
 ---
 
-## Current Snapshot (2026-02-27)
+## Current Snapshot (2026-03-03)
 
 ### Implemented / Operational
 - P0: Import traversal E2E smoke coverage (multi-file, transitive imports, qualifiers, cycle diagnostics).
@@ -69,7 +69,7 @@ Progress (2026-03-01):
 	- typecheck/runtime deep nested qualified chain in `src/types.rs` and `src/lib_test.rs`
 	- typecheck/runtime deep nested re-export chain in `src/types.rs` and `src/lib_test.rs`
 	- CLI integration regression in `tests/cli_run_typeclass_transitive_reexport.rs`
-- CI workflow wiring for an explicit dedicated Phase 3D job is still pending.
+- CI workflow wiring for an explicit dedicated Phase 3D job is active in `.github/workflows/ci.yml` (`phase3d_typeclass_regressions`).
 
 Status:
 - [x] Phase 3C core path is implemented with transitive qualified/unqualified runtime+typecheck regressions.

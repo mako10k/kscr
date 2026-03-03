@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> Archive Notice: This document is a historical snapshot kept for evidence.
+> It may not reflect current implementation behavior.
+> Current source of truth: `docs/DOC_INDEX.md` and documents classified as `Current`.
+> Edit policy: preserve original content; append-only updates are preferred.
+
 # kscr LSP Implementation - Summary
 
 This document summarizes the Language Server Protocol (LSP) implementation for the kscr language.
