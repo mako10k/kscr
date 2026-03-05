@@ -8,7 +8,7 @@ fn issue_001_alias_imports_do_not_conflict() {
     let result = types::typecheck_file(path);
     assert!(
         result.is_ok(),
-        "alias-qualified imports should not trigger a name conflict: {:?}",
+        "qualified alias imports should not trigger a name conflict: {:?}",
         result.err()
     );
 }
@@ -17,7 +17,7 @@ fn issue_001_alias_imports_do_not_conflict() {
 fn issue_001_alias_imports_do_not_leak_unqualified_names() {
     let path = Path::new("tests/import_qualified_conflict_issue_001_unqualified_leak.ks");
     let result = types::typecheck_file(path);
-    let err = result.expect_err("alias imports must not leak unqualified names");
+    let err = result.expect_err("qualified alias imports must not leak unqualified names");
     let msg = err.to_string();
     assert!(
         msg.contains("unbound variable: map"),

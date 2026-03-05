@@ -1,6 +1,6 @@
 module Main where
-  import Prelude as P
-  import Data.List as L
+  import qualified Prelude as P
+  import qualified Data.List as L
 
   x = map
 
