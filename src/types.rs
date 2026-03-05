@@ -16192,6 +16192,122 @@ instance C (Maybe Integer) where
     }
 
     #[test]
+    fn pick_instance_dict_expr_supports_non_ground_rigid_head_with_context_dict() {
+        let class_id = ast::ClassId::dummy("C");
+        let env = ClassEnv {
+            poly_instances: vec![PolyInstance {
+                class: class_id,
+                head_pat: Ty::App {
+                    head: Box::new(Ty::Con("Maybe".to_string())),
+                    args: vec![Ty::Var(1)],
+                },
+                ctx_len: 1,
+                dict_name: "Main.__dict_C_poly_Maybe_a".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let mut dicts = HashSet::new();
+        dicts.insert("__ctx_dict_0".to_string());
+
+        let target = Ty::App {
+            head: Box::new(Ty::Con("Maybe".to_string())),
+            args: vec![Ty::Var(99)],
+        };
+        let got = super::typeclass_dict_passing_common::pick_instance_dict_expr_from_scope(
+            ast::Span { start: 0, end: 0 },
+            &env,
+            &dicts,
+            "C",
+            &target,
+        )
+        .unwrap()
+        .expect("expected dictionary expression");
+
+        match got.kind {
+            ast::ExprKind::Apply { func, args } => {
+                assert_eq!(args.len(), 1);
+                assert!(matches!(
+                    func.kind,
+                    ast::ExprKind::Var(ref n) if n == "Main.__dict_C_poly_Maybe_a"
+                ));
+                assert!(matches!(
+                    args[0].kind,
+                    ast::ExprKind::Var(ref n) if n == "__ctx_dict_0"
+                ));
+            }
+            other => panic!("expected apply expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pick_instance_dict_expr_keeps_bare_tyvar_deferred() {
+        let class_id = ast::ClassId::dummy("C");
+        let env = ClassEnv {
+            poly_instances: vec![PolyInstance {
+                class: class_id,
+                head_pat: Ty::App {
+                    head: Box::new(Ty::Con("Maybe".to_string())),
+                    args: vec![Ty::Var(1)],
+                },
+                ctx_len: 0,
+                dict_name: "Main.__dict_C_poly_Maybe_a".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let got = super::typeclass_dict_passing_common::pick_instance_dict_expr_from_scope(
+            ast::Span { start: 0, end: 0 },
+            &env,
+            &HashSet::new(),
+            "C",
+            &Ty::Var(42),
+        )
+        .unwrap();
+
+        assert!(got.is_none(), "expected deferred resolution for bare tyvar");
+    }
+
+    #[test]
+    fn pick_instance_dict_expr_reports_candidates_for_missing_context_dict() {
+        let class_id = ast::ClassId::dummy("C");
+        let env = ClassEnv {
+            poly_instances: vec![PolyInstance {
+                class: class_id,
+                head_pat: Ty::App {
+                    head: Box::new(Ty::Con("Maybe".to_string())),
+                    args: vec![Ty::Var(1)],
+                },
+                ctx_len: 1,
+                dict_name: "Main.__dict_C_poly_Maybe_a".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let target = Ty::App {
+            head: Box::new(Ty::Con("Maybe".to_string())),
+            args: vec![Ty::Var(3)],
+        };
+        let err = super::typeclass_dict_passing_common::pick_instance_dict_expr_from_scope(
+            ast::Span { start: 0, end: 0 },
+            &env,
+            &HashSet::new(),
+            "C",
+            &target,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("missing instance context dictionary in scope"),
+            "unexpected error: {msg}"
+        );
+        assert!(msg.contains("candidates:"), "unexpected error: {msg}");
+        assert!(msg.contains("import origins:"), "unexpected error: {msg}");
+        assert!(msg.contains("Main"), "unexpected error: {msg}");
+    }
+
+    #[test]
     fn method_dict_failfast_message_has_non_strict_hint() {
         let msg = method_dict_failfast_message("f", "C");
         assert!(

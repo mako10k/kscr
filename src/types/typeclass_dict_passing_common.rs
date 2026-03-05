@@ -528,8 +528,21 @@ pub(super) fn pick_instance_dict_expr_from_scope(
 ) -> Result<Option<ast::Expr>> {
     use ast::{Expr, ExprKind};
 
-    if !ftv_ty(ty).is_empty() {
-        // Not ground: we cannot soundly choose a global instance dictionary here.
+    fn has_rigid_instance_head(ty: &Ty) -> bool {
+        match ty {
+            Ty::Var(_) => false,
+            Ty::Con(_) => true,
+            Ty::List(_) | Ty::Tuple(_) | Ty::Record(_) | Ty::RecordOpen(_, _) | Ty::Func(_, _) => {
+                true
+            }
+            Ty::App { head, .. } => has_rigid_instance_head(head),
+        }
+    }
+
+    let target_has_ftv = !ftv_ty(ty).is_empty();
+    if target_has_ftv && !has_rigid_instance_head(ty) {
+        // Non-ground target without a rigid constructor head (e.g. a bare type variable):
+        // keep deferred behavior to avoid unsound eager global instance selection.
         return Ok(None);
     }
 
@@ -642,8 +655,13 @@ pub(super) fn pick_instance_dict_expr_from_scope(
     for i in 0..pi.ctx_len {
         let pname = format!("__ctx_dict_{i}");
         if !dicts_in_scope.contains(&pname) {
+            let pairs: Vec<(String, Ty)> = candidates
+                .iter()
+                .map(|cand| (cand.dict_name.clone(), cand.head_pat.clone()))
+                .collect();
+            let (candidate_notes, origin_notes) = super::format_overlap_candidates(&pairs);
             return Err(Error::msg(format!(
-                "missing instance context dictionary in scope: {pname}"
+                "missing instance context dictionary in scope: {pname}; while resolving `{class}` for type {ty_norm}; candidates: {candidate_notes}; import origins: {origin_notes}"
             )));
         }
         expr = Expr::new(
