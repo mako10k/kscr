@@ -22,6 +22,10 @@ Legend:
 | `docs/LLVMIRGeneration.md` | Needs-Update | `crates/kscr_llvm/src/lib.rs` MVP subset + `src/cli/cli_compile.rs` `compile --llvm` path + `src/cli/cli_llvm_ir.rs` command wiring | Updated over-claims (JIT/optimization/full lowering) to MVP-scoped behavior. |
 | `docs/LSP_Quick_Start.md` | Needs-Update | `crates/kscr_lsp/test_lsp.sh` build+startup smoke path; `crates/kscr_lsp/src/backend.rs` advertised capabilities and change/save diagnostics; `crates/kscr_lsp/src/backend_diagnostics_hover.rs` file-backed typecheck behavior | Updated feature status and unsaved/typecheck wording to match implementation details. |
 | `docs/LSP_Usage.md` | Needs-Update | `crates/kscr_lsp/src/backend.rs` capability set; `editors/vscode/package.json` language id/settings keys; `crates/kscr_lsp/src/backend_references_rename.rs` VFS-scoped references/rename | Corrected binary path wording and moved implemented navigation features out of "Coming Soon". |
+| `docs/LSPDesign.md` | Needs-Update | `crates/kscr_lsp/src/backend.rs` capability set (completion/references/rename/semantic tokens); `editors/vscode/extension.js` serverPath-or-PATH launch path; `editors/vscode/package.json` current settings keys | Rebased roadmap sections to current implementation; moved auto-download and workspace-wide indexing to future scope. |
+| `docs/LSP_VSIX_NextPlan.md` | Needs-Update | `crates/kscr_lsp/src/backend.rs` advertised capabilities; `crates/kscr_lsp/src/backend_diagnostics_hover.rs` unsaved-file temp path typecheck; `editors/vscode/extension.js` server path resolution and restart command | Removed already-implemented phases and compressed roadmap to post-baseline tasks only; linked remaining scope to `BG-012`/`BG-013`/`BG-014`. |
+| `docs/VSCodeExtension.md` | Needs-Update | `editors/vscode/package.json` language + settings + command contribution; `editors/vscode/extension.js` LanguageClient startup and path fallback; `tests/lsp_completion_docs_smoke.rs` and `tests/lsp_semantic_tokens_smoke.rs` baseline coverage | Rewrote roadmap to implementation-first baseline and moved only unimplemented items to backlog-linked post-baseline section. |
+| `docs/ImplementationPlan.md` | Needs-Update | `src/parser_impl.rs` class/instance parse paths; `src/lib_test/typeclass_phase3.rs` user class/instance regressions; `.github/workflows/ci.yml` phase3d job | Updated M3 status to implemented baseline and shifted execution order from implementation gap to hardening gap. |
 | `docs/LanguageBNF.md` | Needs-Update | `src/lexer.rs` shebang/comments/layout + `src/parser_impl.rs` module/import/export/fixity/class/instance/expression forms + `src/parser_impl/pattern.rs` view/record-loose patterns + `src/lib_test.rs` list-range/view/record-loose tests | Updated grammar claims to current parser behavior (including sections, list ranges, open records, class/instance, and import specs). |
 | `docs/TypeclassDictFallbackPolicy.md` | Needs-Update | `src/types.rs` resolve path (`resolve_method_dict_expr`) + failfast helpers/tests + CLI check for `tests/repro_return_in_letrec_fail.ks`; remaining gaps tracked in `docs/BACKLOG.md` (`BG-011`) | Updated policy wording to match evidence-based fallback currently implemented. |
 | `docs/DOC_INDEX.md` | Aligned | Generated from current classification work | This file is the classification source doc itself. |
@@ -34,9 +38,15 @@ Legend:
 3. Reconciled one confirmed mismatch in `docs/PriorityChecklist.md`.
 4. Reconciled `docs/TypeSystem.md` and audited `docs/TypeclassSemantics.md` against implementation evidence.
 5. Reconciled `docs/LanguageBNF.md` against parser/lexer behavior and updated grammar claims to implementation-first wording.
+6. Reconciled `docs/LSPDesign.md` against `kscr-lsp` capabilities and current VS Code extension launch/settings behavior.
+7. Reconciled `docs/ImplementationPlan.md` milestone status against current parser/typeclass tests/CI.
+8. Reconciled `docs/LSP_VSIX_NextPlan.md` to post-baseline scope and linked remaining work to backlog IDs.
+9. Reconciled `docs/VSCodeExtension.md` to baseline-vs-future split and removed already-implemented LSP items from future roadmap.
+10. Reconciled `docs/LSP_Quick_Start.md` startup/provisioning notes with current extension behavior (`serverPath`/`PATH` + restart flow).
+11. Reconciled `docs/LSP_Usage.md` with current VFS-scoped references/rename limitation and linked workspace-index future direction.
 
 ## Next 3 Reconciliation Tasks
 
-1. `docs/LSPDesign.md`: reconcile roadmap statements with currently advertised `kscr-lsp` capabilities and limits.
-2. `docs/ImplementationPlan.md`: reconcile plan status against currently shipped implementation milestones.
-3. `docs/TypeclassDictFallbackPolicy.md`: implement `BG-011` (fallback ambiguity metadata + regression coverage).
+1. `docs/TypeclassDictFallbackPolicy.md`: implement `BG-011` (fallback ambiguity metadata + regression coverage).
+2. `docs/PriorityChecklist.md`: consider status normalization (`Needs-Update` -> `Aligned`) after one focused verification pass.
+3. `docs/LanguageSemantics.md`: consider status normalization (`Needs-Update` -> `Aligned`) after one focused verification pass.

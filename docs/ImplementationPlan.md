@@ -6,7 +6,7 @@ Policy:
 - If implementation/tests/CI and docs disagree, implementation is the source-of-truth.
 - This file is not a changelog; it defines baseline, gaps, and execution order.
 
-Last updated: 2026-02-27
+Last updated: 2026-03-05
 
 ---
 
@@ -14,11 +14,11 @@ Last updated: 2026-02-27
 
 The codebase is end-to-end runnable (lexer -> parser -> typechecker -> IR -> runtime) and currently includes:
 - Multi-file module resolution with import/export boundaries and qualified imports.
-- Deriving-based typeclass support (`Show`/`Eq`) with dictionary passing.
+- Typeclass support including user-defined `class`/`instance`, deriving-based `Show`/`Eq`, and dictionary passing.
 - REPL (`kscr repl`) with stdio mode and optional readline (`--features readline`), plus `:load` and `:modules`.
 - Optional unsafe-isolated features via subcrates (`unsafe_ffi`, `unsafe_bigint`).
 - Optional LLVM text-generation path (`--features llvm`).
-- CI gates active on main (test/fmt/clippy + required unsafe crates checks).
+- CI gates active on main (test/fmt/clippy + required unsafe crates checks + phase3d typeclass regression job).
 
 Reference docs:
 - `docs/PriorityChecklist.md` (execution-first priorities)
@@ -36,12 +36,14 @@ Status: Done (operational baseline).
 - Module syntax and import traversal are production paths.
 
 ## M3 Typeclasses
-Status: Partially complete.
+Status: Done for current scope.
 - Done:
-  - Constraint representation and dictionary passing for existing built-in class path.
+  - User-defined `class` / `instance` parsing and typechecking paths are implemented.
+  - Constraint representation and dictionary passing for built-in and user-defined class paths.
   - `deriving Show`, `deriving Eq`, and `deriving (Eq, Show)`.
-- Not done:
-  - General user-defined `class` / `instance` feature set (Phase 3).
+  - Reserved-class guardrails (`Show`/`Eq` redefinition rejection).
+- Remaining future hardening:
+  - Better ambiguity/fallback traceability and additional ergonomics (tracked in backlog).
 
 ## M4 IR Elaboration
 Status: Done for current interpreter path.
@@ -67,46 +69,40 @@ Status: Partial/optional.
 
 ## M8 Tooling and UX
 Status: Partial.
-- Diagnostics improved in multiple areas (especially imports), but formatter/linter scope is not a finished milestone.
+- Implemented: `kscr-lsp` + VS Code client baseline with diagnostics/hover/definition/documentSymbol/completion/references/rename/semantic tokens.
+- Pending: formatter/linter scope and wider IDE UX polish.
 
 ---
 
 ## Corrections Applied vs Older Plan Text
 
-1. Typeclasses were previously labeled as fully implemented at milestone granularity.
-- Corrected: deriving + dictionary baseline is implemented, but user `class`/`instance` remains an open milestone.
+1. Typeclasses were previously labeled as partially complete due to missing user `class` / `instance`.
+- Corrected: user `class` / `instance` baseline is implemented; remaining work is hardening/ergonomics.
 
 2. FFI section previously implied mostly future work.
 - Corrected: MVP checked-boundary and unsafe-isolated real C ABI path are already implemented.
 
 3. CI/unsafe gate posture was partially described as pending.
-- Corrected: required CI checks are active and green on `main`.
+- Corrected: required CI checks are active on `main`, including phase3d typeclass regression coverage.
 
-4. Test reliability gap around stdlib `.ksif` assumptions.
-- Corrected in implementation and acknowledged as baseline hardening (clean-checkout deterministic setup).
+4. Tooling section understated current LSP capability surface.
+- Corrected: baseline LSP features are implemented; roadmap now focuses on scale/UX hardening.
 
 ---
 
 ## Rebased Execution Order (From Current State)
 
-## Stage A - Complete Typeclasses Phase 3 (Highest Priority)
-Goal: user-defined `class` / `instance` with coherent resolution and stable IR/runtime behavior.
+## Stage A - Typeclass Hardening and Traceability (Highest Priority)
+Goal: improve diagnosability and long-term maintainability of the already-implemented typeclass baseline.
 
-A1. Surface and environment
-- Parse/validate user classes and instances across imported modules.
-- Keep MVP guardrails (reject user `class Show`/`class Eq` redefinitions).
+A1. Fallback/ambiguity visibility
+- Add structured metadata and user-facing diagnostics for dictionary fallback choices.
 
-A2. Resolution semantics
-- Support constrained non-ground instances.
-- Enforce coherence (no overlap/duplicates) with deterministic diagnostics.
+A2. Resolution reliability
+- Expand regressions for transitive imports, method-as-value, and alias-heavy module graphs.
 
-A3. IR/runtime and module boundaries
-- Complete dictionary passing for method-as-value and transitive imports.
-- Add focused regression suites for aliasing, qualification, and cross-module forwarding.
-
-A4. Hardening
-- Expand CI-targeted class/instance regressions.
-- Update language/typeclass docs to match implemented semantics.
+A3. Documentation sync
+- Keep typeclass policy docs and implementation evidence aligned per pass.
 
 ## Stage B - Diagnostics and Developer UX
 Goal: reduce debugging cost and improve error explainability.

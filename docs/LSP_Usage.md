@@ -144,6 +144,10 @@ Once configured, you'll get:
 - Rename symbols (open workspace files)
 - Semantic tokens
 
+Current limitation:
+- `references` and `rename` are currently VFS-scoped and primarily cover open workspace documents.
+- Full workspace-wide symbol indexing for closed files is tracked as future work (`BG-012`).
+
 ## Testing Your Configuration
 
 1. Open a `.ks` file in your editor

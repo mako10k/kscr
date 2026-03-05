@@ -11,6 +11,10 @@ cargo build --release
 
 The binary will be at: `target/release/kscr-lsp`
 
+Provisioning note:
+- The VS Code extension does not auto-download `kscr-lsp` in the current baseline.
+- Provide the server via `kscr.lsp.serverPath` or ensure `kscr-lsp` is available on `PATH`.
+
 ## 2. Test It Works
 
 ```bash
@@ -118,7 +122,9 @@ Check your editor's outline/symbols view - you should see `add` and `Person`.
 **Solutions**:
 1. Ensure binary is executable: `chmod +x kscr-lsp`
 2. Test manually: `echo '{}' | ./kscr-lsp`
-3. Check for error messages in editor logs
+3. If VS Code is used, set `kscr.lsp.serverPath` explicitly or ensure `kscr-lsp` is on `PATH`
+4. Run `Kscr: Restart LSP` from the command palette after changing server path settings
+5. Check for error messages in editor logs
 
 ## Next Steps
 

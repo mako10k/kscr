@@ -1,9 +1,10 @@
 # kscr LSP / VSIX 設計（推奨案）
 
-この文書は、kscr の VS Code 拡張を **LSP 対応まで拡張**していくための、推奨アーキテクチャと段階的ロードマップをまとめた設計書です。
+この文書は、kscr の VS Code 拡張を **LSP 対応まで拡張**していくための、
+推奨アーキテクチャと段階的ロードマップをまとめた設計書です。
 
 - 対象: kscr 言語（`.ks`）
-- 現状: TextMate 文法 + language-configuration のみ（MVP）
+- 現状: VS Code extension + Rust `kscr-lsp` are implemented (TextMate grammar is still shipped)
 - 目標: kscr 実装（lexer/parser/typechecker 等）と整合する LSP を提供し、VSIX を「入れたらすぐ便利」な品質にする
 
 ---
@@ -38,20 +39,17 @@
 - 位置情報/モジュール解決などを “言語側の真実” に寄せられる
 - TS 側は薄いクライアントにでき、長期保守が楽
 
-### 2.2 配布/起動方式（VSIX を充実させるための推奨）
+### 2.2 配布/起動方式（Current vs Future）
 
-**推奨: B + C のハイブリッド**
+Current implementation:
+- `kscr.lsp.serverPath` can point to a local `kscr-lsp` binary.
+- If `kscr.lsp.serverPath` is empty, the extension launches `kscr-lsp` from `PATH`.
 
-- **B: 初回起動時に LSP サーバーバイナリを自動ダウンロード**（GitHub Releases など）
-- **C: `kscr.lsp.serverPath` 設定でローカルの `kscr-lsp` を優先利用可能**
+Future option (not implemented in this repository state):
+- First-run automatic binary download from Releases.
 
-メリット:
-- ユーザーは “入れたら動く”
-- 開発者/CI はローカルビルドを即利用できる
-- VSIX の巨大化（A: 同梱）を回避できる
-
-注意点:
-- 企業環境/オフラインでの失敗に備え、設定での回避（C）と分かりやすいエラーメッセージが必須
+Note:
+- Keep the future download flow as roadmap work (see backlog item `BG-005`).
 
 ---
 
@@ -59,7 +57,7 @@
 
 最初に実装して「体験が変わる」最小セットを以下とする。
 
-### 3.1 必須（Phase 1）
+### 3.1 実装済み（Current）
 
 - `textDocument/publishDiagnostics`
   - パースエラー
@@ -71,13 +69,20 @@
   - トップレベル定義（モジュール境界を跨ぐ）
 - `textDocument/documentSymbol`
   - モジュール内の項目一覧（関数/データ/型別名/型クラス/インスタンス）
+- `textDocument/completion`
+  - Prefix-based completion with docs from typed module metadata
+- `textDocument/references`
+  - VFS-scoped reference search
+- `textDocument/rename`
+  - VFS-scoped rename using definition anchoring
+- `textDocument/semanticTokens` (full/range/full-delta)
+  - function/type/class/method/constructor categories
 
-### 3.2 後回し（Phase 2+）
+### 3.2 未実装・将来（Phase 2+）
 
-- 補完（`completion`）: スコープ/インポート/型に依存し、設計が重い
-- 参照検索（`references`）: def-use の安定が前提
-- リネーム（`rename`）: 境界/衝突/エクスポートの扱いが必要
-- Semantic Tokens: 正確だが解析コストと仕様の詰めが必要
+- Workspace-wide (non-open-file) references/rename index
+- Auto download/update of `kscr-lsp` binary from releases
+- Quick Fix actions for import/type diagnostics
 
 ---
 
@@ -91,12 +96,11 @@
 
 ### 4.2 VS Code 拡張（TS）側
 
-- 役割: Language Client + サーバーダウンロード/起動管理
+- 役割: Language Client + サーバー起動管理
 - 推奨ライブラリ:
   - `vscode-languageclient`
 - 追加コマンド:
   - Restart kscr LSP
-  - Show kscr LSP Logs
 
 ### 4.3 LSP サーバー（Rust）側
 
@@ -129,7 +133,7 @@ VS Code の未保存バッファを扱うため、解析入力は OS の実フ�
 kscr 仕様に合わせ、import 解決は以下。
 
 - 基準ディレクトリ: **import 元ファイルの親ディレクトリ**
-- `import Foo.Bar` → `<base>/Foo/Bar.ks` を探索（例）
+- `import Foo.Bar` -> `<base>/Foo/Bar.ks` を探索（例）
 - 循環 import は検出し、診断に落とす（既存実装があるなら再利用）
 
 ### 5.3 Prelude の扱い
@@ -174,26 +178,24 @@ kscr 仕様に合わせ、import 解決は以下。
 ### Phase 3（IDE 機能拡張）
 
 - def-use インデックス
-- references / rename / completion
+- workspace-wide references / rename
 
 ---
 
 ## 8. VSIX の“充実”チェックリスト
 
-### 8.1 設定（案）
+### 8.1 設定（Current）
 
 - `kscr.lsp.enabled`: boolean（既定 true）
 - `kscr.lsp.serverPath`: string | null（指定時はこれを優先）
-- `kscr.lsp.download.enabled`: boolean（既定 true）
-- `kscr.lsp.download.channel`: `stable` | `nightly`（既定 stable）
-- `kscr.lsp.trace`: `off` | `messages` | `verbose`
+- `kscr.lsp.restart` command is available from command palette
 
 ### 8.2 UX
 
 - OutputChannel: `Kscr Language Server`
 - ステータスバー: サーバー起動状態（任意）
 - 失敗時の案内:
-  - 「自動DLに失敗しました。`kscr.lsp.serverPath` を設定してください」
+  - 「`kscr-lsp` の起動に失敗しました。`kscr.lsp.serverPath` を設定してください」
 
 ---
 
@@ -208,30 +210,25 @@ kscr 仕様に合わせ、import 解決は以下。
 
 ### 9.2 VSIX
 
-- VSIX は拡張本体（TS/設定/grammar）を配布
-- 初回起動で該当 platform の `kscr-lsp` を取得
+- VSIX currently ships extension code + settings + grammar.
+- `kscr-lsp` is expected from `kscr.lsp.serverPath` or `PATH` (no bundled downloader yet).
 
 ---
 
 ## 10. テスト方針
 
-- Rust: LSP サーバーのユニットテスト（VFS/モジュール解決/診断変換）
-- Rust: 既存 `tests/*.ks` を “解析入力” として再利用できる形を目指す
-- VS Code: 手動スモーク（`example_hello.ks` を開いて diagnostics/hover/definition を確認）
+- Rust: LSP backend unit tests（goto/hover/symbol/reference/rename/semantic tokens）
+- Rust: smoke tests in repository root (`tests/lsp_*`) for completion docs and semantic tokens
+- VS Code: manual smoke remains useful for extension launch/path settings
 
 ---
 
 ## 11. ロードマップ（具体）
 
-1) LSP サーバー最小骨格（initialize/shutdown/exit）
-2) VFS + didOpen/didChange/didSave
-3) diagnostics（parse/import/type）
-4) hover
-5) definition
-6) documentSymbol
-7) 自動DL + 設定（serverPath）
-8) キャッシュ/増分の改善
-9) completion → references → rename
+1) Keep current LSP feature set stable (diagnostics/hover/definition/documentSymbol/completion/references/rename/semantic tokens)
+2) Improve unresolved-file and cross-workspace indexing behavior
+3) Add optional binary download/update flow
+4) Harden cache/incremental invalidation behavior
 
 ---
 

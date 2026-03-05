@@ -77,3 +77,21 @@ Source: initial extraction from `Future` category items in `docs/DOC_INDEX.md`.
 - Title: Add typeclass dictionary fallback traceability and regression coverage
 - Background: `src/types.rs` currently has evidence-based early dictionary selection paths (inferred application type and enclosing binding return type), but `docs/TypeclassDictFallbackPolicy.md` still tracks missing explicit trace metadata and automated regressions.
 - DoD: Add structured ambiguity metadata on deferred dictionary sites, add automated regression for `tests/repro_return_in_letrec_fail.ks`, and add an LSP completion test for incomplete-code default-mode behavior.
+
+### BG-012
+- Priority: P1
+- Title: Add workspace-wide symbol index for LSP navigation and rename
+- Background: Current `references`/`rename` in `crates/kscr_lsp/src/backend_references_rename.rs` are VFS-scoped and only cover open documents; definition currently resolves through immediate module reads, not a full project index.
+- DoD: Add a project symbol index that includes closed files, make `references`/`rename` use indexed symbol resolution, and add regression tests covering cross-file edits when only one file is open in the editor.
+
+### BG-013
+- Priority: P1
+- Title: Improve VSIX server provisioning and startup preflight diagnostics
+- Background: `editors/vscode/extension.js` currently launches `kscr-lsp` from `kscr.lsp.serverPath` or `PATH` only; users must install/manage binaries manually and failure guidance is minimal.
+- DoD: Add explicit preflight checks (existence/executable validation + actionable error details), document supported provisioning flows, and add smoke coverage for failure and success startup paths.
+
+### BG-014
+- Priority: P2
+- Title: Add VS Code snippets and formatter integration contract
+- Background: The extension currently contributes language grammar/config/LSP wiring but no snippets or formatter command integration contract.
+- DoD: Contribute initial snippet set and define formatter command/settings contract (disabled by default if formatter is absent), with user-facing docs and smoke checks.
