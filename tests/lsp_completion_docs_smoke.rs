@@ -390,9 +390,8 @@ fn lsp_completion_survives_incomplete_buffer_tail() {
     let uri = tower_lsp::lsp_types::Url::from_file_path(&path).unwrap();
     let doc = vfs::Document::new(uri, src_doc, 1);
 
-    let items =
-        backend_goto_completion::completion_items_in_doc(&doc, Position::new(line, 2), &tm)
-            .unwrap();
+    let items = backend_goto_completion::completion_items_in_doc(&doc, Position::new(line, 2), &tm)
+        .unwrap();
 
     assert!(
         items.iter().any(|i| i.label == "adjust"),

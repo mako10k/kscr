@@ -13714,14 +13714,7 @@ fn resolve_method_dict_expr(
     } else {
         DictFallbackDecision::DeferUnresolved
     };
-    record_dict_fallback_trace(
-        ctx,
-        mname,
-        class,
-        defer_decision,
-        determined_by_args,
-        None,
-    );
+    record_dict_fallback_trace(ctx, mname, class, defer_decision, determined_by_args, None);
     Ok(None)
 }
 
@@ -16252,7 +16245,8 @@ instance C (Maybe Integer) where
         )
         .unwrap();
 
-        let tm = typecheck_file(&tmp).expect("default mode should keep method rewriting non-strict");
+        let tm =
+            typecheck_file(&tmp).expect("default mode should keep method rewriting non-strict");
         assert!(
             tm.dict_fallback_trace.iter().any(|e| {
                 e.method_name == "pure"
@@ -16282,7 +16276,8 @@ instance C (Maybe Integer) where
             Err(err) => {
                 let msg = err.to_string();
                 assert!(
-                    msg.contains("cannot choose dictionary for method call") && msg.contains("pure"),
+                    msg.contains("cannot choose dictionary for method call")
+                        && msg.contains("pure"),
                     "unexpected error: {msg}"
                 );
 
