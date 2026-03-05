@@ -27,7 +27,7 @@ Legend:
 | `docs/VSCodeExtension.md` | Needs-Update | `editors/vscode/package.json` language + settings + command contribution; `editors/vscode/extension.js` LanguageClient startup and path fallback; `tests/lsp_completion_docs_smoke.rs` and `tests/lsp_semantic_tokens_smoke.rs` baseline coverage | Rewrote roadmap to implementation-first baseline and moved only unimplemented items to backlog-linked post-baseline section. |
 | `docs/ImplementationPlan.md` | Needs-Update | `src/parser_impl.rs` class/instance parse paths; `src/lib_test/typeclass_phase3.rs` user class/instance regressions; `.github/workflows/ci.yml` phase3d job | Updated M3 status to implemented baseline and shifted execution order from implementation gap to hardening gap. |
 | `docs/LanguageBNF.md` | Needs-Update | `src/lexer.rs` shebang/comments/layout + `src/parser_impl.rs` module/import/export/fixity/class/instance/expression forms + `src/parser_impl/pattern.rs` view/record-loose patterns + `src/lib_test.rs` list-range/view/record-loose tests | Updated grammar claims to current parser behavior (including sections, list ranges, open records, class/instance, and import specs). |
-| `docs/TypeclassDictFallbackPolicy.md` | Needs-Update | `src/types.rs` resolve path (`resolve_method_dict_expr`) + failfast helpers/tests + CLI check for `tests/repro_return_in_letrec_fail.ks`; remaining gaps tracked in `docs/BACKLOG.md` (`BG-011`) | Updated policy wording to match evidence-based fallback currently implemented. |
+| `docs/TypeclassDictFallbackPolicy.md` | Aligned | `src/types.rs` structured fallback trace (`DictFallbackTraceEvent` / `DictFallbackDecision`) + failfast helpers/tests + regressions (`tests/typeclass_dict_fallback_regression.rs`, `tests/lsp_completion_docs_smoke.rs`, `tests/repro_return_in_letrec_fail.ks`) | BG-011 implemented; policy and implementation now aligned. |
 | `docs/DOC_INDEX.md` | Aligned | Generated from current classification work | This file is the classification source doc itself. |
 | `docs/ARCHIVE_NOTICE.md` | Aligned | Applied to all current `Past` docs | Template and applied banner are in sync. |
 
@@ -47,6 +47,6 @@ Legend:
 
 ## Next 3 Reconciliation Tasks
 
-1. `docs/TypeclassDictFallbackPolicy.md`: implement `BG-011` (fallback ambiguity metadata + regression coverage).
-2. `docs/PriorityChecklist.md`: consider status normalization (`Needs-Update` -> `Aligned`) after one focused verification pass.
-3. `docs/LanguageSemantics.md`: consider status normalization (`Needs-Update` -> `Aligned`) after one focused verification pass.
+1. `docs/PriorityChecklist.md`: consider status normalization (`Needs-Update` -> `Aligned`) after one focused verification pass.
+2. `docs/LanguageSemantics.md`: consider status normalization (`Needs-Update` -> `Aligned`) after one focused verification pass.
+3. `docs/LSPDesign.md`: verify roadmap status after BG-012/BG-013 scoping updates.

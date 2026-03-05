@@ -51,6 +51,29 @@ pub struct TypedModule {
     pub module: ast::Module,
     pub inferred: HashMap<String, Scheme>,
     pub docs: HashMap<String, String>,
+    pub dict_fallback_trace: Vec<DictFallbackTraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictFallbackDecision {
+    SelectedFromInScopeParam,
+    SelectedFromKnownContext,
+    SelectedFromArgs,
+    SelectedFromInferredApplicationType,
+    SelectedFromEnclosingBindingReturnType,
+    DeferAmbiguous,
+    DeferUnresolved,
+    FailfastError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictFallbackTraceEvent {
+    pub method_name: String,
+    pub class_name: String,
+    pub span: ast::Span,
+    pub determined_by_args: bool,
+    pub decision: DictFallbackDecision,
+    pub chosen_dict: Option<String>,
 }
 
 fn collect_toplevel_docs(module: &ast::Module) -> HashMap<String, String> {
@@ -474,6 +497,22 @@ thread_local! {
     // Type alias usages encountered during AST lowering/expansion.
     // Key: unqualified alias name (e.g. `String`). Value: resolved qualified name (e.g. `Prelude.String`).
     static TL_ALIAS_EVIDENCE: RefCell<Vec<(UnqualName, QualName)>> = const { RefCell::new(Vec::new()) };
+}
+
+thread_local! {
+    static TL_DICT_FALLBACK_TRACE: RefCell<Vec<DictFallbackTraceEvent>> = const { RefCell::new(Vec::new()) };
+}
+
+fn clear_dict_fallback_trace() {
+    TL_DICT_FALLBACK_TRACE.with(|slot| slot.borrow_mut().clear());
+}
+
+fn push_dict_fallback_trace(event: DictFallbackTraceEvent) {
+    TL_DICT_FALLBACK_TRACE.with(|slot| slot.borrow_mut().push(event));
+}
+
+fn take_dict_fallback_trace() -> Vec<DictFallbackTraceEvent> {
+    TL_DICT_FALLBACK_TRACE.with(|slot| std::mem::take(&mut *slot.borrow_mut()))
 }
 
 #[derive(Clone)]
@@ -8940,6 +8979,7 @@ fn typecheck_internal_core_with_entry_path(
 ) -> Result<TypedModule> {
     // Collect docs from the source AST once. Later desugaring/rewrites may drop or rewrite items.
     let source_docs = collect_toplevel_docs(&module);
+    clear_dict_fallback_trace();
 
     WithAliasEvidence::run(|| {
         // Module-unit compilation: imports remain as syntax, but are satisfied via `.ksif`.
@@ -8962,6 +9002,7 @@ fn typecheck_internal_core_with_entry_path(
                     module,
                     inferred,
                     docs: source_docs.clone(),
+                    dict_fallback_trace: Vec::new(),
                 });
             }
         }
@@ -9226,6 +9267,8 @@ fn typecheck_internal_core_with_entry_path(
         // Rewrite method calls/vars while dictionary bindings still exist.
         rewrite_class_method_calls_in_module(&mut module, &class_env, &inferred_for_rewrite)?;
 
+        let dict_fallback_trace = take_dict_fallback_trace();
+
         // Drop class / instance decls after desugaring.
         module
             .items
@@ -9235,6 +9278,7 @@ fn typecheck_internal_core_with_entry_path(
             module,
             inferred,
             docs: source_docs,
+            dict_fallback_trace,
         })
     })
 }
@@ -13277,6 +13321,23 @@ fn resolve_method_dict_expr(
     mname: &str,
     args: &[ast::Expr],
 ) -> Result<Option<(ast::Expr, Option<String>)>> {
+    fn record_dict_fallback_trace(
+        ctx: &ApplyRewriteCtx<'_>,
+        mname: &str,
+        class: &str,
+        decision: DictFallbackDecision,
+        determined_by_args: bool,
+        chosen_dict: Option<String>,
+    ) {
+        push_dict_fallback_trace(DictFallbackTraceEvent {
+            method_name: mname.to_string(),
+            class_name: class.to_string(),
+            span: ctx.span,
+            determined_by_args,
+            decision,
+            chosen_dict,
+        });
+    }
     use ast::{Expr, ExprKind, Type};
 
     fn unqualified_class_name(class: &str) -> &str {
@@ -13337,12 +13398,28 @@ fn resolve_method_dict_expr(
     let dict_var = format!("__dict_{class}");
     let dict_var_unqual = format!("__dict_{}", unqualified_class_name(class));
     if ctx.dicts_in_scope.contains(&dict_var) {
+        record_dict_fallback_trace(
+            ctx,
+            mname,
+            class,
+            DictFallbackDecision::SelectedFromInScopeParam,
+            true,
+            Some(dict_var.clone()),
+        );
         return Ok(Some((
             Expr::new(ctx.span, ExprKind::Var(dict_var.clone())),
             Some(dict_var),
         )));
     }
     if ctx.dicts_in_scope.contains(&dict_var_unqual) {
+        record_dict_fallback_trace(
+            ctx,
+            mname,
+            class,
+            DictFallbackDecision::SelectedFromInScopeParam,
+            true,
+            Some(dict_var_unqual.clone()),
+        );
         return Ok(Some((
             Expr::new(ctx.span, ExprKind::Var(dict_var_unqual.clone())),
             Some(dict_var_unqual),
@@ -13356,6 +13433,14 @@ fn resolve_method_dict_expr(
         .or_else(|| ctx.known_dicts_in_scope.get(unqualified_class_name(class)))
     {
         let chosen_name_for_known = Some(d.clone());
+        record_dict_fallback_trace(
+            ctx,
+            mname,
+            class,
+            DictFallbackDecision::SelectedFromKnownContext,
+            true,
+            chosen_name_for_known.clone(),
+        );
         return Ok(Some((
             Expr::new(ctx.span, ExprKind::Var(d.clone())),
             chosen_name_for_known,
@@ -13384,6 +13469,14 @@ fn resolve_method_dict_expr(
                 if let Ok(head) = instance_head_key_ty_for_class(ctx.class_env, class_id, &app_ty) {
                     if let Some(d) = ctx.class_env.instances.get(&(class_id.clone(), head)) {
                         let chosen_name_for_known = Some(d.clone());
+                        record_dict_fallback_trace(
+                            ctx,
+                            mname,
+                            class,
+                            DictFallbackDecision::SelectedFromInferredApplicationType,
+                            determined_by_args,
+                            chosen_name_for_known.clone(),
+                        );
                         return Ok(Some((
                             Expr::new(ctx.span, ExprKind::Var(d.clone())),
                             chosen_name_for_known,
@@ -13409,6 +13502,14 @@ fn resolve_method_dict_expr(
                                     ctx.class_env.instances.get(&(class_id.clone(), head))
                                 {
                                     let chosen_name_for_known = Some(d.clone());
+                                    record_dict_fallback_trace(
+                                        ctx,
+                                        mname,
+                                        class,
+                                        DictFallbackDecision::SelectedFromEnclosingBindingReturnType,
+                                        determined_by_args,
+                                        chosen_name_for_known.clone(),
+                                    );
                                     return Ok(Some((
                                         Expr::new(ctx.span, ExprKind::Var(d.clone())),
                                         chosen_name_for_known,
@@ -13482,6 +13583,14 @@ fn resolve_method_dict_expr(
                     } else {
                         pi.dict_name.clone()
                     };
+                    record_dict_fallback_trace(
+                        ctx,
+                        mname,
+                        class,
+                        DictFallbackDecision::SelectedFromArgs,
+                        determined_by_args,
+                        Some(dict_ref.clone()),
+                    );
                     return Ok(Some((Expr::new(ctx.span, ExprKind::Var(dict_ref)), None)));
                 }
             }
@@ -13494,6 +13603,14 @@ fn resolve_method_dict_expr(
 
     if let Some(dict_name) = dict_name {
         let chosen_name_for_known = Some(dict_name.clone());
+        record_dict_fallback_trace(
+            ctx,
+            mname,
+            class,
+            DictFallbackDecision::SelectedFromArgs,
+            determined_by_args,
+            chosen_name_for_known.clone(),
+        );
         return Ok(Some((
             Expr::new(ctx.span, ExprKind::Var(dict_name)),
             chosen_name_for_known,
@@ -13507,6 +13624,14 @@ fn resolve_method_dict_expr(
         ctx.dicts_in_scope,
         ctx.known_dicts_in_scope,
     ) {
+        record_dict_fallback_trace(
+            ctx,
+            mname,
+            class,
+            DictFallbackDecision::SelectedFromArgs,
+            determined_by_args,
+            None,
+        );
         return Ok(Some((d, None)));
     }
 
@@ -13528,6 +13653,14 @@ fn resolve_method_dict_expr(
                     if let Ok(head) = instance_head_key_ty_for_class(ctx.class_env, class_id, rt) {
                         if let Some(d) = ctx.class_env.instances.get(&(class_id.clone(), head)) {
                             let chosen_name_for_known = Some(d.clone());
+                            record_dict_fallback_trace(
+                                ctx,
+                                mname,
+                                class,
+                                DictFallbackDecision::SelectedFromEnclosingBindingReturnType,
+                                determined_by_args,
+                                chosen_name_for_known.clone(),
+                            );
                             return Ok(Some((
                                 Expr::new(ctx.span, ExprKind::Var(d.clone())),
                                 chosen_name_for_known,
@@ -13556,6 +13689,14 @@ fn resolve_method_dict_expr(
     // This behaves like a fallback and can mask bugs, so allow opting into strict fail-fast.
     let failfast = method_dict_failfast_enabled();
     if failfast {
+        record_dict_fallback_trace(
+            ctx,
+            mname,
+            class,
+            DictFallbackDecision::FailfastError,
+            determined_by_args,
+            None,
+        );
         eprintln!(
             "[KSCR_FAILFAST_METHOD_DICT] cannot choose dictionary for `{mname}` (class={class}) args_len={} span={:?}",
             args.len(),
@@ -13568,6 +13709,19 @@ fn resolve_method_dict_expr(
     }
 
     // Non-strict mode: keep it polymorphic (caller will wrap in a dict-lambda).
+    let defer_decision = if !determined_by_args || first_non_ground.is_some() {
+        DictFallbackDecision::DeferAmbiguous
+    } else {
+        DictFallbackDecision::DeferUnresolved
+    };
+    record_dict_fallback_trace(
+        ctx,
+        mname,
+        class,
+        defer_decision,
+        determined_by_args,
+        None,
+    );
     Ok(None)
 }
 
@@ -16065,6 +16219,85 @@ instance C (Maybe Integer) where
 
         std::env::set_var("KSCR_FAILFAST_METHOD_DICT", "0");
         assert!(!method_dict_failfast_enabled());
+    }
+
+    #[test]
+    fn dict_fallback_trace_captures_return_resolution_path() {
+        let tm = typecheck_file(std::path::Path::new("tests/repro_return_in_letrec_fail.ks"))
+            .expect("repro_return_in_letrec_fail should typecheck");
+
+        assert!(
+            tm.dict_fallback_trace.iter().any(|e| {
+                e.method_name == "return"
+                    && matches!(
+                        e.decision,
+                        DictFallbackDecision::SelectedFromInferredApplicationType
+                            | DictFallbackDecision::SelectedFromEnclosingBindingReturnType
+                    )
+            }),
+            "missing return fallback trace: {:?}",
+            tm.dict_fallback_trace
+        );
+    }
+
+    #[test]
+    fn dict_fallback_trace_records_non_strict_and_failfast_behavior() {
+        let tmp = std::env::temp_dir().join(format!(
+            "kscr_dict_fallback_trace_defer_{}.ks",
+            std::process::id()
+        ));
+        std::fs::write(
+            &tmp,
+            "module TraceDefer where\n  import Prelude\n  deferred = pure 1\n",
+        )
+        .unwrap();
+
+        let tm = typecheck_file(&tmp).expect("default mode should keep method rewriting non-strict");
+        assert!(
+            tm.dict_fallback_trace.iter().any(|e| {
+                e.method_name == "pure"
+                    && matches!(
+                        e.decision,
+                        DictFallbackDecision::SelectedFromInScopeParam
+                            | DictFallbackDecision::DeferAmbiguous
+                            | DictFallbackDecision::DeferUnresolved
+                    )
+            }),
+            "missing non-strict trace: {:?}",
+            tm.dict_fallback_trace
+        );
+
+        let _guard = EnvGuard::set("KSCR_FAILFAST_METHOD_DICT", "1");
+        match typecheck_file(&tmp) {
+            Ok(tm_strict) => {
+                assert!(
+                    tm_strict
+                        .dict_fallback_trace
+                        .iter()
+                        .any(|e| e.method_name == "pure"),
+                    "missing strict-mode trace: {:?}",
+                    tm_strict.dict_fallback_trace
+                );
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("cannot choose dictionary for method call") && msg.contains("pure"),
+                    "unexpected error: {msg}"
+                );
+
+                let trace = take_dict_fallback_trace();
+                assert!(
+                    trace
+                        .iter()
+                        .any(|e| matches!(e.decision, DictFallbackDecision::FailfastError)),
+                    "missing failfast trace: {:?}",
+                    trace
+                );
+            }
+        }
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 

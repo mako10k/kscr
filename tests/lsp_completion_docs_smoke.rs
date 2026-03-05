@@ -369,3 +369,34 @@ fn lsp_completion_matches_case_insensitive_prefix() {
         items.iter().map(|i| &i.label).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn lsp_completion_survives_incomplete_buffer_tail() {
+    let src_typed = r#"module Main where
+  adjust = 0
+"#
+    .to_string();
+
+    let tmp_dir = std::env::temp_dir().join("kscr_tests");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let path = tmp_dir.join("completion_incomplete_tail.ks");
+    std::fs::write(&path, &src_typed).unwrap();
+
+    let tm = kscr::types::typecheck_file(&path).unwrap();
+
+    // Keep type info from the typed file, but query completion on an incomplete in-memory buffer.
+    let src_doc = format!("{src_typed}\nad(");
+    let line = src_doc.lines().count() as u32 - 1;
+    let uri = tower_lsp::lsp_types::Url::from_file_path(&path).unwrap();
+    let doc = vfs::Document::new(uri, src_doc, 1);
+
+    let items =
+        backend_goto_completion::completion_items_in_doc(&doc, Position::new(line, 2), &tm)
+            .unwrap();
+
+    assert!(
+        items.iter().any(|i| i.label == "adjust"),
+        "completion should remain available for incomplete code: {:?}",
+        items.iter().map(|i| &i.label).collect::<Vec<_>>()
+    );
+}

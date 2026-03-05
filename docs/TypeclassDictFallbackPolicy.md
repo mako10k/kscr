@@ -34,17 +34,19 @@ This is especially important for methods like `return :: a -> m a` where the dic
 - FailFast mode (opt-in): surface ambiguity sites loudly and fail when a dictionary must be chosen but cannot.
   - Current knob: `KSCR_FAILFAST_METHOD_DICT=1`.
 
-## Work items (TODO)
+## Work items (Status)
 
 1. Remove any remaining method-name branching (e.g. `"return"`) from `src/types.rs`. ✅
-2. Audit dictionary resolution paths for early commitment:
-   - functions that return `Ok(Some(...))` / `Ok(None)` etc,
-   - document each `Ok(Some(...))` path as either evidence-based selection or explicit policy choice.
-3. Make ambiguity representation explicit:
-   - tag deferred dictionary sites with structured metadata for diagnostics (method name, location, required class, partial types).
-4. Fix remaining letrec/SCC recursion mismatches:
-   - ensure dictionaries available from expected types (annotations / surrounding context) are visible during rewrite,
-   - for methods whose class parameter is not determined by argument types (e.g. `return`/`pure`), current code first tries inferred application type and then enclosing binding return type.
-5. Add regression tests:
-   - `tests/repro_return_in_letrec_fail.ks` typechecks in current CLI (`kscr typecheck`). Add automated regression coverage. TODO
-   - keep a test that verifies incomplete code used by LSP can still produce completions in default mode.
+2. Audit dictionary resolution paths for early commitment. ✅
+3. Make ambiguity representation explicit. ✅
+   - `src/types.rs` now records `DictFallbackTraceEvent` with structured decision metadata:
+     - selected from args
+     - selected from inferred application type
+     - selected from enclosing binding return type
+     - defer (ambiguous / unresolved)
+     - failfast error
+4. Fix letrec/SCC fallback mismatch for method class params not determined by args. ✅
+   - Resolution order keeps evidence-based selection: inferred application type first, then enclosing binding return type.
+5. Add regressions. ✅
+   - `tests/repro_return_in_letrec_fail.ks` is now covered by Rust tests (unit + integration).
+   - Incomplete-code completion behavior is covered by `tests/lsp_completion_docs_smoke.rs`.

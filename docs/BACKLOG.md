@@ -75,8 +75,10 @@ Source: initial extraction from `Future` category items in `docs/DOC_INDEX.md`.
 ### BG-011
 - Priority: P1
 - Title: Add typeclass dictionary fallback traceability and regression coverage
+- Status: Done (2026-03-05)
 - Background: `src/types.rs` currently has evidence-based early dictionary selection paths (inferred application type and enclosing binding return type), but `docs/TypeclassDictFallbackPolicy.md` still tracks missing explicit trace metadata and automated regressions.
-- DoD: Add structured ambiguity metadata on deferred dictionary sites, add automated regression for `tests/repro_return_in_letrec_fail.ks`, and add an LSP completion test for incomplete-code default-mode behavior.
+- DoD: Add structured ambiguity metadata on deferred dictionary sites, add automated regression for `tests/repro_return_in_letrec_fail.ks`, and add an LSP completion test for incomplete-code default-mode behavior. ✅
+- Notes: implemented via structured fallback metadata in `TypedModule` and dedicated regressions in Rust tests.
 
 ### BG-012
 - Priority: P1
