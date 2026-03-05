@@ -33,6 +33,7 @@ Source: initial extraction from `Future` category items in `docs/DOC_INDEX.md`.
 ### BG-004
 - Priority: P0
 - Title: Resolve qualified import false conflict issue
+- Status: Done (2026-03-05)
 - Background: `docs/issues/001-qualified-import-name-conflict.md` includes a minimal reproduction of user-facing failure.
 - DoD: Repro test passes, conflict behavior is corrected for qualified names, and no regression appears in import-related test suites.
 

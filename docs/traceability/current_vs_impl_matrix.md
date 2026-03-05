@@ -45,6 +45,8 @@ Legend:
 10. Reconciled `docs/LSP_Quick_Start.md` startup/provisioning notes with current extension behavior (`serverPath`/`PATH` + restart flow).
 11. Reconciled `docs/LSP_Usage.md` with current VFS-scoped references/rename limitation and linked workspace-index future direction.
 
+12. Implemented BG-004 import-alias conflict fix and added regression coverage for alias-only import scope behavior.
+
 ## Next 3 Reconciliation Tasks
 
 1. `docs/PriorityChecklist.md`: consider status normalization (`Needs-Update` -> `Aligned`) after one focused verification pass.

@@ -7753,7 +7753,7 @@ fn inject_imported_ksif_forwarders(
 
             // For unqualified imports, inject `x = <Qual>.x`.
             // If multiple imports try to provide the same unqualified name, first import wins.
-            if !id.qualified {
+            if !id.qualified && id.as_name.is_none() {
                 let origin = format!("import {qual}");
                 if let Some(_prev) = defined.get(name) {
                     // Local definitions win silently.
@@ -11023,7 +11023,7 @@ impl ModuleLoader {
             )?;
 
             // Emit unqualified forwarders for non-qualified imports
-            if !id.qualified {
+            if !id.qualified && id.as_name.is_none() {
                 let primary_qual = id.as_name.as_deref().unwrap_or(&id.module);
                 let key = ImportQualKey {
                     path: p.clone(),
