@@ -2737,15 +2737,7 @@ fn parse_atom(ts: &mut TokenStream) -> Result<ast::Expr> {
             _ => unreachable!(),
         },
         Some(TokenKind::String(_)) => match ts.bump() {
-            Some(TokenKind::String(s)) => {
-                // Desugar string literal expressions into list-of-char expressions.
-                // This aligns with Haskell surface semantics where String ~ [Char].
-                let es = s
-                    .chars()
-                    .map(|ch| ast::Expr::dummy(ast::ExprKind::Char(ch)))
-                    .collect::<Vec<_>>();
-                Ok(expr_from(ts, start, ast::ExprKind::List(es)))
-            }
+            Some(TokenKind::String(s)) => Ok(expr_from(ts, start, ast::ExprKind::String(s))),
             _ => unreachable!(),
         },
         Some(TokenKind::Char(_)) => match ts.bump() {

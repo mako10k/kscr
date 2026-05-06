@@ -69,7 +69,7 @@ pub fn encode_ksif_module(module: &KsifModule) -> Vec<u8> {
         },
     ];
 
-    let file_len = (interface_off + interface_payload.len() as u64) as u64;
+    let file_len = interface_off + interface_payload.len() as u64;
     let mut out = Vec::with_capacity(file_len as usize);
 
     out.extend_from_slice(&MAGIC);

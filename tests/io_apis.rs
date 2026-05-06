@@ -30,6 +30,47 @@ fn test_readfile_writefile_api() {
 }
 
 #[test]
+fn test_readfile_two_qualified_imports_regression() {
+    let dir = std::env::temp_dir().join(format!(
+        "kscr_test_readfile_two_qualified_imports_regression_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+
+    let program = dir.join("Program.ks");
+    let program_src = "module Main where\n  import Prelude\n  import qualified Foo as Foo\n  import qualified Bar as Bar\n\n  main = do\n    putStrLn Foo.hello\n    putStrLn Bar.msg\n";
+    std::fs::write(&program, program_src).expect("write Program.ks");
+
+    let main = dir.join("Main.ks");
+    std::fs::write(
+        &main,
+        "module Main where\n  import Prelude\n\n  countChars = \\xs -> case xs of\n    [] -> 0\n    _ : rest -> 1 + countChars rest\n\n  main = do\n    content <- readFile \"Program.ks\"\n    print (show (countChars content))\n",
+    )
+    .expect("write Main.ks");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_kscr"))
+        .args(["run", "Main.ks"])
+        .current_dir(&dir)
+        .output()
+        .expect("run kscr");
+
+    assert!(
+        out.status.success(),
+        "expected success, got status {:?}, stdout={}, stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let expected = format!("\"{}\"", program_src.chars().count());
+    assert_eq!(stdout.trim(), expected);
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn test_exitwith_api() {
     let out = Command::new(env!("CARGO_BIN_EXE_kscr"))
         .args(["run", "tests/test_exitwith.ks"])

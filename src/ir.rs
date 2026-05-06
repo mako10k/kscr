@@ -55,10 +55,8 @@ fn collect_ctor_aliases(module: &ast::Module) -> std::collections::HashMap<Strin
             continue;
         };
         match &b.expr.kind {
-            ast::ExprKind::Var(v) => {
-                if v.contains('.') {
-                    out.insert(name.clone(), v.clone());
-                }
+            ast::ExprKind::Var(v) if v.contains('.') => {
+                out.insert(name.clone(), v.clone());
             }
             ast::ExprKind::Ctor(v) => {
                 let v = v.qualified_text();
@@ -562,6 +560,8 @@ pub enum IoAction {
     },
 }
 
+type SharedEnv = std::rc::Rc<std::collections::HashMap<String, Value>>;
+
 #[derive(Debug, Clone)]
 pub enum Value {
     Unit,
@@ -654,7 +654,7 @@ pub enum Value {
     Closure {
         params: Vec<String>,
         body: Box<IrExpr>,
-        env: std::collections::HashMap<String, Value>,
+        env: SharedEnv,
     },
 }
 
@@ -824,7 +824,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                         func: Box::new(IrExpr::Var("show".to_string())),
                         args: vec![IrExpr::Var("x".to_string())],
                     }),
-                    env: std::collections::HashMap::new(),
+                    env: std::collections::HashMap::new().into(),
                 },
             )]))
         }
@@ -839,7 +839,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                             func: Box::new(IrExpr::Var("+".to_string())),
                             args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
                         }),
-                        env: std::collections::HashMap::new(),
+                        env: std::collections::HashMap::new().into(),
                     },
                 ),
                 (
@@ -850,7 +850,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                             func: Box::new(IrExpr::Var("-".to_string())),
                             args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
                         }),
-                        env: std::collections::HashMap::new(),
+                        env: std::collections::HashMap::new().into(),
                     },
                 ),
                 (
@@ -861,7 +861,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                             func: Box::new(IrExpr::Var("*".to_string())),
                             args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
                         }),
-                        env: std::collections::HashMap::new(),
+                        env: std::collections::HashMap::new().into(),
                     },
                 ),
             ]))
@@ -876,7 +876,7 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
                         func: Box::new(IrExpr::Var("==".to_string())),
                         args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
                     }),
-                    env: std::collections::HashMap::new(),
+                    env: std::collections::HashMap::new().into(),
                 },
             )]))
         }
@@ -1163,7 +1163,7 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
                                     IrExpr::Var("second".to_string()),
                                 ],
                             }),
-                            env: std::collections::HashMap::new(),
+                            env: std::collections::HashMap::new().into(),
                         },
                     ),
                     (
@@ -1177,7 +1177,7 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
                                     IrExpr::Var("f".to_string()),
                                 ],
                             }),
-                            env: std::collections::HashMap::new(),
+                            env: std::collections::HashMap::new().into(),
                         },
                     ),
                     (
@@ -1188,7 +1188,7 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
                                 func: Box::new(IrExpr::Var("IO".to_string())),
                                 args: vec![IrExpr::Var("x".to_string())],
                             }),
-                            env: std::collections::HashMap::new(),
+                            env: std::collections::HashMap::new().into(),
                         },
                     ),
                 ]),
@@ -1216,7 +1216,7 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
                                     IrExpr::Var("second".to_string()),
                                 ],
                             }),
-                            env: std::collections::HashMap::new(),
+                            env: std::collections::HashMap::new().into(),
                         },
                     ),
                     (
@@ -1230,7 +1230,7 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
                                     IrExpr::Var("f".to_string()),
                                 ],
                             }),
-                            env: std::collections::HashMap::new(),
+                            env: std::collections::HashMap::new().into(),
                         },
                     ),
                     (
@@ -1241,7 +1241,7 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
                                 func: Box::new(IrExpr::Var("IO".to_string())),
                                 args: vec![IrExpr::Var("x".to_string())],
                             }),
-                            env: std::collections::HashMap::new(),
+                            env: std::collections::HashMap::new().into(),
                         },
                     ),
                 ]),
@@ -1315,7 +1315,7 @@ fn eval_expr(
         IrExpr::Lambda { params, body } => Value::Closure {
             params: params.clone(),
             body: body.clone(),
-            env: env.clone(),
+            env: std::rc::Rc::new(env.clone()),
         },
         IrExpr::Apply { func, args } => eval_apply(g, env, func, args)?,
         IrExpr::If {
@@ -1570,7 +1570,7 @@ fn run_io_get_args() -> Result<IoOutcome> {
 fn run_io_read_file(path: String) -> Result<IoOutcome> {
     let content = std::fs::read_to_string(&path)
         .map_err(|e| Error::msg(format!("readFile: failed to read '{}': {}", path, e)))?;
-    Ok(IoOutcome::Value(string_to_char_list(&content)))
+    Ok(IoOutcome::Value(Value::String(content)))
 }
 
 fn run_io_write_file(path: String, content: String) -> Result<IoOutcome> {
@@ -1973,7 +1973,7 @@ fn apply_closure(
     g: &Globals,
     params: Vec<String>,
     body: Box<IrExpr>,
-    env: std::collections::HashMap<String, Value>,
+    env: SharedEnv,
     arg: Value,
 ) -> Result<Value> {
     if params.is_empty() {
@@ -1981,13 +1981,17 @@ fn apply_closure(
     }
 
     let mut params = params;
-    let mut env = env;
+    let mut env = (*env).clone();
     let p = params.remove(0);
     env.insert(p, arg);
     if params.is_empty() {
         eval_expr(g, &env, &body)
     } else {
-        Ok(Value::Closure { params, body, env })
+        Ok(Value::Closure {
+            params,
+            body,
+            env: std::rc::Rc::new(env),
+        })
     }
 }
 
@@ -2150,8 +2154,34 @@ fn list_to_vec(g: &Globals, mut v: Value) -> Result<Vec<Value>> {
                 out.push(*h);
                 v = *t;
             }
+            Value::String(s) => {
+                out.extend(s.chars().map(Value::Char));
+                return Ok(out);
+            }
             other => return Err(Error::msg(format!("expected List, got {other:?}"))),
         }
+    }
+}
+
+fn string_uncons(s: String) -> Option<(Value, Value)> {
+    let mut chars = s.chars();
+    let head = chars.next()?;
+    let tail = chars.as_str();
+    let tail_value = if tail.is_empty() {
+        Value::ListNil
+    } else {
+        Value::String(tail.to_string())
+    };
+    Some((Value::Char(head), tail_value))
+}
+
+fn list_uncons(g: &Globals, v: Value) -> Result<Option<(Value, Value)>> {
+    let v = force_value(g, v)?;
+    match v {
+        Value::ListNil => Ok(None),
+        Value::ListCons(h, t) => Ok(Some((*h, *t))),
+        Value::String(s) => Ok(string_uncons(s)),
+        _ => Ok(None),
     }
 }
 
@@ -2626,9 +2656,10 @@ fn show_value_str(g: &Globals, v: Value) -> Result<String> {
         Value::Char(c) => quote_char(c),
         Value::Unit => "()".to_string(),
         Value::Tuple(vs) => {
-            let mut parts = Vec::new();
+            let mut parts: Vec<String> = Vec::new();
             for v in vs {
-                parts.push(show_value_str(g, v)?);
+                let v_forced = force_value(g, v)?;
+                parts.push(show_value_str(g, v_forced)?);
             }
             format!("({})", parts.join(", "))
         }
@@ -2717,6 +2748,20 @@ fn show_with_dict(g: &Globals, builtin_dict: Value, dict: Value, a: Value) -> Re
     apply_one(g, f, a)
 }
 
+fn eq_list_like_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
+    let a_elems = list_to_vec(g, a)?;
+    let b_elems = list_to_vec(g, b)?;
+    if a_elems.len() != b_elems.len() {
+        return Ok(false);
+    }
+    for (x, y) in a_elems.into_iter().zip(b_elems) {
+        if !eq_values(g, x, y)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
     let a = force_and_auto_apply(g, a)?;
     let b = force_and_auto_apply(g, b)?;
@@ -2733,7 +2778,7 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
             if as_.len() != bs.len() {
                 return Ok(false);
             }
-            for (x, y) in as_.into_iter().zip(bs.into_iter()) {
+            for (x, y) in as_.into_iter().zip(bs) {
                 if !eq_values(g, x, y)? {
                     return Ok(false);
                 }
@@ -2746,6 +2791,10 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
         (Value::ListCons(a_hd, a_tl), Value::ListCons(b_hd, b_tl)) => {
             eq_values(g, *a_hd, *b_hd)? && eq_values(g, *a_tl, *b_tl)?
         }
+        (a @ Value::String(_), b @ Value::ListNil)
+        | (a @ Value::String(_), b @ Value::ListCons(_, _))
+        | (a @ Value::ListNil, b @ Value::String(_))
+        | (a @ Value::ListCons(_, _), b @ Value::String(_)) => eq_list_like_values(g, a, b)?,
 
         (Value::Record(mut a_fields), Value::Record(mut b_fields)) => {
             let a_ctor =
@@ -2781,7 +2830,7 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
                 if a_elems.len() != b_elems.len() {
                     return Ok(false);
                 }
-                for (x, y) in a_elems.into_iter().zip(b_elems.into_iter()) {
+                for (x, y) in a_elems.into_iter().zip(b_elems) {
                     if !eq_values(g, x, y)? {
                         return Ok(false);
                     }
@@ -2794,7 +2843,7 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
             if a_fields.len() != b_fields.len() {
                 return Ok(false);
             }
-            for ((ak, av), (bk, bv)) in a_fields.into_iter().zip(b_fields.into_iter()) {
+            for ((ak, av), (bk, bv)) in a_fields.into_iter().zip(b_fields) {
                 if ak != bk {
                     return Ok(false);
                 }
@@ -2909,18 +2958,17 @@ fn match_pat_list(
     let mut out = std::collections::HashMap::new();
     let mut cur = v.clone();
     for p in ps.iter() {
-        let cur_forced = force_value(g, cur)?;
-        let Value::ListCons(h, t) = cur_forced else {
+        let Some((h, t)) = list_uncons(g, cur)? else {
             return Ok(None);
         };
         let Some(b) = match_pat(g, env, p, &h)? else {
             return Ok(None);
         };
         out.extend(b);
-        cur = *t;
+        cur = t;
     }
     let cur = force_value(g, cur)?;
-    if matches!(cur, Value::ListNil) {
+    if matches!(cur, Value::ListNil) || matches!(&cur, Value::String(s) if s.is_empty()) {
         Ok(Some(out))
     } else {
         Ok(None)
@@ -2934,8 +2982,7 @@ fn match_pat_cons(
     tl: &IrPattern,
     v: &Value,
 ) -> Result<Option<std::collections::HashMap<String, Value>>> {
-    let v = force_and_auto_apply(g, v.clone())?;
-    let Value::ListCons(h, t) = v else {
+    let Some((h, t)) = list_uncons(g, force_and_auto_apply(g, v.clone())?)? else {
         return Ok(None);
     };
     let mut out = std::collections::HashMap::new();
@@ -3130,6 +3177,10 @@ mod show_roundtrip_tests {
         Value::Integer(int_from_i64(n))
     }
 
+    fn chars(s: &str) -> Value {
+        string_to_char_list(s)
+    }
+
     #[test]
     fn show_value_str_roundtrips_through_parser_for_literals() {
         let g0 = Globals::from_module(&IrModule { items: vec![] });
@@ -3156,5 +3207,14 @@ mod show_roundtrip_tests {
                 eval_show_str(&s1).unwrap_or_else(|e| panic!("failed to roundtrip: {s1}: {e}"));
             assert_eq!(s1, s2);
         }
+    }
+
+    #[test]
+    fn eq_values_accepts_string_charlist_interop() {
+        let g0 = Globals::from_module(&IrModule { items: vec![] });
+
+        assert!(eq_values(&g0, Value::String("ab".to_string()), chars("ab")).unwrap());
+        assert!(eq_values(&g0, chars("ab"), Value::String("ab".to_string())).unwrap());
+        assert!(eq_values(&g0, Value::String(String::new()), Value::ListNil).unwrap());
     }
 }
