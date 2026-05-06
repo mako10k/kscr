@@ -55,10 +55,8 @@ fn collect_ctor_aliases(module: &ast::Module) -> std::collections::HashMap<Strin
             continue;
         };
         match &b.expr.kind {
-            ast::ExprKind::Var(v) => {
-                if v.contains('.') {
-                    out.insert(name.clone(), v.clone());
-                }
+            ast::ExprKind::Var(v) if v.contains('.') => {
+                out.insert(name.clone(), v.clone());
             }
             ast::ExprKind::Ctor(v) => {
                 let v = v.qualified_text();
@@ -2756,7 +2754,7 @@ fn eq_list_like_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
     if a_elems.len() != b_elems.len() {
         return Ok(false);
     }
-    for (x, y) in a_elems.into_iter().zip(b_elems.into_iter()) {
+    for (x, y) in a_elems.into_iter().zip(b_elems) {
         if !eq_values(g, x, y)? {
             return Ok(false);
         }
@@ -2780,7 +2778,7 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
             if as_.len() != bs.len() {
                 return Ok(false);
             }
-            for (x, y) in as_.into_iter().zip(bs.into_iter()) {
+            for (x, y) in as_.into_iter().zip(bs) {
                 if !eq_values(g, x, y)? {
                     return Ok(false);
                 }
@@ -2832,7 +2830,7 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
                 if a_elems.len() != b_elems.len() {
                     return Ok(false);
                 }
-                for (x, y) in a_elems.into_iter().zip(b_elems.into_iter()) {
+                for (x, y) in a_elems.into_iter().zip(b_elems) {
                     if !eq_values(g, x, y)? {
                         return Ok(false);
                     }
@@ -2845,7 +2843,7 @@ fn eq_values(g: &Globals, a: Value, b: Value) -> Result<bool> {
             if a_fields.len() != b_fields.len() {
                 return Ok(false);
             }
-            for ((ak, av), (bk, bv)) in a_fields.into_iter().zip(b_fields.into_iter()) {
+            for ((ak, av), (bk, bv)) in a_fields.into_iter().zip(b_fields) {
                 if ak != bk {
                     return Ok(false);
                 }
