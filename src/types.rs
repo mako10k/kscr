@@ -8509,8 +8509,13 @@ fn load_module_with_imports_ast_with_loader(
 }
 
 fn ensure_implicit_prelude_import(mut module: ast::Module) -> ast::Module {
-    // Prelude itself should not implicitly import Prelude.
-    if module.name.as_deref() == Some("Prelude") {
+    // Prelude modules must never implicitly import Prelude, or stdlib imports like
+    // Prelude -> Prelude.Functor -> Prelude become spurious cycles in editor/LSP flows.
+    if module
+        .name
+        .as_deref()
+        .is_some_and(|name| name == "Prelude" || name.starts_with("Prelude."))
+    {
         return module;
     }
 
@@ -17165,6 +17170,18 @@ mod inference_tests {
 
         let _tm = typecheck_file(&main).unwrap();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ensure_implicit_prelude_import_skips_prelude_children() {
+        let module = ast::Module {
+            name: Some("Prelude.Functor".to_string()),
+            export_specs: None,
+            items: vec![],
+        };
+
+        let module = ensure_implicit_prelude_import(module);
+        assert!(module.items.is_empty());
     }
 
     #[test]

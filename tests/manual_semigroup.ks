@@ -1,9 +1,9 @@
 module ManualSemigroup (main) where
-  import Prelude.Semigroup
+  import Prelude
   
-  data Pair a = Pair a a
+  data Pair = Pair Integer Integer
   
-  instance Semigroup a => Semigroup (Pair a) where
+  instance Semigroup Pair where
     (<>) = \x y -> case (x, y) of
       (Pair a1 a2, Pair b1 b2) -> Pair (a1 <> b1) (a2 <> b2)
   

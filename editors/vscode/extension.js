@@ -45,14 +45,21 @@ async function startClient(context) {
   };
 
   client = new LanguageClient('kscr', 'kscr Language Server', serverOptions, clientOptions);
-  context.subscriptions.push(client.start());
-
-  // Surface startup failures in a user-visible way.
-  client.onReady().catch((e) => {
+  try {
+    const started = client.start();
+    context.subscriptions.push(started);
+    if (started && typeof started.then === 'function') {
+      await started;
+    }
+    if (typeof client.onReady === 'function') {
+      await client.onReady();
+    }
+  } catch (e) {
+    client = undefined;
     vscode.window.showErrorMessage(
       `kscr-lsp failed to start: ${e}. Set kscr.lsp.serverPath to your kscr-lsp binary path (see docs/LSP_Quick_Start.md).`
     );
-  });
+  }
 }
 
 async function stopClient() {
