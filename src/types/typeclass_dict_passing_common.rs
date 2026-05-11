@@ -528,6 +528,10 @@ pub(super) fn pick_instance_dict_expr_from_scope(
 ) -> Result<Option<ast::Expr>> {
     use ast::{Expr, ExprKind};
 
+    fn ctx_param_name_for_class(class: &str) -> String {
+        format!("__ctx_dict_{}", super::mangle_ident(class))
+    }
+
     fn has_rigid_instance_head(ty: &Ty) -> bool {
         match ty {
             Ty::Var(_) => false,
@@ -541,6 +545,14 @@ pub(super) fn pick_instance_dict_expr_from_scope(
 
     let target_has_ftv = !ftv_ty(ty).is_empty();
     if target_has_ftv && !has_rigid_instance_head(ty) {
+        let full = ctx_param_name_for_class(class);
+        let unqualified = ctx_param_name_for_class(class.rsplit('.').next().unwrap_or(class));
+        if dicts_in_scope.contains(&full) {
+            return Ok(Some(Expr::new(span, ExprKind::Var(full))));
+        }
+        if dicts_in_scope.contains(&unqualified) {
+            return Ok(Some(Expr::new(span, ExprKind::Var(unqualified))));
+        }
         // Non-ground target without a rigid constructor head (e.g. a bare type variable):
         // keep deferred behavior to avoid unsound eager global instance selection.
         return Ok(None);
@@ -641,6 +653,48 @@ pub(super) fn pick_instance_dict_expr_from_scope(
     };
 
     let pi = candidates[best_idx];
+
+    let mut map: HashMap<u32, u32> = HashMap::new();
+    let mut next: u32 = 10_000;
+    fn rename_vars(ty: &Ty, map: &mut HashMap<u32, u32>, next: &mut u32) -> Ty {
+        match ty {
+            Ty::Var(v) => {
+                let nv = *map.entry(*v).or_insert_with(|| {
+                    let out = *next;
+                    *next += 1;
+                    out
+                });
+                Ty::Var(nv)
+            }
+            Ty::Con(c) => Ty::Con(c.clone()),
+            Ty::App { head, args } => Ty::App {
+                head: Box::new(rename_vars(head, map, next)),
+                args: args.iter().map(|a| rename_vars(a, map, next)).collect(),
+            },
+            Ty::Func(a, b) => Ty::Func(
+                Box::new(rename_vars(a, map, next)),
+                Box::new(rename_vars(b, map, next)),
+            ),
+            Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| rename_vars(t, map, next)).collect()),
+            Ty::List(t) => Ty::List(Box::new(rename_vars(t, map, next))),
+            Ty::Record(fields) => Ty::Record(
+                fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), rename_vars(v, map, next)))
+                    .collect(),
+            ),
+            Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
+                fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), rename_vars(v, map, next)))
+                    .collect(),
+                Box::new(rename_vars(rest, map, next)),
+            ),
+        }
+    }
+    let renamed_head = rename_vars(&pi.head_pat, &mut map, &mut next);
+    let subst = unify(renamed_head, ty_norm.clone())?;
+
     // For stdlib dicts, use unqualified names (same as above)
     let dict_ref = if pi.dict_name.starts_with("Prelude.") {
         pi.dict_name
@@ -653,8 +707,33 @@ pub(super) fn pick_instance_dict_expr_from_scope(
     };
     let mut expr = Expr::new(span, ExprKind::Var(dict_ref));
     for i in 0..pi.ctx_len {
-        let pname = format!("__ctx_dict_{i}");
-        if !dicts_in_scope.contains(&pname) {
+        let ctx_class = pi.ctx_classes.get(i).cloned().unwrap_or_default();
+        let ctx_ty = pi
+            .ctx_tys
+            .get(i)
+            .cloned()
+            .map(|ty| apply(&subst, rename_vars(&ty, &mut map, &mut next)))
+            .unwrap_or_else(|| Ty::Var(0));
+        let pname = if ctx_class.is_empty() {
+            format!("__ctx_dict_{i}")
+        } else {
+            ctx_param_name_for_class(&ctx_class)
+        };
+        let ctx_expr = if dicts_in_scope.contains(&pname) {
+            Expr::new(span, ExprKind::Var(pname))
+        } else if !ctx_class.is_empty() {
+            pick_instance_dict_expr_from_scope(span, class_env, dicts_in_scope, &ctx_class, &ctx_ty)?
+                .ok_or_else(|| {
+                    let pairs: Vec<(String, Ty)> = candidates
+                        .iter()
+                        .map(|cand| (cand.dict_name.clone(), cand.head_pat.clone()))
+                        .collect();
+                    let (candidate_notes, origin_notes) = super::format_overlap_candidates(&pairs);
+                    Error::msg(format!(
+                        "missing instance context dictionary in scope: {pname}; while resolving `{class}` for type {ty_norm}; candidates: {candidate_notes}; import origins: {origin_notes}"
+                    ))
+                })?
+        } else {
             let pairs: Vec<(String, Ty)> = candidates
                 .iter()
                 .map(|cand| (cand.dict_name.clone(), cand.head_pat.clone()))
@@ -663,12 +742,12 @@ pub(super) fn pick_instance_dict_expr_from_scope(
             return Err(Error::msg(format!(
                 "missing instance context dictionary in scope: {pname}; while resolving `{class}` for type {ty_norm}; candidates: {candidate_notes}; import origins: {origin_notes}"
             )));
-        }
+        };
         expr = Expr::new(
             span,
             ExprKind::Apply {
                 func: Box::new(expr),
-                args: vec![Expr::new(span, ExprKind::Var(pname))],
+                args: vec![ctx_expr],
             },
         );
     }

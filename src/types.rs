@@ -3593,6 +3593,10 @@ struct PolyInstance {
     head_pat: Ty,
     /// How many context dictionary arguments the instance dictionary expects.
     ctx_len: usize,
+    /// Context classes in declaration order so dict passing can wire the right in-scope dicts.
+    ctx_classes: Vec<String>,
+    /// Context type patterns aligned with `ctx_classes`.
+    ctx_tys: Vec<Ty>,
     /// Dictionary binding name (a value or a function if ctx_len > 0).
     dict_name: String,
 }
@@ -4973,11 +4977,32 @@ fn preregister_instance_dicts(
 
                 // Lower the instance head type into an internal type pattern.
                 let mut cx = InferCtx::default();
+                let mut holes = HashMap::new();
                 let head_pat = normalize_ty_for_instance_key(&lower_surface_type(
                     &mut cx,
                     &inst.ty,
-                    &mut HashMap::new(),
+                    &mut holes,
                 ));
+                let ctx_pairs: Vec<(String, Ty)> = inst
+                    .preds
+                    .iter()
+                    .filter_map(|p| {
+                        let cls = class_name_of_pred(p)?.to_string();
+                        let ty = match p {
+                            ast::Predicate::Show(t)
+                            | ast::Predicate::ShowRow(t)
+                            | ast::Predicate::Eq(t)
+                            | ast::Predicate::EqRow(t) => {
+                                lower_surface_type(&mut cx, t, &mut holes)
+                            }
+                            ast::Predicate::Class { ty, .. } => {
+                                lower_surface_type(&mut cx, ty, &mut holes)
+                            }
+                            ast::Predicate::Lacks { .. } => return None,
+                        };
+                        Some((cls, ty))
+                    })
+                    .collect();
 
                 for (g_class, g_head, g_origin) in &new_ground_heads {
                     if *g_class == inst.class && unify_instance_head(&head_pat, g_head).is_some() {
@@ -5010,6 +5035,8 @@ fn preregister_instance_dicts(
                     class: inst.class.clone(),
                     head_pat,
                     ctx_len: inst.preds.len(),
+                    ctx_classes: ctx_pairs.iter().map(|(class, _)| class.clone()).collect(),
+                    ctx_tys: ctx_pairs.into_iter().map(|(_, ty)| ty).collect(),
                     dict_name,
                 });
             }
@@ -5031,8 +5058,18 @@ fn ctx_param_name(i: usize) -> String {
     format!("__ctx_dict_{i}")
 }
 
+fn instance_ctx_param_name(p: &ast::Predicate, i: usize) -> String {
+    if let Some(cls) = class_name_of_pred(p) {
+        format!("__ctx_dict_{}", mangle_ident(cls))
+    } else {
+        ctx_param_name(i)
+    }
+}
+
 fn class_name_of_pred(p: &ast::Predicate) -> Option<&str> {
     match p {
+        ast::Predicate::Show(_) => Some("Prelude.Show"),
+        ast::Predicate::Eq(_) => Some("Prelude.Eq"),
         ast::Predicate::Class { class, .. } => Some(class.name.as_str()),
         _ => None,
     }
@@ -5164,7 +5201,12 @@ fn append_instance_items(
         ));
     }
 
-    let ctx_params: Vec<String> = (0..inst.preds.len()).map(ctx_param_name).collect();
+    let ctx_params: Vec<String> = inst
+        .preds
+        .iter()
+        .enumerate()
+        .map(|(i, p)| instance_ctx_param_name(p, i))
+        .collect();
     let dict_expr = ast::Expr::new(ast::dummy_span(), ast::ExprKind::Record(dict_fields));
     let dict_expr = add_params_to_expr(ast::dummy_span(), dict_expr, &ctx_params);
     extra_items.push(ast::Item::Binding(ast::Binding {
@@ -5294,6 +5336,22 @@ fn resolve_instance_dict_name(
     env: &ClassEnv,
     inst: &ast::InstanceDecl,
 ) -> Result<(Option<String>, String, String)> {
+    let mut cx = InferCtx::default();
+    let head_ty = normalize_ty_for_instance_key(&lower_surface_type(
+        &mut cx,
+        &inst.ty,
+        &mut HashMap::new(),
+    ));
+
+    if ftv_ty(&head_ty).is_empty() {
+        let ty_key = instance_head_key_ty(&head_ty)?;
+        let ty_mangled = mangle_ident(&ty_key);
+        let dict_key = (inst.class.clone(), ty_key.clone());
+        if let Some(dict_name) = env.instances.get(&dict_key).cloned() {
+            return Ok((Some(ty_key), ty_mangled, dict_name));
+        }
+    }
+
     match instance_head_key_ast(&inst.ty) {
         Ok(ty_key) => {
             let ty_mangled = mangle_ident(&ty_key);
@@ -5306,12 +5364,10 @@ fn resolve_instance_dict_name(
             Ok((Some(ty_key), ty_mangled, dict_name))
         }
         Err(_) => {
-            let mut cx = InferCtx::default();
-            let head_pat = lower_surface_type(&mut cx, &inst.ty, &mut HashMap::new());
             let Some(pi) = env.poly_instances.iter().find(|pi| {
                 pi.class == inst.class
                     && pi.ctx_len == inst.preds.len()
-                    && unify_instance_head(&pi.head_pat, &head_pat).is_some()
+                    && unify_instance_head(&pi.head_pat, &head_ty).is_some()
             }) else {
                 return Err(Error::msg("internal: missing poly instance"));
             };
@@ -5365,7 +5421,7 @@ fn build_extra_param_names(inst: &ast::InstanceDecl) -> Result<Vec<String>> {
                 "MVP: duplicate class in instance context is not supported",
             ));
         }
-        let pname = ctx_param_name(i);
+        let pname = instance_ctx_param_name(p, i);
         extra_param_names.push(pname.clone());
         ctx_dict_by_class.insert(cls.to_string(), pname);
     }
@@ -5381,7 +5437,7 @@ fn resolve_super_dict_names(
     let mut ctx_dict_by_class: HashMap<String, String> = HashMap::new();
     for (i, p) in inst.preds.iter().enumerate() {
         if let Some(cls) = class_name_of_pred(p) {
-            ctx_dict_by_class.insert(cls.to_string(), ctx_param_name(i));
+            ctx_dict_by_class.insert(cls.to_string(), instance_ctx_param_name(p, i));
         }
     }
 
@@ -9853,6 +9909,8 @@ fn merge_class_env_with_module_prefix(
             class: pi.class.clone(),
             head_pat: pi.head_pat.clone(),
             ctx_len: pi.ctx_len,
+            ctx_classes: pi.ctx_classes.clone(),
+            ctx_tys: pi.ctx_tys.clone(),
             dict_name: qualified_dict_name,
         };
         dst.poly_instances.push(qualified_pi);
@@ -13218,9 +13276,26 @@ fn rewrite_class_method_lambda(
     use ast::{Expr, ExprKind};
 
     let mut scope = ctx.dicts_in_scope.clone();
+    let mut known = ctx.known_dicts_in_scope.clone();
     for p in &params {
         if p.starts_with("__dict_") {
             scope.insert(p.clone());
+        }
+        if let Some(encoded_class) = p.strip_prefix("__ctx_dict_") {
+            for class_id in ctx.class_env.class_params.keys() {
+                if mangle_ident(&class_id.name) == encoded_class {
+                    known.insert(class_id.name.clone(), p.clone());
+                    known.insert(
+                        class_id
+                            .name
+                            .rsplit('.')
+                            .next()
+                            .unwrap_or(&class_id.name)
+                            .to_string(),
+                        p.clone(),
+                    );
+                }
+            }
         }
     }
     Ok(Expr::new(
@@ -13232,7 +13307,7 @@ fn rewrite_class_method_lambda(
                 ctx.class_env,
                 ctx.inferred,
                 &scope,
-                ctx.known_dicts_in_scope,
+                &known,
                 body,
             )?),
         },
@@ -13394,44 +13469,27 @@ fn resolve_method_dict_expr(
 
     let class = class_id.name.as_str();
 
-    // Prefer an in-scope dictionary param when available.
     let dict_var = format!("__dict_{class}");
     let dict_var_unqual = format!("__dict_{}", unqualified_class_name(class));
-    if ctx.dicts_in_scope.contains(&dict_var) {
-        record_dict_fallback_trace(
-            ctx,
-            mname,
-            class,
-            DictFallbackDecision::SelectedFromInScopeParam,
-            true,
-            Some(dict_var.clone()),
-        );
-        return Ok(Some((
-            Expr::new(ctx.span, ExprKind::Var(dict_var.clone())),
-            Some(dict_var),
-        )));
-    }
-    if ctx.dicts_in_scope.contains(&dict_var_unqual) {
-        record_dict_fallback_trace(
-            ctx,
-            mname,
-            class,
-            DictFallbackDecision::SelectedFromInScopeParam,
-            true,
-            Some(dict_var_unqual.clone()),
-        );
-        return Ok(Some((
-            Expr::new(ctx.span, ExprKind::Var(dict_var_unqual.clone())),
-            Some(dict_var_unqual),
-        )));
-    }
+    let in_scope_dict = if ctx.dicts_in_scope.contains(&dict_var) {
+        Some(dict_var)
+    } else if ctx.dicts_in_scope.contains(&dict_var_unqual) {
+        Some(dict_var_unqual)
+    } else {
+        None
+    };
 
-    // Prefer a dictionary already fixed by surrounding context.
-    if let Some(d) = ctx
+    let known_context_dict = ctx
         .known_dicts_in_scope
         .get(class)
         .or_else(|| ctx.known_dicts_in_scope.get(unqualified_class_name(class)))
-    {
+        .cloned();
+
+    let determined_by_args = method_class_param_determined_by_args(ctx.class_env, class_id, mname);
+
+    // Prefer a dictionary already fixed by surrounding context.
+    if !determined_by_args {
+        if let Some(d) = known_context_dict.as_ref() {
         let chosen_name_for_known = Some(d.clone());
         record_dict_fallback_trace(
             ctx,
@@ -13445,9 +13503,8 @@ fn resolve_method_dict_expr(
             Expr::new(ctx.span, ExprKind::Var(d.clone())),
             chosen_name_for_known,
         )));
+        }
     }
-
-    let determined_by_args = method_class_param_determined_by_args(ctx.class_env, class_id, mname);
 
     // If the class parameter is not determined by argument types (e.g. `pure`, `return`),
     // try to use the inferred type of the whole application to pick an instance.
@@ -13540,6 +13597,24 @@ fn resolve_method_dict_expr(
                 continue;
             };
 
+            if matches!(a_ty, Ty::Var(_)) {
+                if let Some(d) = known_context_dict.as_ref() {
+                    let chosen_name_for_known = Some(d.clone());
+                    record_dict_fallback_trace(
+                        ctx,
+                        mname,
+                        class,
+                        DictFallbackDecision::SelectedFromKnownContext,
+                        determined_by_args,
+                        chosen_name_for_known.clone(),
+                    );
+                    return Ok(Some((
+                        Expr::new(ctx.span, ExprKind::Var(d.clone())),
+                        chosen_name_for_known,
+                    )));
+                }
+            }
+
             // For first-order classes, instance selection needs a ground type key.
             if !hk_class && !ftv_ty(&a_ty).is_empty() {
                 if first_non_ground.is_none() {
@@ -13599,6 +13674,21 @@ fn resolve_method_dict_expr(
                 first_missing_instance = Some(a_ty);
             }
         }
+    }
+
+    if let Some(dict_name) = in_scope_dict.as_ref() {
+        record_dict_fallback_trace(
+            ctx,
+            mname,
+            class,
+            DictFallbackDecision::SelectedFromInScopeParam,
+            determined_by_args,
+            Some(dict_name.clone()),
+        );
+        return Ok(Some((
+            Expr::new(ctx.span, ExprKind::Var(dict_name.clone())),
+            Some(dict_name.clone()),
+        )));
     }
 
     if let Some(dict_name) = dict_name {
@@ -16142,6 +16232,8 @@ instance C (Maybe Integer) where
                 args: vec![Ty::Var(1)],
             },
             ctx_len: 0,
+            ctx_classes: vec![],
+            ctx_tys: vec![],
             dict_name: "__dict_C_poly_Maybe_poly".to_string(),
         };
         let specific = PolyInstance {
@@ -16151,6 +16243,8 @@ instance C (Maybe Integer) where
                 args: vec![Ty::Con("Integer".to_string())],
             },
             ctx_len: 0,
+            ctx_classes: vec![],
+            ctx_tys: vec![],
             dict_name: "__dict_C_Maybe_Integer".to_string(),
         };
 
@@ -16171,12 +16265,16 @@ instance C (Maybe Integer) where
             class: class_id.clone(),
             head_pat: Ty::Var(1),
             ctx_len: 0,
+            ctx_classes: vec![],
+            ctx_tys: vec![],
             dict_name: "A.__dict_C_poly".to_string(),
         };
         let b = PolyInstance {
             class: class_id,
             head_pat: Ty::Var(2),
             ctx_len: 0,
+            ctx_classes: vec![],
+            ctx_tys: vec![],
             dict_name: "B.__dict_C_poly".to_string(),
         };
 
@@ -16202,13 +16300,15 @@ instance C (Maybe Integer) where
                     args: vec![Ty::Var(1)],
                 },
                 ctx_len: 1,
+                ctx_classes: vec!["C".to_string()],
+                ctx_tys: vec![Ty::Var(1)],
                 dict_name: "Main.__dict_C_poly_Maybe_a".to_string(),
             }],
             ..Default::default()
         };
 
         let mut dicts = HashSet::new();
-        dicts.insert("__ctx_dict_0".to_string());
+        dicts.insert("__ctx_dict_C".to_string());
 
         let target = Ty::App {
             head: Box::new(Ty::Con("Maybe".to_string())),
@@ -16233,7 +16333,56 @@ instance C (Maybe Integer) where
                 ));
                 assert!(matches!(
                     args[0].kind,
-                    ast::ExprKind::Var(ref n) if n == "__ctx_dict_0"
+                    ast::ExprKind::Var(ref n) if n == "__ctx_dict_C"
+                ));
+            }
+            other => panic!("expected apply expression, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pick_instance_dict_expr_resolves_ground_poly_context_from_env() {
+        let class_id = ast::ClassId::dummy("C");
+        let env = ClassEnv {
+            class_params: vec![(class_id.clone(), "a".to_string())]
+                .into_iter()
+                .collect(),
+            instances: vec![
+                ((class_id.clone(), "Bool".to_string()), "Main.__dict_C_Bool".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            poly_instances: vec![PolyInstance {
+                class: class_id,
+                head_pat: Ty::List(Box::new(Ty::Var(1))),
+                ctx_len: 1,
+                ctx_classes: vec!["C".to_string()],
+                ctx_tys: vec![Ty::Var(1)],
+                dict_name: "Main.__dict_C_poly_List_a".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let got = super::typeclass_dict_passing_common::pick_instance_dict_expr_from_scope(
+            ast::Span { start: 0, end: 0 },
+            &env,
+            &HashSet::new(),
+            "C",
+            &Ty::List(Box::new(Ty::Con("Bool".to_string()))),
+        )
+        .unwrap()
+        .expect("expected dictionary expression");
+
+        match got.kind {
+            ast::ExprKind::Apply { func, args } => {
+                assert_eq!(args.len(), 1);
+                assert!(matches!(
+                    func.kind,
+                    ast::ExprKind::Var(ref n) if n == "Main.__dict_C_poly_List_a"
+                ));
+                assert!(matches!(
+                    args[0].kind,
+                    ast::ExprKind::Var(ref n) if n == "Main.__dict_C_Bool"
                 ));
             }
             other => panic!("expected apply expression, got {other:?}"),
@@ -16251,6 +16400,8 @@ instance C (Maybe Integer) where
                     args: vec![Ty::Var(1)],
                 },
                 ctx_len: 0,
+                ctx_classes: vec![],
+                ctx_tys: vec![],
                 dict_name: "Main.__dict_C_poly_Maybe_a".to_string(),
             }],
             ..Default::default()
@@ -16279,6 +16430,8 @@ instance C (Maybe Integer) where
                     args: vec![Ty::Var(1)],
                 },
                 ctx_len: 1,
+                ctx_classes: vec!["C".to_string()],
+                ctx_tys: vec![Ty::Var(1)],
                 dict_name: "Main.__dict_C_poly_Maybe_a".to_string(),
             }],
             ..Default::default()
