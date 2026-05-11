@@ -45,6 +45,12 @@ module Prelude where
   instance Eq Unit where
     eq = __primEq
 
+  instance Eq a => Eq [a] where
+    eq xs ys = case (xs, ys) of
+      ([], []) -> True
+      (x : xs1, y : ys1) -> if x == y then eq xs1 ys1 else False
+      _ -> False
+
   (/=) = \a -> \b -> if a == b then False else True
 
   class Show a where

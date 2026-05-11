@@ -320,7 +320,7 @@ fn rewrite_lambda(
         // Shadow outer names.
         local_tys.remove(p);
 
-        if p.starts_with("__dict_") {
+        if p.starts_with("__dict_") || p.starts_with("__ctx_dict_") {
             scope.insert(p.clone());
         } else {
             // Best-effort placeholder so infer_in_rewrite can see local binders.
@@ -385,16 +385,16 @@ fn rewrite_lambda_with_expected(
         // Always shadow outer names; then re-insert if we learned a ground param type.
         local_tys.remove(p);
         if let Some(t) = expected_param_tys.get(i) {
-            if !p.starts_with("__dict_") {
+            if !p.starts_with("__dict_") && !p.starts_with("__ctx_dict_") {
                 // Keep even non-ground expected types; they are often informative enough
                 // to recover ground constructor argument types in nested pattern matches.
                 local_tys.insert(p.clone(), t.clone());
             }
-        } else if !p.starts_with("__dict_") {
+        } else if !p.starts_with("__dict_") && !p.starts_with("__ctx_dict_") {
             local_tys.insert(p.clone(), placeholder_local_ty(p));
         }
 
-        if p.starts_with("__dict_") {
+        if p.starts_with("__dict_") || p.starts_with("__ctx_dict_") {
             scope.insert(p.clone());
         }
     }
@@ -531,15 +531,6 @@ fn rewrite_apply_func_var(
 
     let mut dict_args: Vec<ast::Expr> = Vec::new();
     for class in classes {
-        if let Some(d) = resolve_dict_arg_from_scope(span, class_env, dicts_in_scope, class) {
-            dict_args.push(d);
-            continue;
-        }
-
-        if args_snapshot_for_infer.is_empty() {
-            continue;
-        }
-
         let mut picked: Option<ast::Expr> = None;
 
         if !shadowed_in_scope.contains(func_name) {
@@ -554,6 +545,17 @@ fn rewrite_apply_func_var(
                     )?;
                 }
             }
+        }
+
+        if picked.is_none() {
+            if let Some(d) = resolve_dict_arg_from_scope(span, class_env, dicts_in_scope, class) {
+                dict_args.push(d);
+                continue;
+            }
+        }
+
+        if args_snapshot_for_infer.is_empty() {
+            continue;
         }
 
         if picked.is_none() {
