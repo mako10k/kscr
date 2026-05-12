@@ -341,7 +341,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                              signature_buf: &mut HashMap<String, ast::QualType>|
      -> Result<()> {
         if let Some(p) = pending.take() {
-            let mut b = desugar_fun(ts, p.name, p.arity, p.clauses);
+            let mut b = desugar_fun(ts, p.name, p.name_span, p.arity, p.clauses);
             if b.doc.is_none() {
                 b.doc = p.doc;
             }
@@ -1467,6 +1467,7 @@ fn parse_ctor_name(ts: &mut TokenStream) -> Result<String> {
 #[derive(Clone)]
 struct FunClause {
     name: String,
+    name_span: crate::lexer::Span,
     args: Vec<ast::Pattern>,
     guard: Option<ast::Expr>,
     body: ast::Expr,
@@ -1480,6 +1481,7 @@ enum ParsedBind {
 
 struct PendingFun {
     name: String,
+    name_span: crate::lexer::Span,
     arity: usize,
     clauses: Vec<(Vec<ast::Pattern>, Option<ast::Expr>, ast::Expr)>,
     doc: Option<String>,
@@ -1493,7 +1495,7 @@ fn flush_pending_fun_item(
     let Some(p) = pending else {
         return Ok(());
     };
-    let mut b = desugar_fun(ts, p.name, p.arity, p.clauses);
+    let mut b = desugar_fun(ts, p.name, p.name_span, p.arity, p.clauses);
     if b.doc.is_none() {
         b.doc = p.doc;
     }
@@ -1509,7 +1511,7 @@ fn flush_pending_fun_binding(
     let Some(p) = pending else {
         return;
     };
-    let mut b = desugar_fun(ts, p.name, p.arity, p.clauses);
+    let mut b = desugar_fun(ts, p.name, p.name_span, p.arity, p.clauses);
     if b.doc.is_none() {
         b.doc = p.doc;
     }
@@ -1541,6 +1543,7 @@ fn push_fun_clause_binding(
             flush_pending_fun_binding(ts, out, pending.take());
             *pending = Some(PendingFun {
                 name: c.name,
+                name_span: c.name_span,
                 arity,
                 clauses: vec![clause],
                 doc: doc.or(clause_doc),
@@ -1549,6 +1552,7 @@ fn push_fun_clause_binding(
         None => {
             *pending = Some(PendingFun {
                 name: c.name,
+                name_span: c.name_span,
                 arity,
                 clauses: vec![clause],
                 doc: doc.or(clause_doc),
@@ -1582,6 +1586,7 @@ fn push_fun_clause_item(
             flush_pending_fun_item(ts, out, pending.take())?;
             *pending = Some(PendingFun {
                 name: c.name,
+                name_span: c.name_span,
                 arity,
                 clauses: vec![clause],
                 doc: doc.or(clause_doc),
@@ -1590,6 +1595,7 @@ fn push_fun_clause_item(
         None => {
             *pending = Some(PendingFun {
                 name: c.name,
+                name_span: c.name_span,
                 arity,
                 clauses: vec![clause],
                 doc: doc.or(clause_doc),
@@ -1603,6 +1609,7 @@ fn push_fun_clause_item(
 fn desugar_fun(
     ts: &mut TokenStream,
     name: String,
+    name_span: crate::lexer::Span,
     arity: usize,
     clauses: Vec<(Vec<ast::Pattern>, Option<ast::Expr>, ast::Expr)>,
 ) -> ast::Binding {
@@ -1678,7 +1685,7 @@ fn desugar_fun(
 
     ast::Binding {
         doc: None,
-        pat: ast::Pattern::new(synth_span, ast::PatternKind::Var(name)),
+        pat: ast::Pattern::new(name_span, ast::PatternKind::Var(name)),
         expr: ast::Expr::new(
             synth_span,
             ast::ExprKind::Lambda {
@@ -1826,12 +1833,17 @@ fn try_parse_funclause_paren_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
     }
 
     let save = (ts.i, ts.last_span_end);
+    let name_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     let name = match parse_paren_operator_name(ts) {
         Ok(name) => name,
         Err(_) => {
             (ts.i, ts.last_span_end) = save;
             return Ok(None);
         }
+    };
+    let name_span = crate::lexer::Span {
+        start: name_start,
+        end: ts.last_span_end,
     };
     if is_ctor_symbol(&name) {
         return Err(ts.err_here("operators starting with ':' are constructors"));
@@ -1849,6 +1861,7 @@ fn try_parse_funclause_paren_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
     let (guard, body) = parse_guard_and_body(ts, stop)?;
     Ok(Some(ParsedBind::FunClause(FunClause {
         name,
+        name_span,
         args,
         guard,
         body,
@@ -1870,7 +1883,12 @@ fn try_parse_funclause_infix_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
         return Ok(None);
     }
 
+    let name_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
     let op = parse_operator_name(ts)?;
+    let name_span = crate::lexer::Span {
+        start: name_start,
+        end: ts.last_span_end,
+    };
     // Disambiguate `x:xs = ...` (pattern binding) from infix function clauses.
     // Only reject constructor operators when lhs is a simple variable or wildcard.
     // Constructor patterns like `D a :*: D b = ...` are allowed.
@@ -1891,6 +1909,7 @@ fn try_parse_funclause_infix_op(ts: &mut TokenStream, stop: Stop) -> Result<Opti
     let (guard, body) = parse_guard_and_body(ts, stop)?;
     Ok(Some(ParsedBind::FunClause(FunClause {
         name: op,
+        name_span,
         args: vec![lhs_pat, rhs_pat],
         guard,
         body,
@@ -1903,6 +1922,10 @@ fn try_parse_funclause_prefix_ident(
     stop: Stop,
 ) -> Result<Option<ParsedBind>> {
     let save = (ts.i, ts.last_span_end);
+    let name_span = ts.peek_span().unwrap_or(crate::lexer::Span {
+        start: ts.last_span_end,
+        end: ts.last_span_end,
+    });
     let name = match ts.expect_ident() {
         Ok(n) => n,
         Err(_) => {
@@ -1938,6 +1961,7 @@ fn try_parse_funclause_prefix_ident(
     let (guard, body) = parse_guard_and_body(ts, stop)?;
     Ok(Some(ParsedBind::FunClause(FunClause {
         name,
+        name_span,
         args,
         guard,
         body,

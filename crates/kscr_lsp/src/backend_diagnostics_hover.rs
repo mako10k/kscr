@@ -73,6 +73,11 @@ pub(super) fn typecheck_document_typed(
 pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
     let off = doc.position_to_offset(pos.line, pos.character)?;
     let (name, name_span) = qualified_ident_at_offset(&doc.text, off)?;
+    let typed = typecheck_document_typed(&doc.uri, &doc.text).ok();
+
+    if let Some(param_hover) = hover_parameter_in_doc(doc, off, &name, typed.as_ref()) {
+        return Some(param_hover);
+    }
 
     let module = parser::parse_module(&doc.text).ok();
     let kind = contextual_ident_kind_at_offset(&doc.text, off)
@@ -83,16 +88,22 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
         })
         .unwrap_or("identifier");
 
-    let typed = typecheck_document_typed(&doc.uri, &doc.text).ok();
     let ty = typed
         .as_ref()
-        .and_then(|tm| tm.inferred.get(&name).map(|s| s.to_string()));
+        .and_then(|tm| tm.inferred.get(&name).cloned())
+        .or_else(|| types::builtin_hover_scheme(&name))
+        .map(|s| s.to_string());
     let doc_comment = typed.as_ref().and_then(|tm| tm.docs.get(&name).cloned());
+    let builtin_kind = types::builtin_hover_kind(&name);
 
     let range = span_to_range(doc, name_span);
     let mut value = match ty {
         Some(ty) => format!("```kscr\n{name} :: {ty}\n```"),
-        None => format!("```kscr\n{kind} {name}\n```"),
+        None => format!(
+            "```kscr\n{} {}\n```",
+            builtin_kind.map(|k| k.hover_label()).unwrap_or(kind),
+            name
+        ),
     };
     if let Some(doc_comment) = doc_comment {
         value.push_str("\n---\n");
@@ -106,4 +117,134 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
         }),
         range,
     })
+}
+
+fn hover_parameter_in_doc(
+    doc: &Document,
+    offset: usize,
+    name: &str,
+    typed: Option<&types::TypedModule>,
+) -> Option<Hover> {
+    let typed = typed?;
+    let module = parser::parse_module(&doc.text).ok()?;
+    let tokens = lexer::lex(&doc.text).ok()?;
+
+    for item in &module.items {
+        let kscr::ast::Item::Binding(binding) = item else {
+            continue;
+        };
+        let kscr::ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
+            continue;
+        };
+        let Some(scheme) = typed.inferred.get(binding_name) else {
+            continue;
+        };
+
+        let mut spans = binding_lhs_parameter_spans(doc, &tokens, binding);
+        spans.extend(leading_lambda_parameter_spans(&tokens, binding));
+        let arg_types = function_argument_types(&scheme.ty, spans.len());
+
+        for (span, ty) in spans.into_iter().zip(arg_types.into_iter()) {
+            if span.start <= offset && offset < span.end {
+                let range = span_to_range(doc, span);
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: format!("```kscr\nparameter {name} :: {ty}\n```"),
+                    }),
+                    range,
+                });
+            }
+        }
+    }
+
+    None
+}
+
+pub(super) fn function_argument_types(ty: &types::Ty, count: usize) -> Vec<types::Ty> {
+    let mut out = Vec::new();
+    let mut current = ty;
+    while out.len() < count {
+        let types::Ty::Func(arg, rest) = current else {
+            break;
+        };
+        out.push((**arg).clone());
+        current = rest;
+    }
+    out
+}
+
+pub(super) fn binding_lhs_parameter_spans(
+    doc: &Document,
+    tokens: &[lexer::Token],
+    binding: &kscr::ast::Binding,
+) -> Vec<kscr::lexer::Span> {
+    let Some((binding_line, _)) = doc.offset_to_position(binding.pat.span.start) else {
+        return Vec::new();
+    };
+
+    let mut seen_name = false;
+    let mut out = Vec::new();
+    for token in tokens {
+        if token.span.start < binding.pat.span.start {
+            continue;
+        }
+        if token.span.start >= binding.span.end {
+            break;
+        }
+
+        let Some((line, _)) = doc.offset_to_position(token.span.start) else {
+            continue;
+        };
+        if line != binding_line {
+            if seen_name {
+                break;
+            }
+            continue;
+        }
+
+        match &token.kind {
+            lexer::TokenKind::Ident(_) if !seen_name => seen_name = true,
+            lexer::TokenKind::Ident(_) if seen_name => out.push(token.span),
+            lexer::TokenKind::Eq if seen_name => break,
+            lexer::TokenKind::ColonColon if seen_name => return Vec::new(),
+            _ => {}
+        }
+    }
+    out
+}
+
+pub(super) fn leading_lambda_parameter_spans(
+    tokens: &[lexer::Token],
+    binding: &kscr::ast::Binding,
+) -> Vec<kscr::lexer::Span> {
+    if !matches!(binding.expr.kind, kscr::ast::ExprKind::Lambda { .. }) {
+        return Vec::new();
+    }
+
+    let mut in_expr = false;
+    let mut out = Vec::new();
+    for token in tokens {
+        if token.span.start < binding.expr.span.start {
+            continue;
+        }
+        if token.span.start >= binding.expr.span.end {
+            break;
+        }
+
+        if !in_expr {
+            if token.kind == lexer::TokenKind::Backslash {
+                in_expr = true;
+            }
+            continue;
+        }
+
+        match &token.kind {
+            lexer::TokenKind::Ident(_) => out.push(token.span),
+            lexer::TokenKind::Arrow => break,
+            lexer::TokenKind::Newline | lexer::TokenKind::Indent | lexer::TokenKind::Dedent => {}
+            _ => break,
+        }
+    }
+    out
 }

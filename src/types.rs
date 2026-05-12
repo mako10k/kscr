@@ -54,6 +54,57 @@ pub struct TypedModule {
     pub dict_fallback_trace: Vec<DictFallbackTraceEvent>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinHoverKind {
+    Type,
+    Function,
+    Value,
+    Class,
+}
+
+impl BuiltinHoverKind {
+    pub fn hover_label(self) -> &'static str {
+        match self {
+            BuiltinHoverKind::Type => "built-in type",
+            BuiltinHoverKind::Function => "built-in function",
+            BuiltinHoverKind::Value => "built-in value",
+            BuiltinHoverKind::Class => "built-in class",
+        }
+    }
+}
+
+pub fn builtin_hover_kind(name: &str) -> Option<BuiltinHoverKind> {
+    match name {
+        "Integer" | "Bool" | "Char" | "Unit" | "Float64" | "IO" => Some(BuiltinHoverKind::Type),
+        "stdoutWrite" | "stdinReadLine" | "readLine" | "print" | "putStrLn" | "getArgs" => {
+            Some(BuiltinHoverKind::Function)
+        }
+        _ => None,
+    }
+}
+
+pub fn builtin_hover_scheme(name: &str) -> Option<Scheme> {
+    let char_list = || Ty::List(Box::new(Ty::Con("Char".to_string())));
+    let io = |ty| Ty::App {
+        head: Box::new(Ty::Con("IO".to_string())),
+        args: vec![ty],
+    };
+
+    match name {
+        "stdoutWrite" => Some(Scheme::mono(Ty::Func(
+            Box::new(char_list()),
+            Box::new(io(Ty::Con("Unit".to_string()))),
+        ))),
+        "stdinReadLine" | "readLine" => Some(Scheme::mono(io(char_list()))),
+        "print" | "putStrLn" => Some(Scheme::mono(Ty::Func(
+            Box::new(char_list()),
+            Box::new(io(Ty::Con("Unit".to_string()))),
+        ))),
+        "getArgs" => Some(Scheme::mono(io(Ty::List(Box::new(char_list()))))),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DictFallbackDecision {
     SelectedFromInScopeParam,

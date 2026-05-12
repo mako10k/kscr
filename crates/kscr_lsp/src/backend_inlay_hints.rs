@@ -36,7 +36,7 @@ pub(crate) fn inlay_hints_in_doc(doc: &Document, range: Range) -> Option<Vec<Inl
             .into_iter()
             .zip(function_argument_types(&scheme.ty, parameter_count))
         {
-            push_type_hint(doc, span.end, ty.to_string(), &range, &mut hints);
+            push_type_hint(doc, span.end, format!(":: {ty}"), &range, &mut hints);
         }
     }
 
@@ -189,6 +189,7 @@ fn position_in_range(pos: Position, range: &Range) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kscr::parser;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tower_lsp::lsp_types::Url;
 
@@ -234,5 +235,26 @@ mod tests {
         assert!(labels.iter().any(|label| label.contains(":: Integer")));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inlay_hints_anchor_on_function_name_and_lhs_param() {
+        let src = "module Main where\n  funcB x = x * 2\n";
+        let module = parser::parse_module(src).unwrap();
+        let binding = match &module.items[0] {
+            Item::Binding(binding) => binding,
+            other => panic!("expected binding, got {other:?}"),
+        };
+
+        assert_eq!(binding.pat.span.start, src.find("funcB").unwrap());
+        assert_eq!(binding.pat.span.end, src.find("funcB").unwrap() + "funcB".len());
+
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let doc = Document::new(uri, src.to_string(), 1);
+        let tokens = lexer::lex(src).unwrap();
+        let param_spans = binding_lhs_parameter_spans(&doc, &tokens, binding);
+        assert_eq!(param_spans.len(), 1);
+        assert_eq!(param_spans[0].start, src.find("x =").unwrap());
+        assert_eq!(param_spans[0].end, src.find("x =").unwrap() + 1);
     }
 }

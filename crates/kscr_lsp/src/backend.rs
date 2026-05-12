@@ -557,6 +557,77 @@ mod tests {
     }
 
     #[test]
+    fn hover_classifies_builtin_type_and_value() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let src = r#"module Main where
+  import Prelude
+  data Pair = Pair Integer Integer
+  main = stdoutWrite "x"
+"#
+        .to_string();
+        let doc = Document::new(uri, src, 1);
+
+        let integer_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 20,
+            },
+        )
+        .unwrap();
+        let integer_text = match integer_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(integer_text.contains("built-in type Integer") || integer_text.contains("Integer"));
+
+        let stdout_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 3,
+                character: 10,
+            },
+        )
+        .unwrap();
+        let stdout_text = match stdout_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(stdout_text.contains("stdoutWrite :: [Char] -> IO Unit"));
+    }
+
+    #[test]
+    fn hover_shows_formal_parameter_type() {
+        let src = r#"module Main where
+  funcB :: Integer -> Integer
+  funcB x = x * 2
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_param_type.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 8,
+            },
+        )
+        .unwrap();
+        let text = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(text.contains("parameter x :: Integer"), "actual hover: {text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn document_symbols_have_reasonable_ranges() {
         let uri = Url::parse("file:///test.ks").unwrap();
         let src = "module M where\n  x = 1\n  data Foo = Bar\n".to_string();
