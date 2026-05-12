@@ -609,38 +609,110 @@ pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
     Ok(subst)
 }
 
-fn canonicalize_string_alias_ty(ty: Ty) -> Ty {
-    match ty {
-        Ty::Con(name) if name == "String" => Ty::List(Box::new(Ty::Con("Char".to_string()))),
-        Ty::List(elem) => Ty::List(Box::new(canonicalize_string_alias_ty(*elem))),
-        Ty::Tuple(items) => Ty::Tuple(
-            items
-                .into_iter()
-                .map(canonicalize_string_alias_ty)
-                .collect(),
-        ),
-        Ty::Record(fields) => Ty::Record(
-            fields
-                .into_iter()
-                .map(|(name, ty)| (name, canonicalize_string_alias_ty(ty)))
-                .collect(),
-        ),
-        Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
-            fields
-                .into_iter()
-                .map(|(name, ty)| (name, canonicalize_string_alias_ty(ty)))
-                .collect(),
-            Box::new(canonicalize_string_alias_ty(*rest)),
-        ),
-        Ty::App { head, args } => Ty::App {
-            head: Box::new(canonicalize_string_alias_ty(*head)),
-            args: args.into_iter().map(canonicalize_string_alias_ty).collect(),
+fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
+    fn go(aliases: &HashMap<String, ast::TypeAlias>, ty: Ty, stack: &mut Vec<String>) -> Ty {
+        match ty {
+            Ty::Con(name) => {
+                let Some(alias) = aliases.get(&name) else {
+                    return Ty::Con(name);
+                };
+                if !alias.params.is_empty() || stack.contains(&alias.name) {
+                    return Ty::Con(name);
+                }
+
+                stack.push(alias.name.clone());
+                let lowered = lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &HashMap::new())
+                    .unwrap_or_else(|_| Ty::Con(name.clone()));
+                let expanded = go(aliases, lowered, stack);
+                stack.pop();
+                expanded
+            }
+            Ty::List(elem) => Ty::List(Box::new(go(aliases, *elem, stack))),
+            Ty::Tuple(items) => Ty::Tuple(items.into_iter().map(|item| go(aliases, item, stack)).collect()),
+            Ty::Record(fields) => Ty::Record(
+                fields
+                    .into_iter()
+                    .map(|(name, ty)| (name, go(aliases, ty, stack)))
+                    .collect(),
+            ),
+            Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
+                fields
+                    .into_iter()
+                    .map(|(name, ty)| (name, go(aliases, ty, stack)))
+                    .collect(),
+                Box::new(go(aliases, *rest, stack)),
+            ),
+            Ty::App { head, args } => {
+                let head = go(aliases, *head, stack);
+                let args: Vec<Ty> = args.into_iter().map(|arg| go(aliases, arg, stack)).collect();
+                let Ty::Con(name) = &head else {
+                    return Ty::App {
+                        head: Box::new(head),
+                        args,
+                    };
+                };
+                let Some(alias) = aliases.get(name) else {
+                    return Ty::App {
+                        head: Box::new(head),
+                        args,
+                    };
+                };
+                if alias.params.len() != args.len() || stack.contains(&alias.name) {
+                    return Ty::App {
+                        head: Box::new(head),
+                        args,
+                    };
+                }
+
+                let param_map: HashMap<String, Ty> = alias
+                    .params
+                    .iter()
+                    .cloned()
+                    .zip(args)
+                    .collect();
+                stack.push(alias.name.clone());
+                let lowered = lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &param_map)
+                    .unwrap_or_else(|_| Ty::App {
+                        head: Box::new(Ty::Con(name.clone())),
+                        args: param_map.into_values().collect(),
+                    });
+                let expanded = go(aliases, lowered, stack);
+                stack.pop();
+                expanded
+            }
+            Ty::Func(a, b) => Ty::Func(
+                Box::new(go(aliases, *a, stack)),
+                Box::new(go(aliases, *b, stack)),
+            ),
+            other => other,
+        }
+    }
+
+    let mut aliases = cx.full_class_env.aliases.clone();
+    aliases.entry("String".to_string()).or_insert_with(|| ast::TypeAlias {
+        doc: None,
+        name: "String".to_string(),
+        params: Vec::new(),
+        ty: ast::Type::List(Box::new(ast::Type::Char)),
+        span: ast::dummy_span(),
+    });
+    go(&aliases, ty, &mut Vec::new())
+}
+
+fn canonicalize_aliases_in_constraint(cx: &InferCtx, c: Constraint) -> Constraint {
+    match c {
+        Constraint::Show(t) => Constraint::Show(canonicalize_aliases_in_ty(cx, t)),
+        Constraint::ShowRow(t) => Constraint::ShowRow(canonicalize_aliases_in_ty(cx, t)),
+        Constraint::Eq(t) => Constraint::Eq(canonicalize_aliases_in_ty(cx, t)),
+        Constraint::EqRow(t) => Constraint::EqRow(canonicalize_aliases_in_ty(cx, t)),
+        Constraint::Class { class, ty } => Constraint::Class {
+            class,
+            ty: canonicalize_aliases_in_ty(cx, ty),
         },
-        Ty::Func(a, b) => Ty::Func(
-            Box::new(canonicalize_string_alias_ty(*a)),
-            Box::new(canonicalize_string_alias_ty(*b)),
-        ),
-        other => other,
+        Constraint::Lacks { label, row } => Constraint::Lacks {
+            label,
+            row: canonicalize_aliases_in_ty(cx, row),
+        },
     }
 }
 
@@ -1669,27 +1741,10 @@ pub fn instantiate_qual(cx: &mut InferCtx, s: &Scheme) -> (Vec<Constraint>, Ty) 
     (
         s.constraints
             .iter()
-            .map(|c| canonicalize_string_alias_constraint(replace_vars_constraint(c, &m)))
+            .map(|c| canonicalize_aliases_in_constraint(cx, replace_vars_constraint(c, &m)))
             .collect(),
-        canonicalize_string_alias_ty(replace_vars(&s.ty, &m)),
+        canonicalize_aliases_in_ty(cx, replace_vars(&s.ty, &m)),
     )
-}
-
-fn canonicalize_string_alias_constraint(c: Constraint) -> Constraint {
-    match c {
-        Constraint::Show(t) => Constraint::Show(canonicalize_string_alias_ty(t)),
-        Constraint::ShowRow(t) => Constraint::ShowRow(canonicalize_string_alias_ty(t)),
-        Constraint::Eq(t) => Constraint::Eq(canonicalize_string_alias_ty(t)),
-        Constraint::EqRow(t) => Constraint::EqRow(canonicalize_string_alias_ty(t)),
-        Constraint::Class { class, ty } => Constraint::Class {
-            class,
-            ty: canonicalize_string_alias_ty(ty),
-        },
-        Constraint::Lacks { label, row } => Constraint::Lacks {
-            label,
-            row: canonicalize_string_alias_ty(row),
-        },
-    }
 }
 
 fn replace_vars(ty: &Ty, m: &HashMap<u32, Ty>) -> Ty {
@@ -7048,9 +7103,9 @@ fn infer_expr_apply(
 
         fun_ty = apply(&s, fun_ty);
         let res = cx.fresh();
-        let fun_ty_norm = canonicalize_string_alias_ty(fun_ty.clone());
-        let arg_ty_norm = canonicalize_string_alias_ty(apply(&s, arg_ty.clone()));
-        let res_norm = canonicalize_string_alias_ty(res.clone());
+        let fun_ty_norm = canonicalize_aliases_in_ty(cx, fun_ty.clone());
+        let arg_ty_norm = canonicalize_aliases_in_ty(cx, apply(&s, arg_ty.clone()));
+        let res_norm = canonicalize_aliases_in_ty(cx, res.clone());
 
         let s_unify = unify_dbg(
             fun_ty_norm,
@@ -7129,8 +7184,8 @@ fn infer_expr_annot(
 
     let t_ann = lower_surface_type(cx, &ty.ty, &mut holes);
     let s2 = unify_dbg(
-        canonicalize_string_alias_ty(apply(&s1, t1)),
-        canonicalize_string_alias_ty(apply(&s1, t_ann.clone())),
+        canonicalize_aliases_in_ty(cx, apply(&s1, t1)),
+        canonicalize_aliases_in_ty(cx, apply(&s1, t_ann.clone())),
         "infer_expr_annot",
     )
     .map_err(|e| {
