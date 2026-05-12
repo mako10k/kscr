@@ -9,6 +9,7 @@ module Prelude.Monoid where
     mempty :: a
     mappend :: a -> a -> a
     mconcat :: [a] -> a
+    minimal mempty
 
     mappend = (<>)
     mconcat xs = case xs of

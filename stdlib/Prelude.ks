@@ -27,9 +27,11 @@ module Prelude where
 
   class Eq a where
     eq :: a -> a -> Bool
+    == :: a -> a -> Bool
+    minimal eq | ==
 
-  == :: Eq a => a -> a -> Bool
-  a == b = a `eq` b
+    a == b = a `eq` b
+    eq a b = a == b
 
   -- Default Eq instances for primitive types.
   -- These are normal instances (not special-cased primitives), but their implementations
@@ -52,7 +54,6 @@ module Prelude where
       (x : xs1, y : ys1) -> if x == y then eq xs1 ys1 else False
       _ -> False
 
-  /= :: Eq a => a -> a -> Bool
   a /= b = if a == b then False else True
 
   class Show a where

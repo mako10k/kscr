@@ -7,6 +7,7 @@ module Prelude.Field where
 
   class Ring a => Field a where
     inv :: a -> a
+    minimal inv
 
     divide :: a -> a -> a
     divide x y = mul x (inv y)

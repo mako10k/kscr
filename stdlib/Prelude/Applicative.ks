@@ -10,6 +10,7 @@ module Prelude.Applicative where
     (<*>) :: f (a -> b) -> f a -> f b
     (*>) :: f a -> f b -> f b
     (<*) :: f a -> f b -> f a
+    minimal pure, (<*>)
 
     fa *> fb = (\_ -> \b -> b) <$> fa <*> fb
     fa <* fb = (\a -> \_ -> a) <$> fa <*> fb

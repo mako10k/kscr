@@ -10,6 +10,7 @@ module Prelude.Ring where
     add :: a -> a -> a
     mul :: a -> a -> a
     neg :: a -> a
+    minimal zero, one, add, mul, neg
 
     sub :: a -> a -> a
     sub x y = add x (neg y)
