@@ -628,6 +628,99 @@ mod tests {
     }
 
     #[test]
+    fn hover_shows_parameter_value_use_type() {
+        let src = r#"module Main where
+  funcB :: Integer -> Integer
+  funcB x = x * 2
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_param_use.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 12,
+            },
+        )
+        .unwrap();
+        let text = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(text.contains("parameter x :: Integer"), "actual hover: {text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_classifies_module_alias_qualifier() {
+        let src = r#"module Main where
+  import qualified Prelude as P
+  main = P.show 1
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_method_alias.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let alias_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 9,
+            },
+        )
+        .unwrap();
+        let alias_text = match alias_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(alias_text.contains("module alias P = Prelude"), "actual hover: {alias_text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_classifies_class_method_use() {
+        let src = r#"module Main where
+  import Prelude
+  showInt = show 1
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_method.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let method_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 12,
+            },
+        )
+        .unwrap();
+        let method_text = match method_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(method_text.contains("class method show ::"), "actual hover: {method_text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn document_symbols_have_reasonable_ranges() {
         let uri = Url::parse("file:///test.ks").unwrap();
         let src = "module M where\n  x = 1\n  data Foo = Bar\n".to_string();

@@ -2,6 +2,16 @@ use crate::vfs::Document;
 use kscr::{error::Error as KscrError, lexer};
 use tower_lsp::lsp_types::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct QualifiedIdentParts {
+    pub current_name: String,
+    pub current_span: kscr::lexer::Span,
+    pub full_name: String,
+    pub full_span: kscr::lexer::Span,
+    pub segment_index: usize,
+    pub segments: Vec<String>,
+}
+
 pub(super) fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
     let len = doc.text.len();
     let start_off = span.start.min(len);
@@ -137,6 +147,14 @@ pub(super) fn qualified_ident_at_offset(
     src: &str,
     offset: usize,
 ) -> Option<(String, kscr::lexer::Span)> {
+    let ident = qualified_ident_parts_at_offset(src, offset)?;
+    Some((ident.full_name, ident.full_span))
+}
+
+pub(super) fn qualified_ident_parts_at_offset(
+    src: &str,
+    offset: usize,
+) -> Option<QualifiedIdentParts> {
     use lexer::TokenKind;
 
     let toks = lexer::lex(src).ok()?;
@@ -149,11 +167,7 @@ pub(super) fn qualified_ident_at_offset(
             })
         })?;
 
-    let lexer::Token {
-        kind: TokenKind::Ident(_),
-        ..
-    } = &toks[i]
-    else {
+    let TokenKind::Ident(current_name) = &toks[i].kind else {
         return None;
     };
 
@@ -189,7 +203,14 @@ pub(super) fn qualified_ident_at_offset(
         j += 2;
     }
 
-    Some((parts.join("."), span))
+    Some(QualifiedIdentParts {
+        current_name: current_name.clone(),
+        current_span: toks[i].span,
+        full_name: parts.join("."),
+        full_span: span,
+        segment_index: (i - start) / 2,
+        segments: parts,
+    })
 }
 
 pub(super) fn contextual_ident_kind_at_offset(src: &str, offset: usize) -> Option<&'static str> {

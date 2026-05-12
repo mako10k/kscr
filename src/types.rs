@@ -50,6 +50,7 @@ pub(crate) fn get_ksif_rebuild_policy() -> KsifRebuildPolicy {
 pub struct TypedModule {
     pub module: ast::Module,
     pub inferred: HashMap<String, Scheme>,
+    pub class_methods: HashMap<String, Scheme>,
     pub docs: HashMap<String, String>,
     pub dict_fallback_trace: Vec<DictFallbackTraceEvent>,
 }
@@ -9253,6 +9254,7 @@ fn typecheck_internal_core_with_entry_path(
                 return Ok(TypedModule {
                     module,
                     inferred,
+                    class_methods: HashMap::new(),
                     docs: source_docs.clone(),
                     dict_fallback_trace: Vec::new(),
                 });
@@ -9541,6 +9543,7 @@ fn typecheck_internal_core_with_entry_path(
         Ok(TypedModule {
             module,
             inferred,
+            class_methods: class_index.methods_by_name,
             docs: source_docs,
             dict_fallback_trace,
         })
