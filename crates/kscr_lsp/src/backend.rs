@@ -2,6 +2,7 @@
 
 use crate::backend_diagnostics_hover as diag_hover;
 use crate::backend_goto_completion;
+use crate::backend_inlay_hints;
 use crate::backend_references_rename;
 use crate::backend_semantic_tokens;
 use crate::backend_symbols;
@@ -80,6 +81,7 @@ impl LanguageServer for Backend {
                 }),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -342,6 +344,16 @@ impl LanguageServer for Backend {
         cache.insert(doc.uri.clone(), current_tokens);
 
         Ok(Some(result))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let vfs = self.vfs.read().await;
+        let doc = match vfs.get(&params.text_document.uri) {
+            Some(doc) => doc,
+            None => return Ok(None),
+        };
+
+        Ok(backend_inlay_hints::inlay_hints_in_doc(doc, params.range))
     }
 }
 

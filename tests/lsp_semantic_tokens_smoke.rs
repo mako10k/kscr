@@ -35,21 +35,30 @@ fn lsp_semantic_tokens_non_empty_for_sample_module() {
 
 #[test]
 fn lsp_semantic_tokens_shape_and_types_are_reasonable() {
-    let src = r#"module Main where
-  data Opt a = Some a | None
-  class ShowLike a where
-    showLike :: a -> String
-  answer = Some 42
+        let binding_src = r#"module Main where
+    applyTwice f x = f (f x)
+    answer = 42
+    idFn = \value -> value
 "#;
+        let binding_uri =
+                tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_bindings.ks").unwrap();
+        let binding_doc = vfs::Document::new(binding_uri, binding_src.to_string(), 1);
+        let binding_tokens = backend_semantic_tokens::semantic_tokens_in_doc(&binding_doc)
+                .expect("semantic tokens should be available for parseable binding source");
 
-    let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_shape.ks").unwrap();
-    let doc = vfs::Document::new(uri, src.to_string(), 1);
+        let type_src = r#"module Main where
+    data Opt a = Some a | None
+    class ShowLike a where
+        showLike :: a -> String
+    answer = Some 42
+"#;
+        let type_uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_types.ks").unwrap();
+        let type_doc = vfs::Document::new(type_uri, type_src.to_string(), 1);
+        let type_tokens = backend_semantic_tokens::semantic_tokens_in_doc(&type_doc)
+                .expect("semantic tokens should be available for parseable type source");
 
-    let tokens = backend_semantic_tokens::semantic_tokens_in_doc(&doc)
-        .expect("semantic tokens should be available for parseable source");
-
-    let mut seen_token_types: HashSet<u32> = HashSet::new();
-    for token in &tokens.data {
+        let mut seen_token_types: HashSet<u32> = HashSet::new();
+        for token in binding_tokens.data.iter().chain(type_tokens.data.iter()) {
         assert!(token.length > 0, "token length must be > 0: {token:?}");
         seen_token_types.insert(token.token_type);
     }
@@ -69,6 +78,14 @@ fn lsp_semantic_tokens_shape_and_types_are_reasonable() {
     assert!(
         seen_token_types.contains(&4),
         "expected enum member token type (4)"
+    );
+    assert!(
+        seen_token_types.contains(&5),
+        "expected variable token type (5)"
+    );
+    assert!(
+        seen_token_types.contains(&6),
+        "expected parameter token type (6)"
     );
 }
 

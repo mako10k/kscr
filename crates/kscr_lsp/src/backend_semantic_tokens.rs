@@ -1,6 +1,6 @@
 use crate::backend_helpers::{find_decl_name_span, find_decl_name_span_any};
 use crate::vfs::Document;
-use kscr::ast::{Item, PatternKind};
+use kscr::ast::{Binding, ExprKind, Item, PatternKind};
 use kscr::lexer;
 use kscr::parser;
 use tower_lsp::lsp_types::{
@@ -13,6 +13,8 @@ const TOKEN_TYPE_TYPE: u32 = 1;
 const TOKEN_TYPE_CLASS: u32 = 2;
 const TOKEN_TYPE_METHOD: u32 = 3;
 const TOKEN_TYPE_ENUM_MEMBER: u32 = 4;
+const TOKEN_TYPE_VARIABLE: u32 = 5;
+const TOKEN_TYPE_PARAMETER: u32 = 6;
 
 pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
@@ -22,6 +24,8 @@ pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
             SemanticTokenType::CLASS,
             SemanticTokenType::METHOD,
             SemanticTokenType::ENUM_MEMBER,
+            SemanticTokenType::VARIABLE,
+            SemanticTokenType::PARAMETER,
         ],
         token_modifiers: Vec::new(),
     }
@@ -30,6 +34,7 @@ pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
 pub(crate) fn semantic_tokens_in_doc(doc: &Document) -> Option<SemanticTokens> {
     let mut raw = collect_raw_tokens(doc)?;
     raw.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    raw.dedup();
     Some(encode_tokens(doc, raw))
 }
 
@@ -37,6 +42,7 @@ pub(crate) fn semantic_tokens_in_range(doc: &Document, range: Range) -> Option<S
     let mut raw = collect_raw_tokens(doc)?;
     raw.retain(|(line, start, _length, _ty)| token_in_range(*line, *start, &range));
     raw.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    raw.dedup();
     Some(encode_tokens(doc, raw))
 }
 
@@ -115,13 +121,25 @@ fn unflatten_tokens(flat: &[u32]) -> Vec<SemanticToken> {
 
 fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
     let module = parser::parse_module(&doc.text).ok()?;
+    let lexed = lexer::lex(&doc.text).ok()?;
     let mut raw: Vec<(u32, u32, u32, u32)> = Vec::new();
 
     for item in &module.items {
         match item {
             Item::Binding(binding) => {
                 if let PatternKind::Var(_) = &binding.pat.kind {
-                    push_span_token(doc, binding.pat.span, TOKEN_TYPE_FUNCTION, &mut raw);
+                    let lhs_params = binding_lhs_parameter_spans(doc, &lexed, binding);
+                    let token_type = if !lhs_params.is_empty()
+                        || matches!(binding.expr.kind, ExprKind::Lambda { .. })
+                    {
+                        TOKEN_TYPE_FUNCTION
+                    } else {
+                        TOKEN_TYPE_VARIABLE
+                    };
+                    push_span_token(doc, binding.pat.span, token_type, &mut raw);
+                    for span in lhs_params {
+                        push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
+                    }
                 }
             }
             Item::TypeAlias(alias) => {
@@ -154,6 +172,9 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                 for method in &inst.methods {
                     if let PatternKind::Var(_) = &method.pat.kind {
                         push_span_token(doc, method.pat.span, TOKEN_TYPE_METHOD, &mut raw);
+                        for span in binding_lhs_parameter_spans(doc, &lexed, method) {
+                            push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
+                        }
                     }
                 }
             }
@@ -161,7 +182,82 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
         }
     }
 
+    for span in lambda_parameter_spans(&lexed) {
+        push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
+    }
+
     Some(raw)
+}
+
+fn binding_lhs_parameter_spans(
+    doc: &Document,
+    tokens: &[lexer::Token],
+    binding: &Binding,
+) -> Vec<kscr::lexer::Span> {
+    let Some((binding_line, _)) = doc.offset_to_position(binding.pat.span.start) else {
+        return Vec::new();
+    };
+
+    let mut seen_name = false;
+    let mut out = Vec::new();
+
+    for token in tokens {
+        if token.span.start < binding.pat.span.start {
+            continue;
+        }
+        if token.span.start >= binding.span.end {
+            break;
+        }
+
+        let Some((line, _)) = doc.offset_to_position(token.span.start) else {
+            continue;
+        };
+        if line != binding_line {
+            if seen_name {
+                break;
+            }
+            continue;
+        }
+
+        match &token.kind {
+            lexer::TokenKind::Ident(_) if !seen_name => {
+                seen_name = true;
+            }
+            lexer::TokenKind::Ident(_) if seen_name => out.push(token.span),
+            lexer::TokenKind::Eq if seen_name => break,
+            lexer::TokenKind::ColonColon if seen_name => return Vec::new(),
+            _ => {}
+        }
+    }
+
+    out
+}
+
+fn lambda_parameter_spans(tokens: &[lexer::Token]) -> Vec<kscr::lexer::Span> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if tokens[i].kind != lexer::TokenKind::Backslash {
+            i += 1;
+            continue;
+        }
+
+        i += 1;
+        while i < tokens.len() {
+            match &tokens[i].kind {
+                lexer::TokenKind::Ident(_) => {
+                    out.push(tokens[i].span);
+                    i += 1;
+                }
+                lexer::TokenKind::Arrow => break,
+                lexer::TokenKind::Newline | lexer::TokenKind::Indent | lexer::TokenKind::Dedent => {
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+    }
+    out
 }
 
 fn encode_tokens(doc: &Document, raw: Vec<(u32, u32, u32, u32)>) -> SemanticTokens {
@@ -270,12 +366,33 @@ mod tests {
     #[test]
     fn semantic_token_legend_has_expected_order() {
         let legend = semantic_tokens_legend();
-        assert_eq!(legend.token_types.len(), 5);
+        assert_eq!(legend.token_types.len(), 7);
         assert_eq!(legend.token_types[0], SemanticTokenType::FUNCTION);
         assert_eq!(legend.token_types[1], SemanticTokenType::TYPE);
         assert_eq!(legend.token_types[2], SemanticTokenType::CLASS);
         assert_eq!(legend.token_types[3], SemanticTokenType::METHOD);
         assert_eq!(legend.token_types[4], SemanticTokenType::ENUM_MEMBER);
+        assert_eq!(legend.token_types[5], SemanticTokenType::VARIABLE);
+        assert_eq!(legend.token_types[6], SemanticTokenType::PARAMETER);
+    }
+
+    #[test]
+    fn semantic_tokens_include_variable_and_parameter_kinds() {
+        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_params.ks").unwrap();
+        let src = r#"module Main where
+  applyTwice f x = f (f x)
+  answer = 42
+  idFn = \value -> value
+"#;
+
+        let doc = Document::new(uri, src.to_string(), 1);
+        let tokens = semantic_tokens_in_doc(&doc).unwrap();
+        let seen: std::collections::HashSet<u32> =
+            tokens.data.iter().map(|token| token.token_type).collect();
+
+        assert!(seen.contains(&TOKEN_TYPE_FUNCTION));
+        assert!(seen.contains(&TOKEN_TYPE_VARIABLE));
+        assert!(seen.contains(&TOKEN_TYPE_PARAMETER));
     }
 
     #[test]
