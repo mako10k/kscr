@@ -93,7 +93,7 @@
         },
         {
           "name": "keyword.declaration.kscr",
-          "match": "\\b(module|import|export|type|data|class|instance|infixl|infixr|infix|deriving|qualified|as)\\b"
+          "match": "\\b(module|import|export|type|data|class|instance|infixl|infixr|infix|deriving|qualified|as|minimal)\\b"
         }
       ]
     },
@@ -109,7 +109,7 @@
       "patterns": [
         {
           "name": "keyword.operator.kscr",
-          "match": "(->|<-|=>|::|==|/=|<=|>=|&&|\\\\|\\|\\|\\+\\+|:)"
+          "match": "(->|<-|=>|::|[-!#$%&*+./<=>?@\\\\^|:~]+)"
         },
         {
           "name": "punctuation.definition.operator.backtick.kscr",

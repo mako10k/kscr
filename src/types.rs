@@ -3937,11 +3937,7 @@ fn process_instances_with_env(
     preregister_instance_dicts(&mut working_env, &instance_decls, module.name.as_deref())?;
 
     // Generate instance items using the working env (has both classes and instances)
-    let extra_items = generate_instance_items(
-        &working_env,
-        &instance_decls,
-        class_decl_info,
-    )?;
+    let extra_items = generate_instance_items(&working_env, &instance_decls, class_decl_info)?;
 
     module.items = module
         .items
@@ -4293,7 +4289,10 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
         }
 
         if !c.minimal_defs.is_empty() {
-            let known_methods = class_method_names.get(&class_id).cloned().unwrap_or_default();
+            let known_methods = class_method_names
+                .get(&class_id)
+                .cloned()
+                .unwrap_or_default();
             for group in &c.minimal_defs {
                 for name in group {
                     if !known_methods.iter().any(|method| method == name) {
@@ -4497,7 +4496,7 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
                 let (method_name, prim_name) = if class_name == "Show" {
                     ("show".to_string(), "__primShow".to_string())
                 } else {
-                    ("eq".to_string(), "__primEq".to_string())
+                    ("==".to_string(), "__primEq".to_string())
                 };
 
                 let class_id_name = if class_name == "Show" {
@@ -4970,9 +4969,7 @@ fn preregister_instance_dicts(
                 let mut cx = InferCtx::default();
                 let mut holes = HashMap::new();
                 let head_pat = normalize_ty_for_instance_key(&lower_surface_type(
-                    &mut cx,
-                    &inst.ty,
-                    &mut holes,
+                    &mut cx, &inst.ty, &mut holes,
                 ));
                 let ctx_pairs: Vec<(String, Ty)> = inst
                     .preds
@@ -5100,12 +5097,7 @@ fn generate_instance_items(
     // Phase 2: generate impl bindings + dictionary records.
     let mut extra_items: Vec<ast::Item> = Vec::new();
     for inst in instance_decls {
-        append_instance_items(
-            env,
-            inst,
-            class_decl_info,
-            &mut extra_items,
-        )?;
+        append_instance_items(env, inst, class_decl_info, &mut extra_items)?;
     }
     Ok(extra_items)
 }
@@ -5127,11 +5119,9 @@ fn append_instance_items(
 
     let inst_methods = collect_instance_methods(inst)?;
     if let Some(minimal_defs) = class_decl_info.minimal_defs.get(&inst.class) {
-        let satisfies_minimal = minimal_defs.iter().any(|group| {
-            group
-                .iter()
-                .all(|name| inst_methods.contains_key(name))
-        });
+        let satisfies_minimal = minimal_defs
+            .iter()
+            .any(|group| group.iter().all(|name| inst_methods.contains_key(name)));
         if !satisfies_minimal {
             return Err(Error::msg(format!(
                 "instance {} {} does not satisfy minimal definition: {}",
@@ -5343,11 +5333,8 @@ fn resolve_instance_dict_name(
     inst: &ast::InstanceDecl,
 ) -> Result<(Option<String>, String, String)> {
     let mut cx = InferCtx::default();
-    let head_ty = normalize_ty_for_instance_key(&lower_surface_type(
-        &mut cx,
-        &inst.ty,
-        &mut HashMap::new(),
-    ));
+    let head_ty =
+        normalize_ty_for_instance_key(&lower_surface_type(&mut cx, &inst.ty, &mut HashMap::new()));
 
     if ftv_ty(&head_ty).is_empty() {
         let ty_key = instance_head_key_ty(&head_ty)?;
@@ -5878,7 +5865,7 @@ fn simplify_process_constraint(
         // Prefer looking up by a distinctive method name when possible.
         // This is robust even if class names are qualified (e.g. `Prelude.Eq`).
         let method_hint = match name {
-            "Eq" => Some("eq"),
+            "Eq" => Some("=="),
             "Show" => Some("show"),
             _ => None,
         };
@@ -9150,18 +9137,14 @@ fn typecheck_internal_core_with_entry_path(
         let mut class_env = if is_stdlib {
             // For stdlib modules: collect classes and process instances without superclass validation
             // Validation will be done when user modules import these classes
-            let (env, class_decl_info) =
-                collect_class_env_only(&mut module, false)?;
+            let (env, class_decl_info) = collect_class_env_only(&mut module, false)?;
 
             // Process instances
             let instance_decls = collect_instance_decls(&module);
             let mut working_env = env.clone();
             preregister_instance_dicts(&mut working_env, &instance_decls, module.name.as_deref())?;
-            let extra_items = generate_instance_items(
-                &working_env,
-                &instance_decls,
-                &class_decl_info,
-            )?;
+            let extra_items =
+                generate_instance_items(&working_env, &instance_decls, &class_decl_info)?;
 
             module.items = module
                 .items
@@ -9533,18 +9516,14 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         }
 
         // Process instances against the merged ClassEnv
-        let mut module_env = process_instances_with_env(
-            &mut tmp_module,
-            &merged_env,
-            &all_class_decl_info,
-            true,
-        )
-        .map_err(|e| {
-            e.with_context(format!(
-                "while processing instances in stdlib module {}",
-                path.display()
-            ))
-        })?;
+        let mut module_env =
+            process_instances_with_env(&mut tmp_module, &merged_env, &all_class_decl_info, true)
+                .map_err(|e| {
+                    e.with_context(format!(
+                        "while processing instances in stdlib module {}",
+                        path.display()
+                    ))
+                })?;
 
         // Qualify instance dict names with the module name before merging
         if let Some(mod_name) = &tmp_module.name {
@@ -9878,12 +9857,8 @@ fn load_imported_typeclass_info(
         // Bring stdlib class declarations into scope so `deriving (Show, Eq)` in imported
         // modules can resolve to stdlib classes (e.g. Prelude.Show) when we collect instances.
         inject_stdlib_class_decls(&mut tmp_module)?;
-        let module_env = process_instances_with_env(
-            &mut tmp_module,
-            &merged_env,
-            &class_decl_info,
-            false,
-        )?;
+        let module_env =
+            process_instances_with_env(&mut tmp_module, &merged_env, &class_decl_info, false)?;
 
         // Collect dictionary bindings from the desugared module
         // These need to be injected into the importing module with qualified names
@@ -13562,19 +13537,19 @@ fn resolve_method_dict_expr(
     // Prefer a dictionary already fixed by surrounding context.
     if !determined_by_args {
         if let Some(d) = known_context_dict.as_ref() {
-        let chosen_name_for_known = Some(d.clone());
-        record_dict_fallback_trace(
-            ctx,
-            mname,
-            class,
-            DictFallbackDecision::SelectedFromKnownContext,
-            true,
-            chosen_name_for_known.clone(),
-        );
-        return Ok(Some((
-            Expr::new(ctx.span, ExprKind::Var(d.clone())),
-            chosen_name_for_known,
-        )));
+            let chosen_name_for_known = Some(d.clone());
+            record_dict_fallback_trace(
+                ctx,
+                mname,
+                class,
+                DictFallbackDecision::SelectedFromKnownContext,
+                true,
+                chosen_name_for_known.clone(),
+            );
+            return Ok(Some((
+                Expr::new(ctx.span, ExprKind::Var(d.clone())),
+                chosen_name_for_known,
+            )));
         }
     }
 
@@ -13939,6 +13914,15 @@ fn rewrite_class_method_apply(
 ) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
 
+    fn peel_explicit_dict_arg(args: Vec<ast::Expr>) -> (Option<ast::Expr>, Vec<ast::Expr>) {
+        if let Some((first, rest)) = args.split_first() {
+            if matches!(&first.kind, ExprKind::Var(name) if name.starts_with("__dict_")) {
+                return (Some(first.clone()), rest.to_vec());
+            }
+        }
+        (None, args)
+    }
+
     if let ExprKind::Var(mname) = &func.kind {
         // Check if this name is defined as a user function/value in the module.
         // If so, don't rewrite it as a typeclass method.
@@ -13964,15 +13948,23 @@ fn rewrite_class_method_apply(
                     return Err(Error::msg("internal: empty method class list"));
                 };
 
+                let (explicit_dict_arg, method_args) = peel_explicit_dict_arg(args);
+
+                if let Some(dict_expr) = explicit_dict_arg {
+                    let new_args =
+                        rewrite_args_with_known(ctx, &ctx.known_dicts_in_scope, method_args)?;
+                    return Ok(build_method_call(ctx, mname, dict_expr, new_args));
+                }
+
                 if let Some((dict_expr, chosen_name_for_known)) =
-                    resolve_method_dict_expr(ctx, class, mname, &args)?
+                    resolve_method_dict_expr(ctx, class, mname, &method_args)?
                 {
                     let mut known = ctx.known_dicts_in_scope.clone();
                     if let Some(chosen) = chosen_name_for_known.clone() {
                         known.insert(class.name.clone(), chosen);
                     }
 
-                    let new_args = rewrite_args_with_known(ctx, &known, args)?;
+                    let new_args = rewrite_args_with_known(ctx, &known, method_args)?;
                     return Ok(build_method_call(ctx, mname, dict_expr, new_args));
                 }
 
@@ -13985,7 +13977,7 @@ fn rewrite_class_method_apply(
                 let mut scope = ctx.dicts_in_scope.clone();
                 scope.insert(dict_var.clone());
 
-                let new_args: Vec<_> = args
+                let new_args: Vec<_> = method_args
                     .into_iter()
                     .map(|a| {
                         rewrite_expr(
@@ -14180,6 +14172,18 @@ fn rewrite_expr_inner(
             ExprKind::Annot {
                 expr: Box::new(rewrite_ctx.rewrite(*expr)?),
                 ty,
+            },
+        ),
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => Expr::new(
+            span,
+            ExprKind::If {
+                cond: Box::new(rewrite_ctx.rewrite(*cond)?),
+                then_branch: Box::new(rewrite_ctx.rewrite(*then_branch)?),
+                else_branch: Box::new(rewrite_ctx.rewrite(*else_branch)?),
             },
         ),
         ExprKind::Do(stmts) => Expr::new(span, ExprKind::Do(rewrite_ctx.rewrite_do(stmts)?)),
@@ -16420,9 +16424,10 @@ instance C (Maybe Integer) where
             class_params: vec![(class_id.clone(), "a".to_string())]
                 .into_iter()
                 .collect(),
-            instances: vec![
-                ((class_id.clone(), "Bool".to_string()), "Main.__dict_C_Bool".to_string()),
-            ]
+            instances: vec![(
+                (class_id.clone(), "Bool".to_string()),
+                "Main.__dict_C_Bool".to_string(),
+            )]
             .into_iter()
             .collect(),
             poly_instances: vec![PolyInstance {

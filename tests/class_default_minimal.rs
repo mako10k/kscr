@@ -51,7 +51,10 @@ fn minimal_definition_rejects_empty_instance() {
         .output()
         .expect("typecheck kscr");
 
-    assert!(!out.status.success(), "empty instance should fail minimal definition");
+    assert!(
+        !out.status.success(),
+        "empty instance should fail minimal definition"
+    );
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("does not satisfy minimal definition"),
         "stderr should mention minimal definition: {}",

@@ -811,7 +811,10 @@ fn parse_class_minimal_line(ts: &mut TokenStream) -> Result<Option<Vec<Vec<Strin
     let mut current = Vec::new();
 
     current.push(parse_signature_name(ts)?);
-    while !matches!(ts.peek_kind(), Some(TokenKind::Newline | TokenKind::Dedent) | None) {
+    while !matches!(
+        ts.peek_kind(),
+        Some(TokenKind::Newline | TokenKind::Dedent) | None
+    ) {
         match ts.peek_kind() {
             Some(TokenKind::Comma) => {
                 ts.bump();
@@ -835,7 +838,11 @@ fn parse_class_minimal_line(ts: &mut TokenStream) -> Result<Option<Vec<Vec<Strin
 
 fn parse_class_body(
     ts: &mut TokenStream,
-) -> Result<(Vec<ast::ClassMethodSig>, Vec<ast::Binding>, Vec<Vec<String>>)> {
+) -> Result<(
+    Vec<ast::ClassMethodSig>,
+    Vec<ast::Binding>,
+    Vec<Vec<String>>,
+)> {
     ts.expect(TokenKind::Indent)?;
 
     let mut methods: Vec<ast::ClassMethodSig> = Vec::new();

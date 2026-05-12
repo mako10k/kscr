@@ -164,9 +164,9 @@ a == b = a `eqInt` b
 fn parser_accepts_haskell_style_infix_definition() {
     let src = r#"
 class EqLike a where
-    eq :: a -> a -> Bool
+    cmp :: a -> a -> Bool
 
-a == b = a `eq` b
+a == b = a `cmp` b
 "#;
 
     let m = crate::parser::parse_module(src).unwrap();
@@ -185,9 +185,9 @@ a == b = a `eq` b
 fn parser_accepts_class_minimal_declaration() {
     let src = r#"
 class EqLike a where
-    eq :: a -> a -> Bool
     == :: a -> a -> Bool
-    minimal eq | ==
+    /= :: a -> a -> Bool
+    minimal == | /=
 "#;
 
     let m = crate::parser::parse_module(src).unwrap();
@@ -199,7 +199,10 @@ class EqLike a where
             _ => None,
         })
         .expect("expected class decl");
-    assert_eq!(cls.minimal_defs, vec![vec!["eq".to_string()], vec!["==".to_string()]]);
+    assert_eq!(
+        cls.minimal_defs,
+        vec![vec!["==".to_string()], vec!["/=".to_string()]]
+    );
 }
 
 #[test]
@@ -306,7 +309,7 @@ instance C a => C (Maybe a) where
 fn parser_instance_head_accepts_parenthesized_infix_type_operator() {
     let src = r#"
 class Eq a where
-    eq :: a -> a -> Bool
+    == :: a -> a -> Bool
 
 instance Eq (a :*: b) where
 "#;

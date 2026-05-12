@@ -4,7 +4,7 @@ module Main where
   data Box = Box Integer
 
   instance Eq Box where
-    eq _ _ = True
+    a == b = True
 
   main = do
     if Box 1 == Box 2 then stdoutWrite "EQ_OK\n" else stdoutWrite "EQ_NG\n"

@@ -1,5 +1,5 @@
 module Prelude where
-  export String, print, readLine, getLine, putStr, putStrLn, getArgs, readFile, writeFile, exitWith, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Eq(..), eq, (==), (/=), Show(..), show, toString, Rational(..), numerator, denominator, toPair, Num(..), (+), (*), Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, (.), ($), flip, (&), on, until, concatMap, map, filter, concat, append, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
+  export String, print, readLine, getLine, putStr, putStrLn, getArgs, readFile, writeFile, exitWith, error, Functor(..), fmap, (<$>), Applicative(..), pure, (<*>), (<*), (*>), Monad(..), (>>=), (>>), return, (=<<), Semigroup(..), (<>), Monoid(..), mempty, mappend, mconcat, Group(..), invert, (<->), Ring(..), zero, one, add, mul, neg, sub, (+^), (-^), (*^), negate, Field(..), inv, divide, (/^), recip, Integral(..), div, mod, quot, rem, Eq(..), (==), (/=), Show(..), show, toString, Rational(..), numerator, denominator, toPair, Num(..), (+), (*), Enum(..), enumFrom, enumFromThen, enumFromTo, enumFromThenTo, id, const, (.), ($), flip, (&), on, until, concatMap, map, filter, concat, append, length, foldr, foldl, reverse, take, drop, takeWhile, dropWhile, any, all, elem, find, zip, unzip, Maybe(..), Either(..), maybe, fromMaybe, isJust, isNothing, maybeToList, listToMaybe, mapMaybe, catMaybes
 
   import Prelude.Functor
   import Prelude.Applicative
@@ -26,35 +26,33 @@ module Prelude where
   infix 40 /=
 
   class Eq a where
-    eq :: a -> a -> Bool
     == :: a -> a -> Bool
-    minimal eq | ==
+    /= :: a -> a -> Bool
+    minimal == | /=
 
-    a == b = a `eq` b
-    eq a b = a == b
+    a == b = if a /= b then False else True
+    a /= b = if a == b then False else True
 
   -- Default Eq instances for primitive types.
   -- These are normal instances (not special-cased primitives), but their implementations
   -- delegate to the structural runtime builtin.
   instance Eq Integer where
-    eq = __primEq
+    a == b = __primEq a b
 
   instance Eq Char where
-    eq = __primEq
+    a == b = __primEq a b
 
   instance Eq Bool where
-    eq = __primEq
+    a == b = __primEq a b
 
   instance Eq Unit where
-    eq = __primEq
+    a == b = __primEq a b
 
   instance Eq a => Eq [a] where
-    eq xs ys = case (xs, ys) of
+    xs == ys = case (xs, ys) of
       ([], []) -> True
-      (x : xs1, y : ys1) -> if x == y then eq xs1 ys1 else False
+      (x : xs1, y : ys1) -> if x == y then xs1 == ys1 else False
       _ -> False
-
-  a /= b = if a == b then False else True
 
   class Show a where
     show :: a -> [Char]

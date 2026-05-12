@@ -754,7 +754,8 @@ fn is_probably_typeclass_dict_record(v: &Value) -> bool {
     }
 
     fields.iter().any(|(k, _)| {
-        k == "eq"
+        k == "=="
+            || k == "/="
             || k == "show"
             || k == "+"
             || k == "-"
@@ -868,17 +869,37 @@ fn try_get_default_dict(class_name: &str) -> Result<Value> {
         }
         "Eq" => {
             // Default Eq instance uses structural equality
-            Ok(Value::Record(vec![(
-                "eq".to_string(),
-                Value::Closure {
-                    params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
-                    body: Box::new(IrExpr::Apply {
-                        func: Box::new(IrExpr::Var("==".to_string())),
-                        args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
-                    }),
-                    env: std::collections::HashMap::new().into(),
-                },
-            )]))
+            Ok(Value::Record(vec![
+                (
+                    "==".to_string(),
+                    Value::Closure {
+                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                        body: Box::new(IrExpr::Apply {
+                            func: Box::new(IrExpr::Var("==".to_string())),
+                            args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
+                        }),
+                        env: std::collections::HashMap::new().into(),
+                    },
+                ),
+                (
+                    "/=".to_string(),
+                    Value::Closure {
+                        params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                        body: Box::new(IrExpr::If {
+                            cond: Box::new(IrExpr::Apply {
+                                func: Box::new(IrExpr::Var("==".to_string())),
+                                args: vec![
+                                    IrExpr::Var("a".to_string()),
+                                    IrExpr::Var("b".to_string()),
+                                ],
+                            }),
+                            then_branch: Box::new(IrExpr::Bool(false)),
+                            else_branch: Box::new(IrExpr::Bool(true)),
+                        }),
+                        env: std::collections::HashMap::new().into(),
+                    },
+                ),
+            ]))
         }
         _ => {
             // For classes without default dicts, return error
@@ -1139,7 +1160,24 @@ fn eval_builtin_var(g: &Globals, name: &str) -> Option<Value> {
         "__builtinShowDict" => Value::Record(vec![("show".to_string(), Value::BuiltinShow)]),
 
         "__eq" => Value::BuiltinEqDictApply,
-        "__builtinEqDict" => Value::Record(vec![("eq".to_string(), Value::BuiltinEq)]),
+        "__builtinEqDict" => Value::Record(vec![
+            ("==".to_string(), Value::BuiltinEq),
+            (
+                "/=".to_string(),
+                Value::Closure {
+                    params: vec!["_dict".to_string(), "a".to_string(), "b".to_string()],
+                    body: Box::new(IrExpr::If {
+                        cond: Box::new(IrExpr::Apply {
+                            func: Box::new(IrExpr::Var("==".to_string())),
+                            args: vec![IrExpr::Var("a".to_string()), IrExpr::Var("b".to_string())],
+                        }),
+                        then_branch: Box::new(IrExpr::Bool(false)),
+                        else_branch: Box::new(IrExpr::Bool(true)),
+                    }),
+                    env: std::collections::HashMap::new().into(),
+                },
+            ),
+        ]),
 
         // Minimal dictionaries for `.ksif`-only execution.
         // These are methods that accept the dictionary as their first argument; we ignore it.
@@ -1738,7 +1776,7 @@ fn apply_one(g: &Globals, fun: Value, arg: Value) -> Result<Value> {
         Value::BuiltinEq => {
             let arg = force_and_auto_apply(g, arg)?;
             // Typeclass method calls pass the instance dictionary as the first arg.
-            // When `__primEq` is used as an instance method body (e.g. `eq = __primEq`),
+            // When `__primEq` is used as an instance method body (e.g. `== = __primEq`),
             // ignore that leading dictionary.
             if is_probably_typeclass_dict_record(&arg) {
                 Ok(Value::BuiltinEq)
@@ -2883,8 +2921,8 @@ fn eq_with_dict(
         return Err(Error::msg("__eq expects an Eq dictionary record"));
     };
 
-    let Some((_, eq_fn)) = fields.into_iter().find(|(k, _)| k == "eq") else {
-        return Err(Error::msg("Eq dictionary missing field: eq"));
+    let Some((_, eq_fn)) = fields.into_iter().find(|(k, _)| k == "==") else {
+        return Err(Error::msg("Eq dictionary missing field: =="));
     };
     let eq_fn = force_value(g, eq_fn)?;
     let f = apply_one(g, eq_fn, builtin_dict)?;

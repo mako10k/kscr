@@ -104,7 +104,7 @@ pub struct ClassDecl {
     pub default_methods: Vec<Binding>,
     /// Minimal complete definition: OR-of-AND method-name groups.
     ///
-    /// Example: `minimal eq | (==)` becomes `[ ["eq"], ["=="] ]`.
+    /// Example: `minimal (==) | (/=)` becomes `[ ["=="], ["/="] ]`.
     pub minimal_defs: Vec<Vec<String>>,
     /// Module where this class was originally defined (e.g., "Prelude.Functor").
     /// Set after parsing; used to construct canonical ClassId keys.
