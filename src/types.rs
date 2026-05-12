@@ -9259,6 +9259,11 @@ fn typecheck_internal_core_with_entry_path(
             }
         }
 
+        if !is_stdlib {
+            validate_superclass_preds(&class_env)?;
+            detect_superclass_cycles(&class_env)?;
+        }
+
         if !imported_typeclass_info.dict_bindings.is_empty() {
             module.items.extend(imported_typeclass_info.dict_bindings);
         }

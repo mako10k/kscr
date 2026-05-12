@@ -5,6 +5,12 @@ use crate::Result;
 
 use std::collections::{HashMap, HashSet};
 
+pub(super) fn is_dict_or_inst_binding_name(name: &str) -> bool {
+    name.rsplit('.')
+        .next()
+        .is_some_and(|last| last.starts_with("__dict_") || last.starts_with("__inst_"))
+}
+
 pub(super) fn rewrite_class_dict_passing_in_module(
     module: &mut ast::Module,
     class_env: &ClassEnv,
@@ -22,7 +28,7 @@ pub(super) fn rewrite_class_dict_passing_in_module(
     // name -> classes (stable order) that require an explicit dictionary arg.
     let mut needs_dicts: HashMap<String, Vec<String>> = HashMap::new();
     for (name, scheme) in inferred {
-        if name.starts_with("__dict_") || name.starts_with("__inst_") {
+        if is_dict_or_inst_binding_name(name) {
             continue;
         }
 
