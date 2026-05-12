@@ -480,6 +480,13 @@ pub fn format_pretty_ty(ty: &Ty) -> String {
     format!("{}", PrettyTyDisplay { ty, vars: &vars })
 }
 
+pub fn format_pretty_tys_with_scheme(scheme: &Scheme, tys: &[Ty]) -> Vec<String> {
+    let vars = pretty_names_for_scheme(scheme);
+    tys.iter()
+        .map(|ty| format!("{}", PrettyTyDisplay { ty, vars: &vars }))
+        .collect()
+}
+
 pub fn format_pretty_scheme(scheme: &Scheme) -> String {
     let vars = pretty_names_for_scheme(scheme);
     format!("{}", PrettySchemeDisplay { scheme, vars: &vars })

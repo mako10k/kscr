@@ -138,17 +138,19 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
         match item {
             Item::Binding(binding) => {
                 if let PatternKind::Var(_) = &binding.pat.kind {
-                    let lhs_params = binding_lhs_parameter_spans(doc, &lexed, binding);
-                    let token_type = if !lhs_params.is_empty()
-                        || matches!(binding.expr.kind, ExprKind::Lambda { .. })
-                    {
-                        TOKEN_TYPE_FUNCTION
-                    } else {
-                        TOKEN_TYPE_VARIABLE
-                    };
-                    push_span_token(doc, binding.pat.span, token_type, &mut raw);
-                    for span in lhs_params {
-                        push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
+                    if let Some(name_span) = binding_name_span(doc, &lexed, binding) {
+                        let lhs_params = binding_lhs_parameter_spans(doc, &lexed, binding, name_span);
+                        let token_type = if !lhs_params.is_empty()
+                            || matches!(binding.expr.kind, ExprKind::Lambda { .. })
+                        {
+                            TOKEN_TYPE_FUNCTION
+                        } else {
+                            TOKEN_TYPE_VARIABLE
+                        };
+                        push_span_token(doc, name_span, token_type, &mut raw);
+                        for span in lhs_params {
+                            push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
+                        }
                     }
                 }
             }
@@ -179,6 +181,16 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                 {
                     push_span_token(doc, span, TOKEN_TYPE_CLASS, &mut raw);
                 }
+                for binding in &class.default_methods {
+                    if let PatternKind::Var(_) = &binding.pat.kind {
+                        if let Some(name_span) = binding_name_span(doc, &lexed, binding) {
+                            push_span_token(doc, name_span, TOKEN_TYPE_METHOD, &mut raw);
+                            for span in binding_lhs_parameter_spans(doc, &lexed, binding, name_span) {
+                                push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
+                            }
+                        }
+                    }
+                }
             }
             Item::InstanceDecl(inst) => {
                 if let Some((span, next_from)) = instance_class_name_span(&lexed, search_from, &inst.class.name) {
@@ -187,9 +199,11 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                 }
                 for method in &inst.methods {
                     if let PatternKind::Var(_) = &method.pat.kind {
-                        push_span_token(doc, method.pat.span, TOKEN_TYPE_METHOD, &mut raw);
-                        for span in binding_lhs_parameter_spans(doc, &lexed, method) {
-                            push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
+                        if let Some(name_span) = binding_name_span(doc, &lexed, method) {
+                            push_span_token(doc, name_span, TOKEN_TYPE_METHOD, &mut raw);
+                            for span in binding_lhs_parameter_spans(doc, &lexed, method, name_span) {
+                                push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
+                            }
                         }
                     }
                 }
@@ -322,44 +336,89 @@ fn binding_lhs_parameter_spans(
     doc: &Document,
     tokens: &[lexer::Token],
     binding: &Binding,
+    name_span: kscr::lexer::Span,
 ) -> Vec<kscr::lexer::Span> {
     let Some((binding_line, _)) = doc.offset_to_position(binding.pat.span.start) else {
         return Vec::new();
     };
 
-    let mut seen_name = false;
     let mut out = Vec::new();
 
     for token in tokens {
-        if token.span.start < binding.pat.span.start {
+        if token.span.start <= name_span.start {
             continue;
-        }
-        if token.span.start >= binding.span.end {
-            break;
         }
 
         let Some((line, _)) = doc.offset_to_position(token.span.start) else {
             continue;
         };
         if line != binding_line {
-            if seen_name {
-                break;
-            }
-            continue;
+            break;
         }
 
         match &token.kind {
-            lexer::TokenKind::Ident(_) if !seen_name => {
-                seen_name = true;
-            }
-            lexer::TokenKind::Ident(_) if seen_name => out.push(token.span),
-            lexer::TokenKind::Eq if seen_name => break,
-            lexer::TokenKind::ColonColon if seen_name => return Vec::new(),
+            lexer::TokenKind::Ident(_) => out.push(token.span),
+            lexer::TokenKind::Eq => break,
+            lexer::TokenKind::ColonColon => return Vec::new(),
             _ => {}
         }
     }
 
     out
+}
+
+fn is_operator_name_token(kind: &lexer::TokenKind) -> bool {
+    matches!(
+        kind,
+        lexer::TokenKind::Operator(_)
+            | lexer::TokenKind::Colon
+            | lexer::TokenKind::Plus
+            | lexer::TokenKind::Minus
+            | lexer::TokenKind::Star
+            | lexer::TokenKind::Slash
+            | lexer::TokenKind::PlusPlus
+            | lexer::TokenKind::EqEq
+            | lexer::TokenKind::SlashEq
+            | lexer::TokenKind::Lt
+            | lexer::TokenKind::Le
+            | lexer::TokenKind::Gt
+            | lexer::TokenKind::Ge
+            | lexer::TokenKind::GtGt
+            | lexer::TokenKind::GtGtEq
+            | lexer::TokenKind::AndAnd
+            | lexer::TokenKind::OrOr
+    )
+}
+
+fn binding_name_span(
+    doc: &Document,
+    tokens: &[lexer::Token],
+    binding: &Binding,
+) -> Option<kscr::lexer::Span> {
+    let (binding_line, _) = doc.offset_to_position(binding.pat.span.start)?;
+
+    let mut saw_lparen = false;
+    for token in tokens {
+        if token.span.start < binding.pat.span.start {
+            continue;
+        }
+
+        let (line, _) = doc.offset_to_position(token.span.start)?;
+        if line != binding_line {
+            break;
+        }
+
+        match &token.kind {
+            lexer::TokenKind::Ident(_) => return Some(token.span),
+            kind if saw_lparen && is_operator_name_token(kind) => return Some(token.span),
+            lexer::TokenKind::LParen => saw_lparen = true,
+            lexer::TokenKind::Eq | lexer::TokenKind::ColonColon => break,
+            lexer::TokenKind::Newline | lexer::TokenKind::Indent | lexer::TokenKind::Dedent => {}
+            _ => break,
+        }
+    }
+
+    None
 }
 
 fn lambda_parameter_spans(tokens: &[lexer::Token]) -> Vec<kscr::lexer::Span> {
@@ -477,6 +536,22 @@ fn push_span_token(
 mod tests {
     use super::*;
 
+    fn absolute_tokens(tokens: &SemanticTokens) -> Vec<(u32, u32, u32, u32)> {
+        let mut out = Vec::new();
+        let mut line = 0;
+        let mut start = 0;
+        for token in &tokens.data {
+            line += token.delta_line;
+            if token.delta_line == 0 {
+                start += token.delta_start;
+            } else {
+                start = token.delta_start;
+            }
+            out.push((line, start, token.length, token.token_type));
+        }
+        out
+    }
+
     #[test]
     fn semantic_tokens_non_empty_for_basic_module() {
         let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_test.ks").unwrap();
@@ -523,6 +598,59 @@ mod tests {
         assert!(seen.contains(&TOKEN_TYPE_FUNCTION));
         assert!(seen.contains(&TOKEN_TYPE_VARIABLE));
         assert!(seen.contains(&TOKEN_TYPE_PARAMETER));
+    }
+
+    #[test]
+    fn semantic_tokens_mark_symbolic_binding_and_all_lhs_params() {
+        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_symbolic.ks").unwrap();
+        let src = "module Main where\n  (/^) x y = x\n";
+
+        let doc = Document::new(uri, src.to_string(), 1);
+        let tokens = semantic_tokens_in_doc(&doc).unwrap();
+        let tokens = absolute_tokens(&tokens);
+
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 1 && *start == 3 && *length == 2 && *token_type == TOKEN_TYPE_FUNCTION), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 1 && *start == 7 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 1 && *start == 9 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+    }
+
+    #[test]
+    fn semantic_tokens_mark_class_default_method_parameters() {
+        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_class_default.ks").unwrap();
+        let src = "module Main where\n  class Field a where\n    divide :: a -> a -> a\n    divide x y = x\n";
+
+        let doc = Document::new(uri, src.to_string(), 1);
+        let tokens = absolute_tokens(&semantic_tokens_in_doc(&doc).unwrap());
+
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 3 && *start == 4 && *length == 6 && *token_type == TOKEN_TYPE_METHOD), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 3 && *start == 11 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 3 && *start == 13 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+    }
+
+    #[test]
+    fn semantic_tokens_cover_real_prelude_field_bindings() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("stdlib/Prelude/Field.ks");
+        let src = std::fs::read_to_string(&path).unwrap();
+        let uri = tower_lsp::lsp_types::Url::from_file_path(std::fs::canonicalize(&path).unwrap()).unwrap();
+        let doc = Document::new(uri, src, 1);
+        let tokens = absolute_tokens(&semantic_tokens_in_range(
+            &doc,
+            Range {
+                start: Position { line: 12, character: 0 },
+                end: Position { line: 15, character: 40 },
+            },
+        )
+        .unwrap());
+
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 12 && *start == 4 && *length == 6 && *token_type == TOKEN_TYPE_METHOD), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 12 && *start == 11 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 12 && *start == 13 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 14 && *start == 3 && *length == 2 && *token_type == TOKEN_TYPE_FUNCTION), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 14 && *start == 7 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 14 && *start == 9 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
     }
 
     #[test]

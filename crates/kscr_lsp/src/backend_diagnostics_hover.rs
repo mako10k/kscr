@@ -86,6 +86,12 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
     if let Some(param_hover) = hover_parameter_use_in_doc(doc, off, typed.as_ref()) {
         return Some(param_hover);
     }
+    if let Some(param_hover) = hover_method_parameter_use_in_doc(doc, off, typed.as_ref()) {
+        return Some(param_hover);
+    }
+    if let Some(param_hover) = hover_line_parameter_use_in_doc(doc, off, typed.as_ref()) {
+        return Some(param_hover);
+    }
     if let Some(local_hover) = hover_local_binding_in_doc(doc, off, &name, typed.as_ref()) {
         return Some(local_hover);
     }
@@ -187,7 +193,6 @@ fn hover_parameter_in_doc(
     name: &str,
     typed: Option<&types::TypedModule>,
 ) -> Option<Hover> {
-    let typed = typed?;
     let module = parser::parse_module(&doc.text).ok()?;
     let tokens = lexer::lex(&doc.text).ok()?;
 
@@ -195,9 +200,13 @@ fn hover_parameter_in_doc(
         let ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
             continue;
         };
-        let scheme = typed.inferred.get(binding_name);
+        let scheme = typed.and_then(|typed| binding_scheme(typed, binding_name));
 
-        let mut spans = binding_lhs_parameter_spans(doc, &tokens, binding);
+        let Some(name_span) = binding_name_span(doc, &tokens, binding) else {
+            continue;
+        };
+
+        let mut spans = binding_lhs_parameter_spans(doc, &tokens, binding, name_span);
         spans.extend(leading_lambda_parameter_spans(&tokens, binding));
 
         for (index, span) in spans.into_iter().enumerate() {
@@ -206,6 +215,7 @@ fn hover_parameter_in_doc(
                 let value = scheme
                     .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
                     .map(|ty| format!("```kscr\nparameter {name} :: {}\n```", types::format_pretty_ty(&ty)))
+                    .or_else(|| class_method_parameter_type_text(&module, binding_name, index).map(|ty| format!("```kscr\nparameter {name} :: {ty}\n```")))
                     .unwrap_or_else(|| format!("```kscr\nparameter {name}\n```"));
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
@@ -226,24 +236,25 @@ fn hover_parameter_use_in_doc(
     offset: usize,
     typed: Option<&types::TypedModule>,
 ) -> Option<Hover> {
-    let typed = typed?;
     let module = parser::parse_module(&doc.text).ok()?;
     let tokens = lexer::lex(&doc.text).ok()?;
     let ident = qualified_ident_parts_at_offset(&doc.text, offset)?;
     if ident.segments.len() != 1 {
         return None;
     }
+    let (cursor_line, _) = doc.offset_to_position(offset)?;
 
     for binding in bindings_in_module(&module) {
         let ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
             continue;
         };
-        let scheme = typed.inferred.get(binding_name);
-        if offset < binding.expr.span.start || binding.expr.span.end <= offset {
+        let scheme = typed.and_then(|typed| binding_scheme(typed, binding_name));
+        let Some(name_span) = binding_name_span(doc, &tokens, binding) else {
             continue;
-        }
+        };
+        let (binding_line, _) = doc.offset_to_position(binding.pat.span.start)?;
 
-        let mut spans = binding_lhs_parameter_spans(doc, &tokens, binding);
+        let mut spans = binding_lhs_parameter_spans(doc, &tokens, binding, name_span);
         spans.extend(leading_lambda_parameter_spans(&tokens, binding));
 
         for (index, span) in spans.into_iter().enumerate() {
@@ -254,10 +265,14 @@ fn hover_parameter_use_in_doc(
             let Some(name) = doc.text.get(span.start..span.end) else {
                 continue;
             };
-            if name == ident.current_name {
+            let same_line_rhs_use = cursor_line == binding_line && offset >= span.end;
+            if name == ident.current_name
+                && (expr_contains_var_at_offset(&binding.expr, name, offset) || same_line_rhs_use)
+            {
                 let head = scheme
                     .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
                     .map(|ty| format!("parameter {name} :: {}", types::format_pretty_ty(&ty)))
+                    .or_else(|| class_method_parameter_type_text(&module, binding_name, index).map(|ty| format!("parameter {name} :: {ty}")))
                     .unwrap_or_else(|| format!("parameter {name}"));
                 return Some(simple_hover(
                     doc,
@@ -269,6 +284,65 @@ fn hover_parameter_use_in_doc(
     }
 
     None
+}
+
+fn expr_contains_var_at_offset(expr: &ast::Expr, name: &str, offset: usize) -> bool {
+    match &expr.kind {
+        ast::ExprKind::Var(var_name) => var_name == name && expr.span.start <= offset && offset < expr.span.end,
+        ast::ExprKind::Lambda { body, .. } | ast::ExprKind::Annot { expr: body, .. } => {
+            expr_contains_var_at_offset(body, name, offset)
+        }
+        ast::ExprKind::Apply { func, args } => {
+            expr_contains_var_at_offset(func, name, offset)
+                || args.iter().any(|arg| expr_contains_var_at_offset(arg, name, offset))
+        }
+        ast::ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            expr_contains_var_at_offset(cond, name, offset)
+                || expr_contains_var_at_offset(then_branch, name, offset)
+                || expr_contains_var_at_offset(else_branch, name, offset)
+        }
+        ast::ExprKind::Let { bindings, body } => {
+            bindings.iter().any(|binding| expr_contains_var_at_offset(&binding.expr, name, offset))
+                || expr_contains_var_at_offset(body, name, offset)
+        }
+        ast::ExprKind::Where { expr, bindings } => {
+            expr_contains_var_at_offset(expr, name, offset)
+                || bindings.iter().any(|binding| expr_contains_var_at_offset(&binding.expr, name, offset))
+        }
+        ast::ExprKind::Do(stmts) => stmts.iter().any(|stmt| match stmt {
+            ast::DoStmt::Bind { expr, .. } | ast::DoStmt::Expr(expr) => expr_contains_var_at_offset(expr, name, offset),
+        }),
+        ast::ExprKind::Case { expr, arms } => {
+            expr_contains_var_at_offset(expr, name, offset)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| expr_contains_var_at_offset(guard, name, offset))
+                        || expr_contains_var_at_offset(&arm.body, name, offset)
+                })
+        }
+        ast::ExprKind::Cons { head, tail } => {
+            expr_contains_var_at_offset(head, name, offset)
+                || expr_contains_var_at_offset(tail, name, offset)
+        }
+        ast::ExprKind::List(items) | ast::ExprKind::Tuple(items) => {
+            items.iter().any(|item| expr_contains_var_at_offset(item, name, offset))
+        }
+        ast::ExprKind::Record(fields) => fields
+            .iter()
+            .any(|(_, value)| expr_contains_var_at_offset(value, name, offset)),
+        ast::ExprKind::Unit
+        | ast::ExprKind::Integer(_)
+        | ast::ExprKind::Float64(_)
+        | ast::ExprKind::Bool(_)
+        | ast::ExprKind::String(_)
+        | ast::ExprKind::Char(_)
+        | ast::ExprKind::Ctor(_) => false,
+    }
 }
 
 fn hover_local_binding_in_doc(
@@ -294,6 +368,166 @@ fn hover_local_binding_in_doc(
     }
 
     None
+}
+
+pub(super) fn hover_method_parameter_use_in_doc(
+    doc: &Document,
+    offset: usize,
+    typed: Option<&types::TypedModule>,
+) -> Option<Hover> {
+    let module = parser::parse_module(&doc.text).ok()?;
+    let tokens = lexer::lex(&doc.text).ok()?;
+    let ident = qualified_ident_parts_at_offset(&doc.text, offset)?;
+    if ident.segments.len() != 1 {
+        return None;
+    }
+
+    let (cursor_line, _) = doc.offset_to_position(offset)?;
+    for item in &module.items {
+        let bindings: &[ast::Binding] = match item {
+            ast::Item::ClassDecl(class) => &class.default_methods,
+            ast::Item::InstanceDecl(inst) => &inst.methods,
+            _ => continue,
+        };
+
+        for binding in bindings {
+            let ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
+                continue;
+            };
+            let scheme = typed.and_then(|typed| binding_scheme(typed, binding_name));
+            let Some(name_span) = binding_name_span(doc, &tokens, binding) else {
+                continue;
+            };
+            let (binding_line, _) = doc.offset_to_position(binding.pat.span.start)?;
+            if cursor_line != binding_line {
+                continue;
+            }
+
+            let spans = binding_lhs_parameter_spans(doc, &tokens, binding, name_span);
+            for (index, span) in spans.into_iter().enumerate() {
+                if span.start <= offset && offset < span.end {
+                    return None;
+                }
+                let Some(name) = doc.text.get(span.start..span.end) else {
+                    continue;
+                };
+                if name == ident.current_name && offset >= span.end {
+                    let head = scheme
+                        .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
+                        .map(|ty| format!("parameter {name} :: {}", types::format_pretty_ty(&ty)))
+                        .or_else(|| class_method_parameter_type_text(&module, binding_name, index).map(|ty| format!("parameter {name} :: {ty}")))
+                        .unwrap_or_else(|| format!("parameter {name}"));
+                    return Some(simple_hover(doc, ident.current_span, &head));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn hover_line_parameter_use_in_doc(
+    doc: &Document,
+    offset: usize,
+    typed: Option<&types::TypedModule>,
+) -> Option<Hover> {
+    let module = parser::parse_module(&doc.text).ok()?;
+    let tokens = lexer::lex(&doc.text).ok()?;
+    let ident = qualified_ident_parts_at_offset(&doc.text, offset)?;
+    if ident.segments.len() != 1 {
+        return None;
+    }
+
+    let (cursor_line, _) = doc.offset_to_position(offset)?;
+    let clause = line_function_clause(doc, &tokens, cursor_line)?;
+    if offset < clause.eq_span.end {
+        return None;
+    }
+
+    for (index, span) in clause.param_spans.iter().copied().enumerate() {
+        if span.start <= offset && offset < span.end {
+            return None;
+        }
+        let Some(name) = doc.text.get(span.start..span.end) else {
+            continue;
+        };
+        if name != ident.current_name || offset < span.end {
+            continue;
+        }
+
+        let scheme = typed.and_then(|typed| binding_scheme(typed, &clause.binding_name));
+        let head = scheme
+            .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
+            .map(|ty| format!("parameter {name} :: {}", types::format_pretty_ty(&ty)))
+            .or_else(|| {
+                class_method_parameter_type_text(&module, &clause.binding_name, index)
+                    .map(|ty| format!("parameter {name} :: {ty}"))
+            })
+            .unwrap_or_else(|| format!("parameter {name}"));
+        return Some(simple_hover(doc, ident.current_span, &head));
+    }
+
+    None
+}
+
+struct LineFunctionClause {
+    binding_name: String,
+    eq_span: lexer::Span,
+    param_spans: Vec<lexer::Span>,
+}
+
+fn line_function_clause(
+    doc: &Document,
+    tokens: &[lexer::Token],
+    target_line: u32,
+) -> Option<LineFunctionClause> {
+    let line_tokens: Vec<&lexer::Token> = tokens
+        .iter()
+        .filter(|token| {
+            doc.offset_to_position(token.span.start)
+                .is_some_and(|(line, _)| line == target_line)
+        })
+        .collect();
+
+    let eq_index = line_tokens
+        .iter()
+        .position(|token| token.kind == lexer::TokenKind::Eq)?;
+    let before_eq = &line_tokens[..eq_index];
+    let eq_span = line_tokens[eq_index].span;
+
+    let mut binding_name = None;
+    let mut param_spans = Vec::new();
+    let mut saw_lparen = false;
+    let mut saw_name = false;
+
+    for token in before_eq {
+        match &token.kind {
+            lexer::TokenKind::Newline | lexer::TokenKind::Indent | lexer::TokenKind::Dedent => {}
+            lexer::TokenKind::LParen if !saw_name => saw_lparen = true,
+            kind if saw_lparen && is_operator_name_token(kind) && !saw_name => {
+                binding_name = Some(token_text(doc, token.span)?.to_string());
+                saw_name = true;
+            }
+            lexer::TokenKind::Ident(_) if !saw_name => {
+                binding_name = Some(token_text(doc, token.span)?.to_string());
+                saw_name = true;
+            }
+            lexer::TokenKind::Ident(_) if saw_name => param_spans.push(token.span),
+            lexer::TokenKind::RParen => {}
+            lexer::TokenKind::ColonColon => return None,
+            _ => break,
+        }
+    }
+
+    Some(LineFunctionClause {
+        binding_name: binding_name?,
+        eq_span,
+        param_spans,
+    })
+}
+
+fn token_text(doc: &Document, span: lexer::Span) -> Option<&str> {
+    doc.text.get(span.start..span.end)
 }
 
 fn hover_local_binding_in_expr<'a>(
@@ -426,13 +660,92 @@ fn local_binding_scheme<'a>(
 fn bindings_in_module(module: &ast::Module) -> Vec<&ast::Binding> {
     let mut out = Vec::new();
     for item in &module.items {
-        let ast::Item::Binding(binding) = item else {
-            continue;
-        };
-        out.push(binding);
-        collect_nested_bindings(&binding.expr, &mut out);
+        match item {
+            ast::Item::Binding(binding) => {
+                out.push(binding);
+                collect_nested_bindings(&binding.expr, &mut out);
+            }
+            ast::Item::ClassDecl(class) => {
+                for binding in &class.default_methods {
+                    out.push(binding);
+                    collect_nested_bindings(&binding.expr, &mut out);
+                }
+            }
+            ast::Item::InstanceDecl(inst) => {
+                for binding in &inst.methods {
+                    out.push(binding);
+                    collect_nested_bindings(&binding.expr, &mut out);
+                }
+            }
+            ast::Item::Import(_)
+            | ast::Item::Export(_)
+            | ast::Item::Fixity(_)
+            | ast::Item::TypeAlias(_)
+            | ast::Item::DataDecl(_) => {}
+        }
     }
     out
+}
+
+fn binding_scheme<'a>(typed: &'a types::TypedModule, binding_name: &str) -> Option<&'a types::Scheme> {
+    typed
+        .inferred
+        .get(binding_name)
+        .or_else(|| typed.class_methods.get(binding_name))
+}
+
+fn class_method_parameter_type_text(
+    module: &ast::Module,
+    binding_name: &str,
+    index: usize,
+) -> Option<String> {
+    module.items.iter().find_map(|item| {
+        let ast::Item::ClassDecl(class) = item else {
+            return None;
+        };
+        class
+            .methods
+            .iter()
+            .find(|method| method.name == binding_name)
+            .and_then(|method| ast_function_argument_types(&method.ty.ty, index + 1).into_iter().nth(index))
+            .map(format_ast_type)
+    })
+}
+
+fn ast_function_argument_types<'a>(ty: &'a ast::Type, count: usize) -> Vec<&'a ast::Type> {
+    let mut out = Vec::new();
+    let mut current = ty;
+    while out.len() < count {
+        let ast::Type::Func(arg, rest) = current else {
+            break;
+        };
+        out.push(arg.as_ref());
+        current = rest;
+    }
+    out
+}
+
+fn format_ast_type(ty: &ast::Type) -> String {
+    match ty {
+        ast::Type::Unit => "()".to_string(),
+        ast::Type::Integer => "Integer".to_string(),
+        ast::Type::Bool => "Bool".to_string(),
+        ast::Type::Float64 => "Float64".to_string(),
+        ast::Type::Char => "Char".to_string(),
+        ast::Type::String => "String".to_string(),
+        ast::Type::List(item) => format!("[{}]", format_ast_type(item)),
+        ast::Type::Tuple(items) => format!("({})", items.iter().map(format_ast_type).collect::<Vec<_>>().join(", ")),
+        ast::Type::Record(fields) => format!("{{{}}}", fields.iter().map(|(name, ty)| format!("{name}: {}", format_ast_type(ty))).collect::<Vec<_>>().join(", ")),
+        ast::Type::RecordOpen(fields, rest) => format!("{{{}, ..{}}}", fields.iter().map(|(name, ty)| format!("{name}: {}", format_ast_type(ty))).collect::<Vec<_>>().join(", "), format_ast_type(rest)),
+        ast::Type::Hole(name) => name.clone().unwrap_or_else(|| "_".to_string()),
+        ast::Type::Var(name) => name.clone(),
+        ast::Type::App { head, args } => {
+            let mut parts = vec![format_ast_type(head)];
+            parts.extend(args.iter().map(format_ast_type));
+            parts.join(" ")
+        }
+        ast::Type::Func(arg, rest) => format!("{} -> {}", format_ast_type(arg), format_ast_type(rest)),
+    }
 }
 
 fn collect_nested_bindings<'a>(expr: &'a ast::Expr, out: &mut Vec<&'a ast::Binding>) {
@@ -539,40 +852,87 @@ pub(super) fn binding_lhs_parameter_spans(
     doc: &Document,
     tokens: &[lexer::Token],
     binding: &kscr::ast::Binding,
+    name_span: kscr::lexer::Span,
 ) -> Vec<kscr::lexer::Span> {
     let Some((binding_line, _)) = doc.offset_to_position(binding.pat.span.start) else {
         return Vec::new();
     };
 
-    let mut seen_name = false;
     let mut out = Vec::new();
     for token in tokens {
-        if token.span.start < binding.pat.span.start {
+        if token.span.start <= name_span.start {
             continue;
-        }
-        if token.span.start >= binding.span.end {
-            break;
         }
 
         let Some((line, _)) = doc.offset_to_position(token.span.start) else {
             continue;
         };
         if line != binding_line {
-            if seen_name {
-                break;
-            }
-            continue;
+            break;
         }
 
         match &token.kind {
-            lexer::TokenKind::Ident(_) if !seen_name => seen_name = true,
-            lexer::TokenKind::Ident(_) if seen_name => out.push(token.span),
-            lexer::TokenKind::Eq if seen_name => break,
-            lexer::TokenKind::ColonColon if seen_name => return Vec::new(),
+            lexer::TokenKind::Ident(_) => out.push(token.span),
+            lexer::TokenKind::Eq => break,
+            lexer::TokenKind::ColonColon => return Vec::new(),
             _ => {}
         }
     }
     out
+}
+
+fn is_operator_name_token(kind: &lexer::TokenKind) -> bool {
+    matches!(
+        kind,
+        lexer::TokenKind::Operator(_)
+            | lexer::TokenKind::Colon
+            | lexer::TokenKind::Plus
+            | lexer::TokenKind::Minus
+            | lexer::TokenKind::Star
+            | lexer::TokenKind::Slash
+            | lexer::TokenKind::PlusPlus
+            | lexer::TokenKind::EqEq
+            | lexer::TokenKind::SlashEq
+            | lexer::TokenKind::Lt
+            | lexer::TokenKind::Le
+            | lexer::TokenKind::Gt
+            | lexer::TokenKind::Ge
+            | lexer::TokenKind::GtGt
+            | lexer::TokenKind::GtGtEq
+            | lexer::TokenKind::AndAnd
+            | lexer::TokenKind::OrOr
+    )
+}
+
+pub(super) fn binding_name_span(
+    doc: &Document,
+    tokens: &[lexer::Token],
+    binding: &kscr::ast::Binding,
+) -> Option<kscr::lexer::Span> {
+    let (binding_line, _) = doc.offset_to_position(binding.pat.span.start)?;
+
+    let mut saw_lparen = false;
+    for token in tokens {
+        if token.span.start < binding.pat.span.start {
+            continue;
+        }
+
+        let (line, _) = doc.offset_to_position(token.span.start)?;
+        if line != binding_line {
+            break;
+        }
+
+        match &token.kind {
+            lexer::TokenKind::Ident(_) => return Some(token.span),
+            kind if saw_lparen && is_operator_name_token(kind) => return Some(token.span),
+            lexer::TokenKind::LParen => saw_lparen = true,
+            lexer::TokenKind::Eq | lexer::TokenKind::ColonColon => break,
+            lexer::TokenKind::Indent => {}
+            _ => break,
+        }
+    }
+
+    None
 }
 
 pub(super) fn leading_lambda_parameter_spans(

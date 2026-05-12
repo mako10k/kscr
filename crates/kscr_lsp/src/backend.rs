@@ -609,6 +609,7 @@ mod tests {
         std::fs::write(&path, &src).unwrap();
         let uri = Url::from_file_path(&path).unwrap();
         let doc = Document::new(uri, src, 1);
+        typecheck_document_text(&doc.uri, &doc.text).unwrap();
 
         let hover = hover_in_doc(
             &doc,
@@ -656,6 +657,215 @@ mod tests {
         assert!(text.contains("parameter x :: Integer"), "actual hover: {text}");
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_shows_class_default_method_parameter_use_type() {
+        let src = r#"module Main where
+  class Field a where
+    divide :: a -> a -> a
+    divide x y = x
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_class_default_param_use.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 3,
+                character: 17,
+            },
+        )
+        .unwrap();
+        let text = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(text.contains("parameter x :: a"), "actual hover: {text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_shows_class_default_method_trailing_parameter_use_type() {
+        let src = r#"module Main where
+  class Field a where
+    inv :: a -> a
+    divide :: a -> a -> a
+    divide x y = mul x (inv y)
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_class_default_param_y.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+        let line = doc.text.lines().nth(4).unwrap();
+
+        let x_col = line.find("mul x").unwrap() as u32 + 4;
+        let y_col = line.find("inv y").unwrap() as u32 + 4;
+
+        let x_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 4,
+                character: x_col,
+            },
+        )
+        .unwrap();
+        let x_text = match x_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(x_text.contains("parameter x :: a"), "actual hover: {x_text}");
+
+        let y_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 4,
+                character: y_col,
+            },
+        )
+        .unwrap();
+        let y_text = match y_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(y_text.contains("parameter y :: a"), "actual hover: {y_text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_shows_symbolic_binding_trailing_parameter_use_type() {
+        let src = r#"module Main where
+  (/^) x y = divide x y
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_symbolic_param_y.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+        let line = doc.text.lines().nth(1).unwrap();
+        let x_col = line.find("divide x y").unwrap() as u32 + 7;
+        let y_col = line.find("divide x y").unwrap() as u32 + 9;
+
+        let x_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 1,
+                character: x_col,
+            },
+        )
+        .unwrap();
+        let x_text = match x_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(x_text.contains("parameter x ::"), "actual hover: {x_text}");
+
+        let y_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 1,
+                character: y_col,
+            },
+        )
+        .unwrap();
+        let y_text = match y_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(y_text.contains("parameter y ::"), "actual hover: {y_text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_shows_parameter_use_types_in_real_prelude_field_file() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("stdlib/Prelude/Field.ks");
+        let src = std::fs::read_to_string(&path).unwrap();
+        let uri = Url::from_file_path(std::fs::canonicalize(&path).unwrap()).unwrap();
+        let doc = Document::new(uri, src.clone(), 1);
+        let divide_line = src.lines().nth(12).unwrap();
+        let divide_x_col = divide_line.find("mul x").unwrap() as u32 + 4;
+        let divide_y_col = divide_line.find("inv y").unwrap() as u32 + 4;
+        let sym_line = src.lines().nth(14).unwrap();
+        let rhs_start = sym_line.find("divide x y").unwrap() as u32;
+        let sym_x_col = rhs_start + 7;
+        let sym_y_col = rhs_start + 9;
+
+        let divide_x_off = doc.position_to_offset(12, divide_x_col).unwrap();
+        let divide_y_off = doc.position_to_offset(12, divide_y_col).unwrap();
+        assert_eq!(&doc.text[divide_x_off - 4..divide_x_off + 1], "mul x");
+        assert_eq!(&doc.text[divide_y_off - 4..divide_y_off + 1], "inv y");
+
+        let divide_x_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 12,
+                character: divide_x_col,
+            },
+        )
+        .unwrap();
+        let divide_x_text = match divide_x_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(divide_x_text.contains("parameter x :: a"), "actual hover: {divide_x_text}");
+
+        let divide_y_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 12,
+                character: divide_y_col,
+            },
+        )
+        .unwrap();
+        let divide_y_text = match divide_y_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(divide_y_text.contains("parameter y :: a"), "actual hover: {divide_y_text}");
+
+        let sym_x_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 14,
+                character: sym_x_col,
+            },
+        )
+        .unwrap();
+        let sym_x_text = match sym_x_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(sym_x_text.contains("parameter x :: a"), "actual hover: {sym_x_text}");
+
+        let sym_y_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 14,
+                character: sym_y_col,
+            },
+        )
+        .unwrap();
+        let sym_y_text = match sym_y_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(sym_y_text.contains("parameter y :: a"), "actual hover: {sym_y_text}");
     }
 
     #[test]
