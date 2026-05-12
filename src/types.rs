@@ -609,6 +609,41 @@ pub fn unify(a: Ty, b: Ty) -> Result<Subst> {
     Ok(subst)
 }
 
+fn canonicalize_string_alias_ty(ty: Ty) -> Ty {
+    match ty {
+        Ty::Con(name) if name == "String" => Ty::List(Box::new(Ty::Con("Char".to_string()))),
+        Ty::List(elem) => Ty::List(Box::new(canonicalize_string_alias_ty(*elem))),
+        Ty::Tuple(items) => Ty::Tuple(
+            items
+                .into_iter()
+                .map(canonicalize_string_alias_ty)
+                .collect(),
+        ),
+        Ty::Record(fields) => Ty::Record(
+            fields
+                .into_iter()
+                .map(|(name, ty)| (name, canonicalize_string_alias_ty(ty)))
+                .collect(),
+        ),
+        Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
+            fields
+                .into_iter()
+                .map(|(name, ty)| (name, canonicalize_string_alias_ty(ty)))
+                .collect(),
+            Box::new(canonicalize_string_alias_ty(*rest)),
+        ),
+        Ty::App { head, args } => Ty::App {
+            head: Box::new(canonicalize_string_alias_ty(*head)),
+            args: args.into_iter().map(canonicalize_string_alias_ty).collect(),
+        },
+        Ty::Func(a, b) => Ty::Func(
+            Box::new(canonicalize_string_alias_ty(*a)),
+            Box::new(canonicalize_string_alias_ty(*b)),
+        ),
+        other => other,
+    }
+}
+
 fn unify_dbg(a: Ty, b: Ty, ctx: &str) -> Result<Subst> {
     unify(a.clone(), b.clone()).map_err(|e| {
         let (a_pretty, b_pretty) = pretty_ty_pair(&a, &b);
@@ -1634,10 +1669,27 @@ pub fn instantiate_qual(cx: &mut InferCtx, s: &Scheme) -> (Vec<Constraint>, Ty) 
     (
         s.constraints
             .iter()
-            .map(|c| replace_vars_constraint(c, &m))
+            .map(|c| canonicalize_string_alias_constraint(replace_vars_constraint(c, &m)))
             .collect(),
-        replace_vars(&s.ty, &m),
+        canonicalize_string_alias_ty(replace_vars(&s.ty, &m)),
     )
+}
+
+fn canonicalize_string_alias_constraint(c: Constraint) -> Constraint {
+    match c {
+        Constraint::Show(t) => Constraint::Show(canonicalize_string_alias_ty(t)),
+        Constraint::ShowRow(t) => Constraint::ShowRow(canonicalize_string_alias_ty(t)),
+        Constraint::Eq(t) => Constraint::Eq(canonicalize_string_alias_ty(t)),
+        Constraint::EqRow(t) => Constraint::EqRow(canonicalize_string_alias_ty(t)),
+        Constraint::Class { class, ty } => Constraint::Class {
+            class,
+            ty: canonicalize_string_alias_ty(ty),
+        },
+        Constraint::Lacks { label, row } => Constraint::Lacks {
+            label,
+            row: canonicalize_string_alias_ty(row),
+        },
+    }
 }
 
 fn replace_vars(ty: &Ty, m: &HashMap<u32, Ty>) -> Ty {
@@ -5522,7 +5574,7 @@ fn lower_surface_type_with_tys(
         Type::Bool => Ty::Con("Bool".to_string()),
         Type::Float64 => Ty::Con("Float64".to_string()),
         Type::Char => Ty::Con("Char".to_string()),
-        Type::String => Ty::Con("String".to_string()),
+        Type::String => Ty::List(Box::new(Ty::Con("Char".to_string()))),
         Type::List(t) => Ty::List(Box::new(lower_surface_type_with_tys(t, holes, params)?)),
         Type::Tuple(ts) => Ty::Tuple(
             ts.iter()
@@ -6996,10 +7048,13 @@ fn infer_expr_apply(
 
         fun_ty = apply(&s, fun_ty);
         let res = cx.fresh();
+        let fun_ty_norm = canonicalize_string_alias_ty(fun_ty.clone());
+        let arg_ty_norm = canonicalize_string_alias_ty(apply(&s, arg_ty.clone()));
+        let res_norm = canonicalize_string_alias_ty(res.clone());
 
         let s_unify = unify_dbg(
-            fun_ty,
-            Ty::Func(Box::new(apply(&s, arg_ty.clone())), Box::new(res.clone())),
+            fun_ty_norm,
+            Ty::Func(Box::new(arg_ty_norm), Box::new(res_norm)),
             "infer_expr_apply",
         )
         .map_err(|e| e.push_span(apply_span).with_context("infer_expr_apply"))?;
@@ -7074,8 +7129,8 @@ fn infer_expr_annot(
 
     let t_ann = lower_surface_type(cx, &ty.ty, &mut holes);
     let s2 = unify_dbg(
-        apply(&s1, t1),
-        apply(&s1, t_ann.clone()),
+        canonicalize_string_alias_ty(apply(&s1, t1)),
+        canonicalize_string_alias_ty(apply(&s1, t_ann.clone())),
         "infer_expr_annot",
     )
     .map_err(|e| {
@@ -7516,7 +7571,7 @@ fn lower_surface_type(cx: &mut InferCtx, ty: &ast::Type, holes: &mut HashMap<Str
                     });
                 }
             });
-            Ty::Con("String".to_string())
+            Ty::List(Box::new(Ty::Con("Char".to_string())))
         }
 
         Type::List(t) => Ty::List(Box::new(lower_surface_type(cx, t, holes))),

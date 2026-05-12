@@ -1,6 +1,7 @@
 module Prelude.ReadInt where
   export readIntMaybe
 
+  import Prelude
   import Prelude.Read
 
   digitToInt :: Char -> Maybe Integer
