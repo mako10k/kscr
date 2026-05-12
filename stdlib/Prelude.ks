@@ -28,7 +28,8 @@ module Prelude where
   class Eq a where
     eq :: a -> a -> Bool
 
-  (==) a b = eq a b
+  == :: Eq a => a -> a -> Bool
+  a == b = a `eq` b
 
   -- Default Eq instances for primitive types.
   -- These are normal instances (not special-cased primitives), but their implementations
@@ -51,13 +52,14 @@ module Prelude where
       (x : xs1, y : ys1) -> if x == y then eq xs1 ys1 else False
       _ -> False
 
-  (/=) = \a -> \b -> if a == b then False else True
+  /= :: Eq a => a -> a -> Bool
+  a /= b = if a == b then False else True
 
   class Show a where
     show :: a -> [Char]
 
   -- Haskell-like alias: `toString` via Show.
-  toString x = show x
+  toString = show
 
   -- Default Show instances for primitive types.
   -- These are normal instances (not special-cased primitives), but their implementations
@@ -78,7 +80,7 @@ module Prelude where
     show = __primShow
 
   instance Show String where
-    show = \s -> s
+    show = id
 
   -- Composite Show instances (polymorphic heads).
   -- Delegate to the structural runtime builtin for MVP.
@@ -116,7 +118,7 @@ module Prelude where
     ma >> mb = __ioThen ma mb
 
   -- Haskell-compatible: print via Show + newline.
-  print = \x -> putStrLn (toString x)
+  print = putStrLn . toString
 
   readLine = stdinReadLine
 
@@ -156,9 +158,9 @@ module Prelude where
 
   filter = \p -> \xs -> concatMap (\x -> if p x then [x] else []) xs
 
-  concat = \xss -> concatMap (\xs -> xs) xss
+  concat = concatMap id
 
-  append = \a -> \b -> a ++ b
+  append = (++)
 
   length = \xs -> case xs of
     [] -> 0

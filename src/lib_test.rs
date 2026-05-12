@@ -127,6 +127,61 @@ instance C Integer where
 }
 
 #[test]
+fn parser_accepts_bare_operator_signatures() {
+    let src = r#"
+class EqLike a where
+    == :: a -> a -> Bool
+
+== :: Integer -> Integer -> Bool
+a == b = a `eqInt` b
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+
+    let cls = m
+        .items
+        .iter()
+        .find_map(|it| match it {
+            crate::ast::Item::ClassDecl(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected class decl");
+    assert_eq!(cls.methods.len(), 1);
+    assert_eq!(cls.methods[0].name, "==");
+
+    let bind = m
+        .items
+        .iter()
+        .find_map(|it| match it {
+            crate::ast::Item::Binding(b) => Some(b),
+            _ => None,
+        })
+        .expect("expected binding");
+    assert!(matches!(&bind.pat.kind, crate::ast::PatternKind::Var(name) if name == "=="));
+}
+
+#[test]
+fn parser_accepts_haskell_style_infix_definition() {
+    let src = r#"
+class EqLike a where
+    eq :: a -> a -> Bool
+
+a == b = a `eq` b
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let bind = m
+        .items
+        .iter()
+        .find_map(|it| match it {
+            crate::ast::Item::Binding(b) => Some(b),
+            _ => None,
+        })
+        .expect("expected binding");
+    assert!(matches!(&bind.pat.kind, crate::ast::PatternKind::Var(name) if name == "=="));
+}
+
+#[test]
 fn parser_class_superclass_context_parens() {
     let src = r#"
 class (Eq a) => Ord a where

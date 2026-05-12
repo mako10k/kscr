@@ -42,6 +42,7 @@ Rule: when implementation alignment is uncertain, classify as `Needs-Triage` unt
 | `docs/LanguageSemantics.md` | Current | Current language semantics reference with explicit future notes. | Runtime/typechecker behavior + tests. |
 | `docs/OPTIMIZATION_SUMMARY.md` | Past | Task completion summary for optimization documentation effort. | Historical summary only. |
 | `docs/PriorityChecklist.md` | Current | Active priority ordering for present baseline work. | Current repo priorities and passing tests. |
+| `docs/PreludeCodingStyle.md` | Current | Active style guide for keeping `stdlib/Prelude.ks` close to straightforward Haskell notation. | `stdlib/Prelude.ks` + parser/typechecker tests. |
 | `docs/REPL_PERFORMANCE.md` | Needs-Triage | Contains dated status plus optimization narrative; freshness uncertain. | Benchmark re-run + current REPL timings required. |
 | `docs/ToolchainDesign.md` | Future | High-level binary toolchain design document. | Directional design; not strict implementation record. |
 | `docs/TypeClassMethodResolutionPlan.md` | Future | Method-resolution plan document by scope and content. | Plan pending implementation validation. |

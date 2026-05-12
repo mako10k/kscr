@@ -374,6 +374,22 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
         if is_stop_at_bound(ts, stop_at) {
             break;
         }
+        if pending.is_some()
+            && matches!(
+                ts.peek_kind(),
+                Some(TokenKind::KwImport)
+                    | Some(TokenKind::KwExport)
+                    | Some(TokenKind::KwInfix)
+                    | Some(TokenKind::KwInfixl)
+                    | Some(TokenKind::KwInfixr)
+                    | Some(TokenKind::KwData)
+                    | Some(TokenKind::KwType)
+                    | Some(TokenKind::KwClass)
+                    | Some(TokenKind::KwInstance)
+            )
+        {
+            flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
+        }
         err_if_sig_would_cross_decl(ts, &signature_buf)?;
 
         let tok = ts.peek_kind().cloned();
@@ -410,10 +426,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_instance_decl(ts)?);
             }
-            Some(TokenKind::Ident(_))
-            | Some(TokenKind::LParen)
-            | Some(TokenKind::Question)
-            | Some(TokenKind::LBrace) => {
+            tok if is_toplevel_binding_start(tok.as_ref()) => {
                 // Either a signature line `x :: ...` or a binding/fun-clause.
                 if try_consume_sig_line(ts, &mut signature_buf)? {
                     continue;
@@ -486,10 +499,45 @@ fn is_upper_by_last_segment(s: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_uppercase())
 }
+fn is_toplevel_binding_start(kind: Option<&TokenKind>) -> bool {
+    matches!(
+        kind,
+        Some(TokenKind::Ident(_))
+            | Some(TokenKind::LParen)
+            | Some(TokenKind::Question)
+            | Some(TokenKind::LBrace)
+            | Some(TokenKind::Operator(_))
+            | Some(TokenKind::Colon)
+            | Some(TokenKind::Plus)
+            | Some(TokenKind::Minus)
+            | Some(TokenKind::Star)
+            | Some(TokenKind::Slash)
+            | Some(TokenKind::PlusPlus)
+            | Some(TokenKind::EqEq)
+            | Some(TokenKind::SlashEq)
+            | Some(TokenKind::Lt)
+            | Some(TokenKind::Le)
+            | Some(TokenKind::Gt)
+            | Some(TokenKind::Ge)
+            | Some(TokenKind::GtGt)
+            | Some(TokenKind::GtGtEq)
+            | Some(TokenKind::AndAnd)
+            | Some(TokenKind::OrOr)
+    )
+}
+
+fn parse_signature_name(ts: &mut TokenStream) -> Result<String> {
+    match ts.peek_kind() {
+        Some(TokenKind::Ident(_)) => ts.expect_ident(),
+        Some(TokenKind::LParen) => parse_paren_operator_name(ts),
+        kind if is_sym_op_token(kind) => parse_fixity_op(ts),
+        _ => Err(ts.err_here("expected signature name")),
+    }
+}
 
 fn try_parse_toplevel_sig_line(ts: &mut TokenStream) -> Result<Option<(String, ast::QualType)>> {
     let save = (ts.i, ts.last_span_end);
-    let Ok(name) = ts.expect_ident() else {
+    let Ok(name) = parse_signature_name(ts) else {
         return Ok(None);
     };
     if !matches!(ts.peek_kind(), Some(TokenKind::ColonColon)) {
@@ -718,24 +766,7 @@ fn parse_class_method_sig_line(ts: &mut TokenStream) -> Result<Option<ast::Class
     //   (++) :: ...
     let save = (ts.i, ts.last_span_end);
 
-    // Parse a method name token that can be either an identifier or a parenthesized operator.
-    let maybe_name = match ts.peek_kind() {
-        Some(TokenKind::Ident(_)) => ts.expect_ident().ok(),
-        Some(TokenKind::LParen) => {
-            // Only treat it as an operator-name if it looks like one.
-            let save2 = (ts.i, ts.last_span_end);
-            ts.bump();
-            let op_ok = matches!(ts.peek_kind(), Some(TokenKind::Backtick))
-                || is_sym_op_token(ts.peek_kind());
-            (ts.i, ts.last_span_end) = save2;
-            if op_ok {
-                parse_paren_operator_name(ts).ok()
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
+    let maybe_name = parse_signature_name(ts).ok();
 
     if let Some(mname) = maybe_name {
         if matches!(ts.peek_kind(), Some(TokenKind::ColonColon)) {
