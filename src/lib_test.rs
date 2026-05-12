@@ -866,6 +866,39 @@ fn parser_newtype_lowers_to_data_decl() {
 }
 
 #[test]
+fn parser_newtype_rejects_multiple_constructors() {
+    let src = "module Main where\n  newtype Age = Age Integer | Age2 Integer\n";
+    let err = crate::parser::parse_module(src).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("newtype must declare exactly one constructor"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn parser_newtype_rejects_zero_field_constructor() {
+    let src = "module Main where\n  newtype Age = Age\n";
+    let err = crate::parser::parse_module(src).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("newtype constructor must have exactly one field"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn parser_newtype_rejects_multi_field_constructor() {
+    let src = "module Main where\n  newtype Age = Age Integer Integer\n";
+    let err = crate::parser::parse_module(src).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("newtype constructor must have exactly one field"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
 fn lexer_golden_basic() {
     let src = std::fs::read_to_string("tests/basic.ks").unwrap();
     let tokens = crate::lexer::lex(&src).unwrap();

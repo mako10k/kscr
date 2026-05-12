@@ -569,6 +569,16 @@ fn parse_newtype_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::
     parse_algebraic_decl(ts, doc, AlgebraicDeclFlavor::Newtype)
 }
 
+fn validate_newtype_shape(ts: &TokenStream, ctors: &[ast::DataCtor]) -> Result<()> {
+    if ctors.len() != 1 {
+        return Err(ts.err_here("newtype must declare exactly one constructor"));
+    }
+    if ctors[0].args.len() != 1 {
+        return Err(ts.err_here("newtype constructor must have exactly one field"));
+    }
+    Ok(())
+}
+
 fn parse_algebraic_decl(
     ts: &mut TokenStream,
     doc: Option<String>,
@@ -723,12 +733,11 @@ fn parse_algebraic_decl(
     }
 
     if flavor == AlgebraicDeclFlavor::Newtype {
-        if ctors.len() != 1 {
-            return Err(ts.err_here("newtype must declare exactly one constructor"));
-        }
-        if ctors[0].args.len() != 1 {
-            return Err(ts.err_here("newtype constructor must have exactly one field"));
-        }
+        // Temporary policy: accept `newtype` syntax, but lower it to the existing
+        // `data` representation after enforcing the Haskell-like shape restriction.
+        // If/when `newtype` gains distinct semantics, this validation boundary is the
+        // narrow place to stop lowering and preserve a dedicated AST node instead.
+        validate_newtype_shape(ts, &ctors)?;
     }
 
     let end = ts.last_span_end;
