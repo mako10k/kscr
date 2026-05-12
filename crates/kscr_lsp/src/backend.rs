@@ -502,6 +502,61 @@ mod tests {
     }
 
     #[test]
+    fn hover_classifies_module_import_and_instance_class_names() {
+        let uri = Url::parse("file:///test.ks").unwrap();
+        let src = r#"module ManualSemigroup where
+  import Prelude
+  data Pair = Pair Integer Integer
+  instance Semigroup Pair where
+    (<>) = \x y -> x
+"#
+        .to_string();
+        let doc = Document::new(uri, src, 1);
+
+        let module_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 0,
+                character: 9,
+            },
+        )
+        .unwrap();
+        let module_text = match module_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(module_text.contains("module ManualSemigroup"));
+
+        let import_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 1,
+                character: 10,
+            },
+        )
+        .unwrap();
+        let import_text = match import_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(import_text.contains("module Prelude"));
+
+        let class_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 3,
+                character: 12,
+            },
+        )
+        .unwrap();
+        let class_text = match class_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(class_text.contains("class Semigroup"));
+    }
+
+    #[test]
     fn document_symbols_have_reasonable_ranges() {
         let uri = Url::parse("file:///test.ks").unwrap();
         let src = "module M where\n  x = 1\n  data Foo = Bar\n".to_string();

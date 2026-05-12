@@ -51,9 +51,9 @@ fn push_binding_type_hint(
     out: &mut Vec<InlayHint>,
 ) {
     let label = if scheme.constraints.is_empty() {
-        format!(": {}", scheme.ty)
+        format!(":: {}", scheme.ty)
     } else {
-        format!(": {scheme}")
+        format!(":: {scheme}")
     };
     push_type_hint(doc, binding.pat.span.end, label, range, out);
 }
@@ -230,8 +230,8 @@ mod tests {
             })
             .collect();
 
-        assert!(labels.iter().any(|label| label.contains(": Integer -> Integer")));
-        assert!(labels.iter().any(|label| label.contains(": Integer")));
+        assert!(labels.iter().any(|label| label.contains(":: Integer -> Integer")));
+        assert!(labels.iter().any(|label| label.contains(":: Integer")));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

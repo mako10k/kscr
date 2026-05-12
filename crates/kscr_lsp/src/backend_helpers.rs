@@ -192,6 +192,103 @@ pub(super) fn qualified_ident_at_offset(
     Some((parts.join("."), span))
 }
 
+pub(super) fn contextual_ident_kind_at_offset(src: &str, offset: usize) -> Option<&'static str> {
+    use lexer::TokenKind;
+
+    let toks = lexer::lex(src).ok()?;
+    let i = toks
+        .iter()
+        .position(|t| t.span.start <= offset && offset < t.span.end && t.span.end > t.span.start)
+        .or_else(|| {
+            toks.iter().position(|t| {
+                t.span.start < offset && offset <= t.span.end && t.span.end > t.span.start
+            })
+        })?;
+
+    let TokenKind::Ident(_) = &toks[i].kind else {
+        return None;
+    };
+
+    let mut start = i;
+    while start >= 2 {
+        if toks[start - 1].kind == TokenKind::Dot
+            && matches!(toks[start - 2].kind, TokenKind::Ident(_))
+        {
+            start -= 2;
+            continue;
+        }
+        break;
+    }
+
+    if start >= 1 && toks[start - 1].kind == TokenKind::KwModule {
+        return Some("module");
+    }
+    if start >= 1 && toks[start - 1].kind == TokenKind::KwImport {
+        return Some("module");
+    }
+    if start >= 2
+        && matches!(&toks[start - 1].kind, TokenKind::Ident(s) if s == "qualified")
+        && toks[start - 2].kind == TokenKind::KwImport
+    {
+        return Some("module");
+    }
+
+    if instance_head_class_token_index(&toks, i).is_some_and(|idx| idx == i) {
+        return Some("class");
+    }
+
+    None
+}
+
+fn instance_head_class_token_index(toks: &[lexer::Token], cursor: usize) -> Option<usize> {
+    use lexer::TokenKind;
+
+    let mut inst = cursor;
+    loop {
+        if toks.get(inst)?.kind == TokenKind::KwInstance {
+            break;
+        }
+        if matches!(
+            toks.get(inst)?.kind,
+            TokenKind::KwModule
+                | TokenKind::KwImport
+                | TokenKind::KwData
+                | TokenKind::KwNewtype
+                | TokenKind::KwType
+                | TokenKind::KwClass
+        ) {
+            return None;
+        }
+        if inst == 0 {
+            return None;
+        }
+        inst -= 1;
+    }
+
+    let mut end = inst + 1;
+    let mut last_fat_arrow = None;
+    while end < toks.len() {
+        match toks[end].kind {
+            TokenKind::KwWhere => break,
+            TokenKind::FatArrow => last_fat_arrow = Some(end),
+            TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent => {}
+            _ => {}
+        }
+        end += 1;
+    }
+
+    let scan_start = last_fat_arrow.map(|idx| idx + 1).unwrap_or(inst + 1);
+    for (idx, tok) in toks.iter().enumerate().take(end).skip(scan_start) {
+        if let TokenKind::Ident(name) = &tok.kind {
+            if name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()) {
+                return Some(idx);
+            }
+        }
+    }
+
+    None
+}
+
 pub(super) fn find_decl_name_span(
     doc: &Document,
     kw: lexer::TokenKind,

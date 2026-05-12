@@ -39,6 +39,37 @@
         "path": "./syntaxes/kscr.tmLanguage.json"
       }
     ],
+    "semanticTokenScopes": [
+      {
+        "language": "kscr",
+        "scopes": {
+          "namespace": [
+            "entity.name.namespace"
+          ],
+          "class": [
+            "entity.name.type.class"
+          ],
+          "type": [
+            "entity.name.type"
+          ],
+          "enumMember": [
+            "variable.other.enummember"
+          ],
+          "function": [
+            "entity.name.function"
+          ],
+          "method": [
+            "entity.name.function.member"
+          ],
+          "variable": [
+            "variable.other.readwrite"
+          ],
+          "parameter": [
+            "variable.parameter"
+          ]
+        }
+      }
+    ],
     "configuration": {
       "title": "kscr",
       "properties": {

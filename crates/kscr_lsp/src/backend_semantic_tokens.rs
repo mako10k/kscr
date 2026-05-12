@@ -15,6 +15,7 @@ const TOKEN_TYPE_METHOD: u32 = 3;
 const TOKEN_TYPE_ENUM_MEMBER: u32 = 4;
 const TOKEN_TYPE_VARIABLE: u32 = 5;
 const TOKEN_TYPE_PARAMETER: u32 = 6;
+const TOKEN_TYPE_NAMESPACE: u32 = 7;
 
 pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
@@ -26,6 +27,7 @@ pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
             SemanticTokenType::ENUM_MEMBER,
             SemanticTokenType::VARIABLE,
             SemanticTokenType::PARAMETER,
+            SemanticTokenType::NAMESPACE,
         ],
         token_modifiers: Vec::new(),
     }
@@ -124,6 +126,14 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
     let lexed = lexer::lex(&doc.text).ok()?;
     let mut raw: Vec<(u32, u32, u32, u32)> = Vec::new();
 
+    for span in module_decl_name_spans(&lexed) {
+        push_span_token(doc, span, TOKEN_TYPE_NAMESPACE, &mut raw);
+    }
+    for span in import_module_name_spans(&lexed) {
+        push_span_token(doc, span, TOKEN_TYPE_NAMESPACE, &mut raw);
+    }
+
+    let mut search_from = 0usize;
     for item in &module.items {
         match item {
             Item::Binding(binding) => {
@@ -171,6 +181,10 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                 }
             }
             Item::InstanceDecl(inst) => {
+                if let Some((span, next_from)) = instance_class_name_span(&lexed, search_from, &inst.class.name) {
+                    push_span_token(doc, span, TOKEN_TYPE_CLASS, &mut raw);
+                    search_from = next_from;
+                }
                 for method in &inst.methods {
                     if let PatternKind::Var(_) = &method.pat.kind {
                         push_span_token(doc, method.pat.span, TOKEN_TYPE_METHOD, &mut raw);
@@ -189,6 +203,119 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
     }
 
     Some(raw)
+}
+
+fn module_decl_name_spans(tokens: &[lexer::Token]) -> Vec<kscr::lexer::Span> {
+    qualified_name_spans_after_keyword(tokens, lexer::TokenKind::KwModule)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+fn import_module_name_spans(tokens: &[lexer::Token]) -> Vec<kscr::lexer::Span> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if tokens[i].kind != lexer::TokenKind::KwImport {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if matches!(&tokens.get(i).map(|t| &t.kind), Some(lexer::TokenKind::Ident(s)) if s == "qualified") {
+            i += 1;
+        }
+
+        while i < tokens.len() {
+            match &tokens[i].kind {
+                lexer::TokenKind::Ident(_) => {
+                    out.push(tokens[i].span);
+                    i += 1;
+                    if matches!(tokens.get(i).map(|t| &t.kind), Some(lexer::TokenKind::Dot)) {
+                        i += 1;
+                        continue;
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+    }
+    out
+}
+
+fn qualified_name_spans_after_keyword(
+    tokens: &[lexer::Token],
+    keyword: lexer::TokenKind,
+) -> Vec<Vec<kscr::lexer::Span>> {
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if tokens[i].kind != keyword {
+            i += 1;
+            continue;
+        }
+        i += 1;
+        let mut spans = Vec::new();
+        while i < tokens.len() {
+            match &tokens[i].kind {
+                lexer::TokenKind::Ident(_) => {
+                    spans.push(tokens[i].span);
+                    i += 1;
+                    if matches!(tokens.get(i).map(|t| &t.kind), Some(lexer::TokenKind::Dot)) {
+                        i += 1;
+                        continue;
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        if !spans.is_empty() {
+            out.push(spans);
+        }
+    }
+    out
+}
+
+fn instance_class_name_span(
+    tokens: &[lexer::Token],
+    search_from: usize,
+    class_name: &str,
+) -> Option<(kscr::lexer::Span, usize)> {
+    let mut i = search_from;
+    while i < tokens.len() {
+        if tokens[i].kind != lexer::TokenKind::KwInstance {
+            i += 1;
+            continue;
+        }
+
+        let mut last_fat_arrow = None;
+        let mut where_pos = None;
+        let start = i;
+        i += 1;
+        while i < tokens.len() {
+            match tokens[i].kind {
+                lexer::TokenKind::FatArrow => last_fat_arrow = Some(i),
+                lexer::TokenKind::KwWhere => {
+                    where_pos = Some(i);
+                    break;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        let end = where_pos?;
+        let scan_start = last_fat_arrow.map(|idx| idx + 1).unwrap_or(start + 1);
+        for j in scan_start..end {
+            if let lexer::TokenKind::Ident(name) = &tokens[j].kind {
+                if name == class_name {
+                    return Some((tokens[j].span, end + 1));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn binding_lhs_parameter_spans(
@@ -368,7 +495,7 @@ mod tests {
     #[test]
     fn semantic_token_legend_has_expected_order() {
         let legend = semantic_tokens_legend();
-        assert_eq!(legend.token_types.len(), 7);
+        assert_eq!(legend.token_types.len(), 8);
         assert_eq!(legend.token_types[0], SemanticTokenType::FUNCTION);
         assert_eq!(legend.token_types[1], SemanticTokenType::TYPE);
         assert_eq!(legend.token_types[2], SemanticTokenType::CLASS);
@@ -376,6 +503,7 @@ mod tests {
         assert_eq!(legend.token_types[4], SemanticTokenType::ENUM_MEMBER);
         assert_eq!(legend.token_types[5], SemanticTokenType::VARIABLE);
         assert_eq!(legend.token_types[6], SemanticTokenType::PARAMETER);
+        assert_eq!(legend.token_types[7], SemanticTokenType::NAMESPACE);
     }
 
     #[test]
@@ -415,6 +543,37 @@ mod tests {
         }
 
         assert_eq!(enum_member_lengths, vec![4]);
+    }
+
+    #[test]
+    fn semantic_tokens_classify_module_import_and_instance_class_names() {
+        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_namespaces.ks").unwrap();
+        let src = r#"module ManualSemigroup where
+  import Prelude
+
+  data Pair = Pair Integer Integer
+
+  instance Semigroup Pair where
+    (<>) = \x y -> x
+"#;
+
+        let doc = Document::new(uri, src.to_string(), 1);
+        let tokens = semantic_tokens_in_doc(&doc).unwrap();
+
+        let mut namespace_lengths = Vec::new();
+        let mut class_lengths = Vec::new();
+        for token in &tokens.data {
+            if token.token_type == TOKEN_TYPE_NAMESPACE {
+                namespace_lengths.push(token.length);
+            }
+            if token.token_type == TOKEN_TYPE_CLASS {
+                class_lengths.push(token.length);
+            }
+        }
+
+        assert!(namespace_lengths.contains(&15));
+        assert!(namespace_lengths.contains(&7));
+        assert!(class_lengths.contains(&9));
     }
 
     #[test]

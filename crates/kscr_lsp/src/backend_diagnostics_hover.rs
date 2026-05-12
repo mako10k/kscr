@@ -1,4 +1,6 @@
-use crate::backend_helpers::{create_diagnostic, qualified_ident_at_offset, span_to_range};
+use crate::backend_helpers::{
+    contextual_ident_kind_at_offset, create_diagnostic, qualified_ident_at_offset, span_to_range,
+};
 use crate::vfs::Document;
 use kscr::{error::Error as KscrError, lexer, parser, types};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -73,9 +75,12 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
     let (name, name_span) = qualified_ident_at_offset(&doc.text, off)?;
 
     let module = parser::parse_module(&doc.text).ok();
-    let kind = module
-        .as_ref()
-        .and_then(|m| crate::backend_goto_completion::super_classify_toplevel_symbol(m, &name))
+    let kind = contextual_ident_kind_at_offset(&doc.text, off)
+        .or_else(|| {
+            module
+                .as_ref()
+                .and_then(|m| crate::backend_goto_completion::super_classify_toplevel_symbol(m, &name))
+        })
         .unwrap_or("identifier");
 
     let typed = typecheck_document_typed(&doc.uri, &doc.text).ok();
