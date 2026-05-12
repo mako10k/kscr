@@ -3753,6 +3753,43 @@ fn instance_head_key_ast(ty: &ast::Type) -> Result<String> {
     })
 }
 
+fn instance_head_shape_key_ast(ty: &ast::Type) -> Result<String> {
+    use ast::Type;
+
+    fn is_lowercase_ident(s: &str) -> bool {
+        s.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+    }
+
+    Ok(match ty {
+        Type::Unit => "Unit".to_string(),
+        Type::Integer => "Integer".to_string(),
+        Type::Bool => "Bool".to_string(),
+        Type::Float64 => "Float64".to_string(),
+        Type::Char => "Char".to_string(),
+        Type::String => "String".to_string(),
+        Type::Var(name) => {
+            if is_lowercase_ident(name) {
+                "poly".to_string()
+            } else {
+                name.clone()
+            }
+        }
+        Type::App { head, args } => {
+            let mut out = instance_head_shape_key_ast(head)?;
+            for a in args {
+                out.push('_');
+                out.push_str(&instance_head_shape_key_ast(a)?);
+            }
+            out
+        }
+        _ => {
+            return Err(Error::msg(
+                "MVP: instance head supports only constructor/app types",
+            ))
+        }
+    })
+}
+
 fn instance_head_key_ty(ty: &Ty) -> Result<String> {
     Ok(match ty {
         Ty::Con(name) => name.clone(),
@@ -4460,7 +4497,7 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
             .unwrap_or(inst.class.name.as_str())
             .to_string();
 
-        if let Ok(ty_key) = instance_head_key_ast(&inst.ty) {
+        if let Ok(ty_key) = instance_head_shape_key_ast(&inst.ty) {
             explicit_instance_keys.insert((class_unqualified, ty_key));
         }
     }
@@ -4480,7 +4517,7 @@ fn expand_deriving_clauses(module: &mut ast::Module) -> Result<()> {
                 ast::Type::App { head, args }
             };
 
-            if let Ok(ty_key) = instance_head_key_ast(&inst_ty) {
+            if let Ok(ty_key) = instance_head_shape_key_ast(&inst_ty) {
                 if explicit_instance_keys.contains(&(class_name.clone(), ty_key)) {
                     continue;
                 }
@@ -12345,6 +12382,7 @@ fn qualify_item(
                     .map(|t| qualify_type(t, type_map))
                     .collect::<Result<Vec<_>>>()?;
             }
+                    d.deriving.clear();
             ast::Item::DataDecl(d)
         }
         x @ (ast::Item::Import(_)
@@ -13914,9 +13952,20 @@ fn rewrite_class_method_apply(
 ) -> Result<ast::Expr> {
     use ast::{Expr, ExprKind};
 
+    fn is_explicit_dict_expr(expr: &ast::Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Var(name) => name
+                .rsplit('.')
+                .next()
+                .is_some_and(|last| last.starts_with("__dict_") || last.starts_with("__inst_")),
+            ExprKind::Apply { func, .. } => is_explicit_dict_expr(func),
+            _ => false,
+        }
+    }
+
     fn peel_explicit_dict_arg(args: Vec<ast::Expr>) -> (Option<ast::Expr>, Vec<ast::Expr>) {
         if let Some((first, rest)) = args.split_first() {
-            if matches!(&first.kind, ExprKind::Var(name) if name.starts_with("__dict_")) {
+            if is_explicit_dict_expr(first) {
                 return (Some(first.clone()), rest.to_vec());
             }
         }

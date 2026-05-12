@@ -1030,6 +1030,11 @@ mod repl_tests {
 /// Merge imported IR module bindings into the main module with qualified names.
 /// For each binding in `imported_ir`, qualify its name with `module_name` prefix
 /// and add it to `main_ir` if not already present.
+fn is_module_qualified_ir_name(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(qualifier, member)| !qualifier.is_empty() && !member.is_empty())
+}
+
 fn merge_imported_ir(
     main_ir: &mut ir::IrModule,
     imported_ir: &ir::IrModule,
@@ -1058,7 +1063,7 @@ fn merge_imported_ir(
             // Dict/inst names should always be qualified with module prefix
             false
         } else {
-            name.contains('.')
+            is_module_qualified_ir_name(name)
         };
 
         if !already_module_qualified {
@@ -1076,7 +1081,7 @@ fn merge_imported_ir(
             // Dict/inst names should always be qualified with module prefix
             false
         } else {
-            name.contains('.')
+            is_module_qualified_ir_name(name)
         };
 
         let qualified_name = if already_module_qualified {
@@ -1101,7 +1106,7 @@ fn merge_imported_ir(
 
         // If the entry module imported this module with an alias (`import M as Q` or
         // `import qualified M as Q`), provide `Q.name = M.name` at runtime.
-        if !name.contains('.') {
+        if !is_module_qualified_ir_name(name) {
             for a in aliases {
                 let alias_name = format!("{}.{}", a, name);
                 if !existing_names.contains(&alias_name) {
@@ -1128,7 +1133,7 @@ fn qualify_ir_expr(
     match expr {
         IrExpr::Var(name) => {
             // If the variable is a local binding in this module and not already qualified, qualify it
-            if local_names.contains(name) && !name.contains('.') {
+            if local_names.contains(name) && !is_module_qualified_ir_name(name) {
                 IrExpr::Var(format!("{}.{}", module_name, name))
             } else {
                 IrExpr::Var(name.clone())
@@ -1634,7 +1639,7 @@ fn inject_transitive_import_aliases(
             let IrItem::Binding { name, .. } = item;
 
             // Determine the target name (qualified with the imported module name)
-            let target_qualified = if name.contains('.') {
+            let target_qualified = if is_module_qualified_ir_name(name) {
                 // Already qualified
                 name.clone()
             } else {
