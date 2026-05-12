@@ -33,7 +33,7 @@ kscr_ir = { path = "crates/kscr_ir" }
 kscr_unsafe_ffi = { path = "crates/kscr_unsafe_ffi", optional = true }
 kscr_unsafe_bigint = { path = "crates/kscr_unsafe_bigint", optional = true }
 kscr_llvm = { path = "crates/kscr_llvm", optional = true }
-rustyline = { version = "17", optional = true }
+rustyline = { version = "18", optional = true }
 
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
@@ -41,7 +41,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 include_dir = "0.7"
 dirs = "6"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 tempfile = "3"

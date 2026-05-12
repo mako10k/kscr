@@ -721,6 +721,215 @@ mod tests {
     }
 
     #[test]
+    fn hover_shows_symbolic_operator_use_type() {
+        let src = r#"module Main where
+  import Prelude
+  value = 1 + 2
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_symbolic_operator.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 12,
+            },
+        )
+        .unwrap();
+        let text = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(text.contains("class method + ::"), "actual hover: {text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_keeps_backtick_infix_identifier_working() {
+        let src = r#"module Main where
+  add a b = a + b
+  value = 1 `add` 2
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_backtick_infix.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 13,
+            },
+        )
+        .unwrap();
+        let text = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(text.contains("add :: Integer -> Integer -> Integer"), "actual hover: {text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_shows_where_local_parameter() {
+        let src = r#"module Main where
+  value = foo 1 where
+    foo y = y + 1
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_where_param.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let binder_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 8,
+            },
+        )
+        .unwrap();
+        let binder_text = match binder_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(binder_text.contains("parameter y"), "actual hover: {binder_text}");
+
+        let use_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 12,
+            },
+        )
+        .unwrap();
+        let use_text = match use_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(use_text.contains("parameter y"), "actual hover: {use_text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_shows_where_local_binding_type() {
+        let src = r#"module Main where
+  value = foo 1 where
+    foo y = y + 1
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_where_binding.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let binder_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 2,
+                character: 4,
+            },
+        )
+        .unwrap();
+        let binder_text = match binder_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(binder_text.contains("binding foo :: Integer -> Integer"), "actual hover: {binder_text}");
+
+        let use_hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 1,
+                character: 10,
+            },
+        )
+        .unwrap();
+        let use_text = match use_hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(use_text.contains("binding foo :: Integer -> Integer"), "actual hover: {use_text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_pretty_prints_type_variables() {
+        let src = r#"module Main where
+  on f g x y = f (g x) (g y)
+"#
+        .to_string();
+        let tmp_dir = std::env::temp_dir().join("kscr_tests");
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let path = tmp_dir.join("hover_pretty_vars.smoke.ks");
+        std::fs::write(&path, &src).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 1,
+                character: 3,
+            },
+        )
+        .unwrap();
+        let text = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(
+            !text.as_bytes().windows(2).any(|window| window[0] == b't' && window[1].is_ascii_digit()),
+            "actual hover: {text}"
+        );
+        assert!(text.contains("a") && text.contains("b"), "actual hover: {text}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hover_shows_prelude_symbolic_method_declaration() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let path = repo_root.join("stdlib/Prelude/Applicative.ks");
+        let src = std::fs::read_to_string(&path).unwrap();
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src, 1);
+
+        let hover = hover_in_doc(
+            &doc,
+            Position {
+                line: 9,
+                character: 6,
+            },
+        )
+        .unwrap();
+        let text = match hover.contents {
+            HoverContents::Markup(m) => m.value,
+            _ => panic!("unexpected hover contents"),
+        };
+        assert!(text.contains("class method <*> ::"), "actual hover: {text}");
+    }
+
+    #[test]
     fn document_symbols_have_reasonable_ranges() {
         let uri = Url::parse("file:///test.ks").unwrap();
         let src = "module M where\n  x = 1\n  data Foo = Bar\n".to_string();

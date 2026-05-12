@@ -51,8 +51,16 @@ pub struct TypedModule {
     pub module: ast::Module,
     pub inferred: HashMap<String, Scheme>,
     pub class_methods: HashMap<String, Scheme>,
+    pub local_bindings: Vec<LocalBindingScheme>,
     pub docs: HashMap<String, String>,
     pub dict_fallback_trace: Vec<DictFallbackTraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalBindingScheme {
+    pub name: String,
+    pub span: ast::Span,
+    pub scheme: Scheme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,45 +369,59 @@ impl fmt::Display for Ty {
     }
 }
 
-fn pretty_ty_pair(a: &Ty, b: &Ty) -> (String, String) {
-    #[derive(Clone)]
-    struct PrettyTy<'a> {
-        ty: &'a Ty,
-        vars: &'a HashMap<u32, String>,
-    }
+#[derive(Clone)]
+struct PrettyTyDisplay<'a> {
+    ty: &'a Ty,
+    vars: &'a HashMap<u32, String>,
+}
 
-    impl fmt::Display for PrettyTy<'_> {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            fmt_ty_prec(f, self.ty, 0, self.vars)
+impl fmt::Display for PrettyTyDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt_ty_prec(f, self.ty, 0, self.vars)
+    }
+}
+
+struct PrettySchemeDisplay<'a> {
+    scheme: &'a Scheme,
+    vars: &'a HashMap<u32, String>,
+}
+
+impl fmt::Display for PrettySchemeDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.scheme.constraints.is_empty() {
+            fmt_constraints(f, &self.scheme.constraints, self.vars)?;
+            write!(f, " => ")?;
         }
+        fmt_ty_prec(f, &self.scheme.ty, 0, self.vars)
     }
+}
 
+fn pretty_ty_pair(a: &Ty, b: &Ty) -> (String, String) {
     let mut vars: HashMap<u32, String> = HashMap::new();
     assign_ty_var_names(a, &mut vars);
     assign_ty_var_names(b, &mut vars);
     (
-        format!("{}", PrettyTy { ty: a, vars: &vars }),
-        format!("{}", PrettyTy { ty: b, vars: &vars }),
+        format!("{}", PrettyTyDisplay { ty: a, vars: &vars }),
+        format!("{}", PrettyTyDisplay { ty: b, vars: &vars }),
     )
 }
 
-fn assign_ty_var_names(ty: &Ty, vars: &mut HashMap<u32, String>) {
-    fn next_name(i: usize) -> String {
-        // a..z, a1..z1, a2..z2, ...
-        let ch = (b'a' + (i % 26) as u8) as char;
-        let suffix = i / 26;
-        if suffix == 0 {
-            ch.to_string()
-        } else {
-            format!("{ch}{suffix}")
-        }
+fn pretty_var_name(i: usize) -> String {
+    let ch = (b'a' + (i % 26) as u8) as char;
+    let suffix = i / 26;
+    if suffix == 0 {
+        ch.to_string()
+    } else {
+        format!("{ch}{suffix}")
     }
+}
 
+fn assign_ty_var_names(ty: &Ty, vars: &mut HashMap<u32, String>) {
     fn go(t: &Ty, vars: &mut HashMap<u32, String>, next: &mut usize) {
         match t {
             Ty::Var(v) => {
                 if !vars.contains_key(v) {
-                    let name = next_name(*next);
+                    let name = pretty_var_name(*next);
                     *next += 1;
                     vars.insert(*v, name);
                 }
@@ -427,10 +449,47 @@ fn assign_ty_var_names(ty: &Ty, vars: &mut HashMap<u32, String>) {
     go(ty, vars, &mut next);
 }
 
+fn assign_constraint_var_names(constraint: &Constraint, vars: &mut HashMap<u32, String>) {
+    match constraint {
+        Constraint::Show(ty)
+        | Constraint::ShowRow(ty)
+        | Constraint::Eq(ty)
+        | Constraint::EqRow(ty) => assign_ty_var_names(ty, vars),
+        Constraint::Class { ty, .. } => assign_ty_var_names(ty, vars),
+        Constraint::Lacks { row, .. } => assign_ty_var_names(row, vars),
+    }
+}
+
+fn pretty_names_for_scheme(scheme: &Scheme) -> HashMap<u32, String> {
+    let mut names = HashMap::new();
+    let mut vars = scheme.vars.clone();
+    vars.sort_unstable();
+    for (index, var) in vars.into_iter().enumerate() {
+        names.insert(var, pretty_var_name(index));
+    }
+    for constraint in &scheme.constraints {
+        assign_constraint_var_names(constraint, &mut names);
+    }
+    assign_ty_var_names(&scheme.ty, &mut names);
+    names
+}
+
+pub fn format_pretty_ty(ty: &Ty) -> String {
+    let mut vars = HashMap::new();
+    assign_ty_var_names(ty, &mut vars);
+    format!("{}", PrettyTyDisplay { ty, vars: &vars })
+}
+
+pub fn format_pretty_scheme(scheme: &Scheme) -> String {
+    let vars = pretty_names_for_scheme(scheme);
+    format!("{}", PrettySchemeDisplay { scheme, vars: &vars })
+}
+
 #[derive(Debug)]
 pub struct InferCtx {
     next_var: u32,
     class_env: ClassEnvIndex,
+    local_binding_schemes: Vec<LocalBindingScheme>,
     /// Full class env for solving class constraints inside local `let`/`where`.
     ///
     /// This is cloned into an `Arc` at module inference entrypoints.
@@ -442,9 +501,16 @@ impl Default for InferCtx {
         Self {
             next_var: 0,
             class_env: ClassEnvIndex::default(),
+            local_binding_schemes: Vec::new(),
             full_class_env: std::sync::Arc::new(ClassEnv::default()),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModuleInference {
+    inferred: HashMap<String, Scheme>,
+    local_bindings: Vec<LocalBindingScheme>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -2301,7 +2367,7 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
     let stdlib_class_env = load_stdlib_class_env()?;
     let mut cx = InferCtx::default();
     let class_index = build_class_method_scheme_index(&mut cx, &stdlib_class_env)?;
-    infer_module_with_class_env(module, &stdlib_class_env, &class_index)
+    infer_module_with_class_env(module, &stdlib_class_env, &class_index).map(|result| result.inferred)
 }
 
 fn collect_deps_in_pattern(
@@ -6900,6 +6966,13 @@ fn infer_local_letrec_bindings(
     }
 
     let (ctx_names, defined_names, name_to_binding) = build_letrec_binding_metadata(&bindings);
+    let binding_spans: HashMap<String, ast::Span> = bindings
+        .iter()
+        .filter_map(|binding| match &binding.pat.kind {
+            ast::PatternKind::Var(name) => Some((name.clone(), binding.pat.span)),
+            _ => None,
+        })
+        .collect();
     let graph = build_letrec_dep_graph(&bindings, &name_to_binding);
 
     let comps = tarjan_scc(&graph);
@@ -6957,6 +7030,13 @@ fn infer_local_letrec_bindings(
         }
 
         for (name, scheme) in new_schemes {
+            if let Some(span) = binding_spans.get(&name).copied() {
+                cx.local_binding_schemes.push(LocalBindingScheme {
+                    name: name.clone(),
+                    span,
+                    scheme: scheme.clone(),
+                });
+            }
             env_global_ftv.extend(ftv_scheme(&scheme));
             env_global.insert(
                 name,
@@ -8043,7 +8123,7 @@ pub(crate) fn compute_file_sha256(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     let result = hasher.finalize();
-    Ok(format!("{:x}", result))
+    Ok(result.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// Validate that all dependencies in a KSIF have matching hashes.
@@ -9255,6 +9335,7 @@ fn typecheck_internal_core_with_entry_path(
                     module,
                     inferred,
                     class_methods: HashMap::new(),
+                    local_bindings: Vec::new(),
                     docs: source_docs.clone(),
                     dict_fallback_trace: Vec::new(),
                 });
@@ -9447,7 +9528,7 @@ fn typecheck_internal_core_with_entry_path(
         let mut cx_for_index = InferCtx::default();
         let class_index = build_class_method_scheme_index(&mut cx_for_index, &class_env)?;
 
-        let inferred = if let Some(entry_path) = entry_path {
+        let inference = if let Some(entry_path) = entry_path {
             // Best-effort: when typechecking from a file, we have a ModuleLoader in the caller
             // (typecheck_file) and can provide real file:line:col evidence.
             // If there is no loader context, this falls back to no evidence.
@@ -9467,6 +9548,10 @@ fn typecheck_internal_core_with_entry_path(
                 None,
             )?
         };
+        let ModuleInference {
+            inferred,
+            local_bindings,
+        } = inference;
 
         let mut main_entry_class_constraints: Vec<Constraint> = Vec::new();
         if let Some(main) = inferred.get("main") {
@@ -9544,6 +9629,7 @@ fn typecheck_internal_core_with_entry_path(
             module,
             inferred,
             class_methods: class_index.methods_by_name,
+            local_bindings,
             docs: source_docs,
             dict_fallback_trace,
         })
@@ -14751,7 +14837,7 @@ fn infer_module_with_class_env(
     module: &ast::Module,
     class_env: &ClassEnv,
     class_index: &ClassEnvIndex,
-) -> Result<HashMap<String, Scheme>> {
+) -> Result<ModuleInference> {
     // Order-independent top-level inference (Haskell-like): compute SCCs of top-level bindings,
     // then typecheck SCCs in dependency order, generalizing non-recursive groups.
     let mut cx = InferCtx {
@@ -14880,7 +14966,10 @@ fn infer_module_with_class_env(
         }
     }
 
-    Ok(out)
+    Ok(ModuleInference {
+        inferred: out,
+        local_bindings: cx.local_binding_schemes,
+    })
 }
 
 fn infer_module_with_class_env_with_entry_path(
@@ -14889,7 +14978,7 @@ fn infer_module_with_class_env_with_entry_path(
     class_index: &ClassEnvIndex,
     imported: Option<&HashMap<String, HashMap<String, Scheme>>>,
     entry_path: Option<&Path>,
-) -> Result<HashMap<String, Scheme>> {
+) -> Result<ModuleInference> {
     // Order-independent top-level inference (Haskell-like): compute SCCs of top-level bindings,
     // then typecheck SCCs in dependency order, generalizing non-recursive groups.
     let mut cx = InferCtx {
@@ -15254,7 +15343,10 @@ fn infer_module_with_class_env_with_entry_path(
         }
     }
 
-    Ok(out)
+    Ok(ModuleInference {
+        inferred: out,
+        local_bindings: cx.local_binding_schemes,
+    })
 }
 
 type InferModuleBindingSccOrder = (

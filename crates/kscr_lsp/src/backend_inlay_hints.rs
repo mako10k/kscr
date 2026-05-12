@@ -3,7 +3,7 @@ use crate::vfs::Document;
 use kscr::ast::{Binding, ExprKind, Item, PatternKind};
 use kscr::lexer;
 use kscr::parser;
-use kscr::types::{Scheme, Ty};
+use kscr::types::{self, Scheme, Ty};
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 
 pub(crate) fn inlay_hints_in_doc(doc: &Document, range: Range) -> Option<Vec<InlayHint>> {
@@ -36,7 +36,13 @@ pub(crate) fn inlay_hints_in_doc(doc: &Document, range: Range) -> Option<Vec<Inl
             .into_iter()
             .zip(function_argument_types(&scheme.ty, parameter_count))
         {
-            push_type_hint(doc, span.end, format!(":: {ty}"), &range, &mut hints);
+            push_type_hint(
+                doc,
+                span.end,
+                format!(":: {}", types::format_pretty_ty(&ty)),
+                &range,
+                &mut hints,
+            );
         }
     }
 
@@ -51,9 +57,9 @@ fn push_binding_type_hint(
     out: &mut Vec<InlayHint>,
 ) {
     let label = if scheme.constraints.is_empty() {
-        format!(":: {}", scheme.ty)
+        format!(":: {}", types::format_pretty_ty(&scheme.ty))
     } else {
-        format!(":: {scheme}")
+        format!(":: {}", types::format_pretty_scheme(scheme))
     };
     push_type_hint(doc, binding.pat.span.end, label, range, out);
 }
@@ -256,5 +262,43 @@ mod tests {
         assert_eq!(param_spans.len(), 1);
         assert_eq!(param_spans[0].start, src.find("x =").unwrap());
         assert_eq!(param_spans[0].end, src.find("x =").unwrap() + 1);
+    }
+
+    #[test]
+    fn inlay_hints_pretty_print_type_variables() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("kscr-lsp-inlay-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("Main.ks");
+        let src = "module Main where\n  on f g x y = f (g x) (g y)\n";
+        std::fs::write(&path, src).unwrap();
+
+        let uri = Url::from_file_path(&path).unwrap();
+        let doc = Document::new(uri, src.to_string(), 1);
+        let hints = inlay_hints_in_doc(
+            &doc,
+            Range {
+                start: Position { line: 0, character: 0 },
+                end: Position { line: 10, character: 0 },
+            },
+        )
+        .unwrap();
+
+        let labels: Vec<String> = hints
+            .iter()
+            .map(|hint| match &hint.label {
+                InlayHintLabel::String(s) => s.clone(),
+                InlayHintLabel::LabelParts(parts) => parts.iter().map(|part| part.value.clone()).collect(),
+            })
+            .collect();
+
+        assert!(labels.iter().any(|label| label.contains(":: (a -> a -> b) -> (c -> a) -> c -> c -> b")), "labels: {labels:?}");
+        assert!(!labels.iter().any(|label| label.contains("t0") || label.contains("t1") || label.contains("t2")), "labels: {labels:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

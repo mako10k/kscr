@@ -86,6 +86,9 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
     if let Some(param_hover) = hover_parameter_use_in_doc(doc, off, typed.as_ref()) {
         return Some(param_hover);
     }
+    if let Some(local_hover) = hover_local_binding_in_doc(doc, off, &name, typed.as_ref()) {
+        return Some(local_hover);
+    }
 
     let module = parser::parse_module(&doc.text).ok();
     let method_name = name.rsplit('.').next().unwrap_or(&name);
@@ -107,7 +110,7 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
         .and_then(|tm| tm.inferred.get(&name).cloned())
         .or(method_ty)
         .or_else(|| types::builtin_hover_scheme(&name))
-        .map(|s| s.to_string());
+        .map(|s| types::format_pretty_scheme(&s));
     let doc_comment = typed.as_ref().and_then(|tm| tm.docs.get(&name).cloned());
     let builtin_kind = types::builtin_hover_kind(&name);
 
@@ -188,28 +191,26 @@ fn hover_parameter_in_doc(
     let module = parser::parse_module(&doc.text).ok()?;
     let tokens = lexer::lex(&doc.text).ok()?;
 
-    for item in &module.items {
-        let ast::Item::Binding(binding) = item else {
-            continue;
-        };
+    for binding in bindings_in_module(&module) {
         let ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
             continue;
         };
-        let Some(scheme) = typed.inferred.get(binding_name) else {
-            continue;
-        };
+        let scheme = typed.inferred.get(binding_name);
 
         let mut spans = binding_lhs_parameter_spans(doc, &tokens, binding);
         spans.extend(leading_lambda_parameter_spans(&tokens, binding));
-        let arg_types = function_argument_types(&scheme.ty, spans.len());
 
-        for (span, ty) in spans.into_iter().zip(arg_types.into_iter()) {
+        for (index, span) in spans.into_iter().enumerate() {
             if span.start <= offset && offset < span.end {
                 let range = span_to_range(doc, span);
+                let value = scheme
+                    .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
+                    .map(|ty| format!("```kscr\nparameter {name} :: {}\n```", types::format_pretty_ty(&ty)))
+                    .unwrap_or_else(|| format!("```kscr\nparameter {name}\n```"));
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
                         kind: MarkupKind::Markdown,
-                        value: format!("```kscr\nparameter {name} :: {ty}\n```"),
+                        value,
                     }),
                     range,
                 });
@@ -233,25 +234,19 @@ fn hover_parameter_use_in_doc(
         return None;
     }
 
-    for item in &module.items {
-        let ast::Item::Binding(binding) = item else {
-            continue;
-        };
+    for binding in bindings_in_module(&module) {
         let ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
             continue;
         };
-        let Some(scheme) = typed.inferred.get(binding_name) else {
-            continue;
-        };
+        let scheme = typed.inferred.get(binding_name);
         if offset < binding.expr.span.start || binding.expr.span.end <= offset {
             continue;
         }
 
         let mut spans = binding_lhs_parameter_spans(doc, &tokens, binding);
         spans.extend(leading_lambda_parameter_spans(&tokens, binding));
-        let arg_types = function_argument_types(&scheme.ty, spans.len());
 
-        for (span, ty) in spans.into_iter().zip(arg_types.into_iter()) {
+        for (index, span) in spans.into_iter().enumerate() {
             if span.start <= offset && offset < span.end {
                 return None;
             }
@@ -260,16 +255,261 @@ fn hover_parameter_use_in_doc(
                 continue;
             };
             if name == ident.current_name {
+                let head = scheme
+                    .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
+                    .map(|ty| format!("parameter {name} :: {}", types::format_pretty_ty(&ty)))
+                    .unwrap_or_else(|| format!("parameter {name}"));
                 return Some(simple_hover(
                     doc,
                     ident.current_span,
-                    &format!("parameter {name} :: {ty}"),
+                    &head,
                 ));
             }
         }
     }
 
     None
+}
+
+fn hover_local_binding_in_doc(
+    doc: &Document,
+    offset: usize,
+    name: &str,
+    typed: Option<&types::TypedModule>,
+) -> Option<Hover> {
+    let typed = typed?;
+    let ident = qualified_ident_parts_at_offset(&doc.text, offset)?;
+    if ident.segments.len() != 1 {
+        return None;
+    }
+
+    let module = parser::parse_module(&doc.text).ok()?;
+    for item in &module.items {
+        let ast::Item::Binding(binding) = item else {
+            continue;
+        };
+        if let Some(hover) = hover_local_binding_in_expr(doc, offset, name, typed, &binding.expr, &[]) {
+            return Some(hover);
+        }
+    }
+
+    None
+}
+
+fn hover_local_binding_in_expr<'a>(
+    doc: &Document,
+    offset: usize,
+    name: &str,
+    typed: &'a types::TypedModule,
+    expr: &'a ast::Expr,
+    scope: &[&'a ast::Binding],
+) -> Option<Hover> {
+    if offset < expr.span.start || expr.span.end <= offset {
+        return None;
+    }
+
+    match &expr.kind {
+        ast::ExprKind::Var(var_name) if var_name == name => {
+            for binding in scope.iter().rev() {
+                let ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
+                    continue;
+                };
+                if binding_name != name {
+                    continue;
+                }
+                let scheme = local_binding_scheme(typed, binding_name, binding.pat.span)?;
+                return Some(simple_hover(
+                    doc,
+                    expr.span,
+                    &format!("binding {name} :: {}", types::format_pretty_scheme(scheme)),
+                ));
+            }
+            None
+        }
+        ast::ExprKind::Var(_) => None,
+        ast::ExprKind::Let { bindings, body } => hover_local_binding_in_scope(
+            doc, offset, name, typed, bindings, body, scope,
+        ),
+        ast::ExprKind::Where { expr, bindings } => hover_local_binding_in_scope(
+            doc, offset, name, typed, bindings, expr, scope,
+        ),
+        ast::ExprKind::Lambda { body, .. } | ast::ExprKind::Annot { expr: body, .. } => {
+            hover_local_binding_in_expr(doc, offset, name, typed, body, scope)
+        }
+        ast::ExprKind::Apply { func, args } => hover_local_binding_in_expr(doc, offset, name, typed, func, scope)
+            .or_else(|| args.iter().find_map(|arg| hover_local_binding_in_expr(doc, offset, name, typed, arg, scope))),
+        ast::ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => hover_local_binding_in_expr(doc, offset, name, typed, cond, scope)
+            .or_else(|| hover_local_binding_in_expr(doc, offset, name, typed, then_branch, scope))
+            .or_else(|| hover_local_binding_in_expr(doc, offset, name, typed, else_branch, scope)),
+        ast::ExprKind::Do(stmts) => stmts.iter().find_map(|stmt| match stmt {
+            ast::DoStmt::Bind { expr, .. } | ast::DoStmt::Expr(expr) => {
+                hover_local_binding_in_expr(doc, offset, name, typed, expr, scope)
+            }
+        }),
+        ast::ExprKind::Case { expr, arms } => hover_local_binding_in_expr(doc, offset, name, typed, expr, scope)
+            .or_else(|| {
+                arms.iter().find_map(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .and_then(|guard| hover_local_binding_in_expr(doc, offset, name, typed, guard, scope))
+                        .or_else(|| hover_local_binding_in_expr(doc, offset, name, typed, &arm.body, scope))
+                })
+            }),
+        ast::ExprKind::Cons { head, tail } => hover_local_binding_in_expr(doc, offset, name, typed, head, scope)
+            .or_else(|| hover_local_binding_in_expr(doc, offset, name, typed, tail, scope)),
+        ast::ExprKind::List(items) | ast::ExprKind::Tuple(items) => {
+            items.iter().find_map(|item| hover_local_binding_in_expr(doc, offset, name, typed, item, scope))
+        }
+        ast::ExprKind::Record(fields) => fields
+            .iter()
+            .find_map(|(_, value)| hover_local_binding_in_expr(doc, offset, name, typed, value, scope)),
+        ast::ExprKind::Unit
+        | ast::ExprKind::Integer(_)
+        | ast::ExprKind::Float64(_)
+        | ast::ExprKind::Bool(_)
+        | ast::ExprKind::String(_)
+        | ast::ExprKind::Char(_)
+        | ast::ExprKind::Ctor(_) => None,
+    }
+}
+
+fn hover_local_binding_in_scope<'a>(
+    doc: &Document,
+    offset: usize,
+    name: &str,
+    typed: &'a types::TypedModule,
+    bindings: &'a [ast::Binding],
+    body: &'a ast::Expr,
+    scope: &[&'a ast::Binding],
+) -> Option<Hover> {
+    for binding in bindings {
+        let ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
+            continue;
+        };
+        if binding_name == name && binding.pat.span.start <= offset && offset < binding.pat.span.end {
+            let scheme = local_binding_scheme(typed, binding_name, binding.pat.span)?;
+            return Some(simple_hover(
+                doc,
+                binding.pat.span,
+                &format!("binding {name} :: {}", types::format_pretty_scheme(scheme)),
+            ));
+        }
+    }
+
+    let mut scoped_bindings: Vec<&ast::Binding> = scope.to_vec();
+    scoped_bindings.extend(bindings.iter());
+    for binding in bindings {
+        if let Some(hover) = hover_local_binding_in_expr(doc, offset, name, typed, &binding.expr, &scoped_bindings) {
+            return Some(hover);
+        }
+    }
+    hover_local_binding_in_expr(doc, offset, name, typed, body, &scoped_bindings)
+}
+
+fn local_binding_scheme<'a>(
+    typed: &'a types::TypedModule,
+    name: &str,
+    span: lexer::Span,
+) -> Option<&'a types::Scheme> {
+    typed
+        .local_bindings
+        .iter()
+        .rev()
+        .find(|binding| binding.name == name && binding.span == span)
+        .map(|binding| &binding.scheme)
+}
+
+fn bindings_in_module(module: &ast::Module) -> Vec<&ast::Binding> {
+    let mut out = Vec::new();
+    for item in &module.items {
+        let ast::Item::Binding(binding) = item else {
+            continue;
+        };
+        out.push(binding);
+        collect_nested_bindings(&binding.expr, &mut out);
+    }
+    out
+}
+
+fn collect_nested_bindings<'a>(expr: &'a ast::Expr, out: &mut Vec<&'a ast::Binding>) {
+    match &expr.kind {
+        ast::ExprKind::Lambda { body, .. } | ast::ExprKind::Annot { expr: body, .. } => {
+            collect_nested_bindings(body, out);
+        }
+        ast::ExprKind::Apply { func, args } => {
+            collect_nested_bindings(func, out);
+            for arg in args {
+                collect_nested_bindings(arg, out);
+            }
+        }
+        ast::ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_nested_bindings(cond, out);
+            collect_nested_bindings(then_branch, out);
+            collect_nested_bindings(else_branch, out);
+        }
+        ast::ExprKind::Let { bindings, body } => {
+            for binding in bindings {
+                out.push(binding);
+                collect_nested_bindings(&binding.expr, out);
+            }
+            collect_nested_bindings(body, out);
+        }
+        ast::ExprKind::Where { expr, bindings } => {
+            collect_nested_bindings(expr, out);
+            for binding in bindings {
+                out.push(binding);
+                collect_nested_bindings(&binding.expr, out);
+            }
+        }
+        ast::ExprKind::Do(stmts) => {
+            for stmt in stmts {
+                match stmt {
+                    ast::DoStmt::Bind { expr, .. } | ast::DoStmt::Expr(expr) => {
+                        collect_nested_bindings(expr, out);
+                    }
+                }
+            }
+        }
+        ast::ExprKind::Case { expr, arms } => {
+            collect_nested_bindings(expr, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_nested_bindings(guard, out);
+                }
+                collect_nested_bindings(&arm.body, out);
+            }
+        }
+        ast::ExprKind::Cons { head, tail } => {
+            collect_nested_bindings(head, out);
+            collect_nested_bindings(tail, out);
+        }
+        ast::ExprKind::List(items) | ast::ExprKind::Tuple(items) => {
+            for item in items {
+                collect_nested_bindings(item, out);
+            }
+        }
+        ast::ExprKind::Record(fields) => {
+            for (_, expr) in fields {
+                collect_nested_bindings(expr, out);
+            }
+        }
+        ast::ExprKind::Unit
+        | ast::ExprKind::Integer(_)
+        | ast::ExprKind::Float64(_)
+        | ast::ExprKind::Bool(_)
+        | ast::ExprKind::String(_)
+        | ast::ExprKind::Char(_)
+        | ast::ExprKind::Var(_)
+        | ast::ExprKind::Ctor(_) => {}
+    }
 }
 
 fn simple_hover(doc: &Document, span: lexer::Span, head: &str) -> Hover {

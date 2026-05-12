@@ -12,6 +12,31 @@ pub(super) struct QualifiedIdentParts {
     pub segments: Vec<String>,
 }
 
+fn token_symbol_name(kind: &lexer::TokenKind) -> Option<String> {
+    use lexer::TokenKind;
+
+    match kind {
+        TokenKind::Ident(name) | TokenKind::Operator(name) => Some(name.clone()),
+        TokenKind::Plus => Some("+".to_string()),
+        TokenKind::PlusPlus => Some("++".to_string()),
+        TokenKind::Minus => Some("-".to_string()),
+        TokenKind::Star => Some("*".to_string()),
+        TokenKind::Slash => Some("/".to_string()),
+        TokenKind::EqEq => Some("==".to_string()),
+        TokenKind::SlashEq => Some("/=".to_string()),
+        TokenKind::Lt => Some("<".to_string()),
+        TokenKind::Le => Some("<=".to_string()),
+        TokenKind::Gt => Some(">".to_string()),
+        TokenKind::Ge => Some(">=".to_string()),
+        TokenKind::GtGt => Some(">>".to_string()),
+        TokenKind::GtGtEq => Some(">>=".to_string()),
+        TokenKind::AndAnd => Some("&&".to_string()),
+        TokenKind::OrOr => Some("||".to_string()),
+        TokenKind::Colon => Some(":".to_string()),
+        _ => None,
+    }
+}
+
 pub(super) fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
     let len = doc.text.len();
     let start_off = span.start.min(len);
@@ -167,9 +192,20 @@ pub(super) fn qualified_ident_parts_at_offset(
             })
         })?;
 
-    let TokenKind::Ident(current_name) = &toks[i].kind else {
+    let Some(current_name) = token_symbol_name(&toks[i].kind) else {
         return None;
     };
+
+    if !matches!(toks[i].kind, TokenKind::Ident(_)) {
+        return Some(QualifiedIdentParts {
+            current_name: current_name.clone(),
+            current_span: toks[i].span,
+            full_name: current_name.clone(),
+            full_span: toks[i].span,
+            segment_index: 0,
+            segments: vec![current_name],
+        });
+    }
 
     let mut start = i;
     while start >= 2 {
@@ -204,7 +240,7 @@ pub(super) fn qualified_ident_parts_at_offset(
     }
 
     Some(QualifiedIdentParts {
-        current_name: current_name.clone(),
+        current_name,
         current_span: toks[i].span,
         full_name: parts.join("."),
         full_span: span,
