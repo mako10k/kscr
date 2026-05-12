@@ -800,11 +800,47 @@ fn class_body_allows_default_item(ts: &TokenStream) -> bool {
     )
 }
 
-fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, Vec<ast::Binding>)> {
+fn parse_class_minimal_line(ts: &mut TokenStream) -> Result<Option<Vec<Vec<String>>>> {
+    let save = (ts.i, ts.last_span_end);
+    if !matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s == "minimal") {
+        return Ok(None);
+    }
+
+    ts.bump();
+    let mut alternatives = Vec::new();
+    let mut current = Vec::new();
+
+    current.push(parse_signature_name(ts)?);
+    while !matches!(ts.peek_kind(), Some(TokenKind::Newline | TokenKind::Dedent) | None) {
+        match ts.peek_kind() {
+            Some(TokenKind::Comma) => {
+                ts.bump();
+                current.push(parse_signature_name(ts)?);
+            }
+            Some(TokenKind::Pipe) => {
+                ts.bump();
+                alternatives.push(current);
+                current = vec![parse_signature_name(ts)?];
+            }
+            _ => {
+                (ts.i, ts.last_span_end) = save;
+                return Ok(None);
+            }
+        }
+    }
+    alternatives.push(current);
+    ts.consume_line_end();
+    Ok(Some(alternatives))
+}
+
+fn parse_class_body(
+    ts: &mut TokenStream,
+) -> Result<(Vec<ast::ClassMethodSig>, Vec<ast::Binding>, Vec<Vec<String>>)> {
     ts.expect(TokenKind::Indent)?;
 
     let mut methods: Vec<ast::ClassMethodSig> = Vec::new();
     let mut default_items: Vec<ast::Item> = Vec::new();
+    let mut minimal_defs: Vec<Vec<String>> = Vec::new();
     let mut pending: Option<PendingFun> = None;
     let mut doc_buf: Option<String> = None;
 
@@ -820,6 +856,14 @@ fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, V
 
         if let Some(sig) = parse_class_method_sig_line(ts)? {
             methods.push(sig);
+            continue;
+        }
+
+        if let Some(minimal) = parse_class_minimal_line(ts)? {
+            if !minimal_defs.is_empty() {
+                return Err(ts.err_here("duplicate minimal declaration in class"));
+            }
+            minimal_defs = minimal;
             continue;
         }
 
@@ -860,7 +904,7 @@ fn parse_class_body(ts: &mut TokenStream) -> Result<(Vec<ast::ClassMethodSig>, V
         default_methods.push(b);
     }
 
-    Ok((methods, default_methods))
+    Ok((methods, default_methods, minimal_defs))
 }
 
 fn parse_class_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
@@ -882,11 +926,12 @@ fn parse_class_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::It
             supers,
             methods: Vec::new(),
             default_methods: Vec::new(),
+            minimal_defs: Vec::new(),
             def_module: None,
         }));
     }
 
-    let (methods, default_methods) = parse_class_body(ts)?;
+    let (methods, default_methods, minimal_defs) = parse_class_body(ts)?;
 
     Ok(ast::Item::ClassDecl(ast::ClassDecl {
         doc,
@@ -895,6 +940,7 @@ fn parse_class_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::It
         supers,
         methods,
         default_methods,
+        minimal_defs,
         def_module: None,
     }))
 }

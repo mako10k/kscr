@@ -182,6 +182,27 @@ a == b = a `eq` b
 }
 
 #[test]
+fn parser_accepts_class_minimal_declaration() {
+    let src = r#"
+class EqLike a where
+    eq :: a -> a -> Bool
+    == :: a -> a -> Bool
+    minimal eq | ==
+"#;
+
+    let m = crate::parser::parse_module(src).unwrap();
+    let cls = m
+        .items
+        .iter()
+        .find_map(|it| match it {
+            crate::ast::Item::ClassDecl(c) => Some(c),
+            _ => None,
+        })
+        .expect("expected class decl");
+    assert_eq!(cls.minimal_defs, vec![vec!["eq".to_string()], vec!["==".to_string()]]);
+}
+
+#[test]
 fn parser_class_superclass_context_parens() {
     let src = r#"
 class (Eq a) => Ord a where

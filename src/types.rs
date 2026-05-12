@@ -3872,56 +3872,6 @@ fn mangle_ident(s: &str) -> String {
     out
 }
 
-fn desugar_typeclasses(module: &mut ast::Module) -> Result<ClassEnv> {
-    desugar_typeclasses_with_strict(module, false)
-}
-
-/// Process classes and instances with optional strict canonicalization.
-fn desugar_typeclasses_with_strict(module: &mut ast::Module, strict: bool) -> Result<ClassEnv> {
-    if std::env::var("KSCR_DEBUG_DESUGAR").is_ok() {
-        eprintln!(
-            "[DESUGAR] Starting desugar_typeclasses for module: {:?}",
-            module.name
-        );
-    }
-    let mut env = ClassEnv {
-        aliases: collect_type_aliases(module),
-        ..Default::default()
-    };
-
-    // Expand deriving clauses BEFORE canonicalization so derived instance class ids get canonicalized
-    expand_deriving_clauses(module)?;
-
-    // Then canonicalize class references inside the module.
-    // Use both import-based and def_module-based canonicalization to handle both
-    // user-defined classes and imported/injected stdlib classes.
-    canonicalize_class_names_in_module_combined(module, strict)?;
-
-    // Then collect class decls with canonical ids.
-    let (class_method_names, class_default_methods) = collect_class_decls(module, &mut env)?;
-    reject_ambiguous_method_names(&mut env)?;
-    validate_superclass_preds(&env)?;
-    detect_superclass_cycles(&env)?;
-
-    let instance_decls = collect_instance_decls(module);
-    preregister_instance_dicts(&mut env, &instance_decls, module.name.as_deref())?;
-    let extra_items = generate_instance_items(
-        &env,
-        &instance_decls,
-        &class_method_names,
-        &class_default_methods,
-    )?;
-
-    module.items = module
-        .items
-        .drain(..)
-        .filter(|it| !matches!(it, ast::Item::ClassDecl(_) | ast::Item::InstanceDecl(_)))
-        .chain(extra_items)
-        .collect();
-
-    Ok(env)
-}
-
 /// Collect only class declarations from a module, without processing instances.
 /// Returns ClassEnv with class definitions, and metadata for later instance processing.
 /// Skips superclass validation (should be done after all classes are collected).
@@ -3954,8 +3904,7 @@ fn collect_class_env_only(
 fn process_instances_with_env(
     module: &mut ast::Module,
     merged_env: &ClassEnv,
-    class_method_names: &HashMap<ast::ClassId, Vec<String>>,
-    class_default_methods: &HashMap<(ast::ClassId, String), ast::Expr>,
+    class_decl_info: &ClassDeclInfo,
     strict: bool,
 ) -> Result<ClassEnv> {
     // Expand deriving clauses BEFORE canonicalization
@@ -3991,8 +3940,7 @@ fn process_instances_with_env(
     let extra_items = generate_instance_items(
         &working_env,
         &instance_decls,
-        class_method_names,
-        class_default_methods,
+        class_decl_info,
     )?;
 
     module.items = module
@@ -4244,10 +4192,33 @@ fn canonicalize_class_refs_in_module(
     Ok(())
 }
 
-type ClassDeclInfo = (
-    HashMap<ast::ClassId, Vec<String>>,
-    HashMap<(ast::ClassId, String), ast::Expr>,
-);
+#[derive(Default, Clone)]
+struct ClassDeclInfo {
+    method_names: HashMap<ast::ClassId, Vec<String>>,
+    default_methods: HashMap<(ast::ClassId, String), ast::Expr>,
+    minimal_defs: HashMap<ast::ClassId, Vec<Vec<String>>>,
+}
+
+fn merge_class_decl_info(dst: &mut ClassDeclInfo, src: ClassDeclInfo) {
+    dst.method_names.extend(src.method_names);
+    dst.default_methods.extend(src.default_methods);
+    dst.minimal_defs.extend(src.minimal_defs);
+}
+
+#[derive(Default)]
+struct ImportedTypeclassInfo {
+    env: ClassEnv,
+    class_decl_info: ClassDeclInfo,
+    dict_bindings: Vec<ast::Item>,
+}
+
+fn format_minimal_defs(minimal_defs: &[Vec<String>]) -> String {
+    minimal_defs
+        .iter()
+        .map(|group| group.join(", "))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
 
 fn is_reserved_builtin_class_name(name: &str) -> bool {
     matches!(name, "Show" | "Eq")
@@ -4258,6 +4229,7 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
     let mut class_method_names: HashMap<ast::ClassId, Vec<String>> = HashMap::new();
     // (class, method) -> default implementation expression
     let mut class_default_methods: HashMap<(ast::ClassId, String), ast::Expr> = HashMap::new();
+    let mut class_minimal_defs: HashMap<ast::ClassId, Vec<Vec<String>>> = HashMap::new();
 
     // Collect class method signatures + defaults.
     for it in &module.items {
@@ -4319,13 +4291,32 @@ fn collect_class_decls(module: &ast::Module, env: &mut ClassEnv) -> Result<Class
             }
             class_default_methods.insert(key, b.expr.clone());
         }
+
+        if !c.minimal_defs.is_empty() {
+            let known_methods = class_method_names.get(&class_id).cloned().unwrap_or_default();
+            for group in &c.minimal_defs {
+                for name in group {
+                    if !known_methods.iter().any(|method| method == name) {
+                        return Err(Error::msg(format!(
+                            "unknown method `{name}` in minimal declaration for class {}",
+                            c.name
+                        )));
+                    }
+                }
+            }
+            class_minimal_defs.insert(class_id.clone(), c.minimal_defs.clone());
+        }
     }
     for classes in env.method_classes.values_mut() {
         classes.sort();
         classes.dedup();
     }
 
-    Ok((class_method_names, class_default_methods))
+    Ok(ClassDeclInfo {
+        method_names: class_method_names,
+        default_methods: class_default_methods,
+        minimal_defs: class_minimal_defs,
+    })
 }
 
 fn reject_ambiguous_method_names(env: &mut ClassEnv) -> Result<()> {
@@ -5104,8 +5095,7 @@ fn add_params_to_expr(span: ast::Span, expr: ast::Expr, params: &[String]) -> as
 fn generate_instance_items(
     env: &ClassEnv,
     instance_decls: &[ast::InstanceDecl],
-    class_method_names: &HashMap<ast::ClassId, Vec<String>>,
-    class_default_methods: &HashMap<(ast::ClassId, String), ast::Expr>,
+    class_decl_info: &ClassDeclInfo,
 ) -> Result<Vec<ast::Item>> {
     // Phase 2: generate impl bindings + dictionary records.
     let mut extra_items: Vec<ast::Item> = Vec::new();
@@ -5113,8 +5103,7 @@ fn generate_instance_items(
         append_instance_items(
             env,
             inst,
-            class_method_names,
-            class_default_methods,
+            class_decl_info,
             &mut extra_items,
         )?;
     }
@@ -5124,13 +5113,12 @@ fn generate_instance_items(
 fn append_instance_items(
     env: &ClassEnv,
     inst: &ast::InstanceDecl,
-    class_method_names: &HashMap<ast::ClassId, Vec<String>>,
-    class_default_methods: &HashMap<(ast::ClassId, String), ast::Expr>,
+    class_decl_info: &ClassDeclInfo,
     extra_items: &mut Vec<ast::Item>,
 ) -> Result<()> {
     let (ty_key_opt, ty_mangled, dict_name) = resolve_instance_dict_name(env, inst)?;
 
-    let Some(method_names) = class_method_names.get(&inst.class) else {
+    let Some(method_names) = class_decl_info.method_names.get(&inst.class) else {
         return Err(Error::msg(format!(
             "unknown class in instance: {}",
             inst.class.name
@@ -5138,6 +5126,21 @@ fn append_instance_items(
     };
 
     let inst_methods = collect_instance_methods(inst)?;
+    if let Some(minimal_defs) = class_decl_info.minimal_defs.get(&inst.class) {
+        let satisfies_minimal = minimal_defs.iter().any(|group| {
+            group
+                .iter()
+                .all(|name| inst_methods.contains_key(name))
+        });
+        if !satisfies_minimal {
+            return Err(Error::msg(format!(
+                "instance {} {} does not satisfy minimal definition: {}",
+                inst.class.name,
+                ty_key_opt.clone().unwrap_or_else(|| "<poly>".to_string()),
+                format_minimal_defs(minimal_defs)
+            )));
+        }
+    }
     let direct_supers = collect_direct_supers(env, inst);
     let extra_param_names = build_extra_param_names(inst)?;
     let super_dict_names =
@@ -5154,7 +5157,10 @@ fn append_instance_items(
     for mname in method_names {
         let expr = if let Some(e) = inst_methods.get(mname) {
             e.clone()
-        } else if let Some(e) = class_default_methods.get(&(inst.class.clone(), mname.clone())) {
+        } else if let Some(e) = class_decl_info
+            .default_methods
+            .get(&(inst.class.clone(), mname.clone()))
+        {
             e.clone()
         } else {
             return Err(Error::msg(format!(
@@ -9140,10 +9146,11 @@ fn typecheck_internal_core_with_entry_path(
         // Desugar typeclasses. For stdlib modules, use relaxed validation since
         // superclasses may be in other stdlib modules not yet in this module's env.
         let is_stdlib = entry_path.is_some_and(is_stdlib_path);
+        let mut imported_typeclass_info = ImportedTypeclassInfo::default();
         let mut class_env = if is_stdlib {
             // For stdlib modules: collect classes and process instances without superclass validation
             // Validation will be done when user modules import these classes
-            let (env, (class_method_names, class_default_methods)) =
+            let (env, class_decl_info) =
                 collect_class_env_only(&mut module, false)?;
 
             // Process instances
@@ -9153,8 +9160,7 @@ fn typecheck_internal_core_with_entry_path(
             let extra_items = generate_instance_items(
                 &working_env,
                 &instance_decls,
-                &class_method_names,
-                &class_default_methods,
+                &class_decl_info,
             )?;
 
             module.items = module
@@ -9166,7 +9172,25 @@ fn typecheck_internal_core_with_entry_path(
 
             env
         } else {
-            desugar_typeclasses(&mut module)?
+            if let Some(ep) = entry_path {
+                let entry_dir = ep.parent().unwrap_or_else(|| Path::new("."));
+                imported_typeclass_info =
+                    load_imported_typeclass_info(&module, entry_dir, entry_path)?;
+            }
+
+            let (env, mut class_decl_info) = collect_class_env_only(&mut module, false)?;
+            merge_class_decl_info(
+                &mut class_decl_info,
+                std::mem::take(&mut imported_typeclass_info.class_decl_info),
+            );
+
+            let mut merged_env = env.clone();
+            merge_class_env(&mut merged_env, &imported_typeclass_info.env)?;
+
+            let local_instance_env =
+                process_instances_with_env(&mut module, &merged_env, &class_decl_info, false)?;
+            merge_class_env(&mut merged_env, &local_instance_env)?;
+            merged_env
         };
         // Merge stdlib class env.
         // IMPORTANT: honor `import Prelude hiding (...)` for method-name disambiguation.
@@ -9215,15 +9239,8 @@ fn typecheck_internal_core_with_entry_path(
             }
         }
 
-        // Load and merge class instances from imported user modules.
-        // This allows Main to use instances defined in module A when Main imports A.
-        if let Some(ep) = entry_path {
-            let entry_dir = ep.parent().unwrap_or_else(|| Path::new("."));
-            let (imported_instances, dict_bindings) =
-                load_imported_instances(&module, entry_dir, entry_path)?;
-            merge_class_env(&mut class_env, &imported_instances)?;
-            // Inject dictionary bindings into the module so they're available at runtime
-            module.items.extend(dict_bindings);
+        if !imported_typeclass_info.dict_bindings.is_empty() {
+            module.items.extend(imported_typeclass_info.dict_bindings);
         }
 
         // If `>>=` and `>>` operators are available (typically from a Monad-like type class),
@@ -9421,8 +9438,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
     // Pass 1: Collect all class declarations (creates merged class definitions)
     // Pass 2: Process all instances (now all classes are known)
     let mut merged_env = ClassEnv::default();
-    let mut all_class_method_names: HashMap<ast::ClassId, Vec<String>> = HashMap::new();
-    let mut all_class_default_methods: HashMap<(ast::ClassId, String), ast::Expr> = HashMap::new();
+    let mut all_class_decl_info = ClassDeclInfo::default();
     let t_desugar = std::time::Instant::now();
 
     // Pass 1: Collect class declarations from all modules
@@ -9454,7 +9470,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         }
 
         // Collect class declarations only
-        let (module_env, (class_method_names, class_default_methods)) =
+        let (module_env, class_decl_info) =
             collect_class_env_only(&mut tmp_module, true).map_err(|e| {
                 e.with_context(format!(
                     "while collecting class decls in stdlib module {}",
@@ -9471,8 +9487,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         })?;
 
         // Accumulate class method metadata for Pass 2
-        all_class_method_names.extend(class_method_names);
-        all_class_default_methods.extend(class_default_methods);
+        merge_class_decl_info(&mut all_class_decl_info, class_decl_info);
     }
 
     // After all classes are collected, validate superclasses and check for cycles
@@ -9521,8 +9536,7 @@ fn load_stdlib_class_env_uncached() -> Result<ClassEnv> {
         let mut module_env = process_instances_with_env(
             &mut tmp_module,
             &merged_env,
-            &all_class_method_names,
-            &all_class_default_methods,
+            &all_class_decl_info,
             true,
         )
         .map_err(|e| {
@@ -9662,13 +9676,14 @@ fn load_stdlib_class_decl_items_uncached() -> Result<Vec<ast::Item>> {
     Ok(merged.items)
 }
 
-/// Load class instances from all imported user modules (non-stdlib).
-/// This is needed so that instances defined in module A are available when Main imports A.
-fn load_imported_instances(
+/// Load class and instance metadata from imported user modules (non-stdlib).
+/// This is needed so that local modules can define instances of imported classes,
+/// inherit imported class defaults, and use imported instance dictionaries.
+fn load_imported_typeclass_info(
     module: &ast::Module,
     entry_dir: &Path,
     entry_path: Option<&Path>,
-) -> Result<(ClassEnv, Vec<ast::Item>)> {
+) -> Result<ImportedTypeclassInfo> {
     fn qualify_dict_refs_in_expr(expr: ast::Expr, module_prefix: &str) -> ast::Expr {
         use ast::{Expr, ExprKind};
         let span = expr.span;
@@ -9707,8 +9722,12 @@ fn load_imported_instances(
         }
     }
 
-    let mut merged_env = ClassEnv::default();
-    let mut dict_bindings: Vec<ast::Item> = Vec::new();
+    struct ImportedModuleData {
+        imported_module_name: String,
+        imported_ast: ast::Module,
+    }
+
+    let mut module_data: Vec<ImportedModuleData> = Vec::new();
     let stdlib_root = stdlib_cache::stdlib_root()?;
     let mut queued_modules: std::collections::VecDeque<String> = module
         .items
@@ -9792,27 +9811,7 @@ fn load_imported_instances(
             }
         }
 
-        // Create a temporary module with only class and instance declarations
-        let mut tmp_module = ast::Module {
-            name: imported_ast.name.clone(),
-            export_specs: None,
-            items: imported_ast
-                .items
-                .into_iter()
-                .filter(|it| {
-                    matches!(
-                        it,
-                        ast::Item::ClassDecl(_)
-                            | ast::Item::InstanceDecl(_)
-                            | ast::Item::DataDecl(_)
-                            | ast::Item::Import(_)
-                    )
-                })
-                .collect(),
-        };
-
-        // Skip if no instances or class declarations
-        if !tmp_module.items.iter().any(|it| {
+        if !imported_ast.items.iter().any(|it| {
             matches!(
                 it,
                 ast::Item::InstanceDecl(_) | ast::Item::ClassDecl(_) | ast::Item::DataDecl(_)
@@ -9821,12 +9820,70 @@ fn load_imported_instances(
             continue;
         }
 
-        // Canonicalize class names and desugar typeclasses to get instances
+        module_data.push(ImportedModuleData {
+            imported_module_name,
+            imported_ast,
+        });
+    }
+
+    let mut merged_env = ClassEnv::default();
+    let mut class_decl_info = ClassDeclInfo::default();
+    for data in &module_data {
+        let mut tmp_module = ast::Module {
+            name: data.imported_ast.name.clone(),
+            export_specs: None,
+            items: data
+                .imported_ast
+                .items
+                .clone()
+                .into_iter()
+                .filter(|it| {
+                    matches!(
+                        it,
+                        ast::Item::ClassDecl(_) | ast::Item::Import(_) | ast::Item::TypeAlias(_)
+                    )
+                })
+                .collect(),
+        };
+
+        inject_stdlib_class_decls(&mut tmp_module)?;
+        let (module_env, module_class_decl_info) = collect_class_env_only(&mut tmp_module, false)?;
+        merge_class_env(&mut merged_env, &module_env)?;
+        merge_class_decl_info(&mut class_decl_info, module_class_decl_info);
+    }
+
+    let mut dict_bindings: Vec<ast::Item> = Vec::new();
+    let mut instance_env = ClassEnv::default();
+    for data in module_data {
+        let mut tmp_module = ast::Module {
+            name: data.imported_ast.name.clone(),
+            export_specs: None,
+            items: data
+                .imported_ast
+                .items
+                .into_iter()
+                .filter(|it| {
+                    matches!(
+                        it,
+                        ast::Item::InstanceDecl(_)
+                            | ast::Item::ClassDecl(_)
+                            | ast::Item::DataDecl(_)
+                            | ast::Item::Import(_)
+                            | ast::Item::TypeAlias(_)
+                    )
+                })
+                .collect(),
+        };
 
         // Bring stdlib class declarations into scope so `deriving (Show, Eq)` in imported
         // modules can resolve to stdlib classes (e.g. Prelude.Show) when we collect instances.
         inject_stdlib_class_decls(&mut tmp_module)?;
-        let module_env = desugar_typeclasses(&mut tmp_module)?;
+        let module_env = process_instances_with_env(
+            &mut tmp_module,
+            &merged_env,
+            &class_decl_info,
+            false,
+        )?;
 
         // Collect dictionary bindings from the desugared module
         // These need to be injected into the importing module with qualified names
@@ -9835,9 +9892,9 @@ fn load_imported_instances(
                 if let ast::PatternKind::Var(name) = &b.pat.kind {
                     if name.starts_with("__dict_") || name.starts_with("__inst_") {
                         // Qualify the binding name and all __dict_/__inst_ references in the expression
-                        let qual_name = format!("{}.{}", imported_module_name, name);
+                        let qual_name = format!("{}.{}", data.imported_module_name, name);
                         let qual_expr =
-                            qualify_dict_refs_in_expr(b.expr.clone(), &imported_module_name);
+                            qualify_dict_refs_in_expr(b.expr.clone(), &data.imported_module_name);
                         let qual_binding = ast::Binding {
                             doc: b.doc.clone(),
                             pat: ast::Pattern::new(b.pat.span, ast::PatternKind::Var(qual_name)),
@@ -9854,10 +9911,20 @@ fn load_imported_instances(
         // Qualification happens when merging into the importing module's class_env.
 
         // Merge this module's instances into the accumulated env
-        merge_class_env_with_module_prefix(&mut merged_env, &module_env, &imported_module_name)?;
+        merge_class_env_with_module_prefix(
+            &mut instance_env,
+            &module_env,
+            &data.imported_module_name,
+        )?;
     }
 
-    Ok((merged_env, dict_bindings))
+    merge_class_env(&mut merged_env, &instance_env)?;
+
+    Ok(ImportedTypeclassInfo {
+        env: merged_env,
+        class_decl_info,
+        dict_bindings,
+    })
 }
 
 fn merge_class_env(dst: &mut ClassEnv, src: &ClassEnv) -> Result<()> {
@@ -15599,6 +15666,7 @@ fn expand_item(item: ast::Item, aliases: &HashMap<String, ast::TypeAlias>) -> Re
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
+            minimal_defs: c.minimal_defs,
             def_module: c.def_module,
         })),
         ast::Item::InstanceDecl(inst) => Ok(ast::Item::InstanceDecl(ast::InstanceDecl {
