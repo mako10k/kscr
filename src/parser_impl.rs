@@ -618,8 +618,9 @@ fn parse_algebraic_decl(
         // Try prefix ctor first: `Ctor a b` / `(:*:) a b`.
         // If that fails, accept infix ctor: `a :*: b`.
         let save = (ts.i, ts.last_span_end);
-        let parsed = if let Ok(ctor_name) = parse_ctor_name(ts) {
+        let parsed = if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
             let ctor_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
+            let ctor_name = parse_ctor_name(ts)?;
             let mut args = Vec::new();
             while matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s != "deriving")
                 || matches!(

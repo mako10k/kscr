@@ -1,4 +1,4 @@
-use crate::backend_helpers::{find_decl_name_span, find_decl_name_span_any};
+use crate::backend_helpers::{find_ctor_name_span, find_decl_name_span, find_decl_name_span_any};
 use crate::vfs::Document;
 use kscr::ast::{Binding, ExprKind, Item, PatternKind};
 use kscr::lexer;
@@ -158,7 +158,9 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                     push_span_token(doc, span, TOKEN_TYPE_TYPE, &mut raw);
                 }
                 for ctor in &data.ctors {
-                    push_span_token(doc, ctor.span, TOKEN_TYPE_ENUM_MEMBER, &mut raw);
+                    if let Some(span) = find_ctor_name_span(doc, ctor.span, &ctor.name) {
+                        push_span_token(doc, span, TOKEN_TYPE_ENUM_MEMBER, &mut raw);
+                    }
                 }
             }
             Item::ClassDecl(class) => {
@@ -393,6 +395,26 @@ mod tests {
         assert!(seen.contains(&TOKEN_TYPE_FUNCTION));
         assert!(seen.contains(&TOKEN_TYPE_VARIABLE));
         assert!(seen.contains(&TOKEN_TYPE_PARAMETER));
+    }
+
+    #[test]
+    fn semantic_tokens_mark_only_ctor_name_in_data_decl() {
+        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_ctor_decl.ks").unwrap();
+        let src = r#"module Main where
+  data Pair = Pair Integer Integer
+"#;
+
+        let doc = Document::new(uri, src.to_string(), 1);
+        let tokens = semantic_tokens_in_doc(&doc).unwrap();
+
+        let mut enum_member_lengths = Vec::new();
+        for token in &tokens.data {
+            if token.token_type == TOKEN_TYPE_ENUM_MEMBER {
+                enum_member_lengths.push(token.length);
+            }
+        }
+
+        assert_eq!(enum_member_lengths, vec![4]);
     }
 
     #[test]

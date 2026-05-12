@@ -217,3 +217,26 @@ pub(super) fn find_decl_name_span_any(
     }
     None
 }
+
+pub(super) fn find_ctor_name_span(
+    doc: &Document,
+    ctor_span: kscr::lexer::Span,
+    name: &str,
+) -> Option<kscr::lexer::Span> {
+    let toks = lexer::lex(&doc.text).ok()?;
+    for tok in toks {
+        if tok.span.start < ctor_span.start {
+            continue;
+        }
+        if tok.span.end > ctor_span.end {
+            break;
+        }
+
+        match &tok.kind {
+            lexer::TokenKind::Ident(n) if n == name => return Some(tok.span),
+            lexer::TokenKind::Operator(n) if n == name => return Some(tok.span),
+            _ => {}
+        }
+    }
+    None
+}
