@@ -1,4 +1,4 @@
-use crate::backend_helpers::{find_decl_name_span, span_to_range};
+use crate::backend_helpers::{find_decl_name_span, find_decl_name_span_any, span_to_range};
 use crate::vfs::Document;
 use kscr::lexer;
 use tower_lsp::lsp_types::*;
@@ -26,9 +26,13 @@ pub(super) fn item_to_symbol(item: &kscr::ast::Item, doc: &Document) -> Option<D
             })
         }
         Item::DataDecl(data) => {
-            let range = find_decl_name_span(doc, lexer::TokenKind::KwData, &data.name)
-                .and_then(|s| span_to_range(doc, s))
-                .unwrap_or_default();
+            let range = find_decl_name_span_any(
+                doc,
+                &[lexer::TokenKind::KwData, lexer::TokenKind::KwNewtype],
+                &data.name,
+            )
+            .and_then(|s| span_to_range(doc, s))
+            .unwrap_or_default();
             #[allow(deprecated)]
             Some(DocumentSymbol {
                 name: data.name.clone(),

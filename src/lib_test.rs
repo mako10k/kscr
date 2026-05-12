@@ -847,6 +847,25 @@ fn parser_golden_decl() {
 }
 
 #[test]
+fn parser_newtype_lowers_to_data_decl() {
+    use crate::ast::{Item, Type};
+
+    let src = "module Main where\n  newtype Age = Age Integer\n";
+    let m = crate::parser::parse_module(src).unwrap();
+    assert_eq!(m.items.len(), 1);
+
+    match &m.items[0] {
+        Item::DataDecl(dd) => {
+            assert_eq!(dd.name, "Age");
+            assert_eq!(dd.ctors.len(), 1);
+            assert_eq!(dd.ctors[0].name, "Age");
+            assert_eq!(dd.ctors[0].args, vec![Type::Integer]);
+        }
+        _ => panic!("expected newtype to lower to data decl"),
+    }
+}
+
+#[test]
 fn lexer_golden_basic() {
     let src = std::fs::read_to_string("tests/basic.ks").unwrap();
     let tokens = crate::lexer::lex(&src).unwrap();

@@ -124,6 +124,7 @@ fn err_if_sig_would_cross_decl(
         | Some(TokenKind::KwInfixl)
         | Some(TokenKind::KwInfixr)
         | Some(TokenKind::KwData)
+        | Some(TokenKind::KwNewtype)
         | Some(TokenKind::KwType)
         | Some(TokenKind::KwClass)
         | Some(TokenKind::KwInstance) => {
@@ -383,6 +384,7 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
                     | Some(TokenKind::KwInfixl)
                     | Some(TokenKind::KwInfixr)
                     | Some(TokenKind::KwData)
+                    | Some(TokenKind::KwNewtype)
                     | Some(TokenKind::KwType)
                     | Some(TokenKind::KwClass)
                     | Some(TokenKind::KwInstance)
@@ -413,6 +415,10 @@ fn parse_items_until(ts: &mut TokenStream, stop_at: StopAt) -> Result<Vec<ast::I
             Some(TokenKind::KwData) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
                 items.push(parse_data_decl(ts, doc_buf.take())?);
+            }
+            Some(TokenKind::KwNewtype) => {
+                flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
+                items.push(parse_newtype_decl(ts, doc_buf.take())?);
             }
             Some(TokenKind::KwType) => {
                 flush_pending_fun(ts, &mut items, &mut pending, &mut signature_buf)?;
@@ -549,9 +555,30 @@ fn try_parse_toplevel_sig_line(ts: &mut TokenStream) -> Result<Option<(String, a
     Ok(Some((name, ty)))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AlgebraicDeclFlavor {
+    Data,
+    Newtype,
+}
+
 fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
+    parse_algebraic_decl(ts, doc, AlgebraicDeclFlavor::Data)
+}
+
+fn parse_newtype_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Item> {
+    parse_algebraic_decl(ts, doc, AlgebraicDeclFlavor::Newtype)
+}
+
+fn parse_algebraic_decl(
+    ts: &mut TokenStream,
+    doc: Option<String>,
+    flavor: AlgebraicDeclFlavor,
+) -> Result<ast::Item> {
     let start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
-    ts.expect(TokenKind::KwData)?;
+    ts.expect(match flavor {
+        AlgebraicDeclFlavor::Data => TokenKind::KwData,
+        AlgebraicDeclFlavor::Newtype => TokenKind::KwNewtype,
+    })?;
     let name = ts.expect_ident()?;
 
     let mut params = Vec::new();
@@ -692,6 +719,15 @@ fn parse_data_decl(ts: &mut TokenStream, doc: Option<String>) -> Result<ast::Ite
         // Consume Dedent if we consumed Indent earlier
         if found_newline_before_deriving && matches!(ts.peek_kind(), Some(TokenKind::Dedent)) {
             ts.bump();
+        }
+    }
+
+    if flavor == AlgebraicDeclFlavor::Newtype {
+        if ctors.len() != 1 {
+            return Err(ts.err_here("newtype must declare exactly one constructor"));
+        }
+        if ctors[0].args.len() != 1 {
+            return Err(ts.err_here("newtype constructor must have exactly one field"));
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::backend_helpers::find_decl_name_span;
+use crate::backend_helpers::{find_decl_name_span, find_decl_name_span_any};
 use crate::vfs::Document;
 use kscr::ast::{Item, PatternKind};
 use kscr::lexer;
@@ -132,9 +132,11 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                 }
             }
             Item::DataDecl(data) => {
-                if let Some(span) =
-                    find_decl_name_span(doc, lexer::TokenKind::KwData, data.name.as_str())
-                {
+                if let Some(span) = find_decl_name_span_any(
+                    doc,
+                    &[lexer::TokenKind::KwData, lexer::TokenKind::KwNewtype],
+                    data.name.as_str(),
+                ) {
                     push_span_token(doc, span, TOKEN_TYPE_TYPE, &mut raw);
                 }
                 for ctor in &data.ctors {

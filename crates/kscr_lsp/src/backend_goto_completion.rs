@@ -76,7 +76,11 @@ fn find_toplevel_span_in_doc(
 
     match super_classify_toplevel_symbol(module, name)? {
         "type" => find_decl_name_span(doc, lexer::TokenKind::KwType, name),
-        "data" => find_decl_name_span(doc, lexer::TokenKind::KwData, name),
+        "data" => crate::backend_helpers::find_decl_name_span_any(
+            doc,
+            &[lexer::TokenKind::KwData, lexer::TokenKind::KwNewtype],
+            name,
+        ),
         "class" => find_decl_name_span(doc, lexer::TokenKind::KwClass, name),
         "ctor" => {
             let toks = lexer::lex(&doc.text).ok()?;
@@ -90,7 +94,10 @@ fn find_toplevel_span_in_doc(
 
                 let mut idx = 0usize;
                 while idx + 1 < toks.len() {
-                    if toks[idx].kind == lexer::TokenKind::KwData {
+                    if matches!(
+                        toks[idx].kind,
+                        lexer::TokenKind::KwData | lexer::TokenKind::KwNewtype
+                    ) {
                         if let lexer::TokenKind::Ident(n) = &toks[idx + 1].kind {
                             if n == &dd.name {
                                 break;
@@ -110,6 +117,7 @@ fn find_toplevel_span_in_doc(
                         lexer::TokenKind::Indent => depth += 1,
                         lexer::TokenKind::Dedent => depth = depth.saturating_sub(1),
                         lexer::TokenKind::KwData
+                        | lexer::TokenKind::KwNewtype
                         | lexer::TokenKind::KwType
                         | lexer::TokenKind::KwClass
                         | lexer::TokenKind::KwInstance

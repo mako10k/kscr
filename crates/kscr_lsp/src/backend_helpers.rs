@@ -197,9 +197,17 @@ pub(super) fn find_decl_name_span(
     kw: lexer::TokenKind,
     name: &str,
 ) -> Option<kscr::lexer::Span> {
+    find_decl_name_span_any(doc, &[kw], name)
+}
+
+pub(super) fn find_decl_name_span_any(
+    doc: &Document,
+    kws: &[lexer::TokenKind],
+    name: &str,
+) -> Option<kscr::lexer::Span> {
     let toks = lexer::lex(&doc.text).ok()?;
     for w in toks.windows(2) {
-        if w[0].kind == kw {
+        if kws.iter().any(|kw| w[0].kind == *kw) {
             if let lexer::TokenKind::Ident(n) = &w[1].kind {
                 if n == name {
                     return Some(w[1].span);
