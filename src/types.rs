@@ -7870,16 +7870,26 @@ fn ensure_ksif_for_module(
     entry_dir: &Path,
     visiting: &mut HashSet<String>,
     done: &mut HashSet<String>,
+    stack: &mut Vec<String>,
 ) -> Result<()> {
     use std::path::PathBuf;
 
     if done.contains(module_name) {
         return Ok(());
     }
+    if let Some(pos) = stack.iter().position(|name| name == module_name) {
+        let mut chain = stack[pos..].to_vec();
+        chain.push(module_name.to_string());
+        return Err(Error::msg(format!(
+            "cyclic imports: {}",
+            chain.join(" -> ")
+        )));
+    }
     if visiting.contains(module_name) {
         return Err(Error::msg(format!("cyclic imports: {module_name}")));
     }
     visiting.insert(module_name.to_string());
+    stack.push(module_name.to_string());
 
     // Resolve module .ks file
     let rel = module_name.replace('.', "/");
@@ -7955,6 +7965,7 @@ fn ensure_ksif_for_module(
     if !needs_rebuild {
         visiting.remove(module_name);
         done.insert(module_name.to_string());
+        stack.pop();
         return Ok(());
     }
 
@@ -7993,7 +8004,7 @@ fn ensure_ksif_for_module(
             let ast::Item::Import(id) = it else {
                 continue;
             };
-            ensure_ksif_for_module(&id.module, entry_dir, visiting, done)?;
+            ensure_ksif_for_module(&id.module, entry_dir, visiting, done, stack)?;
         }
     } else {
         // When recursive rebuild is suppressed, we do not build dependencies.
@@ -8240,6 +8251,7 @@ fn ensure_ksif_for_module(
 
     visiting.remove(module_name);
     done.insert(module_name.to_string());
+    stack.pop();
 
     Ok(())
 }
@@ -8348,11 +8360,13 @@ fn load_imported_ksif_schemes_internal(
                             auto_rebuild_attempted = true;
                             let mut visiting = HashSet::new();
                             let mut done = HashSet::new();
+                            let mut stack = Vec::new();
                             ensure_ksif_for_module(
                                 &id.module,
                                 entry_dir,
                                 &mut visiting,
                                 &mut done,
+                                &mut stack,
                             )?;
                             continue;
                         }
@@ -8397,11 +8411,12 @@ fn load_imported_ksif_schemes(
     // Ensure KSIF artifacts exist for all imports (including stdlib)
     let mut visiting = HashSet::new();
     let mut done = HashSet::new();
+    let mut stack = Vec::new();
     for it in &module.items {
         let ast::Item::Import(id) = it else {
             continue;
         };
-        ensure_ksif_for_module(&id.module, entry_dir, &mut visiting, &mut done)?;
+        ensure_ksif_for_module(&id.module, entry_dir, &mut visiting, &mut done, &mut stack)?;
     }
 
     // Load KSIF schemes
@@ -16981,7 +16996,12 @@ mod inference_tests {
         std::fs::write(&b, "module B where\n  import A\n  y = 2\n").unwrap();
 
         let e = typecheck_file(&a).unwrap_err();
-        assert!(format!("{e}").contains("cyclic imports"));
+        let msg = format!("{e}");
+        assert!(msg.contains("cyclic imports"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("B -> A -> B"),
+            "expected import cycle chain in error, got: {msg}"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
