@@ -847,6 +847,47 @@ fn parser_golden_decl() {
 }
 
 #[test]
+fn parser_accepts_prefix_and_infix_symbolic_data_constructors() {
+    for (decl, expected_args) in [
+        (
+            "data Pair a b = (:*:) a b",
+            vec![
+                crate::ast::Type::Var("a".to_string()),
+                crate::ast::Type::Var("b".to_string()),
+            ],
+        ),
+        (
+            "data Pair a b = a :*: b",
+            vec![
+                crate::ast::Type::Var("a".to_string()),
+                crate::ast::Type::Var("b".to_string()),
+            ],
+        ),
+        (
+            "data Pair b = A :*: b",
+            vec![
+                crate::ast::Type::Var("A".to_string()),
+                crate::ast::Type::Var("b".to_string()),
+            ],
+        ),
+    ] {
+        let module = crate::parser::parse_module(decl).unwrap_or_else(|err| {
+            panic!("failed to parse `{decl}`: {err}");
+        });
+        let crate::ast::Item::DataDecl(data) = &module.items[0] else {
+            panic!("expected data declaration for `{decl}`");
+        };
+
+        assert_eq!(data.ctors.len(), 1, "unexpected constructors for `{decl}`");
+        assert_eq!(data.ctors[0].name, ":*:", "unexpected ctor for `{decl}`");
+        assert_eq!(
+            data.ctors[0].args, expected_args,
+            "unexpected ctor arguments for `{decl}`"
+        );
+    }
+}
+
+#[test]
 fn parser_newtype_lowers_to_data_decl() {
     use crate::ast::{Item, Type};
 

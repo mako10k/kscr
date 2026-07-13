@@ -37,6 +37,17 @@ fn token_symbol_name(kind: &lexer::TokenKind) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+pub(super) fn repo_source_path(relative: &str) -> std::path::PathBuf {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root_package_path = manifest_dir.join(relative);
+    if root_package_path.exists() {
+        root_package_path
+    } else {
+        manifest_dir.join("../..").join(relative)
+    }
+}
+
 pub(super) fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
     let len = doc.text.len();
     let start_off = span.start.min(len);
@@ -192,9 +203,7 @@ pub(super) fn qualified_ident_parts_at_offset(
             })
         })?;
 
-    let Some(current_name) = token_symbol_name(&toks[i].kind) else {
-        return None;
-    };
+    let current_name = token_symbol_name(&toks[i].kind)?;
 
     if !matches!(toks[i].kind, TokenKind::Ident(_)) {
         return Some(QualifiedIdentParts {
@@ -337,7 +346,11 @@ fn instance_head_class_token_index(toks: &[lexer::Token], cursor: usize) -> Opti
     let scan_start = last_fat_arrow.map(|idx| idx + 1).unwrap_or(inst + 1);
     for (idx, tok) in toks.iter().enumerate().take(end).skip(scan_start) {
         if let TokenKind::Ident(name) = &tok.kind {
-            if name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()) {
+            if name
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_uppercase())
+            {
                 return Some(idx);
             }
         }

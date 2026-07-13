@@ -326,14 +326,14 @@ impl ModuleShape {
                             .collect(),
                     });
                 }
-                crate::ast::Item::Import(imp) => {
+                crate::ast::Item::Import(imp)
+                    if !shape.dependencies.iter().any(|d| d.name == imp.module) =>
+                {
                     // Track dependencies from imports
-                    if !shape.dependencies.iter().any(|d| d.name == imp.module) {
-                        shape.dependencies.push(DependencySpec {
-                            name: imp.module.clone(),
-                            version_req: "*".to_string(), // Default: any version
-                        });
-                    }
+                    shape.dependencies.push(DependencySpec {
+                        name: imp.module.clone(),
+                        version_req: "*".to_string(), // Default: any version
+                    });
                 }
                 _ => {}
             }

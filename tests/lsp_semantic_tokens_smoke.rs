@@ -35,30 +35,30 @@ fn lsp_semantic_tokens_non_empty_for_sample_module() {
 
 #[test]
 fn lsp_semantic_tokens_shape_and_types_are_reasonable() {
-        let binding_src = r#"module Main where
+    let binding_src = r#"module Main where
     applyTwice f x = f (f x)
     answer = 42
     idFn = \value -> value
 "#;
-        let binding_uri =
-                tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_bindings.ks").unwrap();
-        let binding_doc = vfs::Document::new(binding_uri, binding_src.to_string(), 1);
-        let binding_tokens = backend_semantic_tokens::semantic_tokens_in_doc(&binding_doc)
-                .expect("semantic tokens should be available for parseable binding source");
+    let binding_uri =
+        tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_bindings.ks").unwrap();
+    let binding_doc = vfs::Document::new(binding_uri, binding_src.to_string(), 1);
+    let binding_tokens = backend_semantic_tokens::semantic_tokens_in_doc(&binding_doc)
+        .expect("semantic tokens should be available for parseable binding source");
 
-        let type_src = r#"module Main where
+    let type_src = r#"module Main where
     data Opt a = Some a | None
     class ShowLike a where
         showLike :: a -> String
     answer = Some 42
 "#;
-        let type_uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_types.ks").unwrap();
-        let type_doc = vfs::Document::new(type_uri, type_src.to_string(), 1);
-        let type_tokens = backend_semantic_tokens::semantic_tokens_in_doc(&type_doc)
-                .expect("semantic tokens should be available for parseable type source");
+    let type_uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_types.ks").unwrap();
+    let type_doc = vfs::Document::new(type_uri, type_src.to_string(), 1);
+    let type_tokens = backend_semantic_tokens::semantic_tokens_in_doc(&type_doc)
+        .expect("semantic tokens should be available for parseable type source");
 
-        let mut seen_token_types: HashSet<u32> = HashSet::new();
-        for token in binding_tokens.data.iter().chain(type_tokens.data.iter()) {
+    let mut seen_token_types: HashSet<u32> = HashSet::new();
+    for token in binding_tokens.data.iter().chain(type_tokens.data.iter()) {
         assert!(token.length > 0, "token length must be > 0: {token:?}");
         seen_token_types.insert(token.token_type);
     }
