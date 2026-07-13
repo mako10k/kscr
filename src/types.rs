@@ -3953,7 +3953,22 @@ fn format_overlap_candidates(candidates: &[(String, Ty)]) -> (String, String) {
 }
 
 fn method_dict_failfast_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = METHOD_DICT_FAILFAST_OVERRIDE.with(|slot| *slot.borrow()) {
+        return enabled;
+    }
+
     std::env::var("KSCR_FAILFAST_METHOD_DICT").ok().as_deref() == Some("1")
+}
+
+#[cfg(test)]
+thread_local! {
+    static METHOD_DICT_FAILFAST_OVERRIDE: RefCell<Option<bool>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn replace_method_dict_failfast_override(value: Option<bool>) -> Option<bool> {
+    METHOD_DICT_FAILFAST_OVERRIDE.with(|slot| slot.replace(value))
 }
 
 fn method_dict_failfast_message(mname: &str, class: &str) -> String {
@@ -16601,26 +16616,20 @@ mod class_ambiguity_resolution_tests {
 mod overlap_diagnostics_tests {
     use super::*;
 
-    struct EnvGuard {
-        key: &'static str,
-        old: Option<String>,
+    struct MethodDictFailfastGuard {
+        old: Option<bool>,
     }
 
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let old = std::env::var(key).ok();
-            std::env::set_var(key, value);
-            Self { key, old }
+    impl MethodDictFailfastGuard {
+        fn set(enabled: bool) -> Self {
+            let old = replace_method_dict_failfast_override(Some(enabled));
+            Self { old }
         }
     }
 
-    impl Drop for EnvGuard {
+    impl Drop for MethodDictFailfastGuard {
         fn drop(&mut self) {
-            if let Some(v) = &self.old {
-                std::env::set_var(self.key, v);
-            } else {
-                std::env::remove_var(self.key);
-            }
+            replace_method_dict_failfast_override(self.old);
         }
     }
 
@@ -16907,10 +16916,12 @@ instance C (Maybe Integer) where
 
     #[test]
     fn method_dict_failfast_enabled_only_for_one() {
-        let _g = EnvGuard::set("KSCR_FAILFAST_METHOD_DICT", "1");
-        assert!(method_dict_failfast_enabled());
+        {
+            let _g = MethodDictFailfastGuard::set(true);
+            assert!(method_dict_failfast_enabled());
+        }
 
-        std::env::set_var("KSCR_FAILFAST_METHOD_DICT", "0");
+        let _g = MethodDictFailfastGuard::set(false);
         assert!(!method_dict_failfast_enabled());
     }
 
@@ -16945,6 +16956,7 @@ instance C (Maybe Integer) where
         )
         .unwrap();
 
+        let non_strict_guard = MethodDictFailfastGuard::set(false);
         let tm =
             typecheck_file(&tmp).expect("default mode should keep method rewriting non-strict");
         assert!(
@@ -16960,8 +16972,9 @@ instance C (Maybe Integer) where
             "missing non-strict trace: {:?}",
             tm.dict_fallback_trace
         );
+        drop(non_strict_guard);
 
-        let _guard = EnvGuard::set("KSCR_FAILFAST_METHOD_DICT", "1");
+        let _guard = MethodDictFailfastGuard::set(true);
         match typecheck_file(&tmp) {
             Ok(tm_strict) => {
                 assert!(
