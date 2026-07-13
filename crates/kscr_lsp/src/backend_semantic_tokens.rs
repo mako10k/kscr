@@ -674,6 +674,32 @@ mod tests {
     }
 
     #[test]
+    fn semantic_tokens_mark_symbolic_ctor_names_in_data_decls() {
+        for (name, decl) in [
+            ("prefix", "data Pair a b = (:*:) a b"),
+            ("infix", "data Pair a b = a :*: b"),
+            ("infix_uppercase", "data Pair b = A :*: b"),
+        ] {
+            let uri = tower_lsp::lsp_types::Url::parse(&format!(
+                "file:///semantic_tokens_{name}_ctor_decl.ks"
+            ))
+            .unwrap();
+            let src = format!("module Main where\n  {decl}\n");
+            let doc = Document::new(uri, src, 1);
+            let tokens = semantic_tokens_in_doc(&doc).unwrap();
+
+            let enum_member_lengths: Vec<u32> = tokens
+                .data
+                .iter()
+                .filter(|token| token.token_type == TOKEN_TYPE_ENUM_MEMBER)
+                .map(|token| token.length)
+                .collect();
+
+            assert_eq!(enum_member_lengths, vec![3], "declaration: `{decl}`");
+        }
+    }
+
+    #[test]
     fn semantic_tokens_classify_module_import_and_instance_class_names() {
         let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_namespaces.ks").unwrap();
         let src = r#"module ManualSemigroup where
