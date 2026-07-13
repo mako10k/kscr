@@ -3800,6 +3800,48 @@ fn lower_surface_type_with_params(
             .get(name)
             .map(|v| Ty::Var(*v))
             .unwrap_or_else(|| Ty::Con(name.clone())),
+        Type::List(t) => Ty::List(Box::new(lower_surface_type_with_params(
+            cx, t, holes, params,
+        ))),
+        Type::Tuple(ts) => Ty::Tuple(
+            ts.iter()
+                .map(|t| lower_surface_type_with_params(cx, t, holes, params))
+                .collect(),
+        ),
+        Type::Record(fields) => Ty::Record(
+            fields
+                .iter()
+                .map(|(name, t)| {
+                    (
+                        name.clone(),
+                        lower_surface_type_with_params(cx, t, holes, params),
+                    )
+                })
+                .collect(),
+        ),
+        Type::RecordOpen(fields, rest) => Ty::RecordOpen(
+            fields
+                .iter()
+                .map(|(name, t)| {
+                    (
+                        name.clone(),
+                        lower_surface_type_with_params(cx, t, holes, params),
+                    )
+                })
+                .collect(),
+            Box::new(lower_surface_type_with_params(cx, rest, holes, params)),
+        ),
+        Type::Func(a, b) => Ty::Func(
+            Box::new(lower_surface_type_with_params(cx, a, holes, params)),
+            Box::new(lower_surface_type_with_params(cx, b, holes, params)),
+        ),
+        Type::App { head, args } => Ty::App {
+            head: Box::new(lower_surface_type_with_params(cx, head, holes, params)),
+            args: args
+                .iter()
+                .map(|t| lower_surface_type_with_params(cx, t, holes, params))
+                .collect(),
+        },
         other => lower_surface_type(cx, other, holes),
     }
 }

@@ -788,6 +788,7 @@ mod tests {
             ("prefix", "data Pair a b = (:*:) a b"),
             ("infix", "data Pair a b = a :*: b"),
             ("infix_uppercase", "data Pair b = A :*: b"),
+            ("infix_applied", "data Pair a b = Maybe a :*: Either a b"),
         ] {
             let uri = tower_lsp::lsp_types::Url::parse(&format!(
                 "file:///semantic_tokens_{name}_ctor_decl.ks"

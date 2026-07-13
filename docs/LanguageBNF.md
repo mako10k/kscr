@@ -184,13 +184,18 @@ deriving_clause ::= 'deriving' <identifier> | 'deriving' '(' <identifier> {',' <
 type_name ::= <identifier>
 type_vars ::= <identifier> {<identifier>}
 ctor_list ::= ctor {'|' ctor}
-ctor ::= <identifier> ctor_args
+ctor ::= prefix_ctor | infix_ctor
+prefix_ctor ::= (<identifier> | '(' <constructor_operator> ')') ctor_args
+infix_ctor ::= type_app <constructor_operator> type_app
+constructor_operator ::= <operator beginning with ':'>
 ctor_args ::= /* empty */ | type_atom {type_atom}
+type_app ::= type_atom {type_atom}
 type_atom ::= <identifier> | '(' type ')'
 
 # Example:
 # data Maybe a = Nothing | Just a
 # data Either a b = Left a | Right b
+# data Pair a b = Maybe a :*: Either a b
 
 ---
 
