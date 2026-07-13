@@ -684,10 +684,7 @@ mod tests {
 
     #[test]
     fn semantic_tokens_cover_real_prelude_field_bindings() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("stdlib/Prelude/Field.ks");
+        let path = crate::backend_helpers::repo_source_path("stdlib/Prelude/Field.ks");
         let src = std::fs::read_to_string(&path).unwrap();
         let uri = tower_lsp::lsp_types::Url::from_file_path(std::fs::canonicalize(&path).unwrap())
             .unwrap();

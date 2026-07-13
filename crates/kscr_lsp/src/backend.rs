@@ -803,10 +803,7 @@ mod tests {
 
     #[test]
     fn hover_shows_parameter_use_types_in_real_prelude_field_file() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("stdlib/Prelude/Field.ks");
+        let path = crate::backend_helpers::repo_source_path("stdlib/Prelude/Field.ks");
         let src = std::fs::read_to_string(&path).unwrap();
         let uri = Url::from_file_path(std::fs::canonicalize(&path).unwrap()).unwrap();
         let doc = Document::new(uri, src.clone(), 1);
@@ -1166,8 +1163,7 @@ mod tests {
 
     #[test]
     fn hover_shows_prelude_symbolic_method_declaration() {
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let path = repo_root.join("stdlib/Prelude/Applicative.ks");
+        let path = crate::backend_helpers::repo_source_path("stdlib/Prelude/Applicative.ks");
         let src = std::fs::read_to_string(&path).unwrap();
         let uri = Url::from_file_path(&path).unwrap();
         let doc = Document::new(uri, src, 1);

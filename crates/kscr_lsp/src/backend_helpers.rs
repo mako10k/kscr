@@ -37,6 +37,17 @@ fn token_symbol_name(kind: &lexer::TokenKind) -> Option<String> {
     }
 }
 
+#[cfg(test)]
+pub(super) fn repo_source_path(relative: &str) -> std::path::PathBuf {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root_package_path = manifest_dir.join(relative);
+    if root_package_path.exists() {
+        root_package_path
+    } else {
+        manifest_dir.join("../..").join(relative)
+    }
+}
+
 pub(super) fn span_to_range(doc: &Document, span: kscr::lexer::Span) -> Option<Range> {
     let len = doc.text.len();
     let start_off = span.start.min(len);
