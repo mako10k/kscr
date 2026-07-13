@@ -489,7 +489,13 @@ pub fn format_pretty_tys_with_scheme(scheme: &Scheme, tys: &[Ty]) -> Vec<String>
 
 pub fn format_pretty_scheme(scheme: &Scheme) -> String {
     let vars = pretty_names_for_scheme(scheme);
-    format!("{}", PrettySchemeDisplay { scheme, vars: &vars })
+    format!(
+        "{}",
+        PrettySchemeDisplay {
+            scheme,
+            vars: &vars
+        }
+    )
 }
 
 #[derive(Debug)]
@@ -746,14 +752,20 @@ fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
                 }
 
                 stack.push(alias.name.clone());
-                let lowered = lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &HashMap::new())
-                    .unwrap_or_else(|_| Ty::Con(name.clone()));
+                let lowered =
+                    lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &HashMap::new())
+                        .unwrap_or_else(|_| Ty::Con(name.clone()));
                 let expanded = go(aliases, lowered, stack);
                 stack.pop();
                 expanded
             }
             Ty::List(elem) => Ty::List(Box::new(go(aliases, *elem, stack))),
-            Ty::Tuple(items) => Ty::Tuple(items.into_iter().map(|item| go(aliases, item, stack)).collect()),
+            Ty::Tuple(items) => Ty::Tuple(
+                items
+                    .into_iter()
+                    .map(|item| go(aliases, item, stack))
+                    .collect(),
+            ),
             Ty::Record(fields) => Ty::Record(
                 fields
                     .into_iter()
@@ -769,7 +781,10 @@ fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
             ),
             Ty::App { head, args } => {
                 let head = go(aliases, *head, stack);
-                let args: Vec<Ty> = args.into_iter().map(|arg| go(aliases, arg, stack)).collect();
+                let args: Vec<Ty> = args
+                    .into_iter()
+                    .map(|arg| go(aliases, arg, stack))
+                    .collect();
                 let Ty::Con(name) = &head else {
                     return Ty::App {
                         head: Box::new(head),
@@ -789,18 +804,15 @@ fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
                     };
                 }
 
-                let param_map: HashMap<String, Ty> = alias
-                    .params
-                    .iter()
-                    .cloned()
-                    .zip(args)
-                    .collect();
+                let param_map: HashMap<String, Ty> =
+                    alias.params.iter().cloned().zip(args).collect();
                 stack.push(alias.name.clone());
-                let lowered = lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &param_map)
-                    .unwrap_or_else(|_| Ty::App {
-                        head: Box::new(Ty::Con(name.clone())),
-                        args: param_map.into_values().collect(),
-                    });
+                let lowered =
+                    lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &param_map)
+                        .unwrap_or_else(|_| Ty::App {
+                            head: Box::new(Ty::Con(name.clone())),
+                            args: param_map.into_values().collect(),
+                        });
                 let expanded = go(aliases, lowered, stack);
                 stack.pop();
                 expanded
@@ -814,13 +826,15 @@ fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
     }
 
     let mut aliases = cx.full_class_env.aliases.clone();
-    aliases.entry("String".to_string()).or_insert_with(|| ast::TypeAlias {
-        doc: None,
-        name: "String".to_string(),
-        params: Vec::new(),
-        ty: ast::Type::List(Box::new(ast::Type::Char)),
-        span: ast::dummy_span(),
-    });
+    aliases
+        .entry("String".to_string())
+        .or_insert_with(|| ast::TypeAlias {
+            doc: None,
+            name: "String".to_string(),
+            params: Vec::new(),
+            ty: ast::Type::List(Box::new(ast::Type::Char)),
+            span: ast::dummy_span(),
+        });
     go(&aliases, ty, &mut Vec::new())
 }
 
@@ -2374,7 +2388,8 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
     let stdlib_class_env = load_stdlib_class_env()?;
     let mut cx = InferCtx::default();
     let class_index = build_class_method_scheme_index(&mut cx, &stdlib_class_env)?;
-    infer_module_with_class_env(module, &stdlib_class_env, &class_index).map(|result| result.inferred)
+    infer_module_with_class_env(module, &stdlib_class_env, &class_index)
+        .map(|result| result.inferred)
 }
 
 fn collect_deps_in_pattern(
@@ -5474,7 +5489,7 @@ fn append_instance_items(
         ));
     }
 
-    for (sup, sup_dict_name) in direct_supers.into_iter().zip(super_dict_names.into_iter()) {
+    for (sup, sup_dict_name) in direct_supers.into_iter().zip(super_dict_names) {
         dict_fields.push((
             super_field_name(&sup.name),
             ast::Expr::new(ast::dummy_span(), ast::ExprKind::Var(sup_dict_name)),
@@ -8220,16 +8235,26 @@ fn ensure_ksif_for_module(
     entry_dir: &Path,
     visiting: &mut HashSet<String>,
     done: &mut HashSet<String>,
+    stack: &mut Vec<String>,
 ) -> Result<()> {
     use std::path::PathBuf;
 
     if done.contains(module_name) {
         return Ok(());
     }
+    if let Some(pos) = stack.iter().position(|name| name == module_name) {
+        let mut chain = stack[pos..].to_vec();
+        chain.push(module_name.to_string());
+        return Err(Error::msg(format!(
+            "cyclic imports: {}",
+            chain.join(" -> ")
+        )));
+    }
     if visiting.contains(module_name) {
         return Err(Error::msg(format!("cyclic imports: {module_name}")));
     }
     visiting.insert(module_name.to_string());
+    stack.push(module_name.to_string());
 
     // Resolve module .ks file
     let rel = module_name.replace('.', "/");
@@ -8305,6 +8330,7 @@ fn ensure_ksif_for_module(
     if !needs_rebuild {
         visiting.remove(module_name);
         done.insert(module_name.to_string());
+        stack.pop();
         return Ok(());
     }
 
@@ -8343,7 +8369,7 @@ fn ensure_ksif_for_module(
             let ast::Item::Import(id) = it else {
                 continue;
             };
-            ensure_ksif_for_module(&id.module, entry_dir, visiting, done)?;
+            ensure_ksif_for_module(&id.module, entry_dir, visiting, done, stack)?;
         }
     } else {
         // When recursive rebuild is suppressed, we do not build dependencies.
@@ -8590,6 +8616,7 @@ fn ensure_ksif_for_module(
 
     visiting.remove(module_name);
     done.insert(module_name.to_string());
+    stack.pop();
 
     Ok(())
 }
@@ -8698,11 +8725,13 @@ fn load_imported_ksif_schemes_internal(
                             auto_rebuild_attempted = true;
                             let mut visiting = HashSet::new();
                             let mut done = HashSet::new();
+                            let mut stack = Vec::new();
                             ensure_ksif_for_module(
                                 &id.module,
                                 entry_dir,
                                 &mut visiting,
                                 &mut done,
+                                &mut stack,
                             )?;
                             continue;
                         }
@@ -8747,11 +8776,12 @@ fn load_imported_ksif_schemes(
     // Ensure KSIF artifacts exist for all imports (including stdlib)
     let mut visiting = HashSet::new();
     let mut done = HashSet::new();
+    let mut stack = Vec::new();
     for it in &module.items {
         let ast::Item::Import(id) = it else {
             continue;
         };
-        ensure_ksif_for_module(&id.module, entry_dir, &mut visiting, &mut done)?;
+        ensure_ksif_for_module(&id.module, entry_dir, &mut visiting, &mut done, &mut stack)?;
     }
 
     // Load KSIF schemes
@@ -9219,83 +9249,28 @@ fn build_inferred_for_rewrite(
             continue;
         };
 
-        // Apply import spec filter consistently with inference.
-        let all_names: std::collections::HashSet<String> = schemes.keys().cloned().collect();
-        let filtered_names: std::collections::HashSet<String> = match &id.import_spec {
-            None => all_names,
-            Some(ast::ImportSpec::Only(specs)) => {
-                expand_import_spec_with_ctors(specs, &id.module, entry_dir)
-            }
-            Some(ast::ImportSpec::Hiding(specs)) => {
-                let hidden = expand_import_spec_with_ctors(specs, &id.module, entry_dir);
-                all_names
-                    .into_iter()
-                    .filter(|n| !hidden.contains(n))
-                    .collect()
-            }
-        };
-
-        for name in filtered_names {
-            let Some(scheme) = schemes.get(&name) else {
-                continue;
-            };
-
-            if let Some(as_name) = &id.as_name {
-                // Aliased import: expose only alias-qualified names.
-                out.entry(format!("{}.{}", as_name, name))
-                    .or_insert_with(|| scheme.clone());
-                continue;
-            }
-
-            if id.qualified {
-                // Qualified import without alias: expose only Module.name.
-                out.entry(format!("{}.{}", id.module, name))
-                    .or_insert_with(|| scheme.clone());
-            } else {
-                // Unqualified import: allow both Module.name and name.
-                out.entry(format!("{}.{}", id.module, name))
-                    .or_insert_with(|| scheme.clone());
-                out.entry(name).or_insert_with(|| scheme.clone());
-            }
+        let is_self_import = module.name.as_deref() == Some(id.module.as_str());
+        for (key, scheme) in
+            imported_scheme_bindings_for_decl(id, schemes, entry_dir, is_self_import)
+        {
+            out.entry(key).or_insert(scheme);
         }
     }
 
-    // Mirror inference-time constructor re-exports that may not be present in `.ksif`.
-    // This is needed for rewrite-time inference on qualified ctor uses like `M.Just`.
-    if imported.contains_key("Data.Maybe") {
-        if let Some(just) = out
-            .get("Just")
+    // Mirror the inference-time compatibility path for legacy Data.Maybe KSIF artifacts.
+    // Current artifacts already contain canonical constructor schemes and are handled above.
+    // Rewrite-time inference does not otherwise have the built-in Prelude constructor env,
+    // so use the same canonical source as initial inference for legacy artifacts.
+    let mut builtin_cx = InferCtx::default();
+    let mut builtin_ctors = TypeEnv::new();
+    add_prelude_data_ctors(&mut builtin_cx, &mut builtin_ctors, false, false);
+    let legacy_fallbacks = legacy_data_maybe_ctor_fallbacks(module, imported, entry_dir, |name| {
+        out.get(name)
             .cloned()
-            .or_else(|| out.get("Prelude.Just").cloned())
-        {
-            out.entry("Data.Maybe.Just".to_string()).or_insert(just);
-        }
-        if let Some(nothing) = out
-            .get("Nothing")
-            .cloned()
-            .or_else(|| out.get("Prelude.Nothing").cloned())
-        {
-            out.entry("Data.Maybe.Nothing".to_string())
-                .or_insert(nothing);
-        }
-
-        for it in &module.items {
-            let ast::Item::Import(id) = it else {
-                continue;
-            };
-            if id.module != "Data.Maybe" {
-                continue;
-            }
-            let Some(as_name) = &id.as_name else {
-                continue;
-            };
-            if let Some(just) = out.get("Data.Maybe.Just").cloned() {
-                out.entry(format!("{}.Just", as_name)).or_insert(just);
-            }
-            if let Some(nothing) = out.get("Data.Maybe.Nothing").cloned() {
-                out.entry(format!("{}.Nothing", as_name)).or_insert(nothing);
-            }
-        }
+            .or_else(|| builtin_ctors.get(name).map(|entry| entry.scheme.clone()))
+    });
+    for (key, scheme) in legacy_fallbacks {
+        out.entry(key).or_insert(scheme);
     }
 
     // Ensure instance dictionary bindings referenced by name are available to rewrite-time inference.
@@ -10285,7 +10260,7 @@ fn merge_class_env_with_module_prefix(
 /// with module-qualified names like `Prelude.Rational.__dict_Ring_Rational`.
 fn qualify_instance_dict_names(env: &mut ClassEnv, module_name: &str) {
     // Qualify dict names in the instances map
-    for (_, dict_name) in env.instances.iter_mut() {
+    for dict_name in env.instances.values_mut() {
         if !dict_name.contains('.') {
             *dict_name = format!("{}.{}", module_name, dict_name);
         }
@@ -11233,18 +11208,16 @@ impl ModuleLoader {
                         }
                     }
                 }
-                ast::Item::TypeAlias(ta) => {
+                ast::Item::TypeAlias(ta) if ta.name.contains('.') => {
                     // Type aliases can act like “type-level forwarders” across modules.
                     // Index only qualified names to avoid ambiguity.
-                    if ta.name.contains('.') {
-                        self.def_sites.type_alias.insert(
-                            ta.name.clone(),
-                            DefSite {
-                                path: path.to_path_buf(),
-                                span: ta.span,
-                            },
-                        );
-                    }
+                    self.def_sites.type_alias.insert(
+                        ta.name.clone(),
+                        DefSite {
+                            path: path.to_path_buf(),
+                            span: ta.span,
+                        },
+                    );
                 }
                 _ => {}
             }
@@ -12280,7 +12253,7 @@ fn expand_import_spec_with_ctors(
                 // Now we have module items, use the full expansion
                 let mut names = HashSet::new();
                 for spec in specs {
-                    names.extend(expand_export_spec_to_names(spec, &imported_mod.items));
+                    names.extend(expand_export_spec_to_names(spec, &imported_mod));
                 }
                 return names;
             }
@@ -12295,10 +12268,7 @@ fn expand_import_spec_with_ctors(
 /// For `Name(n)`, returns {n}.
 /// For `Type{name, ctors: All}`, returns {name} + all constructors of that type from module (best-effort).
 /// For `Type{name, ctors: Some(list)}`, returns {name} + listed constructors.
-fn expand_export_spec_to_names(
-    spec: &ast::ExportSpec,
-    module_items: &[ast::Item],
-) -> HashSet<String> {
+fn expand_export_spec_to_names(spec: &ast::ExportSpec, module: &ast::Module) -> HashSet<String> {
     let mut names = HashSet::new();
     match spec {
         ast::ExportSpec::Name(n) => {
@@ -12309,7 +12279,7 @@ fn expand_export_spec_to_names(
             match ctors {
                 ast::ExportCtors::All => {
                     // Find the DataDecl for this type and add all its constructors
-                    for item in module_items {
+                    for item in &module.items {
                         if let ast::Item::DataDecl(dd) = item {
                             if &dd.name == name {
                                 for ctor in &dd.ctors {
@@ -12317,6 +12287,14 @@ fn expand_export_spec_to_names(
                                 }
                                 break;
                             }
+                        }
+                    }
+                    if let Some(alias) = module.items.iter().find_map(|item| match item {
+                        ast::Item::TypeAlias(alias) if &alias.name == name => Some(alias),
+                        _ => None,
+                    }) {
+                        if let Some(constructors) = extract_aliased_type_ctors(module, alias) {
+                            names.extend(constructors);
                         }
                     }
                 }
@@ -12336,7 +12314,7 @@ fn expand_export_spec_to_names(
 fn apply_import_spec_filter(
     exports: &HashSet<String>,
     import_spec: &Option<ast::ImportSpec>,
-    module_items: &[ast::Item],
+    module: &ast::Module,
 ) -> HashSet<String> {
     match import_spec {
         None => exports.clone(), // No filter, import everything
@@ -12344,7 +12322,7 @@ fn apply_import_spec_filter(
             // Expand each ExportSpec to a set of names
             let mut allowed = HashSet::new();
             for spec in specs {
-                allowed.extend(expand_export_spec_to_names(spec, module_items));
+                allowed.extend(expand_export_spec_to_names(spec, module));
             }
             // Import only items that are both in exports and in the allowed set
             exports
@@ -12357,7 +12335,7 @@ fn apply_import_spec_filter(
             // Expand each ExportSpec to a set of names to hide
             let mut hidden = HashSet::new();
             for spec in specs {
-                hidden.extend(expand_export_spec_to_names(spec, module_items));
+                hidden.extend(expand_export_spec_to_names(spec, module));
             }
             // Import everything except the hidden items
             exports
@@ -12410,7 +12388,7 @@ fn import_unqualified_forwarders(
     }
 
     // Apply import spec filter to determine which names to import
-    let filtered_exports = apply_import_spec_filter(exports, import_spec, &module.items);
+    let filtered_exports = apply_import_spec_filter(exports, import_spec, module);
 
     for n in filtered_exports.iter() {
         if values.contains(n) {
@@ -12659,7 +12637,7 @@ fn qualify_item(
                     .map(|t| qualify_type(t, type_map))
                     .collect::<Result<Vec<_>>>()?;
             }
-                    d.deriving.clear();
+            d.deriving.clear();
             ast::Item::DataDecl(d)
         }
         x @ (ast::Item::Import(_)
@@ -14278,7 +14256,7 @@ fn rewrite_class_method_apply(
 
                 if let Some(dict_expr) = explicit_dict_arg {
                     let new_args =
-                        rewrite_args_with_known(ctx, &ctx.known_dicts_in_scope, method_args)?;
+                        rewrite_args_with_known(ctx, ctx.known_dicts_in_scope, method_args)?;
                     return Ok(build_method_call(ctx, mname, dict_expr, new_args));
                 }
 
@@ -14994,6 +14972,174 @@ fn infer_module_with_class_env(
     })
 }
 
+fn replace_type_constructor(ty: &Ty, alias: &str, canonical: &str) -> Ty {
+    match ty {
+        Ty::Var(var) => Ty::Var(*var),
+        Ty::Con(name) if name == alias => Ty::Con(canonical.to_string()),
+        Ty::Con(name) => Ty::Con(name.clone()),
+        Ty::List(item) => Ty::List(Box::new(replace_type_constructor(item, alias, canonical))),
+        Ty::Tuple(items) => Ty::Tuple(
+            items
+                .iter()
+                .map(|item| replace_type_constructor(item, alias, canonical))
+                .collect(),
+        ),
+        Ty::Record(fields) => Ty::Record(
+            fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), replace_type_constructor(ty, alias, canonical)))
+                .collect(),
+        ),
+        Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
+            fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), replace_type_constructor(ty, alias, canonical)))
+                .collect(),
+            Box::new(replace_type_constructor(rest, alias, canonical)),
+        ),
+        Ty::App { head, args } => Ty::App {
+            head: Box::new(replace_type_constructor(head, alias, canonical)),
+            args: args
+                .iter()
+                .map(|arg| replace_type_constructor(arg, alias, canonical))
+                .collect(),
+        },
+        Ty::Func(arg, result) => Ty::Func(
+            Box::new(replace_type_constructor(arg, alias, canonical)),
+            Box::new(replace_type_constructor(result, alias, canonical)),
+        ),
+    }
+}
+
+fn canonicalize_reexport_ctor_scheme(scheme: &Scheme, alias: &str, canonical: &str) -> Scheme {
+    let replace_constraint = |constraint: &Constraint| match constraint {
+        Constraint::Show(ty) => Constraint::Show(replace_type_constructor(ty, alias, canonical)),
+        Constraint::ShowRow(ty) => {
+            Constraint::ShowRow(replace_type_constructor(ty, alias, canonical))
+        }
+        Constraint::Eq(ty) => Constraint::Eq(replace_type_constructor(ty, alias, canonical)),
+        Constraint::EqRow(ty) => Constraint::EqRow(replace_type_constructor(ty, alias, canonical)),
+        Constraint::Class { class, ty } => Constraint::Class {
+            class: class.clone(),
+            ty: replace_type_constructor(ty, alias, canonical),
+        },
+        Constraint::Lacks { label, row } => Constraint::Lacks {
+            label: label.clone(),
+            row: replace_type_constructor(row, alias, canonical),
+        },
+    };
+
+    Scheme {
+        vars: scheme.vars.clone(),
+        constraints: scheme.constraints.iter().map(replace_constraint).collect(),
+        ty: replace_type_constructor(&scheme.ty, alias, canonical),
+    }
+}
+
+fn imported_scheme_bindings_for_decl(
+    import: &ast::ImportDecl,
+    schemes: &HashMap<String, Scheme>,
+    entry_dir: &Path,
+    self_import: bool,
+) -> Vec<(String, Scheme)> {
+    let all_names: HashSet<String> = schemes.keys().cloned().collect();
+    let filtered_names = if self_import {
+        all_names
+    } else {
+        match &import.import_spec {
+            None => all_names,
+            Some(ast::ImportSpec::Only(specs)) => {
+                expand_import_spec_with_ctors(specs, &import.module, entry_dir)
+            }
+            Some(ast::ImportSpec::Hiding(specs)) => {
+                let hidden = expand_import_spec_with_ctors(specs, &import.module, entry_dir);
+                all_names
+                    .into_iter()
+                    .filter(|name| !hidden.contains(name))
+                    .collect()
+            }
+        }
+    };
+
+    let mut bindings = Vec::new();
+    for name in filtered_names {
+        let Some(scheme) = schemes.get(&name) else {
+            continue;
+        };
+
+        let keys = if self_import {
+            vec![name.clone(), format!("{}.{}", import.module, name)]
+        } else if let Some(alias) = &import.as_name {
+            vec![format!("{alias}.{name}")]
+        } else if import.qualified {
+            vec![format!("{}.{}", import.module, name)]
+        } else {
+            vec![name.clone(), format!("{}.{}", import.module, name)]
+        };
+        bindings.extend(keys.into_iter().map(|key| (key, scheme.clone())));
+    }
+
+    bindings
+}
+
+fn legacy_data_maybe_ctor_fallbacks(
+    module: &ast::Module,
+    imported: &HashMap<String, HashMap<String, Scheme>>,
+    entry_dir: &Path,
+    lookup: impl Fn(&str) -> Option<Scheme>,
+) -> Vec<(String, Scheme)> {
+    let Some(data_maybe_schemes) = imported.get("Data.Maybe") else {
+        return Vec::new();
+    };
+    let mut fallbacks = Vec::new();
+
+    for item in &module.items {
+        let ast::Item::Import(import) = item else {
+            continue;
+        };
+        if import.module != "Data.Maybe" {
+            continue;
+        }
+
+        for (ctor_name, prelude_name) in [("Just", "Prelude.Just"), ("Nothing", "Prelude.Nothing")]
+        {
+            if data_maybe_schemes.contains_key(ctor_name) {
+                continue;
+            }
+
+            let allowed = match &import.import_spec {
+                None => true,
+                Some(ast::ImportSpec::Only(specs)) => {
+                    expand_import_spec_with_ctors(specs, &import.module, entry_dir)
+                        .contains(ctor_name)
+                }
+                Some(ast::ImportSpec::Hiding(specs)) => {
+                    !expand_import_spec_with_ctors(specs, &import.module, entry_dir)
+                        .contains(ctor_name)
+                }
+            };
+            if !allowed {
+                continue;
+            }
+
+            let Some(scheme) = lookup(prelude_name).or_else(|| lookup(ctor_name)) else {
+                continue;
+            };
+            let scheme = canonicalize_reexport_ctor_scheme(&scheme, "Maybe", "Prelude.Maybe");
+            let keys = if let Some(alias) = &import.as_name {
+                vec![format!("{alias}.{ctor_name}")]
+            } else if import.qualified {
+                vec![format!("Data.Maybe.{ctor_name}")]
+            } else {
+                vec![ctor_name.to_string(), format!("Data.Maybe.{ctor_name}")]
+            };
+            fallbacks.extend(keys.into_iter().map(|key| (key, scheme.clone())));
+        }
+    }
+
+    fallbacks
+}
+
 fn infer_module_with_class_env_with_entry_path(
     module: &ast::Module,
     class_env: &ClassEnv,
@@ -15041,205 +15187,53 @@ fn infer_module_with_class_env_with_entry_path(
                 imported.len()
             );
         }
-        // First pass: add all value schemes
-        for (module_name, schemes) in imported {
+        let entry_dir = entry_path
+            .and_then(Path::parent)
+            .unwrap_or_else(|| Path::new("."));
+
+        // Merge each declaration independently so aliases keep their own Only/Hiding filters.
+        for item in &module.items {
+            let ast::Item::Import(import) = item else {
+                continue;
+            };
+            let Some(schemes) = imported.get(&import.module) else {
+                continue;
+            };
             if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
                 eprintln!(
                     "[KSCR_DEBUG_IMPORTS] Module: {}, schemes: {}",
-                    module_name,
+                    import.module,
                     schemes.len()
                 );
             }
 
-            // Collect aliases, qualified flag, and import_spec
-            // Only apply import filtering if we're importing this module from another module,
-            // not when processing the module itself
-            let current_module = module.name.as_deref();
-            let is_self_import = current_module == Some(module_name.as_str());
-
-            let mut is_qualified = false;
-            let mut aliases: Vec<String> = Vec::new();
-            let mut import_spec: Option<ast::ImportSpec> = None;
-            if !is_self_import {
-                // Only look for import spec if this is not a self-import
-                for it in &module.items {
-                    if let ast::Item::Import(id) = it {
-                        if id.module == *module_name {
-                            is_qualified = id.qualified;
-                            if let Some(ref as_name) = id.as_name {
-                                aliases.push(as_name.clone());
-                            }
-                            import_spec = id.import_spec.clone();
-                        }
-                    }
-                }
-            }
-
-            // Apply import spec filter (only if not a self-import)
-            let filtered_names: std::collections::HashSet<String> = if is_self_import {
-                schemes.keys().cloned().collect() // Self-import: import everything
-            } else {
-                let entry_dir = if let Some(ep) = entry_path {
-                    ep.parent().unwrap_or_else(|| Path::new("."))
-                } else {
-                    Path::new(".")
-                };
-                match &import_spec {
-                    None => schemes.keys().cloned().collect(), // No filter, import everything
-                    Some(ast::ImportSpec::Only(specs)) => {
-                        // Expand ExportSpecs to names with constructor resolution
-                        expand_import_spec_with_ctors(specs, module_name, entry_dir)
-                    }
-                    Some(ast::ImportSpec::Hiding(specs)) => {
-                        // Expand ExportSpecs to names to hide
-                        let hidden = expand_import_spec_with_ctors(specs, module_name, entry_dir);
-                        schemes
-                            .keys()
-                            .filter(|n| !hidden.contains(*n))
-                            .cloned()
-                            .collect()
-                    }
-                }
-            };
-
-            for (name, scheme) in schemes {
-                // Skip if name is not in the filtered set
-                if !filtered_names.contains(name) {
-                    continue;
-                }
-
-                // For unqualified imports without aliases, expose both qualified and unqualified names
-                if !is_qualified && aliases.is_empty() {
-                    // Unqualified import: `import A` - expose both A.name and name
-                    let qualified_name = format!("{}.{}", module_name, name);
-                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                        eprintln!(
-                            "[KSCR_DEBUG_IMPORTS] Adding unqualified: {} and {}",
-                            name, qualified_name
-                        );
-                    }
-                    env_global.insert(
-                        qualified_name,
-                        EnvEntry {
-                            scheme: scheme.clone(),
-                            def_site: None,
-                        },
-                    );
-                    // Also expose unqualified name
-                    env_global.insert(
-                        name.clone(),
-                        EnvEntry {
-                            scheme: scheme.clone(),
-                            def_site: None,
-                        },
-                    );
-                } else if !aliases.is_empty() {
-                    // Aliased import: `import A as M` or `import qualified A as M`
-                    // Expose only alias-qualified names
-                    for a in &aliases {
-                        let qualified_name = format!("{}.{}", a, name);
-                        env_global.insert(
-                            qualified_name,
-                            EnvEntry {
-                                scheme: scheme.clone(),
-                                def_site: None,
-                            },
-                        );
-                    }
-                } else {
-                    // Qualified import without alias: `import qualified A` - expose only A.name
-                    let qualified_name = format!("{}.{}", module_name, name);
-                    env_global.insert(
-                        qualified_name,
-                        EnvEntry {
-                            scheme: scheme.clone(),
-                            def_site: None,
-                        },
-                    );
-                }
+            let is_self_import = module.name.as_deref() == Some(import.module.as_str());
+            for (key, scheme) in
+                imported_scheme_bindings_for_decl(import, schemes, entry_dir, is_self_import)
+            {
+                env_global.insert(
+                    key,
+                    EnvEntry {
+                        scheme,
+                        def_site: None,
+                    },
+                );
             }
         }
 
-        // Second pass: add constructor re-exports after all schemes are merged.
-        // Hardcoded constructor re-export for Data.Maybe:
-        // Data.Maybe exports `type Maybe = Prelude.Maybe` with `Maybe(..)`,
-        // so qualified access like `M.Just` when `import qualified Data.Maybe as M`
-        // should resolve to Prelude.Just.
-        for module_name in imported.keys() {
-            if module_name == "Data.Maybe" {
-                if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                    eprintln!("[KSCR_DEBUG_IMPORTS] Handling Data.Maybe constructor re-exports");
-                    eprintln!(
-                        "[KSCR_DEBUG_IMPORTS] Just in env? {}",
-                        env_global.contains_key("Just")
-                    );
-                    eprintln!(
-                        "[KSCR_DEBUG_IMPORTS] Prelude.Just in env? {}",
-                        env_global.contains_key("Prelude.Just")
-                    );
-                    eprintln!(
-                        "[KSCR_DEBUG_IMPORTS] Nothing in env? {}",
-                        env_global.contains_key("Nothing")
-                    );
-                }
-                // Prelude constructors might be qualified; check both.
-                if let Some(just_entry) = env_global
-                    .get("Just")
-                    .or_else(|| env_global.get("Prelude.Just"))
-                {
-                    env_global.insert("Data.Maybe.Just".to_string(), just_entry.clone());
-                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                        eprintln!("[KSCR_DEBUG_IMPORTS] Added Data.Maybe.Just");
-                    }
-                }
-                if let Some(nothing_entry) = env_global
-                    .get("Nothing")
-                    .or_else(|| env_global.get("Prelude.Nothing"))
-                {
-                    env_global.insert("Data.Maybe.Nothing".to_string(), nothing_entry.clone());
-                    if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                        eprintln!("[KSCR_DEBUG_IMPORTS] Added Data.Maybe.Nothing");
-                    }
-                }
-            }
-        }
-
-        // Handle import aliases: if `import qualified Data.Maybe as M`, add `M.Just` mapping to `Data.Maybe.Just`.
-        if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-            eprintln!(
-                "[KSCR_DEBUG_IMPORTS] Handling import aliases, {} items in module",
-                module.items.len()
-            );
-        }
-        for it in &module.items {
-            if let ast::Item::Import(id) = it {
-                if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                    eprintln!(
-                        "[KSCR_DEBUG_IMPORTS] Import: {} as {:?}",
-                        id.module, id.as_name
-                    );
-                }
-                if let Some(as_name) = &id.as_name {
-                    // For each imported module with an alias, check if we've added qualified constructors
-                    // and add them with the alias prefix too.
-                    if id.module == "Data.Maybe" {
-                        if let Some(maybe_just) = env_global.get("Data.Maybe.Just") {
-                            let key = format!("{}.Just", as_name);
-                            if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                                eprintln!("[KSCR_DEBUG_IMPORTS] Adding ctor mapping: {}", key);
-                            }
-                            env_global.insert(key, maybe_just.clone());
-                        }
-                        if let Some(maybe_nothing) = env_global.get("Data.Maybe.Nothing") {
-                            let key = format!("{}.Nothing", as_name);
-                            if std::env::var("KSCR_DEBUG_IMPORTS").ok().is_some() {
-                                eprintln!("[KSCR_DEBUG_IMPORTS] Adding ctor mapping: {}", key);
-                            }
-                            env_global.insert(key, maybe_nothing.clone());
-                        }
-                    }
-                }
-            }
+        // Current KSIF artifacts contain alias-reexported constructors, so the first pass above
+        // is authoritative. Keep a compatibility fallback only for legacy Data.Maybe artifacts
+        // that do not contain Just/Nothing. The fallback must preserve import filtering and must
+        // never overwrite a scheme loaded from Data.Maybe itself.
+        let legacy_fallbacks =
+            legacy_data_maybe_ctor_fallbacks(module, imported, entry_dir, |name| {
+                env_global.get(name).map(|entry| entry.scheme.clone())
+            });
+        for (key, scheme) in legacy_fallbacks {
+            env_global.entry(key).or_insert(EnvEntry {
+                scheme,
+                def_site: None,
+            });
         }
     }
 
@@ -17542,7 +17536,12 @@ mod inference_tests {
         std::fs::write(&b, "module B where\n  import A\n  y = 2\n").unwrap();
 
         let e = typecheck_file(&a).unwrap_err();
-        assert!(format!("{e}").contains("cyclic imports"));
+        let msg = format!("{e}");
+        assert!(msg.contains("cyclic imports"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("B -> A -> B"),
+            "expected import cycle chain in error, got: {msg}"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -17645,6 +17644,98 @@ mod inference_tests {
             ty: Ty::List(Box::new(Ty::Var(2))),
         };
         assert_eq!(format!("{s}"), "forall a. [a]");
+    }
+
+    #[test]
+    fn canonicalize_legacy_reexport_ctor_scheme_rewrites_alias_types() {
+        let maybe_of = |item| Ty::App {
+            head: Box::new(Ty::Con("Maybe".to_string())),
+            args: vec![item],
+        };
+        let canonical_maybe_of = |item| Ty::App {
+            head: Box::new(Ty::Con("Prelude.Maybe".to_string())),
+            args: vec![item],
+        };
+        let scheme = Scheme {
+            vars: vec![1],
+            constraints: vec![Constraint::Class {
+                class: ast::ClassId::dummy("C"),
+                ty: maybe_of(Ty::Var(1)),
+            }],
+            ty: Ty::Func(Box::new(Ty::Var(1)), Box::new(maybe_of(Ty::Var(1)))),
+        };
+
+        let got = canonicalize_reexport_ctor_scheme(&scheme, "Maybe", "Prelude.Maybe");
+
+        assert_eq!(
+            got.ty,
+            Ty::Func(
+                Box::new(Ty::Var(1)),
+                Box::new(canonical_maybe_of(Ty::Var(1))),
+            )
+        );
+        assert!(matches!(
+            &got.constraints[0],
+            Constraint::Class { ty, .. } if *ty == canonical_maybe_of(Ty::Var(1))
+        ));
+    }
+
+    #[test]
+    fn legacy_data_maybe_ctor_fallback_is_available_during_rewrite_inference() {
+        let mut module = parser::parse_module(
+            "module Main where\n  import qualified Data.Maybe as M\n  x = M.Just 1\n  main = IO ()\n",
+        )
+        .unwrap();
+        desugar_module_qualified_names(&mut module).unwrap();
+        module = ensure_implicit_prelude_import(module);
+
+        let imported = HashMap::from([("Data.Maybe".to_string(), HashMap::new())]);
+        let inferred_for_rewrite = build_inferred_for_rewrite(
+            &module,
+            &HashMap::new(),
+            &ClassEnv::default(),
+            Some(&imported),
+            None,
+        );
+
+        let just = inferred_for_rewrite
+            .get("M.Just")
+            .expect("legacy fallback should expose M.Just during rewrite");
+        assert!(matches!(
+            &just.ty,
+            Ty::Func(_, result)
+                if matches!(
+                    result.as_ref(),
+                    Ty::App { head, .. }
+                        if head.as_ref() == &Ty::Con("Prelude.Maybe".to_string())
+                )
+        ));
+
+        let x_expr = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Binding(binding)
+                    if matches!(&binding.pat.kind, ast::PatternKind::Var(name) if name == "x") =>
+                {
+                    Some(binding.expr.clone())
+                }
+                _ => None,
+            })
+            .expect("test module should contain x");
+        let inferred_ty = infer_in_module_with_class_env(
+            &module,
+            &ClassEnv::default(),
+            &inferred_for_rewrite,
+            x_expr,
+        )
+        .unwrap();
+        assert!(matches!(
+            inferred_ty,
+            Ty::App { head, args }
+                if head.as_ref() == &Ty::Con("Prelude.Maybe".to_string())
+                    && args == vec![Ty::Con("Integer".to_string())]
+        ));
     }
 
     #[test]

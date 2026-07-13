@@ -4,11 +4,7 @@ use std::process::Command;
 fn stdlib_read_int_smoke() {
     let out = Command::new(env!("CARGO_BIN_EXE_kscr"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args([
-            "run",
-            "--ksif-rebuild",
-            "tests/stdlib_read_int_smoke.ks",
-        ])
+        .args(["run", "--ksif-rebuild", "tests/stdlib_read_int_smoke.ks"])
         .output()
         .expect("run kscr");
 

@@ -1833,21 +1833,53 @@ mod tests {
     #[test]
     fn cli_run_import_data_maybe_stdlib_smoke() {
         let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe as M\n  main = do\n    print (show (M.fromMaybe 0 (M.Just 1)))\n    print (show (M.fromMaybe 0 M.Nothing))\n    print (show (M.isJust (M.Just 1)))\n    print (show (M.isNothing M.Nothing))\n    putStrLn \"maybe ok\"\n";
-        let mut attempt: u8 = 0;
-        loop {
-            match run_main_in_temp_dir("cli_run_import_data_maybe_stdlib_smoke", src) {
-                Ok(()) => break,
-                Err(e) => {
-                    // CIで稀にフレークする既知症状: `M.fromMaybe` が unbound として報告される。
-                    // 根本原因が不明な間は、テスト意図を保ちつつ1回だけリトライ。
-                    if attempt == 0 && e.to_string().contains("unbound variable: M.fromMaybe") {
-                        attempt = 1;
-                        continue;
-                    }
-                    panic!("cli_run_import_data_maybe_stdlib_smoke failed: {e}");
-                }
-            }
-        }
+        run_main_in_temp_dir("cli_run_import_data_maybe_stdlib_smoke", src).unwrap();
+    }
+
+    #[test]
+    fn cli_run_import_data_maybe_without_alias_smoke() {
+        let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe\n  main = do\n    print (show (Data.Maybe.fromMaybe 0 (Data.Maybe.Just 1)))\n    print (show (Data.Maybe.fromMaybe 0 Data.Maybe.Nothing))\n";
+        run_main_in_temp_dir("cli_run_import_data_maybe_without_alias_smoke", src).unwrap();
+    }
+
+    #[test]
+    fn cli_run_repeated_data_maybe_imports_keep_alias_filters() {
+        let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe as C (Maybe(..))\n  import qualified Data.Maybe as F (fromMaybe)\n  main = print (show (F.fromMaybe 0 (C.Just 1)))\n";
+        run_main_in_temp_dir(
+            "cli_run_repeated_data_maybe_imports_keep_alias_filters",
+            src,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn cli_typecheck_repeated_data_maybe_imports_do_not_leak_alias_filters() {
+        let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe as F (fromMaybe)\n  import qualified Data.Maybe as C (Maybe(..))\n  leaked = F.Just 1\n  main = IO ()\n";
+        let err = run_main_in_temp_dir(
+            "cli_typecheck_repeated_data_maybe_imports_do_not_leak_alias_filters",
+            src,
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("unknown constructor: F.Just"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn cli_typecheck_data_maybe_hiding_does_not_restore_constructors() {
+        let src = "module Main where\n  import Prelude\n  import qualified Data.Maybe as M hiding (Maybe(..))\n  x = M.Just 1\n  main = IO ()\n";
+        let err = run_main_in_temp_dir(
+            "cli_typecheck_data_maybe_hiding_does_not_restore_constructors",
+            src,
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("unknown constructor: M.Just"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]

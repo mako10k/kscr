@@ -618,9 +618,8 @@ fn parse_algebraic_decl(
         // Try prefix ctor first: `Ctor a b` / `(:*:) a b`.
         // If that fails, accept infix ctor: `a :*: b`.
         let save = (ts.i, ts.last_span_end);
-        let parsed = if matches!(ts.peek_kind(), Some(TokenKind::Ident(_))) {
-            let ctor_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
-            let ctor_name = parse_ctor_name(ts)?;
+        let prefix_ctor_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
+        let prefix_ctor = if let Ok(ctor_name) = parse_ctor_name(ts) {
             let mut args = Vec::new();
             while matches!(ts.peek_kind(), Some(TokenKind::Ident(s)) if s != "deriving")
                 || matches!(
@@ -630,16 +629,26 @@ fn parse_algebraic_decl(
             {
                 args.push(parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?);
             }
-            let ctor_end = ts.last_span_end;
-            Some(ast::DataCtor {
-                doc: ctor_doc_buf.take(),
-                name: ctor_name,
-                args,
-                span: crate::lexer::Span {
-                    start: ctor_start,
-                    end: ctor_end,
-                },
-            })
+            if matches!(ts.peek_kind(), Some(TokenKind::Operator(op)) if is_ctor_symbol(op)) {
+                None
+            } else {
+                let ctor_end = ts.last_span_end;
+                Some(ast::DataCtor {
+                    doc: ctor_doc_buf.take(),
+                    name: ctor_name,
+                    args,
+                    span: crate::lexer::Span {
+                        start: prefix_ctor_start,
+                        end: ctor_end,
+                    },
+                })
+            }
+        } else {
+            None
+        };
+
+        let parsed = if let Some(ctor) = prefix_ctor {
+            Some(ctor)
         } else {
             (ts.i, ts.last_span_end) = save;
             let lhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
@@ -882,13 +891,13 @@ fn parse_class_minimal_line(ts: &mut TokenStream) -> Result<Option<Vec<Vec<Strin
     Ok(Some(alternatives))
 }
 
-fn parse_class_body(
-    ts: &mut TokenStream,
-) -> Result<(
+type ParsedClassBody = (
     Vec<ast::ClassMethodSig>,
     Vec<ast::Binding>,
     Vec<Vec<String>>,
-)> {
+);
+
+fn parse_class_body(ts: &mut TokenStream) -> Result<ParsedClassBody> {
     ts.expect(TokenKind::Indent)?;
 
     let mut methods: Vec<ast::ClassMethodSig> = Vec::new();

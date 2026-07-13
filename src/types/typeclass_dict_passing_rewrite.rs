@@ -879,7 +879,7 @@ fn bind_pat_ground_tys(
                 return;
             };
 
-            for (p, t) in args.iter().zip(arg_tys.into_iter()) {
+            for (p, t) in args.iter().zip(arg_tys) {
                 let t = apply(&subst, t);
                 bind_pat_ground_tys(module, class_env, p, &t, out);
             }
