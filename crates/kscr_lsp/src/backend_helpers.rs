@@ -192,9 +192,7 @@ pub(super) fn qualified_ident_parts_at_offset(
             })
         })?;
 
-    let Some(current_name) = token_symbol_name(&toks[i].kind) else {
-        return None;
-    };
+    let current_name = token_symbol_name(&toks[i].kind)?;
 
     if !matches!(toks[i].kind, TokenKind::Ident(_)) {
         return Some(QualifiedIdentParts {

@@ -891,13 +891,13 @@ fn parse_class_minimal_line(ts: &mut TokenStream) -> Result<Option<Vec<Vec<Strin
     Ok(Some(alternatives))
 }
 
-fn parse_class_body(
-    ts: &mut TokenStream,
-) -> Result<(
+type ParsedClassBody = (
     Vec<ast::ClassMethodSig>,
     Vec<ast::Binding>,
     Vec<Vec<String>>,
-)> {
+);
+
+fn parse_class_body(ts: &mut TokenStream) -> Result<ParsedClassBody> {
     ts.expect(TokenKind::Indent)?;
 
     let mut methods: Vec<ast::ClassMethodSig> = Vec::new();

@@ -768,7 +768,7 @@ fn class_method_parameter_type_text(
     })
 }
 
-fn ast_function_argument_types<'a>(ty: &'a ast::Type, count: usize) -> Vec<&'a ast::Type> {
+fn ast_function_argument_types(ty: &ast::Type, count: usize) -> Vec<&ast::Type> {
     let mut out = Vec::new();
     let mut current = ty;
     while out.len() < count {

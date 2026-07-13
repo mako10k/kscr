@@ -171,7 +171,7 @@ fn class_method_signature_text(
     })
 }
 
-fn ast_function_argument_types<'a>(ty: &'a kscr::ast::Type) -> Vec<&'a kscr::ast::Type> {
+fn ast_function_argument_types(ty: &kscr::ast::Type) -> Vec<&kscr::ast::Type> {
     let mut out = Vec::new();
     let mut current = ty;
     while let kscr::ast::Type::Func(arg, rest) = current {

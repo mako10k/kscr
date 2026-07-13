@@ -327,10 +327,10 @@ fn instance_class_name_span(
 
         let end = where_pos?;
         let scan_start = last_fat_arrow.map(|idx| idx + 1).unwrap_or(start + 1);
-        for j in scan_start..end {
-            if let lexer::TokenKind::Ident(name) = &tokens[j].kind {
+        for token in tokens.iter().take(end).skip(scan_start) {
+            if let lexer::TokenKind::Ident(name) = &token.kind {
                 if name == class_name {
-                    return Some((tokens[j].span, end + 1));
+                    return Some((token.span, end + 1));
                 }
             }
         }

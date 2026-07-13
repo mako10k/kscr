@@ -14228,7 +14228,7 @@ fn rewrite_class_method_apply(
 
                 if let Some(dict_expr) = explicit_dict_arg {
                     let new_args =
-                        rewrite_args_with_known(ctx, &ctx.known_dicts_in_scope, method_args)?;
+                        rewrite_args_with_known(ctx, ctx.known_dicts_in_scope, method_args)?;
                     return Ok(build_method_call(ctx, mname, dict_expr, new_args));
                 }
 
