@@ -35,7 +35,7 @@ pub(crate) fn semantic_tokens_legend() -> SemanticTokensLegend {
 
 pub(crate) fn semantic_tokens_in_doc(doc: &Document) -> Option<SemanticTokens> {
     let mut raw = collect_raw_tokens(doc)?;
-    raw.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    raw.sort_by_key(|a| (a.0, a.1));
     raw.dedup();
     Some(encode_tokens(doc, raw))
 }
@@ -43,7 +43,7 @@ pub(crate) fn semantic_tokens_in_doc(doc: &Document) -> Option<SemanticTokens> {
 pub(crate) fn semantic_tokens_in_range(doc: &Document, range: Range) -> Option<SemanticTokens> {
     let mut raw = collect_raw_tokens(doc)?;
     raw.retain(|(line, start, _length, _ty)| token_in_range(*line, *start, &range));
-    raw.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    raw.sort_by_key(|a| (a.0, a.1));
     raw.dedup();
     Some(encode_tokens(doc, raw))
 }

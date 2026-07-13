@@ -5474,7 +5474,7 @@ fn append_instance_items(
         ));
     }
 
-    for (sup, sup_dict_name) in direct_supers.into_iter().zip(super_dict_names.into_iter()) {
+    for (sup, sup_dict_name) in direct_supers.into_iter().zip(super_dict_names) {
         dict_fields.push((
             super_field_name(&sup.name),
             ast::Expr::new(ast::dummy_span(), ast::ExprKind::Var(sup_dict_name)),
@@ -10230,7 +10230,7 @@ fn merge_class_env_with_module_prefix(
 /// with module-qualified names like `Prelude.Rational.__dict_Ring_Rational`.
 fn qualify_instance_dict_names(env: &mut ClassEnv, module_name: &str) {
     // Qualify dict names in the instances map
-    for (_, dict_name) in env.instances.iter_mut() {
+    for dict_name in env.instances.values_mut() {
         if !dict_name.contains('.') {
             *dict_name = format!("{}.{}", module_name, dict_name);
         }
@@ -11178,18 +11178,16 @@ impl ModuleLoader {
                         }
                     }
                 }
-                ast::Item::TypeAlias(ta) => {
+                ast::Item::TypeAlias(ta) if ta.name.contains('.') => {
                     // Type aliases can act like “type-level forwarders” across modules.
                     // Index only qualified names to avoid ambiguity.
-                    if ta.name.contains('.') {
-                        self.def_sites.type_alias.insert(
-                            ta.name.clone(),
-                            DefSite {
-                                path: path.to_path_buf(),
-                                span: ta.span,
-                            },
-                        );
-                    }
+                    self.def_sites.type_alias.insert(
+                        ta.name.clone(),
+                        DefSite {
+                            path: path.to_path_buf(),
+                            span: ta.span,
+                        },
+                    );
                 }
                 _ => {}
             }
