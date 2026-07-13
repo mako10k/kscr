@@ -249,7 +249,7 @@ pub fn encode_kir1_module(module: &IrModule) -> Vec<u8> {
         },
     ];
 
-    let file_len = (ir_off + ir_payload.len() as u64) as u64;
+    let file_len = ir_off + ir_payload.len() as u64;
 
     let mut out = Vec::with_capacity(file_len as usize);
 
