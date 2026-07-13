@@ -139,7 +139,8 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
             Item::Binding(binding) => {
                 if let PatternKind::Var(_) = &binding.pat.kind {
                     if let Some(name_span) = binding_name_span(doc, &lexed, binding) {
-                        let lhs_params = binding_lhs_parameter_spans(doc, &lexed, binding, name_span);
+                        let lhs_params =
+                            binding_lhs_parameter_spans(doc, &lexed, binding, name_span);
                         let token_type = if !lhs_params.is_empty()
                             || matches!(binding.expr.kind, ExprKind::Lambda { .. })
                         {
@@ -185,7 +186,8 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                     if let PatternKind::Var(_) = &binding.pat.kind {
                         if let Some(name_span) = binding_name_span(doc, &lexed, binding) {
                             push_span_token(doc, name_span, TOKEN_TYPE_METHOD, &mut raw);
-                            for span in binding_lhs_parameter_spans(doc, &lexed, binding, name_span) {
+                            for span in binding_lhs_parameter_spans(doc, &lexed, binding, name_span)
+                            {
                                 push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
                             }
                         }
@@ -193,7 +195,9 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                 }
             }
             Item::InstanceDecl(inst) => {
-                if let Some((span, next_from)) = instance_class_name_span(&lexed, search_from, &inst.class.name) {
+                if let Some((span, next_from)) =
+                    instance_class_name_span(&lexed, search_from, &inst.class.name)
+                {
                     push_span_token(doc, span, TOKEN_TYPE_CLASS, &mut raw);
                     search_from = next_from;
                 }
@@ -201,7 +205,8 @@ fn collect_raw_tokens(doc: &Document) -> Option<Vec<(u32, u32, u32, u32)>> {
                     if let PatternKind::Var(_) = &method.pat.kind {
                         if let Some(name_span) = binding_name_span(doc, &lexed, method) {
                             push_span_token(doc, name_span, TOKEN_TYPE_METHOD, &mut raw);
-                            for span in binding_lhs_parameter_spans(doc, &lexed, method, name_span) {
+                            for span in binding_lhs_parameter_spans(doc, &lexed, method, name_span)
+                            {
                                 push_span_token(doc, span, TOKEN_TYPE_PARAMETER, &mut raw);
                             }
                         }
@@ -235,7 +240,8 @@ fn import_module_name_spans(tokens: &[lexer::Token]) -> Vec<kscr::lexer::Span> {
             continue;
         }
         i += 1;
-        if matches!(&tokens.get(i).map(|t| &t.kind), Some(lexer::TokenKind::Ident(s)) if s == "qualified") {
+        if matches!(&tokens.get(i).map(|t| &t.kind), Some(lexer::TokenKind::Ident(s)) if s == "qualified")
+        {
             i += 1;
         }
 
@@ -609,22 +615,71 @@ mod tests {
         let tokens = semantic_tokens_in_doc(&doc).unwrap();
         let tokens = absolute_tokens(&tokens);
 
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 1 && *start == 3 && *length == 2 && *token_type == TOKEN_TYPE_FUNCTION), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 1 && *start == 7 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 1 && *start == 9 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 1
+                    && *start == 3
+                    && *length == 2
+                    && *token_type == TOKEN_TYPE_FUNCTION),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 1
+                    && *start == 7
+                    && *length == 1
+                    && *token_type == TOKEN_TYPE_PARAMETER),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 1
+                    && *start == 9
+                    && *length == 1
+                    && *token_type == TOKEN_TYPE_PARAMETER),
+            "tokens: {tokens:?}"
+        );
     }
 
     #[test]
     fn semantic_tokens_mark_class_default_method_parameters() {
-        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_class_default.ks").unwrap();
+        let uri =
+            tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_class_default.ks").unwrap();
         let src = "module Main where\n  class Field a where\n    divide :: a -> a -> a\n    divide x y = x\n";
 
         let doc = Document::new(uri, src.to_string(), 1);
         let tokens = absolute_tokens(&semantic_tokens_in_doc(&doc).unwrap());
 
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 3 && *start == 4 && *length == 6 && *token_type == TOKEN_TYPE_METHOD), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 3 && *start == 11 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 3 && *start == 13 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 3
+                    && *start == 4
+                    && *length == 6
+                    && *token_type == TOKEN_TYPE_METHOD),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 3
+                    && *start == 11
+                    && *length == 1
+                    && *token_type == TOKEN_TYPE_PARAMETER),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 3
+                    && *start == 13
+                    && *length == 1
+                    && *token_type == TOKEN_TYPE_PARAMETER),
+            "tokens: {tokens:?}"
+        );
     }
 
     #[test]
@@ -634,23 +689,80 @@ mod tests {
             .join("..")
             .join("stdlib/Prelude/Field.ks");
         let src = std::fs::read_to_string(&path).unwrap();
-        let uri = tower_lsp::lsp_types::Url::from_file_path(std::fs::canonicalize(&path).unwrap()).unwrap();
+        let uri = tower_lsp::lsp_types::Url::from_file_path(std::fs::canonicalize(&path).unwrap())
+            .unwrap();
         let doc = Document::new(uri, src, 1);
-        let tokens = absolute_tokens(&semantic_tokens_in_range(
-            &doc,
-            Range {
-                start: Position { line: 12, character: 0 },
-                end: Position { line: 15, character: 40 },
-            },
-        )
-        .unwrap());
+        let tokens = absolute_tokens(
+            &semantic_tokens_in_range(
+                &doc,
+                Range {
+                    start: Position {
+                        line: 12,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 15,
+                        character: 40,
+                    },
+                },
+            )
+            .unwrap(),
+        );
 
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 12 && *start == 4 && *length == 6 && *token_type == TOKEN_TYPE_METHOD), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 12 && *start == 11 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 12 && *start == 13 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 14 && *start == 3 && *length == 2 && *token_type == TOKEN_TYPE_FUNCTION), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 14 && *start == 7 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
-        assert!(tokens.iter().any(|(line, start, length, token_type)| *line == 14 && *start == 9 && *length == 1 && *token_type == TOKEN_TYPE_PARAMETER), "tokens: {tokens:?}");
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 12
+                    && *start == 4
+                    && *length == 6
+                    && *token_type == TOKEN_TYPE_METHOD),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 12
+                    && *start == 11
+                    && *length == 1
+                    && *token_type == TOKEN_TYPE_PARAMETER),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 12
+                    && *start == 13
+                    && *length == 1
+                    && *token_type == TOKEN_TYPE_PARAMETER),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 14
+                    && *start == 3
+                    && *length == 2
+                    && *token_type == TOKEN_TYPE_FUNCTION),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 14
+                    && *start == 7
+                    && *length == 1
+                    && *token_type == TOKEN_TYPE_PARAMETER),
+            "tokens: {tokens:?}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|(line, start, length, token_type)| *line == 14
+                    && *start == 9
+                    && *length == 1
+                    && *token_type == TOKEN_TYPE_PARAMETER),
+            "tokens: {tokens:?}"
+        );
     }
 
     #[test]
@@ -701,7 +813,8 @@ mod tests {
 
     #[test]
     fn semantic_tokens_classify_module_import_and_instance_class_names() {
-        let uri = tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_namespaces.ks").unwrap();
+        let uri =
+            tower_lsp::lsp_types::Url::parse("file:///semantic_tokens_namespaces.ks").unwrap();
         let src = r#"module ManualSemigroup where
   import Prelude
 

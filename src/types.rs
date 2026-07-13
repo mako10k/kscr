@@ -489,7 +489,13 @@ pub fn format_pretty_tys_with_scheme(scheme: &Scheme, tys: &[Ty]) -> Vec<String>
 
 pub fn format_pretty_scheme(scheme: &Scheme) -> String {
     let vars = pretty_names_for_scheme(scheme);
-    format!("{}", PrettySchemeDisplay { scheme, vars: &vars })
+    format!(
+        "{}",
+        PrettySchemeDisplay {
+            scheme,
+            vars: &vars
+        }
+    )
 }
 
 #[derive(Debug)]
@@ -746,14 +752,20 @@ fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
                 }
 
                 stack.push(alias.name.clone());
-                let lowered = lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &HashMap::new())
-                    .unwrap_or_else(|_| Ty::Con(name.clone()));
+                let lowered =
+                    lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &HashMap::new())
+                        .unwrap_or_else(|_| Ty::Con(name.clone()));
                 let expanded = go(aliases, lowered, stack);
                 stack.pop();
                 expanded
             }
             Ty::List(elem) => Ty::List(Box::new(go(aliases, *elem, stack))),
-            Ty::Tuple(items) => Ty::Tuple(items.into_iter().map(|item| go(aliases, item, stack)).collect()),
+            Ty::Tuple(items) => Ty::Tuple(
+                items
+                    .into_iter()
+                    .map(|item| go(aliases, item, stack))
+                    .collect(),
+            ),
             Ty::Record(fields) => Ty::Record(
                 fields
                     .into_iter()
@@ -769,7 +781,10 @@ fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
             ),
             Ty::App { head, args } => {
                 let head = go(aliases, *head, stack);
-                let args: Vec<Ty> = args.into_iter().map(|arg| go(aliases, arg, stack)).collect();
+                let args: Vec<Ty> = args
+                    .into_iter()
+                    .map(|arg| go(aliases, arg, stack))
+                    .collect();
                 let Ty::Con(name) = &head else {
                     return Ty::App {
                         head: Box::new(head),
@@ -789,18 +804,15 @@ fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
                     };
                 }
 
-                let param_map: HashMap<String, Ty> = alias
-                    .params
-                    .iter()
-                    .cloned()
-                    .zip(args)
-                    .collect();
+                let param_map: HashMap<String, Ty> =
+                    alias.params.iter().cloned().zip(args).collect();
                 stack.push(alias.name.clone());
-                let lowered = lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &param_map)
-                    .unwrap_or_else(|_| Ty::App {
-                        head: Box::new(Ty::Con(name.clone())),
-                        args: param_map.into_values().collect(),
-                    });
+                let lowered =
+                    lower_surface_type_with_tys(&alias.ty, &mut HashMap::new(), &param_map)
+                        .unwrap_or_else(|_| Ty::App {
+                            head: Box::new(Ty::Con(name.clone())),
+                            args: param_map.into_values().collect(),
+                        });
                 let expanded = go(aliases, lowered, stack);
                 stack.pop();
                 expanded
@@ -814,13 +826,15 @@ fn canonicalize_aliases_in_ty(cx: &InferCtx, ty: Ty) -> Ty {
     }
 
     let mut aliases = cx.full_class_env.aliases.clone();
-    aliases.entry("String".to_string()).or_insert_with(|| ast::TypeAlias {
-        doc: None,
-        name: "String".to_string(),
-        params: Vec::new(),
-        ty: ast::Type::List(Box::new(ast::Type::Char)),
-        span: ast::dummy_span(),
-    });
+    aliases
+        .entry("String".to_string())
+        .or_insert_with(|| ast::TypeAlias {
+            doc: None,
+            name: "String".to_string(),
+            params: Vec::new(),
+            ty: ast::Type::List(Box::new(ast::Type::Char)),
+            span: ast::dummy_span(),
+        });
     go(&aliases, ty, &mut Vec::new())
 }
 
@@ -2374,7 +2388,8 @@ pub fn infer_module(module: &ast::Module) -> Result<HashMap<String, Scheme>> {
     let stdlib_class_env = load_stdlib_class_env()?;
     let mut cx = InferCtx::default();
     let class_index = build_class_method_scheme_index(&mut cx, &stdlib_class_env)?;
-    infer_module_with_class_env(module, &stdlib_class_env, &class_index).map(|result| result.inferred)
+    infer_module_with_class_env(module, &stdlib_class_env, &class_index)
+        .map(|result| result.inferred)
 }
 
 fn collect_deps_in_pattern(
@@ -9219,18 +9234,11 @@ fn build_inferred_for_rewrite(
     let mut builtin_cx = InferCtx::default();
     let mut builtin_ctors = TypeEnv::new();
     add_prelude_data_ctors(&mut builtin_cx, &mut builtin_ctors, false, false);
-    let legacy_fallbacks = legacy_data_maybe_ctor_fallbacks(
-        module,
-        imported,
-        entry_dir,
-        |name| {
-            out.get(name).cloned().or_else(|| {
-                builtin_ctors
-                    .get(name)
-                    .map(|entry| entry.scheme.clone())
-            })
-        },
-    );
+    let legacy_fallbacks = legacy_data_maybe_ctor_fallbacks(module, imported, entry_dir, |name| {
+        out.get(name)
+            .cloned()
+            .or_else(|| builtin_ctors.get(name).map(|entry| entry.scheme.clone()))
+    });
     for (key, scheme) in legacy_fallbacks {
         out.entry(key).or_insert(scheme);
     }
@@ -12232,10 +12240,7 @@ fn expand_import_spec_with_ctors(
 /// For `Name(n)`, returns {n}.
 /// For `Type{name, ctors: All}`, returns {name} + all constructors of that type from module (best-effort).
 /// For `Type{name, ctors: Some(list)}`, returns {name} + listed constructors.
-fn expand_export_spec_to_names(
-    spec: &ast::ExportSpec,
-    module: &ast::Module,
-) -> HashSet<String> {
+fn expand_export_spec_to_names(spec: &ast::ExportSpec, module: &ast::Module) -> HashSet<String> {
     let mut names = HashSet::new();
     match spec {
         ast::ExportSpec::Name(n) => {
@@ -12604,7 +12609,7 @@ fn qualify_item(
                     .map(|t| qualify_type(t, type_map))
                     .collect::<Result<Vec<_>>>()?;
             }
-                    d.deriving.clear();
+            d.deriving.clear();
             ast::Item::DataDecl(d)
         }
         x @ (ast::Item::Import(_)
@@ -14954,23 +14959,13 @@ fn replace_type_constructor(ty: &Ty, alias: &str, canonical: &str) -> Ty {
         Ty::Record(fields) => Ty::Record(
             fields
                 .iter()
-                .map(|(name, ty)| {
-                    (
-                        name.clone(),
-                        replace_type_constructor(ty, alias, canonical),
-                    )
-                })
+                .map(|(name, ty)| (name.clone(), replace_type_constructor(ty, alias, canonical)))
                 .collect(),
         ),
         Ty::RecordOpen(fields, rest) => Ty::RecordOpen(
             fields
                 .iter()
-                .map(|(name, ty)| {
-                    (
-                        name.clone(),
-                        replace_type_constructor(ty, alias, canonical),
-                    )
-                })
+                .map(|(name, ty)| (name.clone(), replace_type_constructor(ty, alias, canonical)))
                 .collect(),
             Box::new(replace_type_constructor(rest, alias, canonical)),
         ),
@@ -14988,22 +14983,14 @@ fn replace_type_constructor(ty: &Ty, alias: &str, canonical: &str) -> Ty {
     }
 }
 
-fn canonicalize_reexport_ctor_scheme(
-    scheme: &Scheme,
-    alias: &str,
-    canonical: &str,
-) -> Scheme {
+fn canonicalize_reexport_ctor_scheme(scheme: &Scheme, alias: &str, canonical: &str) -> Scheme {
     let replace_constraint = |constraint: &Constraint| match constraint {
-        Constraint::Show(ty) => {
-            Constraint::Show(replace_type_constructor(ty, alias, canonical))
-        }
+        Constraint::Show(ty) => Constraint::Show(replace_type_constructor(ty, alias, canonical)),
         Constraint::ShowRow(ty) => {
             Constraint::ShowRow(replace_type_constructor(ty, alias, canonical))
         }
         Constraint::Eq(ty) => Constraint::Eq(replace_type_constructor(ty, alias, canonical)),
-        Constraint::EqRow(ty) => {
-            Constraint::EqRow(replace_type_constructor(ty, alias, canonical))
-        }
+        Constraint::EqRow(ty) => Constraint::EqRow(replace_type_constructor(ty, alias, canonical)),
         Constraint::Class { class, ty } => Constraint::Class {
             class: class.clone(),
             ty: replace_type_constructor(ty, alias, canonical),
@@ -15086,8 +15073,7 @@ fn legacy_data_maybe_ctor_fallbacks(
             continue;
         }
 
-        for (ctor_name, prelude_name) in
-            [("Just", "Prelude.Just"), ("Nothing", "Prelude.Nothing")]
+        for (ctor_name, prelude_name) in [("Just", "Prelude.Just"), ("Nothing", "Prelude.Nothing")]
         {
             if data_maybe_schemes.contains_key(ctor_name) {
                 continue;
@@ -15111,8 +15097,7 @@ fn legacy_data_maybe_ctor_fallbacks(
             let Some(scheme) = lookup(prelude_name).or_else(|| lookup(ctor_name)) else {
                 continue;
             };
-            let scheme =
-                canonicalize_reexport_ctor_scheme(&scheme, "Maybe", "Prelude.Maybe");
+            let scheme = canonicalize_reexport_ctor_scheme(&scheme, "Maybe", "Prelude.Maybe");
             let keys = if let Some(alias) = &import.as_name {
                 vec![format!("{alias}.{ctor_name}")]
             } else if import.qualified {
@@ -15212,12 +15197,10 @@ fn infer_module_with_class_env_with_entry_path(
         // is authoritative. Keep a compatibility fallback only for legacy Data.Maybe artifacts
         // that do not contain Just/Nothing. The fallback must preserve import filtering and must
         // never overwrite a scheme loaded from Data.Maybe itself.
-        let legacy_fallbacks = legacy_data_maybe_ctor_fallbacks(
-            module,
-            imported,
-            entry_dir,
-            |name| env_global.get(name).map(|entry| entry.scheme.clone()),
-        );
+        let legacy_fallbacks =
+            legacy_data_maybe_ctor_fallbacks(module, imported, entry_dir, |name| {
+                env_global.get(name).map(|entry| entry.scheme.clone())
+            });
         for (key, scheme) in legacy_fallbacks {
             env_global.entry(key).or_insert(EnvEntry {
                 scheme,
@@ -17648,10 +17631,7 @@ mod inference_tests {
                 class: ast::ClassId::dummy("C"),
                 ty: maybe_of(Ty::Var(1)),
             }],
-            ty: Ty::Func(
-                Box::new(Ty::Var(1)),
-                Box::new(maybe_of(Ty::Var(1))),
-            ),
+            ty: Ty::Func(Box::new(Ty::Var(1)), Box::new(maybe_of(Ty::Var(1)))),
         };
 
         let got = canonicalize_reexport_ctor_scheme(&scheme, "Maybe", "Prelude.Maybe");

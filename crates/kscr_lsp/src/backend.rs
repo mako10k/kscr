@@ -623,7 +623,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(text.contains("parameter x :: Integer"), "actual hover: {text}");
+        assert!(
+            text.contains("parameter x :: Integer"),
+            "actual hover: {text}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -654,7 +657,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(text.contains("parameter x :: Integer"), "actual hover: {text}");
+        assert!(
+            text.contains("parameter x :: Integer"),
+            "actual hover: {text}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -723,7 +729,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(x_text.contains("parameter x :: a"), "actual hover: {x_text}");
+        assert!(
+            x_text.contains("parameter x :: a"),
+            "actual hover: {x_text}"
+        );
 
         let y_hover = hover_in_doc(
             &doc,
@@ -737,7 +746,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(y_text.contains("parameter y :: a"), "actual hover: {y_text}");
+        assert!(
+            y_text.contains("parameter y :: a"),
+            "actual hover: {y_text}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -823,7 +835,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(divide_x_text.contains("parameter x :: a"), "actual hover: {divide_x_text}");
+        assert!(
+            divide_x_text.contains("parameter x :: a"),
+            "actual hover: {divide_x_text}"
+        );
 
         let divide_y_hover = hover_in_doc(
             &doc,
@@ -837,7 +852,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(divide_y_text.contains("parameter y :: a"), "actual hover: {divide_y_text}");
+        assert!(
+            divide_y_text.contains("parameter y :: a"),
+            "actual hover: {divide_y_text}"
+        );
 
         let sym_x_hover = hover_in_doc(
             &doc,
@@ -851,7 +869,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(sym_x_text.contains("parameter x :: a"), "actual hover: {sym_x_text}");
+        assert!(
+            sym_x_text.contains("parameter x :: a"),
+            "actual hover: {sym_x_text}"
+        );
 
         let sym_y_hover = hover_in_doc(
             &doc,
@@ -865,7 +886,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(sym_y_text.contains("parameter y :: a"), "actual hover: {sym_y_text}");
+        assert!(
+            sym_y_text.contains("parameter y :: a"),
+            "actual hover: {sym_y_text}"
+        );
     }
 
     #[test]
@@ -894,7 +918,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(alias_text.contains("module alias P = Prelude"), "actual hover: {alias_text}");
+        assert!(
+            alias_text.contains("module alias P = Prelude"),
+            "actual hover: {alias_text}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -925,7 +952,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(method_text.contains("class method show ::"), "actual hover: {method_text}");
+        assert!(
+            method_text.contains("class method show ::"),
+            "actual hover: {method_text}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -987,7 +1017,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(text.contains("add :: Integer -> Integer -> Integer"), "actual hover: {text}");
+        assert!(
+            text.contains("add :: Integer -> Integer -> Integer"),
+            "actual hover: {text}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1018,7 +1051,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(binder_text.contains("parameter y"), "actual hover: {binder_text}");
+        assert!(
+            binder_text.contains("parameter y"),
+            "actual hover: {binder_text}"
+        );
 
         let use_hover = hover_in_doc(
             &doc,
@@ -1063,7 +1099,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(binder_text.contains("binding foo :: Integer -> Integer"), "actual hover: {binder_text}");
+        assert!(
+            binder_text.contains("binding foo :: Integer -> Integer"),
+            "actual hover: {binder_text}"
+        );
 
         let use_hover = hover_in_doc(
             &doc,
@@ -1077,7 +1116,10 @@ mod tests {
             HoverContents::Markup(m) => m.value,
             _ => panic!("unexpected hover contents"),
         };
-        assert!(use_text.contains("binding foo :: Integer -> Integer"), "actual hover: {use_text}");
+        assert!(
+            use_text.contains("binding foo :: Integer -> Integer"),
+            "actual hover: {use_text}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1108,10 +1150,16 @@ mod tests {
             _ => panic!("unexpected hover contents"),
         };
         assert!(
-            !text.as_bytes().windows(2).any(|window| window[0] == b't' && window[1].is_ascii_digit()),
+            !text
+                .as_bytes()
+                .windows(2)
+                .any(|window| window[0] == b't' && window[1].is_ascii_digit()),
             "actual hover: {text}"
         );
-        assert!(text.contains("a") && text.contains("b"), "actual hover: {text}");
+        assert!(
+            text.contains("a") && text.contains("b"),
+            "actual hover: {text}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

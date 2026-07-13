@@ -104,9 +104,9 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
 
     let kind = contextual_ident_kind_at_offset(&doc.text, off)
         .or_else(|| {
-            module
-                .as_ref()
-                .and_then(|m| crate::backend_goto_completion::super_classify_toplevel_symbol(m, &name))
+            module.as_ref().and_then(|m| {
+                crate::backend_goto_completion::super_classify_toplevel_symbol(m, &name)
+            })
         })
         .or_else(|| method_ty.as_ref().map(|_| "class method"))
         .unwrap_or("identifier");
@@ -127,11 +127,7 @@ pub(super) fn hover_in_doc(doc: &Document, pos: Position) -> Option<Hover> {
             format!("```kscr\n{hover_kind} {name} :: {ty}\n```")
         }
         Some(ty) => format!("```kscr\n{name} :: {ty}\n```"),
-        None => format!(
-            "```kscr\n{} {}\n```",
-            hover_kind,
-            name
-        ),
+        None => format!("```kscr\n{} {}\n```", hover_kind, name),
     };
     if let Some(doc_comment) = doc_comment {
         value.push_str("\n---\n");
@@ -213,9 +209,21 @@ fn hover_parameter_in_doc(
             if span.start <= offset && offset < span.end {
                 let range = span_to_range(doc, span);
                 let value = scheme
-                    .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
-                    .map(|ty| format!("```kscr\nparameter {name} :: {}\n```", types::format_pretty_ty(&ty)))
-                    .or_else(|| class_method_parameter_type_text(&module, binding_name, index).map(|ty| format!("```kscr\nparameter {name} :: {ty}\n```")))
+                    .and_then(|scheme| {
+                        function_argument_types(&scheme.ty, index + 1)
+                            .into_iter()
+                            .nth(index)
+                    })
+                    .map(|ty| {
+                        format!(
+                            "```kscr\nparameter {name} :: {}\n```",
+                            types::format_pretty_ty(&ty)
+                        )
+                    })
+                    .or_else(|| {
+                        class_method_parameter_type_text(&module, binding_name, index)
+                            .map(|ty| format!("```kscr\nparameter {name} :: {ty}\n```"))
+                    })
                     .unwrap_or_else(|| format!("```kscr\nparameter {name}\n```"));
                 return Some(Hover {
                     contents: HoverContents::Markup(MarkupContent {
@@ -270,15 +278,18 @@ fn hover_parameter_use_in_doc(
                 && (expr_contains_var_at_offset(&binding.expr, name, offset) || same_line_rhs_use)
             {
                 let head = scheme
-                    .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
+                    .and_then(|scheme| {
+                        function_argument_types(&scheme.ty, index + 1)
+                            .into_iter()
+                            .nth(index)
+                    })
                     .map(|ty| format!("parameter {name} :: {}", types::format_pretty_ty(&ty)))
-                    .or_else(|| class_method_parameter_type_text(&module, binding_name, index).map(|ty| format!("parameter {name} :: {ty}")))
+                    .or_else(|| {
+                        class_method_parameter_type_text(&module, binding_name, index)
+                            .map(|ty| format!("parameter {name} :: {ty}"))
+                    })
                     .unwrap_or_else(|| format!("parameter {name}"));
-                return Some(simple_hover(
-                    doc,
-                    ident.current_span,
-                    &head,
-                ));
+                return Some(simple_hover(doc, ident.current_span, &head));
             }
         }
     }
@@ -288,13 +299,17 @@ fn hover_parameter_use_in_doc(
 
 fn expr_contains_var_at_offset(expr: &ast::Expr, name: &str, offset: usize) -> bool {
     match &expr.kind {
-        ast::ExprKind::Var(var_name) => var_name == name && expr.span.start <= offset && offset < expr.span.end,
+        ast::ExprKind::Var(var_name) => {
+            var_name == name && expr.span.start <= offset && offset < expr.span.end
+        }
         ast::ExprKind::Lambda { body, .. } | ast::ExprKind::Annot { expr: body, .. } => {
             expr_contains_var_at_offset(body, name, offset)
         }
         ast::ExprKind::Apply { func, args } => {
             expr_contains_var_at_offset(func, name, offset)
-                || args.iter().any(|arg| expr_contains_var_at_offset(arg, name, offset))
+                || args
+                    .iter()
+                    .any(|arg| expr_contains_var_at_offset(arg, name, offset))
         }
         ast::ExprKind::If {
             cond,
@@ -306,15 +321,21 @@ fn expr_contains_var_at_offset(expr: &ast::Expr, name: &str, offset: usize) -> b
                 || expr_contains_var_at_offset(else_branch, name, offset)
         }
         ast::ExprKind::Let { bindings, body } => {
-            bindings.iter().any(|binding| expr_contains_var_at_offset(&binding.expr, name, offset))
+            bindings
+                .iter()
+                .any(|binding| expr_contains_var_at_offset(&binding.expr, name, offset))
                 || expr_contains_var_at_offset(body, name, offset)
         }
         ast::ExprKind::Where { expr, bindings } => {
             expr_contains_var_at_offset(expr, name, offset)
-                || bindings.iter().any(|binding| expr_contains_var_at_offset(&binding.expr, name, offset))
+                || bindings
+                    .iter()
+                    .any(|binding| expr_contains_var_at_offset(&binding.expr, name, offset))
         }
         ast::ExprKind::Do(stmts) => stmts.iter().any(|stmt| match stmt {
-            ast::DoStmt::Bind { expr, .. } | ast::DoStmt::Expr(expr) => expr_contains_var_at_offset(expr, name, offset),
+            ast::DoStmt::Bind { expr, .. } | ast::DoStmt::Expr(expr) => {
+                expr_contains_var_at_offset(expr, name, offset)
+            }
         }),
         ast::ExprKind::Case { expr, arms } => {
             expr_contains_var_at_offset(expr, name, offset)
@@ -329,9 +350,9 @@ fn expr_contains_var_at_offset(expr: &ast::Expr, name: &str, offset: usize) -> b
             expr_contains_var_at_offset(head, name, offset)
                 || expr_contains_var_at_offset(tail, name, offset)
         }
-        ast::ExprKind::List(items) | ast::ExprKind::Tuple(items) => {
-            items.iter().any(|item| expr_contains_var_at_offset(item, name, offset))
-        }
+        ast::ExprKind::List(items) | ast::ExprKind::Tuple(items) => items
+            .iter()
+            .any(|item| expr_contains_var_at_offset(item, name, offset)),
         ast::ExprKind::Record(fields) => fields
             .iter()
             .any(|(_, value)| expr_contains_var_at_offset(value, name, offset)),
@@ -362,7 +383,9 @@ fn hover_local_binding_in_doc(
         let ast::Item::Binding(binding) = item else {
             continue;
         };
-        if let Some(hover) = hover_local_binding_in_expr(doc, offset, name, typed, &binding.expr, &[]) {
+        if let Some(hover) =
+            hover_local_binding_in_expr(doc, offset, name, typed, &binding.expr, &[])
+        {
             return Some(hover);
         }
     }
@@ -413,9 +436,16 @@ pub(super) fn hover_method_parameter_use_in_doc(
                 };
                 if name == ident.current_name && offset >= span.end {
                     let head = scheme
-                        .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
+                        .and_then(|scheme| {
+                            function_argument_types(&scheme.ty, index + 1)
+                                .into_iter()
+                                .nth(index)
+                        })
                         .map(|ty| format!("parameter {name} :: {}", types::format_pretty_ty(&ty)))
-                        .or_else(|| class_method_parameter_type_text(&module, binding_name, index).map(|ty| format!("parameter {name} :: {ty}")))
+                        .or_else(|| {
+                            class_method_parameter_type_text(&module, binding_name, index)
+                                .map(|ty| format!("parameter {name} :: {ty}"))
+                        })
                         .unwrap_or_else(|| format!("parameter {name}"));
                     return Some(simple_hover(doc, ident.current_span, &head));
                 }
@@ -457,7 +487,11 @@ fn hover_line_parameter_use_in_doc(
 
         let scheme = typed.and_then(|typed| binding_scheme(typed, &clause.binding_name));
         let head = scheme
-            .and_then(|scheme| function_argument_types(&scheme.ty, index + 1).into_iter().nth(index))
+            .and_then(|scheme| {
+                function_argument_types(&scheme.ty, index + 1)
+                    .into_iter()
+                    .nth(index)
+            })
             .map(|ty| format!("parameter {name} :: {}", types::format_pretty_ty(&ty)))
             .or_else(|| {
                 class_method_parameter_type_text(&module, &clause.binding_name, index)
@@ -561,17 +595,22 @@ fn hover_local_binding_in_expr<'a>(
             None
         }
         ast::ExprKind::Var(_) => None,
-        ast::ExprKind::Let { bindings, body } => hover_local_binding_in_scope(
-            doc, offset, name, typed, bindings, body, scope,
-        ),
-        ast::ExprKind::Where { expr, bindings } => hover_local_binding_in_scope(
-            doc, offset, name, typed, bindings, expr, scope,
-        ),
+        ast::ExprKind::Let { bindings, body } => {
+            hover_local_binding_in_scope(doc, offset, name, typed, bindings, body, scope)
+        }
+        ast::ExprKind::Where { expr, bindings } => {
+            hover_local_binding_in_scope(doc, offset, name, typed, bindings, expr, scope)
+        }
         ast::ExprKind::Lambda { body, .. } | ast::ExprKind::Annot { expr: body, .. } => {
             hover_local_binding_in_expr(doc, offset, name, typed, body, scope)
         }
-        ast::ExprKind::Apply { func, args } => hover_local_binding_in_expr(doc, offset, name, typed, func, scope)
-            .or_else(|| args.iter().find_map(|arg| hover_local_binding_in_expr(doc, offset, name, typed, arg, scope))),
+        ast::ExprKind::Apply { func, args } => {
+            hover_local_binding_in_expr(doc, offset, name, typed, func, scope).or_else(|| {
+                args.iter().find_map(|arg| {
+                    hover_local_binding_in_expr(doc, offset, name, typed, arg, scope)
+                })
+            })
+        }
         ast::ExprKind::If {
             cond,
             then_branch,
@@ -584,23 +623,30 @@ fn hover_local_binding_in_expr<'a>(
                 hover_local_binding_in_expr(doc, offset, name, typed, expr, scope)
             }
         }),
-        ast::ExprKind::Case { expr, arms } => hover_local_binding_in_expr(doc, offset, name, typed, expr, scope)
-            .or_else(|| {
+        ast::ExprKind::Case { expr, arms } => {
+            hover_local_binding_in_expr(doc, offset, name, typed, expr, scope).or_else(|| {
                 arms.iter().find_map(|arm| {
                     arm.guard
                         .as_ref()
-                        .and_then(|guard| hover_local_binding_in_expr(doc, offset, name, typed, guard, scope))
-                        .or_else(|| hover_local_binding_in_expr(doc, offset, name, typed, &arm.body, scope))
+                        .and_then(|guard| {
+                            hover_local_binding_in_expr(doc, offset, name, typed, guard, scope)
+                        })
+                        .or_else(|| {
+                            hover_local_binding_in_expr(doc, offset, name, typed, &arm.body, scope)
+                        })
                 })
-            }),
-        ast::ExprKind::Cons { head, tail } => hover_local_binding_in_expr(doc, offset, name, typed, head, scope)
-            .or_else(|| hover_local_binding_in_expr(doc, offset, name, typed, tail, scope)),
-        ast::ExprKind::List(items) | ast::ExprKind::Tuple(items) => {
-            items.iter().find_map(|item| hover_local_binding_in_expr(doc, offset, name, typed, item, scope))
+            })
         }
-        ast::ExprKind::Record(fields) => fields
+        ast::ExprKind::Cons { head, tail } => {
+            hover_local_binding_in_expr(doc, offset, name, typed, head, scope)
+                .or_else(|| hover_local_binding_in_expr(doc, offset, name, typed, tail, scope))
+        }
+        ast::ExprKind::List(items) | ast::ExprKind::Tuple(items) => items
             .iter()
-            .find_map(|(_, value)| hover_local_binding_in_expr(doc, offset, name, typed, value, scope)),
+            .find_map(|item| hover_local_binding_in_expr(doc, offset, name, typed, item, scope)),
+        ast::ExprKind::Record(fields) => fields.iter().find_map(|(_, value)| {
+            hover_local_binding_in_expr(doc, offset, name, typed, value, scope)
+        }),
         ast::ExprKind::Unit
         | ast::ExprKind::Integer(_)
         | ast::ExprKind::Float64(_)
@@ -624,7 +670,8 @@ fn hover_local_binding_in_scope<'a>(
         let ast::PatternKind::Var(binding_name) = &binding.pat.kind else {
             continue;
         };
-        if binding_name == name && binding.pat.span.start <= offset && offset < binding.pat.span.end {
+        if binding_name == name && binding.pat.span.start <= offset && offset < binding.pat.span.end
+        {
             let scheme = local_binding_scheme(typed, binding_name, binding.pat.span)?;
             return Some(simple_hover(
                 doc,
@@ -637,7 +684,9 @@ fn hover_local_binding_in_scope<'a>(
     let mut scoped_bindings: Vec<&ast::Binding> = scope.to_vec();
     scoped_bindings.extend(bindings.iter());
     for binding in bindings {
-        if let Some(hover) = hover_local_binding_in_expr(doc, offset, name, typed, &binding.expr, &scoped_bindings) {
+        if let Some(hover) =
+            hover_local_binding_in_expr(doc, offset, name, typed, &binding.expr, &scoped_bindings)
+        {
             return Some(hover);
         }
     }
@@ -687,7 +736,10 @@ fn bindings_in_module(module: &ast::Module) -> Vec<&ast::Binding> {
     out
 }
 
-fn binding_scheme<'a>(typed: &'a types::TypedModule, binding_name: &str) -> Option<&'a types::Scheme> {
+fn binding_scheme<'a>(
+    typed: &'a types::TypedModule,
+    binding_name: &str,
+) -> Option<&'a types::Scheme> {
     typed
         .inferred
         .get(binding_name)
@@ -707,7 +759,11 @@ fn class_method_parameter_type_text(
             .methods
             .iter()
             .find(|method| method.name == binding_name)
-            .and_then(|method| ast_function_argument_types(&method.ty.ty, index + 1).into_iter().nth(index))
+            .and_then(|method| {
+                ast_function_argument_types(&method.ty.ty, index + 1)
+                    .into_iter()
+                    .nth(index)
+            })
             .map(format_ast_type)
     })
 }
@@ -734,9 +790,31 @@ fn format_ast_type(ty: &ast::Type) -> String {
         ast::Type::Char => "Char".to_string(),
         ast::Type::String => "String".to_string(),
         ast::Type::List(item) => format!("[{}]", format_ast_type(item)),
-        ast::Type::Tuple(items) => format!("({})", items.iter().map(format_ast_type).collect::<Vec<_>>().join(", ")),
-        ast::Type::Record(fields) => format!("{{{}}}", fields.iter().map(|(name, ty)| format!("{name}: {}", format_ast_type(ty))).collect::<Vec<_>>().join(", ")),
-        ast::Type::RecordOpen(fields, rest) => format!("{{{}, ..{}}}", fields.iter().map(|(name, ty)| format!("{name}: {}", format_ast_type(ty))).collect::<Vec<_>>().join(", "), format_ast_type(rest)),
+        ast::Type::Tuple(items) => format!(
+            "({})",
+            items
+                .iter()
+                .map(format_ast_type)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ast::Type::Record(fields) => format!(
+            "{{{}}}",
+            fields
+                .iter()
+                .map(|(name, ty)| format!("{name}: {}", format_ast_type(ty)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ast::Type::RecordOpen(fields, rest) => format!(
+            "{{{}, ..{}}}",
+            fields
+                .iter()
+                .map(|(name, ty)| format!("{name}: {}", format_ast_type(ty)))
+                .collect::<Vec<_>>()
+                .join(", "),
+            format_ast_type(rest)
+        ),
         ast::Type::Hole(name) => name.clone().unwrap_or_else(|| "_".to_string()),
         ast::Type::Var(name) => name.clone(),
         ast::Type::App { head, args } => {
@@ -744,7 +822,9 @@ fn format_ast_type(ty: &ast::Type) -> String {
             parts.extend(args.iter().map(format_ast_type));
             parts.join(" ")
         }
-        ast::Type::Func(arg, rest) => format!("{} -> {}", format_ast_type(arg), format_ast_type(rest)),
+        ast::Type::Func(arg, rest) => {
+            format!("{} -> {}", format_ast_type(arg), format_ast_type(rest))
+        }
     }
 }
 

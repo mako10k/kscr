@@ -16,9 +16,12 @@ pub(crate) fn inlay_hints_in_doc(doc: &Document, range: Range) -> Option<Vec<Inl
         let PatternKind::Var(name) = &binding.pat.kind else {
             continue;
         };
-        let scheme = typed
-            .as_ref()
-            .and_then(|typed| typed.inferred.get(name).or_else(|| typed.class_methods.get(name)));
+        let scheme = typed.as_ref().and_then(|typed| {
+            typed
+                .inferred
+                .get(name)
+                .or_else(|| typed.class_methods.get(name))
+        });
         let class_sig = class_method_signature_text(&module, name);
         if scheme.is_none() && class_sig.is_none() {
             continue;
@@ -54,13 +57,7 @@ pub(crate) fn inlay_hints_in_doc(doc: &Document, range: Range) -> Option<Vec<Inl
                 .unwrap_or_default()
         };
         for (span, label) in parameter_spans.into_iter().zip(parameter_labels) {
-            push_type_hint(
-                doc,
-                span.end,
-                format!(":: {label}"),
-                &range,
-                &mut hints,
-            );
+            push_type_hint(doc, span.end, format!(":: {label}"), &range, &mut hints);
         }
     }
 
@@ -152,16 +149,25 @@ fn class_method_signature_text(
         let Item::ClassDecl(class) = item else {
             return None;
         };
-        class.methods.iter().find(|method| method.name == binding_name).map(|method| {
-            let params = ast_function_argument_types(&method.ty.ty)
-                .into_iter()
-                .map(format_ast_type)
-                .collect::<Vec<_>>();
-            (
-                format!("{} {} => {}", class.name, class.param, format_ast_type(&method.ty.ty)),
-                params,
-            )
-        })
+        class
+            .methods
+            .iter()
+            .find(|method| method.name == binding_name)
+            .map(|method| {
+                let params = ast_function_argument_types(&method.ty.ty)
+                    .into_iter()
+                    .map(format_ast_type)
+                    .collect::<Vec<_>>();
+                (
+                    format!(
+                        "{} {} => {}",
+                        class.name,
+                        class.param,
+                        format_ast_type(&method.ty.ty)
+                    ),
+                    params,
+                )
+            })
     })
 }
 
@@ -185,7 +191,14 @@ fn format_ast_type(ty: &kscr::ast::Type) -> String {
         kscr::ast::Type::String => "String".to_string(),
         kscr::ast::Type::List(item) => format!("[{}]", format_ast_type(item)),
         kscr::ast::Type::Tuple(items) => {
-            format!("({})", items.iter().map(format_ast_type).collect::<Vec<_>>().join(", "))
+            format!(
+                "({})",
+                items
+                    .iter()
+                    .map(format_ast_type)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
         kscr::ast::Type::Record(fields) => format!(
             "{{{}}}",
@@ -433,11 +446,15 @@ mod tests {
             .iter()
             .map(|hint| match &hint.label {
                 InlayHintLabel::String(s) => s.clone(),
-                InlayHintLabel::LabelParts(parts) => parts.iter().map(|part| part.value.clone()).collect(),
+                InlayHintLabel::LabelParts(parts) => {
+                    parts.iter().map(|part| part.value.clone()).collect()
+                }
             })
             .collect();
 
-        assert!(labels.iter().any(|label| label.contains(":: Integer -> Integer")));
+        assert!(labels
+            .iter()
+            .any(|label| label.contains(":: Integer -> Integer")));
         assert!(labels.iter().any(|label| label.contains(":: Integer")));
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -453,7 +470,10 @@ mod tests {
         };
 
         assert_eq!(binding.pat.span.start, src.find("funcB").unwrap());
-        assert_eq!(binding.pat.span.end, src.find("funcB").unwrap() + "funcB".len());
+        assert_eq!(
+            binding.pat.span.end,
+            src.find("funcB").unwrap() + "funcB".len()
+        );
 
         let uri = Url::parse("file:///test.ks").unwrap();
         let doc = Document::new(uri, src.to_string(), 1);
@@ -486,8 +506,14 @@ mod tests {
         let hints = inlay_hints_in_doc(
             &doc,
             Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 10, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 10,
+                    character: 0,
+                },
             },
         )
         .unwrap();
@@ -509,9 +535,24 @@ mod tests {
         let x_column = src.lines().nth(1).unwrap().find("x y").unwrap() as u32 + 1;
         let y_column = src.lines().nth(1).unwrap().rfind('y').unwrap() as u32 + 1;
 
-        assert!(labels_and_columns.iter().any(|(label, column)| label.contains(":: a -> b -> a") && *column == slash_column), "labels_and_columns: {labels_and_columns:?}");
-        assert!(labels_and_columns.iter().any(|(label, column)| label == ":: a" && *column == x_column), "labels_and_columns: {labels_and_columns:?}");
-        assert!(labels_and_columns.iter().any(|(label, column)| label == ":: b" && *column == y_column), "labels_and_columns: {labels_and_columns:?}");
+        assert!(
+            labels_and_columns
+                .iter()
+                .any(|(label, column)| label.contains(":: a -> b -> a") && *column == slash_column),
+            "labels_and_columns: {labels_and_columns:?}"
+        );
+        assert!(
+            labels_and_columns
+                .iter()
+                .any(|(label, column)| label == ":: a" && *column == x_column),
+            "labels_and_columns: {labels_and_columns:?}"
+        );
+        assert!(
+            labels_and_columns
+                .iter()
+                .any(|(label, column)| label == ":: b" && *column == y_column),
+            "labels_and_columns: {labels_and_columns:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -534,8 +575,14 @@ mod tests {
         let hints = inlay_hints_in_doc(
             &doc,
             Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 10, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 10,
+                    character: 0,
+                },
             },
         )
         .unwrap();
@@ -544,12 +591,24 @@ mod tests {
             .iter()
             .map(|hint| match &hint.label {
                 InlayHintLabel::String(s) => s.clone(),
-                InlayHintLabel::LabelParts(parts) => parts.iter().map(|part| part.value.clone()).collect(),
+                InlayHintLabel::LabelParts(parts) => {
+                    parts.iter().map(|part| part.value.clone()).collect()
+                }
             })
             .collect();
 
-        assert!(labels.iter().any(|label| label.contains(":: (a -> a -> b) -> (c -> a) -> c -> c -> b")), "labels: {labels:?}");
-        assert!(!labels.iter().any(|label| label.contains("t0") || label.contains("t1") || label.contains("t2")), "labels: {labels:?}");
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains(":: (a -> a -> b) -> (c -> a) -> c -> c -> b")),
+            "labels: {labels:?}"
+        );
+        assert!(
+            !labels
+                .iter()
+                .any(|label| label.contains("t0") || label.contains("t1") || label.contains("t2")),
+            "labels: {labels:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -572,8 +631,14 @@ mod tests {
         let hints = inlay_hints_in_doc(
             &doc,
             Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 10, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 10,
+                    character: 0,
+                },
             },
         )
         .unwrap();
@@ -582,12 +647,22 @@ mod tests {
             .iter()
             .map(|hint| match &hint.label {
                 InlayHintLabel::String(s) => s.clone(),
-                InlayHintLabel::LabelParts(parts) => parts.iter().map(|part| part.value.clone()).collect(),
+                InlayHintLabel::LabelParts(parts) => {
+                    parts.iter().map(|part| part.value.clone()).collect()
+                }
             })
             .collect();
 
-        assert!(labels.iter().any(|label| label.contains("Field a => a -> a -> a")), "labels: {labels:?}");
-        assert!(labels.iter().any(|label| label == ":: a"), "labels: {labels:?}");
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.contains("Field a => a -> a -> a")),
+            "labels: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label == ":: a"),
+            "labels: {labels:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -604,8 +679,14 @@ mod tests {
         let hints = inlay_hints_in_doc(
             &doc,
             Range {
-                start: Position { line: 12, character: 0 },
-                end: Position { line: 15, character: 40 },
+                start: Position {
+                    line: 12,
+                    character: 0,
+                },
+                end: Position {
+                    line: 15,
+                    character: 40,
+                },
             },
         )
         .unwrap();
@@ -623,11 +704,43 @@ mod tests {
             })
             .collect();
 
-        assert!(labels_and_positions.iter().any(|(label, line, _)| *line == 12 && label.contains("Field a => a -> a -> a")), "labels_and_positions: {labels_and_positions:?}");
-        assert!(labels_and_positions.iter().any(|(label, line, col)| *line == 12 && *col == 12 && label == ":: a"), "labels_and_positions: {labels_and_positions:?}");
-        assert!(labels_and_positions.iter().any(|(label, line, col)| *line == 12 && *col == 14 && label == ":: a"), "labels_and_positions: {labels_and_positions:?}");
-        assert!(labels_and_positions.iter().any(|(label, line, col)| *line == 14 && *col == 6 && label.contains("Field a => a -> a -> a")), "labels_and_positions: {labels_and_positions:?}");
-        assert!(labels_and_positions.iter().any(|(label, line, col)| *line == 14 && *col == 8 && label == ":: a"), "labels_and_positions: {labels_and_positions:?}");
-        assert!(labels_and_positions.iter().any(|(label, line, col)| *line == 14 && *col == 10 && label == ":: a"), "labels_and_positions: {labels_and_positions:?}");
+        assert!(
+            labels_and_positions
+                .iter()
+                .any(|(label, line, _)| *line == 12 && label.contains("Field a => a -> a -> a")),
+            "labels_and_positions: {labels_and_positions:?}"
+        );
+        assert!(
+            labels_and_positions
+                .iter()
+                .any(|(label, line, col)| *line == 12 && *col == 12 && label == ":: a"),
+            "labels_and_positions: {labels_and_positions:?}"
+        );
+        assert!(
+            labels_and_positions
+                .iter()
+                .any(|(label, line, col)| *line == 12 && *col == 14 && label == ":: a"),
+            "labels_and_positions: {labels_and_positions:?}"
+        );
+        assert!(
+            labels_and_positions
+                .iter()
+                .any(|(label, line, col)| *line == 14
+                    && *col == 6
+                    && label.contains("Field a => a -> a -> a")),
+            "labels_and_positions: {labels_and_positions:?}"
+        );
+        assert!(
+            labels_and_positions
+                .iter()
+                .any(|(label, line, col)| *line == 14 && *col == 8 && label == ":: a"),
+            "labels_and_positions: {labels_and_positions:?}"
+        );
+        assert!(
+            labels_and_positions
+                .iter()
+                .any(|(label, line, col)| *line == 14 && *col == 10 && label == ":: a"),
+            "labels_and_positions: {labels_and_positions:?}"
+        );
     }
 }

@@ -337,7 +337,11 @@ fn instance_head_class_token_index(toks: &[lexer::Token], cursor: usize) -> Opti
     let scan_start = last_fat_arrow.map(|idx| idx + 1).unwrap_or(inst + 1);
     for (idx, tok) in toks.iter().enumerate().take(end).skip(scan_start) {
         if let TokenKind::Ident(name) = &tok.kind {
-            if name.chars().next().is_some_and(|ch| ch.is_ascii_uppercase()) {
+            if name
+                .chars()
+                .next()
+                .is_some_and(|ch| ch.is_ascii_uppercase())
+            {
                 return Some(idx);
             }
         }
