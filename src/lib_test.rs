@@ -848,27 +848,41 @@ fn parser_golden_decl() {
 
 #[test]
 fn parser_accepts_prefix_and_infix_symbolic_data_constructors() {
+    use crate::ast::Type;
+
+    fn var(name: &str) -> Type {
+        Type::Var(name.to_string())
+    }
+
+    fn app(name: &str, args: Vec<Type>) -> Type {
+        Type::App {
+            head: Box::new(var(name)),
+            args,
+        }
+    }
+
     for (decl, expected_args) in [
+        ("data Pair a b = (:*:) a b", vec![var("a"), var("b")]),
+        ("data Pair a b = a :*: b", vec![var("a"), var("b")]),
+        ("data Pair b = A :*: b", vec![var("A"), var("b")]),
         (
-            "data Pair a b = (:*:) a b",
+            "data Pair a b = Maybe a :*: b",
+            vec![app("Maybe", vec![var("a")]), var("b")],
+        ),
+        (
+            "data Pair a b = a :*: Maybe b",
+            vec![var("a"), app("Maybe", vec![var("b")])],
+        ),
+        (
+            "data Pair e a b = Either e a :*: Maybe b",
             vec![
-                crate::ast::Type::Var("a".to_string()),
-                crate::ast::Type::Var("b".to_string()),
+                app("Either", vec![var("e"), var("a")]),
+                app("Maybe", vec![var("b")]),
             ],
         ),
         (
-            "data Pair a b = a :*: b",
-            vec![
-                crate::ast::Type::Var("a".to_string()),
-                crate::ast::Type::Var("b".to_string()),
-            ],
-        ),
-        (
-            "data Pair b = A :*: b",
-            vec![
-                crate::ast::Type::Var("A".to_string()),
-                crate::ast::Type::Var("b".to_string()),
-            ],
+            "data Pair a b c = (a -> b) :*: c",
+            vec![Type::Func(Box::new(var("a")), Box::new(var("b"))), var("c")],
         ),
     ] {
         let module = crate::parser::parse_module(decl).unwrap_or_else(|err| {
@@ -885,6 +899,76 @@ fn parser_accepts_prefix_and_infix_symbolic_data_constructors() {
             "unexpected ctor arguments for `{decl}`"
         );
     }
+
+    let decl = "data Pair a b = Maybe a :*: Either a b | Prefix (Maybe a) [b] deriving (Eq, Show)";
+    let module = crate::parser::parse_module(decl).unwrap();
+    let crate::ast::Item::DataDecl(data) = &module.items[0] else {
+        panic!("expected data declaration for `{decl}`");
+    };
+    assert_eq!(data.ctors.len(), 2);
+    assert_eq!(data.ctors[0].name, ":*:");
+    assert_eq!(
+        data.ctors[0].args,
+        vec![
+            app("Maybe", vec![var("a")]),
+            app("Either", vec![var("a"), var("b")]),
+        ]
+    );
+    assert_eq!(data.ctors[1].name, "Prefix");
+    assert_eq!(
+        data.ctors[1].args,
+        vec![app("Maybe", vec![var("a")]), Type::List(Box::new(var("b")))]
+    );
+    assert_eq!(data.deriving, vec!["Eq", "Show"]);
+
+    for (invalid, reason) in [
+        (
+            "data Bad a b c = a -> b :*: c",
+            "unparenthesized function type must not be accepted as an infix constructor operand",
+        ),
+        (
+            "data Bad a = a :*: deriving Show",
+            "deriving must not be consumed as a missing infix constructor operand",
+        ),
+    ] {
+        assert!(crate::parser::parse_module(invalid).is_err(), "{reason}");
+    }
+}
+
+#[test]
+fn typecheck_infix_constructor_applied_operands_preserve_data_params() {
+    let declarations = concat!(
+        "data MMaybe a = MNothing | MJust a\n",
+        "data EEither a b = L a | R b\n",
+        "data Pair a b = MMaybe a :*: EEither a b\n",
+    );
+
+    let valid = format!(
+        "{declarations}data IntPair = IntPair (Pair Integer Char)\n\
+         value = IntPair ((:*:) (MJust 1) (L 1))\n"
+    );
+    let module = crate::parser::parse_module(&valid).unwrap();
+    crate::types::typecheck(module).unwrap();
+
+    let invalid_a = format!(
+        "{declarations}data BoolPair = BoolPair (Pair Bool Char)\n\
+         value = BoolPair ((:*:) (MJust 1) (L 1))\n"
+    );
+    let module = crate::parser::parse_module(&invalid_a).unwrap();
+    assert!(
+        crate::types::typecheck(module).is_err(),
+        "the first constructor field must constrain the first result parameter"
+    );
+
+    let invalid_b = format!(
+        "{declarations}data CharPair = CharPair (Pair Bool Char)\n\
+         value = CharPair ((:*:) MNothing (R 1))\n"
+    );
+    let module = crate::parser::parse_module(&invalid_b).unwrap();
+    assert!(
+        crate::types::typecheck(module).is_err(),
+        "the second constructor field must constrain the second result parameter"
+    );
 }
 
 #[test]

@@ -199,6 +199,14 @@ fn parse_type_app(
     }
 }
 
+pub(crate) fn parse_type_app_in_root(
+    ts: &mut TokenStream,
+    stop: Stop,
+    end: fn(Option<&TokenKind>, Stop) -> bool,
+) -> Result<ast::Type> {
+    parse_type_app(ts, stop, end)
+}
+
 fn is_type_atom_start(kind: Option<&TokenKind>) -> bool {
     matches!(
         kind,

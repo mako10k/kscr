@@ -651,7 +651,7 @@ fn parse_algebraic_decl(
             Some(ctor)
         } else {
             (ts.i, ts.last_span_end) = save;
-            let lhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
+            let lhs = parse_algebraic_ctor_operand(ts)?;
             let Some(TokenKind::Operator(op)) = ts.peek_kind() else {
                 return Err(ts.err_here("expected constructor name"));
             };
@@ -661,7 +661,7 @@ fn parse_algebraic_decl(
             let op = op.clone();
             let ctor_start = ts.peek_span().map(|s| s.start).unwrap_or(ts.last_span_end);
             ts.bump();
-            let rhs = parse_type_atom(ts, Stop::LineEnd, is_type_alias_end)?;
+            let rhs = parse_algebraic_ctor_operand(ts)?;
             let ctor_end = ts.last_span_end;
             Some(ast::DataCtor {
                 doc: ctor_doc_buf.take(),
@@ -2571,6 +2571,20 @@ fn is_type_alias_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
     type_expr::is_type_alias_end_public(kind, Stop::LineEnd)
 }
 
+fn is_algebraic_ctor_operand_end(kind: Option<&TokenKind>, _stop: Stop) -> bool {
+    matches!(
+        kind,
+        None | Some(TokenKind::Newline) | Some(TokenKind::Pipe) | Some(TokenKind::Dedent)
+    ) || matches!(kind, Some(TokenKind::Ident(name)) if name == "deriving")
+}
+
+fn parse_algebraic_ctor_operand(ts: &mut TokenStream) -> Result<ast::Type> {
+    if is_algebraic_ctor_operand_end(ts.peek_kind(), Stop::LineEnd) {
+        return Err(ts.err_here("expected type"));
+    }
+    parse_type_app(ts, Stop::LineEnd, is_algebraic_ctor_operand_end)
+}
+
 fn is_type_end(kind: Option<&TokenKind>, stop: Stop) -> bool {
     type_expr::is_type_end_in_root(kind, stop)
 }
@@ -2581,6 +2595,14 @@ fn parse_type_expr(
     end: fn(Option<&TokenKind>, Stop) -> bool,
 ) -> Result<ast::Type> {
     type_expr::parse_type_expr_in_root(ts, stop, end)
+}
+
+fn parse_type_app(
+    ts: &mut TokenStream,
+    stop: Stop,
+    end: fn(Option<&TokenKind>, Stop) -> bool,
+) -> Result<ast::Type> {
+    type_expr::parse_type_app_in_root(ts, stop, end)
 }
 
 fn parse_type_atom(
