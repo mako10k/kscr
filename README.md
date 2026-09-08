@@ -254,20 +254,24 @@ See `crates/kscr_lsp/README.md` for integration instructions with VS Code, Vim, 
 
 ## Development Status
 
-Current implementation includes:
-- ✅ Lexer with indent-aware tokenization
-- ✅ Parser supporting full language syntax
-- ✅ Type inference with Hindley-Milner algorithm
-- ✅ Typeclass constraints (Show, Eq) with dictionary passing
-- ✅ Module system with import/export
-- ✅ IR with basic evaluator
-- ✅ Pattern matching and case expressions
-- ✅ Do-notation for IO
-- ✅ Interactive REPL
-- ✅ Automatic deriving for typeclasses
-- ✅ LSP server with diagnostics, symbols, hover, definition, completion, references, rename, and semantic tokens
+The main interpreter path is an operational baseline: source can be lexed, parsed,
+typechecked, lowered to IR, and executed with modules, typeclasses, pattern
+matching, IO, and the REPL. This does not mean every language, backend, artifact,
+or self-hosting contract is complete.
 
-For the latest development status and priorities, see `docs/PriorityChecklist.md`.
+Current partial or experimental surfaces include:
+
+- KIR1/KSIF artifacts and the native runner produced by `kscr compile`;
+- the optional LLVM and unsafe FFI paths; and
+- LSP workspace scale, server provisioning, and formatter integration.
+
+Known high-impact gaps include stack-unsafe tail recursion in the evaluator,
+runtime import aliases that do not fully preserve import filters, ambiguous
+`KSCR_USE_KSIF=0` artifact behavior, and direct equality for `String` /
+`[Char]`.
+
+See `docs/ImplementationPlan.md` for the evidence-backed maturity matrix and
+`docs/PriorityChecklist.md` for the current self-hosting priority view.
 
 ## License
 

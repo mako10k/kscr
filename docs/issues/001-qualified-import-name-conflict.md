@@ -1,5 +1,12 @@
 # Issue: False `name conflict` for qualified imports
 
+> **Status:** Resolved historical issue. The fix was recorded in commit
+> `78c8014`, and `tests/import_qualified_conflict_issue_001.rs` covers both the
+> conflict and unqualified-name leakage regressions.
+>
+> The report below is preserved as investigated; present-tense failure language
+> describes the pre-fix state.
+
 ## Summary
 Qualified imports should allow the same exported name from multiple modules without conflicts (e.g. `P.filter` vs `L.filter`).
 

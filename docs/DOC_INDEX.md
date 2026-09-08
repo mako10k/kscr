@@ -1,6 +1,14 @@
-# Documentation Index and Classification Ledger (Draft v1)
+# Documentation Index
 
-This file is the first-pass classification ledger for `docs/` and root-level summary/handoff files.
+This file classifies `docs/` and root-level status records. It is a routing
+index, not a second implementation-status ledger.
+
+Current authority:
+
+- observable behavior: implementation and focused tests;
+- capability maturity: `docs/ImplementationPlan.md`;
+- current execution order: `docs/PriorityChecklist.md`;
+- live work and acceptance criteria: GitHub Issues.
 
 ## Classification Policy (Short)
 
@@ -15,11 +23,11 @@ Rule: when implementation alignment is uncertain, classify as `Needs-Triage` unt
 
 | path | category | rationale | source-of-truth |
 |---|---|---|---|
-| `docs/BinaryIRFormat.md` | Future | Explicitly marked as design proposal and not yet implemented. | Proposal only; validate against `src/ir_pack.rs` before execution. |
+| `docs/BinaryIRFormat.md` | Future | Proposes a full separate-compilation format; an experimental KIR1/KSIF subset exists. | Proposal scope must be compared with `src/kir1.rs` and `src/ir_pack.rs`. |
 | `docs/CACHING_STRATEGY.md` | Future | Optimization strategy and expected gains, not an implementation record. | Proposal baseline; implementation/tests decide final behavior. |
 | `docs/CACHING_STRATEGY_ja.md` | Future | Japanese version of strategy document; same planning intent. | Same as `docs/CACHING_STRATEGY.md`. |
 | `docs/ARCHIVE_NOTICE.md` | Current | Defines the canonical banner for historical evidence docs. | Documentation governance policy in this repo. |
-| `docs/BACKLOG.md` | Future | Consolidated future-work backlog extracted from planning artifacts. | Active future-work tracker. |
+| `docs/BACKLOG.md` | Past | Archived 2026-03 planning inventory with mixed completed and proposed items. | Historical reference; GitHub Issues are the live tracker. |
 | `docs/DOC_INDEX.md` | Current | Canonical classification ledger for `Past/Current/Future/Needs-Triage`. | Documentation governance policy in this repo. |
 | `docs/DiagnosticsPlan.md` | Future | Improvement plan for diagnostics UX. | Proposal; final behavior must follow code + tests. |
 | `docs/DocComments.md` | Current | Describes active doc comment syntax and behavior. | Lexer/parser/tests are canonical. |
@@ -29,8 +37,9 @@ Rule: when implementation alignment is uncertain, classify as `Needs-Triage` unt
 | `docs/HANDOFF_2026-02-03.md` | Past | Date-stamped WIP transfer note. | Historical reference only. |
 | `docs/HANDOFF_2026-02-05.md` | Past | Date-stamped handoff containing local delta notes. | Historical reference only. |
 | `docs/HANDOFF_2026-03-01.md` | Past | Date-stamped handoff summary of executed changes. | Historical reference only. |
+| `docs/HANDOFF_2026-03-03.md` | Past | Date-stamped documentation reconciliation handoff. | Historical reference only. |
 | `docs/IROptimization.md` | Needs-Triage | States framework principles; implementation depth unclear from doc alone. | Reconcile with optimizer passes and tests. |
-| `docs/ImplementationPlan.md` | Needs-Triage | Combines baseline statements and planned gaps; temporal state is mixed. | Code/tests/CI are authoritative; doc needs spot-check update. |
+| `docs/ImplementationPlan.md` | Current | Evidence-backed capability matrix with explicit maturity vocabulary and known Issue boundaries. | Code/tests/CI plus linked live Issues. |
 | `docs/IntermediateRepresentation.md` | Current | Reference-style internal IR description intended as active spec. | `src/ir.rs`, `src/kir1.rs`, runtime/tests. |
 | `docs/LLVMIRGeneration.md` | Current | Feature description for existing `kscr_llvm` pipeline. | `crates/kscr_llvm/` + related tests. |
 | `docs/LSPDesign.md` | Future | Labeled design/roadmap for expanded LSP/VSIX architecture. | Design intent only. |
@@ -57,8 +66,8 @@ Rule: when implementation alignment is uncertain, classify as `Needs-Triage` unt
 | `docs/plans/PLANNING_INDEX.md` | Future | Index for pending KSIF plan set. | Planning index. |
 | `docs/plans/PLAN_SUMMARY.md` | Future | "Ready for implementation" summary for planned work. | Planning summary. |
 | `docs/plans/plan.md` | Future | Full implementation plan/specification. | Planning source doc. |
-| `docs/traceability/current_vs_impl_matrix.md` | Current | Tracks reconciliation status between current docs and implementation evidence. | Audit progress source for current-doc verification. |
-| `docs/issues/001-qualified-import-name-conflict.md` | Future | Open issue with repro and expected fix direction. | Issue tracker artifact; validate against tests once fixed. |
+| `docs/traceability/current_vs_impl_matrix.md` | Past | Point-in-time record of the 2026-03 documentation reconciliation. | Historical audit evidence only. |
+| `docs/issues/001-qualified-import-name-conflict.md` | Past | Resolved local issue record; its qualified-import regressions pass. | `tests/import_qualified_conflict_issue_001.rs`. |
 | `FIX_SUMMARY.md` | Past | Point-in-time fix log with test status context. | Historical execution snapshot. |
 | `IMPLEMENTATION_SUMMARY.md` | Past | Point-in-time implementation narrative and solved items. | Historical execution snapshot. |
 | `ORCHESTRATION_SUMMARY.md` | Past | Process summary of delegated fix session. | Historical orchestration snapshot. |
@@ -66,7 +75,6 @@ Rule: when implementation alignment is uncertain, classify as `Needs-Triage` unt
 ## Needs-Triage Items
 
 - `docs/IROptimization.md`
-- `docs/ImplementationPlan.md`
 - `docs/REPL_PERFORMANCE.md`
 - `docs/TypeClassesPlan.md`
 
@@ -74,16 +82,16 @@ Triage rule for all items above:
 - Confirm current behavior via targeted tests/benchmarks first.
 - If doc and implementation diverge, update doc to match implementation.
 
-## Next Actions (Current-State Reconciliation Priority)
+## Next Classification Tasks
 
-1. Reconcile `docs/LanguageSemantics.md` with runtime/typechecker behavior on current `main`.
-2. Reconcile `docs/TypeSystem.md` and `docs/TypeclassSemantics.md` against `src/types.rs` and typeclass integration tests.
-3. Reconcile `docs/IntermediateRepresentation.md` with `src/ir.rs`, `src/kir1.rs`, and codegen/runtime pathways.
+1. Verify `docs/IROptimization.md` against current optimizer passes and tests.
+2. Refresh `docs/REPL_PERFORMANCE.md` only with a current benchmark run.
+3. Split or retire the mixed current/future content in `docs/TypeClassesPlan.md`.
 
-## Count Summary (This Draft)
+## Count Summary
 
-- Past: 12
-- Current: 15
-- Future: 15
-- Needs-Triage: 4
-- Total classified: 46
+- Past: 16
+- Current: 16
+- Future: 13
+- Needs-Triage: 3
+- Total classified: 48

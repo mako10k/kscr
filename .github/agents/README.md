@@ -1,26 +1,20 @@
-# Agents
+# Custom Agents
 
-This folder contains reusable GitHub Copilot Chat agents for this repository.
+These GitHub Copilot profiles are optional specialists. The repository-wide contract is `AGENTS.md`; no profile is a mandatory gateway for another profile.
 
-## Available agents
+| Profile | Use when |
+|---|---|
+| `orchestrator.agent.md` | The user explicitly requests coordination, or independent workstreams have distinct decision value. |
+| `issues.agent.md` | A report or idea needs requirements and acceptance criteria. |
+| `plan.agent.md` | Accepted requirements need an implementation-ready plan. |
+| `implement.agent.md` | The user requested a bounded code or documentation change. |
+| `review.agent.md` | An existing design or diff needs read-only risk-first review. |
+| `pr.agent.md` | An existing diff needs a pull-request draft. |
+| `maintenance.agent.md` | Instructions or status documentation need reconciliation. |
 
-- `gatekeeper.agent.md` (ゆい（門番）): enforce explicit user approval before implementation when requirements are ambiguous (no guessing) + gate high-impact actions
-- `issues.agent.md` (まなみ（要望）): define requirements/specs; create/modify GitHub Issues
-- `plan.agent.md` (さくら（計画）): break Issues into implementation-ready plans
-- `implement.agent.md` (こうた（実装）): make focused code changes + validate via tests
-- `review.agent.md` (りん（レビュー）): review changes; identify risk and missing tests
-- `pr.agent.md` (はる（PR）): draft PR title/description/checklist/release notes
-- `maintenance.agent.md` (ゆい（保守） / Yui): maintain instructions/docs/agent prompts consistency
-- `orchestrator.agent.md` (あおい（司令）): route work to the right agent and integrate outputs
+Profiles use GitHub's portable tool aliases: `read`, `search`, `edit`, `execute`, `agent`, and `web`. Unknown or unavailable tools are not prerequisites and must not be installed automatically.
 
-## Conventions
+`disable-model-invocation: true` keeps each profile manually selected. Selecting a profile does not grant commits, pushes, GitHub mutations, releases, installation, rollback, or cleanup authority.
 
-- Repo-facing content is English-first.
-- Follow `.github/copilot-instructions.md`.
-- Keep diffs minimal; avoid unrelated refactors.
-
-## Tools policy
-
-- Prefer least privilege: only enable tools the agent actually uses.
-- Keep `#tool:<name>` references consistent with the frontmatter `tools:` list.
-- Use only tool names recognized by the GitHub Copilot Chat agent runner in this repo.
+Use `GUIDANCE_SCENARIOS.md` to check that future instruction changes handle
+the same mechanisms under positive, paraphrased, and non-applicable cases.

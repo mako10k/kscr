@@ -2,7 +2,9 @@
 
 This document proposes a binary format for kscr IR and module-level artifacts suitable for separate compilation and fast loading.
 
-Status: design proposal (not yet implemented).
+Status: design proposal for the full separate-compilation format. An
+experimental KIR1/KSIF subset is implemented in `src/kir1.rs`; the complete
+format and toolchain described here are not accepted as implemented.
 
 This document is intentionally written as a toolchain-change proposal.
 Sections marked **ToDo** are actionable items not yet implemented in the Rust engine / CLI.
@@ -513,4 +515,3 @@ Implementation can proceed incrementally:
 - Stage 1 should be usable as a drop-in replacement for `ir_pack` in `kscr compile` (whole-program mode).
 - Stage 2 should include enough `TYPES` to typecheck imports (schemes + ADT shapes).
 - Stage 3 requires changes in module resolution/typechecker to consult `.ksif`.
-

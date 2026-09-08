@@ -1,6 +1,12 @@
-# Current Docs vs Implementation Matrix (Draft v1)
+# Archived Current-Docs Reconciliation Matrix
 
-This matrix tracks reconciliation status for documents classified as `Current` in `docs/DOC_INDEX.md`.
+Status: historical record of the documentation reconciliation completed in
+March 2026.
+
+This matrix preserves what was inspected and changed during that pass. Its
+status labels describe the state within that audit and are not current maturity
+claims. Use `docs/ImplementationPlan.md` for current capability status and
+`docs/DOC_INDEX.md` for current document classification.
 
 Legend:
 - `Aligned`: documentation matches implementation evidence.

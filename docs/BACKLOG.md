@@ -1,6 +1,15 @@
-# Backlog (Draft v1)
+# Archived Planning Backlog
 
-Source: initial extraction from `Future` category items in `docs/DOC_INDEX.md`.
+Status: historical snapshot from the 2026-03 documentation reconciliation.
+
+This file preserves the original `BG-XXX` planning inventory and completion
+notes. It is not the active work queue and does not authorize implementation.
+Use GitHub Issues for live requirements and acceptance criteria,
+`docs/PriorityChecklist.md` for current ordering, and
+`docs/ImplementationPlan.md` for capability maturity.
+
+Original source: extraction from `Future` category items in
+`docs/DOC_INDEX.md`.
 
 ## Entry Template
 
